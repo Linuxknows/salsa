@@ -79,3 +79,10 @@ cd salsa-lwasapi
   ```bash
   ./install-salsa.sh --uninstall
   ```
+
+---
+
+## Contributors
+
+- **Linuxknows** — Creator & Maintainer
+- **Antigravity (Google DeepMind — Gemini 4 Hydrogen)** — AI Pair-Programming Contributor
