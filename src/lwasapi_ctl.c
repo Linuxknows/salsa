@@ -127,7 +127,7 @@ static int cmd_status(void) {
     };
 
     printf("================================================================================\n");
-    printf(" Salsa Rev 6.3 — Linux WASAPI Studio Engine (Fixed Master Clock + HW Analog)\n");
+    printf(" Salsa Rev 6.5 — Linux WASAPI Studio Engine (Fixed/Split Clock + HW Analog)\n");
     printf("================================================================================\n");
     printf(" Render / Sink Endpoint : %s [%s]\n",
            st.hw_device, st.active_playback_id[0] ? st.active_playback_id : "auto");
@@ -1841,7 +1841,7 @@ int main(int argc, char **argv) {
 
     fprintf(stderr,
         "Usage: %s <command>\n"
-        "  status                                    Show Salsa Rev 6.3 engine, BlueZ, PA socket & HW analog status\n"
+        "  status                                    Show Salsa Rev 6.5 engine, BlueZ, PA socket & HW analog status\n"
         "  bench                                     Run live latency benchmark vs. Native PA / ALSA\n"
         "  sync-modules                              Sync ELF symbol versions, rebuild shims & self-heal configs\n"
         "  devices                                   List active WaveRT ALSA, BlueZ A2DP & MIDI endpoints\n"

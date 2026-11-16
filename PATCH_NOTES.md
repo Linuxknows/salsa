@@ -4,7 +4,20 @@ Chronological changelog organized by installer revision and each requested chang
 
 ---
 
-## Rev 6.3 — Current (`2026-11-14`)
+## Rev 6.5 — Current (`2026-11-16`)
+
+### 1. Independent Capture / Mic Clock & Zero-Double-Resample Capture Pipeline
+- Split capture clock control (`LWASAPI_SetCaptureSampleRate`, `lwasapi-ctl set-cap-rate <44100..192000|auto>`) across [`include/lwasapi.h`](include/lwasapi.h), [`src/liblwasapi.c`](src/liblwasapi.c), [`src/lwasapi_audiodg.c`](src/lwasapi_audiodg.c), [`src/lwasapi_bluez.c`](src/lwasapi_bluez.c), and [`src/lwasapi_ctl.c`](src/lwasapi_ctl.c) so USB microphones (e.g., Focusrite Scarlett 2i2 at `48,000 Hz` for Discord/voice) run independently of a `192,000 Hz` playback Master Clock.
+- Upgraded capture audio path with [`lwasapi_bluez_read_capture_native`](include/lwasapi_bluez.h) and [`lwasapi_pa_server_push_capture`](include/lwasapi_pa_server.h) so hardware capture, Mic APO (`HPF`, gate, `48 kHz` RNNoise, compressor, clarity), and native `48 kHz` PulseAudio record clients stream `1:1` without double-resampling, using Catmull-Rom upsampling only when high-rate playback sidetone or `192 kHz` capture streams are active.
+
+### 2. USB Capture Telemetry Watchdog, MIDI Key-Press Counter & Quick Mic APO Presets
+- Added capture rate telemetry (`pref_rate`, `measured_rate`, `kick_count`, `is_usb`, `duplex_locked`) to [`include/lwasapi_debug.h`](include/lwasapi_debug.h), [`src/lwasapi_debug.c`](src/lwasapi_debug.c), and [`salsa_debug_ui.py`](salsa_debug_ui.py).
+- Updated [`include/lwasapi_midi.h`](include/lwasapi_midi.h) and [`src/lwasapi_midi.c`](src/lwasapi_midi.c) so routed MIDI telemetry counts actual Note-On key-press events (`0x90..0x9F` with non-zero velocity) instead of idle MIDI clock pulses.
+- Added quick reversible Mic APO presets (`lwasapi-ctl mic-preset <discord|broadcast|clean|bypass>`, plus `cmb_mic_preset` / `cmb_mic_preset_tray` and `cmb_cap_rate` selectors in [`salsa-gui.py`](salsa-gui.py) and [`lwasapi-tray.py`](lwasapi-tray.py)), centralized shared ctypes bindings/presets into [`salsa_ipc.py`](salsa_ipc.py), retired legacy Bose PipeWire workaround restore logic in `disable-auto`, and expanded live regression tests in [`scripts/run_regression_tests.py`](scripts/run_regression_tests.py).
+
+---
+
+## Rev 6.3 (`2026-11-14`)
 
 ### 1. Periodic Full-Duplex Static & Cross-Period Continuity Fixes
 - **Request:** *"the analog worked well but on his system there is slight static coming from both of us periodically"*

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Salsa Rev 6.3 — Linux WASAPI Studio Control Center, Dynamic EQ & Auto-Graph
+Salsa Rev 6.5 — Linux WASAPI Studio Control Center, Dynamic EQ & Auto-Graph
 ==========================================================================
 Fixed-Clock Lossless WaveRT Audio Engine (44.1–192 kHz / 16–32-bit),
 10-Band Dynamic EQ + AutoEQ Importer + Bauer Crossfeed, Capture Mic APO
@@ -705,11 +705,11 @@ def save_gui_settings(data: dict) -> None:
 OWNERS_MANUAL_CHAPTER_DEFS = {
     "overview": (
         "accent_primary",
-        "📘 Chapter 1: Philosophy — Why Salsa Rev 6.1 Needs Zero Manual Patching",
+        "📘 Chapter 1: Philosophy — Why Salsa Rev 6.5 Needs Zero Manual Patching",
         "Click any node in the live Signal Topology Graph above (or use the chapter buttons) to inspect how each stage works.",
         """
         <p>In traditional Linux audio utilities like <code>qpwgraph</code> or <code>QjackCtl</code>, users are forced to manually drag virtual patch cables between applications, PulseAudio/JACK bridges, resamplers, and hardware sinks. Whenever a game restarts, a browser tab changes sample rate, or a USB interface reconnects, manual patchbays frequently drop connections.</p>
-        <p><b>Salsa Rev 6.3 — Linux WASAPI (<code>lwasapi-audiodg</code>)</b> replaces manual patching with a <b>100% self-wiring Windows WASAPI / WaveRT Audio Device Graph architecture</b>:</p>
+        <p><b>Salsa Rev 6.5 — Linux WASAPI (<code>lwasapi-audiodg</code>)</b> replaces manual patching with a <b>100% self-wiring Windows WASAPI / WaveRT Audio Device Graph architecture</b>:</p>
         <ul>
             <li><b>Fixed Lossless Master Clock & Bit Depth Control:</b> Lock your hardware and BlueZ engine clock cleanly across <code>44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz</code> and <code>16 / 24 / 32-bit</code> precision without unpredictable clock hunting.</li>
             <li><b>Automatic Session Discovery & Per-App Routing:</b> Native WASAPI, ALSA, PulseAudio, SDL2/SDL3, OpenAL, Proton/Wine, and JACK apps register automatically with persistent per-app volume, mute, and hardware endpoint routing.</li>
@@ -809,7 +809,7 @@ OWNERS_MANUAL_CHAPTER_DEFS = {
         "🎛️ Chapter 12: Capture Mic APO, HW Analog Boost & BlueZ HFP SCO",
         "Neural RNNoise • Discrete Sound Card DAC/Amp • Two-Way Bluetooth HFP Headset Mic",
         """
-        <p>Salsa Rev 6.3 provides studio voice processing, hardware DAC/amp analog boosting, and wireless controls without PipeWire/WirePlumber dependencies:</p>
+        <p>Salsa Rev 6.5 provides studio voice processing, hardware DAC/amp analog boosting, and wireless controls without PipeWire/WirePlumber dependencies:</p>
         <ul>
             <li><b>Hardware Analog Architecture:</b> Automatically utilizes ALSA DAC unity volume, discrete headphone amp gain tiers, and USB HID volume dials on supported sound cards like the ASUS Strix Raid DLX.</li>
             <li><b>Capture Mic APO & Sidetone:</b> Toggleable per-session strip featuring Voice HPF, Noise Gate, Neural <code>librnnoise</code> denoising, Clarity shelf, Soft Compressor, and zero-latency headphone Sidetone.</li>
@@ -2341,7 +2341,7 @@ class SalsaStudioWindow(QMainWindow):
         top_layout.setSpacing(10)
 
         title_col = QVBoxLayout()
-        self.lbl_title = QLabel("SALSA — LINUX WASAPI STUDIO (REV 6.3)")
+        self.lbl_title = QLabel("SALSA — LINUX WASAPI STUDIO (REV 6.5)")
         self.lbl_title.setObjectName("TitleBanner")
         self.lbl_subtitle = QLabel(
             f"Fixed-Clock Lossless WaveRT • Hardware DAC/Amp Analog • Mic APO & Studio EQ • Host: {HOST_PROFILE['os']} ({HOST_PROFILE['cpu']})"
@@ -2977,7 +2977,7 @@ class SalsaStudioWindow(QMainWindow):
         graph_hdr_row.addWidget(lbl_g_title)
         graph_hdr_row.addStretch()
 
-        self.lbl_auto_badge = QLabel("✔ REV 6.3 LIVE | MASTER CLOCK | HW ANALOG DAC | MIC APO | BT ABR")
+        self.lbl_auto_badge = QLabel("✔ REV 6.5 LIVE | MASTER CLOCK | HW ANALOG DAC | MIC APO | BT ABR")
         self.lbl_auto_badge.setObjectName("AutoBadgeLabel")
         graph_hdr_row.addWidget(self.lbl_auto_badge)
         graph_box.addLayout(graph_hdr_row)
@@ -4089,7 +4089,7 @@ class SalsaStudioWindow(QMainWindow):
             eq_b = f"EQ:{'ON' if st.eq_cfg.enabled else 'OFF'}{'+CF' if st.param_eq.crossfeed_enabled else ''}"
             mic_b = f"Mic:{'Krisp-APO' if st.mic_apo.enabled else 'Raw'}"
             bt_b = f"BT:{bt_cod_s}{' ABR' if st.bt_codec_cfg.wireless_abr_enabled else ''}" if st.bt_active else ("DAC:Unity" if st.hw_analog_info.dac_unity_active else "Out:ALSA")
-            badge_txt = f"✔ REV 6.3 LIVE | {clk_b} | {eq_b} | {mic_b} | {bt_b}"
+            badge_txt = f"✔ REV 6.5 LIVE | {clk_b} | {eq_b} | {mic_b} | {bt_b}"
             if self.lbl_auto_badge.text() != badge_txt:
                 self.lbl_auto_badge.setText(badge_txt)
 

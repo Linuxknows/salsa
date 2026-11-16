@@ -6,10 +6,10 @@ High-Resolution (Up to **192,000 Hz / 32-Bit Float**) Windows WASAPI / WaveRT Ze
 
 ## Quick 1-Command Install on Any Linux PC
 
-Unzip the archive (for example `Rev_5.9` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
+Unzip the archive (for example `Rev_6.5` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
 
 ```bash
-unzip "salsa-lwasapi-installer (Rev_5.9).zip"
+unzip "salsa-lwasapi-installer (Rev_6.5).zip"
 cd salsa-lwasapi
 ./install-salsa.sh
 ```
