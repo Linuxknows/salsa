@@ -1,4 +1,4 @@
-# Salsa — Linux WASAPI (`lwasapi`) Portable Installer Package
+# Salsa — Linux WASAPI Portable Installer Package
 
 High-Resolution (Up to **192,000 Hz / 32-Bit Float**) Windows WASAPI / WaveRT Zero-Copy Audio Engine, **Built-in PulseAudio Protocol v35 Server**, **Direct BlueZ D-Bus A2DP/AVRCP Audio**, **10-Band Real-Time Dynamic EQ APO**, Sample-Accurate **DAW MIDI Hub**, and Automatic **`qpwgraph`-Equivalent Signal Topology & Owner's Manual** for Linux — with **zero PipeWire-Pulse or WirePlumber audio dependencies**.
 
