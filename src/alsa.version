@@ -1,0 +1,43 @@
+ALSA_0.9 {
+    global:
+        snd_*;
+        _snd_*;
+    local:
+        *;
+};
+
+ALSA_0.9.0 {
+} ALSA_0.9;
+
+ALSA_0.9.0rc4 {
+} ALSA_0.9.0;
+
+ALSA_0.9.0rc8 {
+} ALSA_0.9.0rc4;
+
+ALSA_0.9.3 {
+} ALSA_0.9.0rc8;
+
+ALSA_0.9.5 {
+} ALSA_0.9.3;
+
+ALSA_0.9.7 {
+} ALSA_0.9.5;
+
+ALSA_1.1.6 {
+} ALSA_0.9.7;
+
+ALSA_1.2.6 {
+} ALSA_1.1.6;
+
+ALSA_1.2.9 {
+} ALSA_1.2.6;
+
+ALSA_1.2.10 {
+} ALSA_1.2.9;
+
+ALSA_1.2.13 {
+} ALSA_1.2.10;
+
+ALSA_1.2.15 {
+} ALSA_1.2.13;

@@ -1,0 +1,23 @@
+# Compiled binaries, objects, and build artifacts
+build/
+*.o
+*.so
+*.so.*
+*.a
+
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Release/installer archives and temporary files
+*.zip
+*.tmp
+*.log
+*.jsonl
+
+# Editor and OS files
+*.swp
+*~
+.DS_Store

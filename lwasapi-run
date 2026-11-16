@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Launch any Linux, SDL2/SDL3, OpenAL, DAW, or Wine/Proton application with LWASAPI's full-duplex shims
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+export LD_LIBRARY_PATH="${SCRIPT_DIR}/build/shims:${SCRIPT_DIR}/build:${LD_LIBRARY_PATH:-}"
+export PROTON_USE_PIPEWIRE="${PROTON_USE_PIPEWIRE:-0}"
+export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-pulse}"
+export ALSOFT_DRIVERS="${ALSOFT_DRIVERS:-alsa,pulse}"
+exec "$@"
