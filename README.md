@@ -1,6 +1,6 @@
 # Salsa — Linux WASAPI Portable Installer Package
 
-"**"You can't spell Salsa without ALSA — because even the cleanest audio chips sound flat until they have a zero-latency dip to dance on, with zero chunks dropped and plenty of Dynamic EQ heat!"**
+"**"You can't spell Salsa without ALSA — because even the cleanest audio chips sound flat until they have a zero-latency dip to taste, with zero chunks dropped and plenty of Dynamic EQ heat!"**
 
 High-Resolution (Up to **192,000 Hz / 32-Bit Float**) Windows WASAPI / WaveRT Zero-Copy Audio Engine, **Built-in PulseAudio Protocol v35 Server**, **Direct BlueZ D-Bus A2DP/AVRCP Audio**, **10-Band Real-Time Dynamic EQ APO**, Sample-Accurate **DAW MIDI Hub**, and Automatic **`qpwgraph`-Equivalent Signal Topology & Owner's Manual**, **Designed to remove all PipeWire-Pulse or WirePlumber audio dependencies**.  
 
