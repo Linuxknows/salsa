@@ -190,7 +190,8 @@ def _run_cli_probe(args: argparse.Namespace) -> int:
 
 
 def _run_gui(start_tab: int) -> int:
-    from PyQt6.QtGui import QColor, QPalette
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QColor, QKeySequence, QPalette, QShortcut
     from PyQt6.QtWidgets import QApplication, QComboBox, QHBoxLayout, QLabel, QMainWindow, QVBoxLayout, QWidget
     from salsa_debug_ui import FALLBACK_THEME, SalsaLiveDebuggerWidget
 
@@ -218,7 +219,9 @@ def _run_gui(start_tab: int) -> int:
             lay.setSpacing(6)
 
             hdr = QHBoxLayout()
-            title = QLabel("SALSA LIVE INTERACTION DEBUGGER (WASAPI · PA v35 · BlueZ A2DP · MIDI · ALSA · Shims · PipeWire)")
+            title = QLabel(
+                "SALSA LIVE INTERACTION DEBUGGER (Ctrl+1..5 Sub-Tabs · F5 Refresh · Ctrl+W / Ctrl+Q Close)"
+            )
             title.setObjectName("TitleBanner")
             hdr.addWidget(title, 1)
             hdr.addWidget(QLabel("Theme:"))
@@ -234,7 +237,32 @@ def _run_gui(start_tab: int) -> int:
                 self.dbg_widget.subtabs.setCurrentIndex(start_tab)
             lay.addWidget(self.dbg_widget, 1)
 
+            self._shortcuts = []
+            for tab_i in range(min(5, self.dbg_widget.subtabs.count())):
+                sc = QShortcut(QKeySequence(f"Ctrl+{tab_i + 1}"), self)
+                sc.setContext(Qt.ShortcutContext.WindowShortcut)
+                sc.activated.connect(lambda idx=tab_i: self.dbg_widget.subtabs.setCurrentIndex(idx))
+                self._shortcuts.append(sc)
+            sc_ref = QShortcut(QKeySequence("F5"), self)
+            sc_ref.setContext(Qt.ShortcutContext.WindowShortcut)
+            sc_ref.activated.connect(self._refresh_now)
+            self._shortcuts.append(sc_ref)
+            for key_seq in ("Ctrl+W", "Ctrl+Q"):
+                sc_cls = QShortcut(QKeySequence(key_seq), self)
+                sc_cls.setContext(Qt.ShortcutContext.WindowShortcut)
+                sc_cls.activated.connect(self.close)
+                self._shortcuts.append(sc_cls)
+
             self._apply_theme()
+
+        def _refresh_now(self) -> None:
+            try:
+                if getattr(self.dbg_widget, "client", None) is not None:
+                    self.dbg_widget.client.request_snapshot()
+                self.dbg_widget._auto_refresh_audits()
+                self.dbg_widget._render_telemetry()
+            except Exception:
+                pass
 
         def _on_theme(self, name: str) -> None:
             if name in themes:

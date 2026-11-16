@@ -4,7 +4,20 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## Rev 6.5 — Current (`2026-11-16`)
+## Rev 6.6 — Current (`2026-11-16`)
+
+### 1. Multi-Window Studio Flow: Topology Intro, Pop-Out Advanced Options & Standalone Debugger
+- Split the Auto-Graph Signal Topology & Owner's Manual view into its own standalone startup intro window (`_build_topology_intro_window` in [`salsa-gui.py`](salsa-gui.py)) with a `"Don't show Topology Intro on startup"` persistence toggle (`show_topology_intro`), `"Enter Studio Mixer ->"` button, and top-bar `"Topology (F1)"` toggle to reopen anytime (or via `salsa-graph`).
+- Removed the embedded `SalsaLiveDebuggerWidget` tab and `QTabWidget` wrapper from [`salsa-gui.py`](salsa-gui.py); [`salsa-debug.py`](salsa-debug.py) now launches strictly as its own separate standalone program/window via **Advanced Options**, while Topology keeps lightweight async Video PW Broker detection via `snapshot_once`.
+- Moved `Hardware Analog Stage`, `Engine Ownership Toggle` (`Salsa Native` / `PipeWire`), `Send Test MIDI (C4)`, `Run Latency Benchmark`, `Run System Health Audit`, `Sync Audio Modules Now`, `Restart Audio Engine` & `Restart Tray Service`, `Open Custom Theme Studio`, `Reset Safe Defaults`, `Soft-Knee Limiter`, `Per-Device EQ`, `Import AutoEQ .txt`, and `Bauer Crossfeed` into the dedicated pop-out **Advanced Options** window (`_build_advanced_options_window`).
+
+### 2. Customizable Keyboard Shortcuts (GUI & Standalone Debugger)
+- Added customizable `QKeySequenceEdit` key-bind rows inside **Advanced Options** for 14 Studio/system actions (`DEFAULT_SHORTCUTS`, conflict auto-clearing, per-action clear, and `Restore Defaults`), persisted under `"shortcuts"` in `gui_settings.json` with live shortcut/tooltip rebinding (`_setup_shortcuts`).
+- Added keyboard navigation shortcuts in [`salsa-debug.py`](salsa-debug.py) (`Ctrl+1..5` sub-tabs, `F5` refresh, `Ctrl+W`/`Ctrl+Q` close) and expanded multi-window + shortcut regression assertions in [`scripts/run_regression_tests.py`](scripts/run_regression_tests.py).
+
+---
+
+## Rev 6.5 (`2026-11-16`)
 
 ### 1. Independent Capture / Mic Clock & Zero-Double-Resample Capture Pipeline
 - Split capture clock control (`LWASAPI_SetCaptureSampleRate`, `lwasapi-ctl set-cap-rate <44100..192000|auto>`) across [`include/lwasapi.h`](include/lwasapi.h), [`src/liblwasapi.c`](src/liblwasapi.c), [`src/lwasapi_audiodg.c`](src/lwasapi_audiodg.c), [`src/lwasapi_bluez.c`](src/lwasapi_bluez.c), and [`src/lwasapi_ctl.c`](src/lwasapi_ctl.c) so USB microphones (e.g., Focusrite Scarlett 2i2 at `48,000 Hz` for Discord/voice) run independently of a `192,000 Hz` playback Master Clock.

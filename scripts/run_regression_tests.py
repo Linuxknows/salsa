@@ -846,9 +846,58 @@ def test_live_rev61_studio_apis() -> None:
         assert "self._rate_hold_until" in tray_src and "self._bt_hold_until" in tray_src
         assert "SalsaAutoGraphCanvas" in gui_src and "self.lbl_auto_badge" in gui_src
         assert "self.cmb_cap_rate" in gui_src and "self.cmb_mic_preset" in gui_src
+        assert "self.intro_win" in gui_src and "self.adv_win" in gui_src and "DEFAULT_SHORTCUTS" in gui_src
+        assert "SalsaLiveDebuggerWidget" not in gui_src and "snapshot_once" in gui_src
         assert "self.cmb_mic_preset_tray" in tray_src
         assert "PRESETS" in ipc_src and "MIC_APO_PRESETS" in ipc_src and "def bind_liblwasapi" in ipc_src
         assert "dry_ring" in audiodg_src and "vad_ring" in audiodg_src and "g_mic_demud_flt" in audiodg_src
+
+        # Offscreen PyQt6 check for Intro <-> Studio <-> Advanced window split and customizable shortcuts
+        ui_probe = r'''
+import importlib.util, os, tempfile
+from PyQt6.QtGui import QKeySequence
+from PyQt6.QtWidgets import QApplication
+with tempfile.TemporaryDirectory() as tmp:
+    os.environ["XDG_CONFIG_HOME"] = tmp
+    spec = importlib.util.spec_from_file_location("sg", "salsa-gui.py")
+    sg = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sg)
+    app = QApplication([])
+    w = sg.SalsaStudioWindow(start_in_graph=False, start_in_debug=False)
+    w.timer.stop()
+    assert not hasattr(w, "tabs") and not hasattr(w, "debugger_tab")
+    assert w.intro_win is not None and w.adv_win is not None
+    assert len(w.shortcut_edits) == len(sg.DEFAULT_SHORTCUTS)
+    w._open_topology_intro()
+    app.processEvents()
+    assert w.intro_win.isVisible()
+    w.chk_skip_intro.setChecked(True)
+    app.processEvents()
+    assert not w.chk_show_intro_startup.isChecked()
+    assert sg.load_gui_settings().get("show_topology_intro") is False
+    w._enter_studio_from_intro()
+    app.processEvents()
+    assert w.isVisible() and not w.intro_win.isVisible()
+    w._open_advanced_options()
+    app.processEvents()
+    assert w.adv_win.isVisible()
+    w._on_shortcut_edited("toggle_eq", QKeySequence("Ctrl+M"))
+    assert w._get_shortcut_map()["toggle_eq"] == "Ctrl+M"
+    assert w._get_shortcut_map()["mute_spk"] == ""
+    w._reset_default_shortcuts()
+    assert w._get_shortcut_map()["mute_spk"] == "Ctrl+M"
+    assert w._get_shortcut_map()["toggle_eq"] == "Ctrl+E"
+    w.close()
+'''
+        r_ui = subprocess.run(
+            [sys.executable, "-c", ui_probe],
+            cwd=REPO_DIR,
+            env=dict(os.environ, QT_QPA_PLATFORM="offscreen"),
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert r_ui.returncode == 0, f"Multi-window & shortcut Qt probe failed:\n{r_ui.stdout}\n{r_ui.stderr}"
 
         # 6. Verify 0600 permissions on state & volume files
         for p in (

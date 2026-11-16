@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Salsa Rev 6.5 — Linux WASAPI Studio Control Center, Dynamic EQ & Auto-Graph
+Salsa Rev 6.6 — Linux WASAPI Studio Control Center, Dynamic EQ & Auto-Graph
 ==========================================================================
 Fixed-Clock Lossless WaveRT Audio Engine (44.1–192 kHz / 16–32-bit),
 10-Band Dynamic EQ + AutoEQ Importer + Bauer Crossfeed, Capture Mic APO
@@ -17,12 +17,13 @@ import re
 import stat
 import subprocess
 import sys
+import threading
 import time
 
 _REAL_DIR = os.path.dirname(os.path.realpath(__file__))
 if _REAL_DIR not in sys.path:
     sys.path.insert(0, _REAL_DIR)
-from salsa_debug_ui import SalsaLiveDebuggerWidget
+from salsa_debug_core import snapshot_once
 from salsa_theme_editor import (
     CUSTOM_THEME_NAME,
     SalsaCustomThemeDialog,
@@ -35,12 +36,14 @@ from PyQt6.QtGui import (
     QColor,
     QFont,
     QIcon,
+    QKeySequence,
     QLinearGradient,
     QPainter,
     QPainterPath,
     QPalette,
     QPen,
     QPixmap,
+    QShortcut,
 )
 from PyQt6.QtWidgets import (
     QApplication,
@@ -53,6 +56,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QKeySequenceEdit,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -62,7 +66,6 @@ from PyQt6.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
-    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextBrowser,
@@ -74,8 +77,26 @@ from PyQt6.QtWidgets import (
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 LIB_PATH = os.path.join(BASE_DIR, "build", "liblwasapi.so")
 CTL_BIN = os.path.join(BASE_DIR, "build", "lwasapi-ctl")
+DEBUG_SCRIPT = os.path.join(BASE_DIR, "salsa-debug.py")
 ICON_PATH = os.path.join(BASE_DIR, "assets", "salsa-lwasapi.png")
 ICON_GLOW_PATH = os.path.join(BASE_DIR, "assets", "salsa-lwasapi-glow.png")
+
+DEFAULT_SHORTCUTS = [
+    ("advanced", "Open Advanced Options", "Ctrl+,"),
+    ("topology", "Toggle Topology & Manual", "F1"),
+    ("debugger", "Open Standalone Debugger", "Ctrl+D"),
+    ("mute_spk", "Toggle Speaker Mute", "Ctrl+M"),
+    ("mute_mic", "Toggle Mic Capture Mute", "Ctrl+Shift+M"),
+    ("toggle_eq", "Toggle 10-Band Dynamic EQ", "Ctrl+E"),
+    ("toggle_mic_apo", "Toggle Capture Mic APO", "Ctrl+K"),
+    ("vol_up", "Speaker Volume +5%", "Ctrl+Up"),
+    ("vol_down", "Speaker Volume -5%", "Ctrl+Down"),
+    ("mic_up", "Mic Gain +5%", "Ctrl+Alt+Up"),
+    ("mic_down", "Mic Gain -5%", "Ctrl+Alt+Down"),
+    ("bt_reset", "Reset Bluetooth A2DP", "Ctrl+Shift+B"),
+    ("refresh", "Force Status & Devices Refresh", "F5"),
+    ("quit", "Quit Studio", "Ctrl+Q"),
+]
 
 
 def detect_host_pc_profile() -> dict:
@@ -705,11 +726,11 @@ def save_gui_settings(data: dict) -> None:
 OWNERS_MANUAL_CHAPTER_DEFS = {
     "overview": (
         "accent_primary",
-        "📘 Chapter 1: Philosophy — Why Salsa Rev 6.5 Needs Zero Manual Patching",
+        "📘 Chapter 1: Philosophy — Why Salsa Rev 6.6 Needs Zero Manual Patching",
         "Click any node in the live Signal Topology Graph above (or use the chapter buttons) to inspect how each stage works.",
         """
         <p>In traditional Linux audio utilities like <code>qpwgraph</code> or <code>QjackCtl</code>, users are forced to manually drag virtual patch cables between applications, PulseAudio/JACK bridges, resamplers, and hardware sinks. Whenever a game restarts, a browser tab changes sample rate, or a USB interface reconnects, manual patchbays frequently drop connections.</p>
-        <p><b>Salsa Rev 6.5 — Linux WASAPI (<code>lwasapi-audiodg</code>)</b> replaces manual patching with a <b>100% self-wiring Windows WASAPI / WaveRT Audio Device Graph architecture</b>:</p>
+        <p><b>Salsa Rev 6.6 — Linux WASAPI (<code>lwasapi-audiodg</code>)</b> replaces manual patching with a <b>100% self-wiring Windows WASAPI / WaveRT Audio Device Graph architecture</b>:</p>
         <ul>
             <li><b>Fixed Lossless Master Clock & Bit Depth Control:</b> Lock your hardware and BlueZ engine clock cleanly across <code>44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz</code> and <code>16 / 24 / 32-bit</code> precision without unpredictable clock hunting.</li>
             <li><b>Automatic Session Discovery & Per-App Routing:</b> Native WASAPI, ALSA, PulseAudio, SDL2/SDL3, OpenAL, Proton/Wine, and JACK apps register automatically with persistent per-app volume, mute, and hardware endpoint routing.</li>
@@ -809,7 +830,7 @@ OWNERS_MANUAL_CHAPTER_DEFS = {
         "🎛️ Chapter 12: Capture Mic APO, HW Analog Boost & BlueZ HFP SCO",
         "Neural RNNoise • Discrete Sound Card DAC/Amp • Two-Way Bluetooth HFP Headset Mic",
         """
-        <p>Salsa Rev 6.5 provides studio voice processing, hardware DAC/amp analog boosting, and wireless controls without PipeWire/WirePlumber dependencies:</p>
+        <p>Salsa Rev 6.6 provides studio voice processing, hardware DAC/amp analog boosting, and wireless controls without PipeWire/WirePlumber dependencies:</p>
         <ul>
             <li><b>Hardware Analog Architecture:</b> Automatically utilizes ALSA DAC unity volume, discrete headphone amp gain tiers, and USB HID volume dials on supported sound cards like the ASUS Strix Raid DLX.</li>
             <li><b>Capture Mic APO & Sidetone:</b> Toggleable per-session strip featuring Voice HPF, Noise Gate, Neural <code>librnnoise</code> denoising, Clarity shelf, Soft Compressor, and zero-latency headphone Sidetone.</li>
@@ -2085,6 +2106,21 @@ class SavedChipLabel(QLabel):
             super().setText(elided)
 
 
+class SalsaPopWindow(QWidget):
+    """Independent Salsa sub-window matching Studio's live palette and QSS."""
+
+    def __init__(self, title: str, on_close=None):
+        super().__init__(None, Qt.WindowType.Window)
+        self.setWindowTitle(title)
+        self._on_close = on_close
+
+    def closeEvent(self, event):
+        if callable(self._on_close):
+            if self._on_close(event) is False:
+                return
+        event.accept()
+
+
 class SalsaStudioWindow(QMainWindow):
     def __init__(self, start_in_graph: bool = False, start_in_debug: bool = False):
         super().__init__()
@@ -2100,15 +2136,18 @@ class SalsaStudioWindow(QMainWindow):
             self.current_theme = THEMES[self.current_theme_name]
         self._custom_theme_dlg = None
         self.current_manual_key = "overview"
+        self._closing_all = False
+        self._start_in_graph_flag = bool(start_in_graph)
+        self._studio_entered = False
 
         self.setWindowTitle(
-            "Salsa — Linux WASAPI Studio (192 kHz WaveRT Engine, Dynamic EQ & Auto-Graph Owner's Manual)"
+            "Salsa — Linux WASAPI Studio (192 kHz WaveRT Engine & Dynamic EQ)"
         )
         self.setWindowIcon(create_salsa_icon(self.current_theme))
         try:
-            win_w = max(640, min(7680, int(self.gui_settings.get("window_width", 1240))))
+            win_w = max(640, min(7680, int(self.gui_settings.get("window_width", 1580))))
         except (TypeError, ValueError):
-            win_w = 1240
+            win_w = 1580
         try:
             win_h = max(480, min(4320, int(self.gui_settings.get("window_height", 840))))
         except (TypeError, ValueError):
@@ -2130,6 +2169,10 @@ class SalsaStudioWindow(QMainWindow):
         self._active_playback_id = ""
         self._cached_sinks = [("auto", "Auto (Global Output)")]
         self._cached_sources = [("auto", "Auto (Global Mic)")]
+        self._cached_pw_telem = None
+        self._pw_telem_ts = 0.0
+        self._pw_telem_inflight = False
+        self._svc_restart_proc = None
         self._sess_widgets = {}
         self._sess_last_send_ts = {}
         self._last_sess_struct_sig = None
@@ -2193,22 +2236,14 @@ class SalsaStudioWindow(QMainWindow):
         self.current_hw_analog.mic_hw_boost_db = 0.0
 
         self.updating_ui = False
+        self.intro_win = None
+        self.adv_win = None
         self._build_ui()
+        self._build_topology_intro_window()
+        self._build_advanced_options_window()
+        self._setup_shortcuts()
         self._apply_theme()
         self._restore_saved_eq_on_build()
-
-        if start_in_debug:
-            self.tabs.setCurrentIndex(2)
-        elif start_in_graph:
-            self.tabs.setCurrentIndex(1)
-        else:
-            try:
-                saved_tab = int(self.gui_settings.get("last_tab", 0))
-            except (TypeError, ValueError):
-                saved_tab = 0
-            if 0 <= saved_tab < self.tabs.count():
-                self.tabs.setCurrentIndex(saved_tab)
-        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self._poll_engine(initial=True)
 
@@ -2231,16 +2266,23 @@ class SalsaStudioWindow(QMainWindow):
         if app is not None:
             app.setPalette(pal)
         self.setPalette(pal)
+        if getattr(self, "intro_win", None) is not None:
+            self.intro_win.setPalette(pal)
+        if getattr(self, "adv_win", None) is not None:
+            self.adv_win.setPalette(pal)
 
     def _apply_theme(self):
         t = self.current_theme
+        ico = create_salsa_icon(t)
         self._apply_palette(t)
         self._apply_stylesheet()
-        self.setWindowIcon(create_salsa_icon(t))
+        self.setWindowIcon(ico)
         self.canvas.set_theme(t)
         self.graph_canvas.set_theme(t)
-        if hasattr(self, "debugger_tab"):
-            self.debugger_tab.set_theme(t)
+        if getattr(self, "intro_win", None) is not None:
+            self.intro_win.setWindowIcon(ico)
+        if getattr(self, "adv_win", None) is not None:
+            self.adv_win.setWindowIcon(ico)
         self.manual_browser.document().setDefaultStyleSheet(
             f"body, p, li {{ color: {t['text_primary']}; }} "
             f"code {{ background-color: {t['code_bg']}; color: {t['accent_secondary']}; "
@@ -2322,7 +2364,26 @@ class SalsaStudioWindow(QMainWindow):
         self._apply_theme()
 
     def _apply_stylesheet(self):
-        self.setStyleSheet(build_salsa_stylesheet(self.current_theme, mini=False))
+        t = self.current_theme
+        qss = build_salsa_stylesheet(t, mini=False) + f"""
+        QKeySequenceEdit, QKeySequenceEdit QLineEdit {{
+            background-color: {t['bg_control']};
+            color: {t['text_bright']};
+            border: 1px solid {t['border_control']};
+            border-radius: 6px;
+            padding: 3px 8px;
+            font-weight: 700;
+        }}
+        QKeySequenceEdit:focus, QKeySequenceEdit QLineEdit:focus {{
+            border-color: {t['accent_primary']};
+            background-color: {t['bg_hover']};
+        }}
+        """
+        self.setStyleSheet(qss)
+        if getattr(self, "intro_win", None) is not None:
+            self.intro_win.setStyleSheet(qss)
+        if getattr(self, "adv_win", None) is not None:
+            self.adv_win.setStyleSheet(qss)
 
     def _build_ui(self):
         central = QWidget()
@@ -2330,9 +2391,10 @@ class SalsaStudioWindow(QMainWindow):
         root = QVBoxLayout(central)
         root.setContentsMargins(10, 8, 10, 8)
         root.setSpacing(6)
+        self._root_layout = root
 
         # =====================================================================
-        # TOP BAR: Branding + Engine Switch + Up-To-192kHz Clock
+        # TOP BAR: Branding + Clocks + Topology / Advanced Window Buttons
         # =====================================================================
         top_card = QFrame()
         top_card.setObjectName("Card")
@@ -2341,7 +2403,7 @@ class SalsaStudioWindow(QMainWindow):
         top_layout.setSpacing(10)
 
         title_col = QVBoxLayout()
-        self.lbl_title = QLabel("SALSA — LINUX WASAPI STUDIO (REV 6.5)")
+        self.lbl_title = QLabel("SALSA — LINUX WASAPI STUDIO (REV 6.6)")
         self.lbl_title.setObjectName("TitleBanner")
         self.lbl_subtitle = QLabel(
             f"Fixed-Clock Lossless WaveRT • Hardware DAC/Amp Analog • Mic APO & Studio EQ • Host: {HOST_PROFILE['os']} ({HOST_PROFILE['cpu']})"
@@ -2398,80 +2460,42 @@ class SalsaStudioWindow(QMainWindow):
 
         theme_col = QVBoxLayout()
         theme_col.addWidget(QLabel("GUI Theme:"))
-        theme_row = QHBoxLayout()
-        theme_row.setContentsMargins(0, 0, 0, 0)
-        theme_row.setSpacing(4)
         self.cmb_theme = QComboBox()
         for theme_name in THEMES:
             self.cmb_theme.addItem(theme_name)
         self.cmb_theme.addItem(CUSTOM_THEME_NAME)
         self.cmb_theme.setCurrentText(self.current_theme_name)
         self.cmb_theme.activated.connect(self._on_theme_activated)
-        theme_row.addWidget(self.cmb_theme, 1)
-        self.btn_custom_theme = QPushButton("🎨")
-        self.btn_custom_theme.setObjectName("CompactBtn")
-        self.btn_custom_theme.setToolTip("Open Custom Theme Studio (Live Mini GUI Preview)")
-        self.btn_custom_theme.setFixedWidth(30)
-        self.btn_custom_theme.clicked.connect(self._open_custom_theme_editor)
-        theme_row.addWidget(self.btn_custom_theme)
-        theme_col.addLayout(theme_row)
+        theme_col.addWidget(self.cmb_theme)
         top_layout.addLayout(theme_col)
 
         eng_col = QVBoxLayout()
         self.lbl_latency = QLabel("Quantum: 5.33 ms | SCHED_FIFO")
         self.lbl_latency.setObjectName("LatencyLabel")
-        self.btn_engine_toggle = QPushButton("Engine: SALSA NATIVE AUDIO (Revert to PW/WP)")
-        self.btn_engine_toggle.setObjectName("PrimaryBtn")
-        self.btn_engine_toggle.clicked.connect(self._toggle_engine_mode)
         eng_col.addWidget(self.lbl_latency)
-        eng_col.addWidget(self.btn_engine_toggle)
+        hdr_btns = QHBoxLayout()
+        hdr_btns.setContentsMargins(0, 0, 0, 0)
+        hdr_btns.setSpacing(6)
+        self.btn_open_topology = QPushButton("🕸️ Topology (F1)")
+        self.btn_open_topology.setToolTip("Open Auto-Graph Signal Topology & Owner's Manual window (F1)")
+        self.btn_open_topology.clicked.connect(self._open_topology_intro)
+        hdr_btns.addWidget(self.btn_open_topology)
+        self.btn_open_advanced = QPushButton("⚙️ Advanced Options (Ctrl+,)")
+        self.btn_open_advanced.setObjectName("PrimaryBtn")
+        self.btn_open_advanced.setToolTip("Open Advanced Options, Standalone Live Debugger, DSP, Hardware Analog & Shortcuts (Ctrl+,)")
+        self.btn_open_advanced.clicked.connect(self._open_advanced_options)
+        hdr_btns.addWidget(self.btn_open_advanced)
+        eng_col.addLayout(hdr_btns)
         top_layout.addLayout(eng_col)
 
         root.addWidget(top_card)
 
-        # =====================================================================
-        # STUDIO TABS: [1] Studio Mixer & EQ | [2] Auto-Graph & Manual | [3] Debugger
-        # + Corner Slot: Bauer Crossfeed Controls
-        # =====================================================================
-        self.tabs = QTabWidget()
-
-        self.tabs_corner = QWidget()
-        self.tabs_corner.setObjectName("TabsCornerSlot")
-        param_row = QHBoxLayout(self.tabs_corner)
-        param_row.setContentsMargins(8, 0, 2, 2)
-        param_row.setSpacing(5)
-        self.chk_crossfeed = QCheckBox("Bauer Crossfeed")
-        self.chk_crossfeed.setToolTip("Optional BS2B-style stereo crossfeed for natural headphone staging")
-        self.chk_crossfeed.toggled.connect(self._on_param_control_changed)
-        param_row.addWidget(self.chk_crossfeed)
-
-        self.lbl_crossfeed = QLabel("30%")
-        param_row.addWidget(self.lbl_crossfeed)
-        self.sld_crossfeed = QSlider(Qt.Orientation.Horizontal)
-        self.sld_crossfeed.setRange(0, 100)
-        self.sld_crossfeed.setValue(30)
-        self.sld_crossfeed.setFixedWidth(82)
-        self.sld_crossfeed.valueChanged.connect(self._on_param_control_changed)
-        param_row.addWidget(self.sld_crossfeed)
-
-        self.cmb_crossfeed_cut = QComboBox()
-        self.cmb_crossfeed_cut.addItem("650 Hz", 650)
-        self.cmb_crossfeed_cut.addItem("700 Hz", 700)
-        self.cmb_crossfeed_cut.addItem("850 Hz", 850)
-        self.cmb_crossfeed_cut.setCurrentIndex(1)
-        self.cmb_crossfeed_cut.setMaximumWidth(78)
-        self.cmb_crossfeed_cut.currentIndexChanged.connect(self._on_param_control_changed)
-        param_row.addWidget(self.cmb_crossfeed_cut)
-        self.tabs.setCornerWidget(self.tabs_corner, Qt.Corner.TopRightCorner)
-
-        root.addWidget(self.tabs, 1)
-
         # ---------------------------------------------------------------------
-        # TAB 1: Studio Mixer, 192 kHz Clock & Real-Time 10-Band Dynamic EQ
+        # MAIN STUDIO VIEW: 192 kHz Clock, Dynamic EQ, Mic APO & Full-Duplex Mixer
         # ---------------------------------------------------------------------
         tab_studio = QWidget()
         studio_layout = QVBoxLayout(tab_studio)
-        studio_layout.setContentsMargins(6, 6, 6, 6)
+        studio_layout.setContentsMargins(0, 2, 0, 0)
         studio_layout.setSpacing(6)
 
         eq_card = QFrame()
@@ -2517,33 +2541,12 @@ class SalsaStudioWindow(QMainWindow):
         self.cmb_dyn_mode.currentIndexChanged.connect(self._send_eq_update)
         eq_bar.addWidget(self.cmb_dyn_mode)
 
-        eq_bar.addSpacing(4)
-        self.chk_limiter = QCheckBox("Soft-Knee Mastering Limiter")
-        self.chk_limiter.setChecked(True)
-        self.chk_limiter.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.chk_limiter.toggled.connect(self._send_eq_update)
-        eq_bar.addWidget(self.chk_limiter)
-
-        self.chk_eq_per_dev = QCheckBox("Per-Device EQ")
-        self.chk_eq_per_dev.setChecked(bool(self.gui_settings.get("eq_per_device", self.gui_settings.get("eq_per_device_enabled", False))))
-        self.chk_eq_per_dev.setToolTip("Automatically save and restore a separate EQ curve for each output device")
-        self.chk_eq_per_dev.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.chk_eq_per_dev.toggled.connect(self._on_per_device_eq_toggled)
-        eq_bar.addWidget(self.chk_eq_per_dev)
-
         btn_flat = QPushButton("Reset Flat")
         btn_flat.setObjectName("CompactBtn")
         btn_flat.setToolTip("Reset all EQ bands flat (0 dB), restore octave centers, and bypass Crossfeed")
         btn_flat.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         btn_flat.clicked.connect(self._on_reset_flat_clicked)
         eq_bar.addWidget(btn_flat)
-
-        btn_import_autoeq = QPushButton("Import AutoEQ .txt")
-        btn_import_autoeq.setObjectName("CompactBtn")
-        btn_import_autoeq.setToolTip("Import EqualizerAPO / AutoEQ / Oratory1990 ParametricEQ .txt profile")
-        btn_import_autoeq.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        btn_import_autoeq.clicked.connect(self._import_autoeq_txt)
-        eq_bar.addWidget(btn_import_autoeq)
         eq_bar.addStretch(1)
         eq_layout.addLayout(eq_bar)
 
@@ -2780,78 +2783,6 @@ class SalsaStudioWindow(QMainWindow):
         bt_row.addWidget(self.lbl_bt_diag, 1)
         hw_col.addLayout(bt_row)
 
-        hw_analog_row1 = QHBoxLayout()
-        hw_analog_row1.setSpacing(6)
-        hw_analog_row1.addWidget(QLabel("HW Analog:"))
-        self.chk_hw_dac_unity = QCheckBox("HW DAC Unity")
-        self.chk_hw_dac_unity.setChecked(True)
-        self.chk_hw_dac_unity.setToolTip(
-            "Drive ALSA hardware DAC mixer for lossless 0..100% volume (leaves Scarlett/BlueZ untouched)"
-        )
-        self.chk_hw_dac_unity.toggled.connect(self._on_hw_analog_cfg_changed)
-        hw_analog_row1.addWidget(self.chk_hw_dac_unity)
-
-        self.cmb_hw_amp = QComboBox()
-        self.cmb_hw_amp.addItem("Amp: Auto (Preserve)", LWASAPI_HW_AMP_AUTO)
-        self.cmb_hw_amp.addItem("Amp: Low (<=32Ω IEM)", LWASAPI_HW_AMP_LOW)
-        self.cmb_hw_amp.addItem("Amp: Med (64-150Ω)", LWASAPI_HW_AMP_MED)
-        self.cmb_hw_amp.addItem("Amp: High (600Ω TPA6120)", LWASAPI_HW_AMP_HIGH)
-        self.cmb_hw_amp.currentIndexChanged.connect(self._on_hw_analog_cfg_changed)
-        hw_analog_row1.addWidget(self.cmb_hw_amp)
-
-        self.cmb_hw_route = QComboBox()
-        self.cmb_hw_route.addItem("Route: Auto", LWASAPI_HW_ROUTE_AUTO)
-        self.cmb_hw_route.addItem("Route: Headphones", LWASAPI_HW_ROUTE_HP)
-        self.cmb_hw_route.addItem("Route: Line / Spk", LWASAPI_HW_ROUTE_SPK)
-        self.cmb_hw_route.currentIndexChanged.connect(self._on_hw_analog_cfg_changed)
-        hw_analog_row1.addWidget(self.cmb_hw_route)
-
-        self.chk_hw_rails = QCheckBox("0dB Rails")
-        self.chk_hw_rails.setChecked(False)
-        self.chk_hw_rails.setToolTip("Unmute & normalize ALSA DAC playback switches to 0 dB")
-        self.chk_hw_rails.toggled.connect(self._on_hw_analog_cfg_changed)
-        hw_analog_row1.addWidget(self.chk_hw_rails)
-
-        self.lbl_hw_analog_diag = QLabel("HW Stage: Probing...")
-        self.lbl_hw_analog_diag.setObjectName("BandDynLabel")
-        hw_analog_row1.addWidget(self.lbl_hw_analog_diag, 1)
-        hw_col.addLayout(hw_analog_row1)
-
-        hw_analog_row2 = QHBoxLayout()
-        hw_analog_row2.setSpacing(6)
-        hw_analog_row2.addWidget(QLabel("Analog Drive:"))
-        self.sld_hw_boost = QSlider(Qt.Orientation.Horizontal)
-        self.sld_hw_boost.setRange(0, 24)
-        self.sld_hw_boost.setValue(0)
-        self.sld_hw_boost.setMaximumWidth(140)
-        self.sld_hw_boost.setToolTip("Strix/Soundcard clean soft-knee analog drive boost (0.0 .. +12.0 dB)")
-        self.sld_hw_boost.valueChanged.connect(self._on_hw_boost_slider_changed)
-        self.sld_hw_boost.sliderReleased.connect(self._on_hw_analog_cfg_changed)
-        hw_analog_row2.addWidget(self.sld_hw_boost)
-        self.lbl_hw_boost = QLabel("+0.0 dB")
-        self.lbl_hw_boost.setMinimumWidth(56)
-        hw_analog_row2.addWidget(self.lbl_hw_boost)
-
-        hw_analog_row2.addWidget(QLabel("Mic HW Boost:"))
-        self.sld_hw_mic_boost = QSlider(Qt.Orientation.Horizontal)
-        self.sld_hw_mic_boost.setRange(0, 24)
-        self.sld_hw_mic_boost.setValue(0)
-        self.sld_hw_mic_boost.setMaximumWidth(140)
-        self.sld_hw_mic_boost.setToolTip("ALSA Mic Boost + clean capture preamp makeup (0 .. +24 dB)")
-        self.sld_hw_mic_boost.valueChanged.connect(self._on_hw_mic_boost_slider_changed)
-        self.sld_hw_mic_boost.sliderReleased.connect(self._on_hw_analog_cfg_changed)
-        hw_analog_row2.addWidget(self.sld_hw_mic_boost)
-        self.lbl_hw_mic_boost = QLabel("+0.0 dB")
-        self.lbl_hw_mic_boost.setMinimumWidth(56)
-        hw_analog_row2.addWidget(self.lbl_hw_mic_boost)
-
-        self.btn_hw_analog_reset = QPushButton("Safe Defaults")
-        self.btn_hw_analog_reset.setToolTip("Revert Hardware Analog Stage to non-invasive safe defaults")
-        self.btn_hw_analog_reset.clicked.connect(self._on_hw_analog_reset)
-        hw_analog_row2.addWidget(self.btn_hw_analog_reset)
-        hw_analog_row2.addStretch(1)
-        hw_col.addLayout(hw_analog_row2)
-
         spk_row = QHBoxLayout()
         self.lbl_spk = QLabel("Speaker Vol (80%):")
         self.lbl_spk.setMinimumWidth(135)
@@ -2898,17 +2829,8 @@ class SalsaStudioWindow(QMainWindow):
         mic_row.addWidget(self.btn_mic_mute)
         hw_col.addLayout(mic_row)
 
-        midi_row = QHBoxLayout()
         self.lbl_midi_status = QLabel("DAW MIDI Hub: Auto-Detecting (0 key presses)")
-        midi_row.addWidget(self.lbl_midi_status)
-        btn_midi_test = QPushButton("Send Test MIDI (C4)")
-        btn_midi_test.clicked.connect(lambda: subprocess.Popen([CTL_BIN, "midi-send", "60", "115"]))
-        midi_row.addWidget(btn_midi_test)
-        btn_bench = QPushButton("Run Latency Benchmark")
-        btn_bench.setObjectName("PrimaryBtn")
-        btn_bench.clicked.connect(self._run_latency_benchmark)
-        midi_row.addWidget(btn_bench)
-        hw_col.addLayout(midi_row)
+        hw_col.addWidget(self.lbl_midi_status)
 
         bot_layout.addWidget(hw_card, 2)
 
@@ -2953,15 +2875,17 @@ class SalsaStudioWindow(QMainWindow):
         studio_scroll.setFrameShape(QFrame.Shape.NoFrame)
         studio_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         studio_scroll.setWidget(tab_studio)
-        self.tabs.addTab(studio_scroll, "🎛️ Studio Mixer • Dynamic EQ")
+        self._root_layout.addWidget(studio_scroll, 1)
 
-        # ---------------------------------------------------------------------
-        # TAB 2: Auto-Graph Topology (qpwgraph Equivalent) & Owner's Manual
-        # ---------------------------------------------------------------------
-        tab_graph = QWidget()
-        graph_layout = QVBoxLayout(tab_graph)
-        graph_layout.setContentsMargins(8, 8, 8, 8)
-        graph_layout.setSpacing(10)
+    def _build_topology_intro_window(self):
+        self.intro_win = SalsaPopWindow(
+            "Salsa — Auto-Graph Topology & Owner's Manual",
+            on_close=self._on_intro_win_close,
+        )
+        self.intro_win.resize(1340, 840)
+        graph_layout = QVBoxLayout(self.intro_win)
+        graph_layout.setContentsMargins(10, 8, 10, 8)
+        graph_layout.setSpacing(8)
 
         graph_card = QFrame()
         graph_card.setObjectName("Card")
@@ -2977,7 +2901,7 @@ class SalsaStudioWindow(QMainWindow):
         graph_hdr_row.addWidget(lbl_g_title)
         graph_hdr_row.addStretch()
 
-        self.lbl_auto_badge = QLabel("✔ REV 6.5 LIVE | MASTER CLOCK | HW ANALOG DAC | MIC APO | BT ABR")
+        self.lbl_auto_badge = QLabel("✔ REV 6.6 LIVE | MASTER CLOCK | HW ANALOG DAC | MIC APO | BT ABR")
         self.lbl_auto_badge.setObjectName("AutoBadgeLabel")
         graph_hdr_row.addWidget(self.lbl_auto_badge)
         graph_box.addLayout(graph_hdr_row)
@@ -2985,7 +2909,6 @@ class SalsaStudioWindow(QMainWindow):
         self.graph_canvas = SalsaAutoGraphCanvas(self._on_graph_node_clicked)
         graph_box.addWidget(self.graph_canvas)
 
-        # Bottom Owner's Manual Interactive Reader Card
         manual_card = QFrame()
         manual_card.setObjectName("Card")
         manual_box = QVBoxLayout(manual_card)
@@ -3034,14 +2957,638 @@ class SalsaStudioWindow(QMainWindow):
         graph_splitter.setStretchFactor(0, 13)
         graph_splitter.setStretchFactor(1, 7)
         graph_splitter.setSizes([500, 240])
-        graph_layout.addWidget(graph_splitter)
-        self.tabs.addTab(tab_graph, "🕸️ Auto-Graph Topology • Manual")
+        graph_layout.addWidget(graph_splitter, 1)
 
-        # ---------------------------------------------------------------------
-        # TAB 3: Live Interaction & Telemetry Debugger
-        # ---------------------------------------------------------------------
-        self.debugger_tab = SalsaLiveDebuggerWidget(self, start_client=True)
-        self.tabs.addTab(self.debugger_tab, "🔬 Live Debugger")
+        intro_footer = QFrame()
+        intro_footer.setObjectName("Card")
+        foot_row = QHBoxLayout(intro_footer)
+        foot_row.setContentsMargins(14, 8, 14, 8)
+        foot_row.setSpacing(12)
+        show_intro = bool(self.gui_settings.get("show_topology_intro", True))
+        self.chk_skip_intro = QCheckBox("Don't show Topology Intro on startup")
+        self.chk_skip_intro.setObjectName("EqEnableCheck")
+        self.chk_skip_intro.setChecked(not show_intro)
+        self.chk_skip_intro.toggled.connect(lambda ch: self._set_show_topology_intro(not ch))
+        foot_row.addWidget(self.chk_skip_intro)
+
+        self.lbl_intro_shortcuts = QLabel("")
+        self.lbl_intro_shortcuts.setObjectName("BandDynLabel")
+        foot_row.addWidget(self.lbl_intro_shortcuts, 1)
+
+        self.btn_enter_studio = QPushButton("Enter Studio Mixer  ->")
+        self.btn_enter_studio.setObjectName("PrimaryBtn")
+        self.btn_enter_studio.setMinimumHeight(32)
+        self.btn_enter_studio.clicked.connect(self._enter_studio_from_intro)
+        foot_row.addWidget(self.btn_enter_studio)
+        graph_layout.addWidget(intro_footer)
+
+    def _build_advanced_options_window(self):
+        self.adv_win = SalsaPopWindow(
+            "Salsa — Advanced Options, DSP, Hardware Analog & Diagnostics",
+            on_close=self._on_adv_win_close,
+        )
+        self.adv_win.resize(1120, 645)
+        adv_root = QVBoxLayout(self.adv_win)
+        adv_root.setContentsMargins(12, 10, 12, 10)
+        adv_root.setSpacing(8)
+
+        hdr_card = QFrame()
+        hdr_card.setObjectName("Card")
+        hc_lay = QHBoxLayout(hdr_card)
+        hc_lay.setContentsMargins(12, 8, 12, 8)
+        lbl_ah = QLabel("SALSA — ADVANCED OPTIONS, DSP, HARDWARE ANALOG & DIAGNOSTICS")
+        lbl_ah.setObjectName("TitleBanner")
+        hc_lay.addWidget(lbl_ah, 1)
+        btn_close_adv = QPushButton("Close (Esc)")
+        btn_close_adv.clicked.connect(self.adv_win.hide)
+        hc_lay.addWidget(btn_close_adv)
+        adv_root.addWidget(hdr_card)
+
+        cols_row = QHBoxLayout()
+        cols_row.setSpacing(10)
+        left_col = QVBoxLayout()
+        left_col.setSpacing(8)
+        right_col = QVBoxLayout()
+        right_col.setSpacing(8)
+
+        # Card L1: Diagnostics, Standalone Debugger & Audio Services
+        diag_card = QFrame()
+        diag_card.setObjectName("Card")
+        dc_lay = QVBoxLayout(diag_card)
+        dc_lay.setContentsMargins(12, 8, 12, 8)
+        dc_lay.setSpacing(6)
+        lbl_diag_hdr = QLabel("DIAGNOSTICS, STANDALONE DEBUGGER & AUDIO SERVICES")
+        lbl_diag_hdr.setObjectName("SectionHeader")
+        dc_lay.addWidget(lbl_diag_hdr)
+
+        g_diag = QGridLayout()
+        g_diag.setSpacing(6)
+        self.btn_open_debugger = QPushButton("Open Live Debugger Window (Ctrl+D)")
+        self.btn_open_debugger.setObjectName("PrimaryBtn")
+        self.btn_open_debugger.clicked.connect(self._open_standalone_debugger)
+        g_diag.addWidget(self.btn_open_debugger, 0, 0, 1, 2)
+
+        btn_bench = QPushButton("Run Latency Benchmark")
+        btn_bench.clicked.connect(self._run_latency_benchmark)
+        g_diag.addWidget(btn_bench, 1, 0)
+
+        btn_audit = QPushButton("Run System Health Audit")
+        btn_audit.clicked.connect(self._run_health_audit)
+        g_diag.addWidget(btn_audit, 1, 1)
+
+        btn_sync_adv = QPushButton("Sync Audio Modules Now")
+        btn_sync_adv.clicked.connect(self._run_module_sync)
+        g_diag.addWidget(btn_sync_adv, 2, 0)
+
+        self.btn_midi_test = QPushButton("Send Test MIDI (C4)")
+        self.btn_midi_test.clicked.connect(lambda: subprocess.Popen([CTL_BIN, "midi-send", "60", "115"]))
+        g_diag.addWidget(self.btn_midi_test, 2, 1)
+
+        self.btn_rst_engine = QPushButton("Restart Audio Engine")
+        self.btn_rst_engine.clicked.connect(lambda: self._restart_systemd_service("lwasapi-audiodg.service"))
+        g_diag.addWidget(self.btn_rst_engine, 3, 0)
+
+        self.btn_rst_tray = QPushButton("Restart Tray Service")
+        self.btn_rst_tray.clicked.connect(lambda: self._restart_systemd_service("lwasapi-tray.service"))
+        g_diag.addWidget(self.btn_rst_tray, 3, 1)
+        dc_lay.addLayout(g_diag)
+
+        self.lbl_adv_integration = QLabel("Integration: Checking Steam wrapper, launchers & autosync hook...")
+        self.lbl_adv_integration.setObjectName("BandDynLabel")
+        dc_lay.addWidget(self.lbl_adv_integration)
+        left_col.addWidget(diag_card)
+
+        # Card L2: Engine Ownership, Startup & Appearance
+        eng_card = QFrame()
+        eng_card.setObjectName("Card")
+        ec_lay = QVBoxLayout(eng_card)
+        ec_lay.setContentsMargins(12, 8, 12, 8)
+        ec_lay.setSpacing(6)
+        lbl_eng_hdr = QLabel("ENGINE OWNERSHIP, STARTUP & APPEARANCE")
+        lbl_eng_hdr.setObjectName("SectionHeader")
+        ec_lay.addWidget(lbl_eng_hdr)
+
+        self.btn_engine_toggle = QPushButton("Engine: SALSA NATIVE AUDIO (Revert to PW/WP)")
+        self.btn_engine_toggle.setObjectName("PrimaryBtn")
+        self.btn_engine_toggle.clicked.connect(self._toggle_engine_mode)
+        ec_lay.addWidget(self.btn_engine_toggle)
+
+        self.chk_show_intro_startup = QCheckBox("Show Auto-Graph Topology Intro window on startup")
+        self.chk_show_intro_startup.setChecked(bool(self.gui_settings.get("show_topology_intro", True)))
+        self.chk_show_intro_startup.toggled.connect(self._set_show_topology_intro)
+        ec_lay.addWidget(self.chk_show_intro_startup)
+
+        row_app = QHBoxLayout()
+        self.btn_custom_theme = QPushButton("Open Custom Theme Studio...")
+        self.btn_custom_theme.clicked.connect(self._open_custom_theme_editor)
+        row_app.addWidget(self.btn_custom_theme, 1)
+        btn_reset_all = QPushButton("Reset Settings to Safe Defaults")
+        btn_reset_all.setObjectName("CompactBtn")
+        btn_reset_all.clicked.connect(self._reset_all_safe_defaults)
+        row_app.addWidget(btn_reset_all)
+        ec_lay.addLayout(row_app)
+        left_col.addWidget(eng_card)
+
+        # Card R1: Advanced EQ & Spatial DSP
+        eqadv_card = QFrame()
+        eqadv_card.setObjectName("Card")
+        qa_lay = QVBoxLayout(eqadv_card)
+        qa_lay.setContentsMargins(12, 8, 12, 8)
+        qa_lay.setSpacing(6)
+        lbl_qa = QLabel("ADVANCED EQ & SPATIAL DSP")
+        lbl_qa.setObjectName("SectionHeader")
+        qa_lay.addWidget(lbl_qa)
+
+        row_qa1 = QHBoxLayout()
+        self.chk_limiter = QCheckBox("Soft-Knee Mastering Limiter")
+        self.chk_limiter.setChecked(True)
+        self.chk_limiter.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.chk_limiter.toggled.connect(self._send_eq_update)
+        row_qa1.addWidget(self.chk_limiter)
+
+        self.chk_eq_per_dev = QCheckBox("Per-Device EQ")
+        self.chk_eq_per_dev.setChecked(bool(self.gui_settings.get("eq_per_device", self.gui_settings.get("eq_per_device_enabled", False))))
+        self.chk_eq_per_dev.setToolTip("Automatically save and restore a separate EQ curve for each output device")
+        self.chk_eq_per_dev.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.chk_eq_per_dev.toggled.connect(self._on_per_device_eq_toggled)
+        row_qa1.addWidget(self.chk_eq_per_dev)
+
+        btn_import_autoeq = QPushButton("Import AutoEQ .txt")
+        btn_import_autoeq.setObjectName("CompactBtn")
+        btn_import_autoeq.setToolTip("Import EqualizerAPO / AutoEQ / Oratory1990 ParametricEQ .txt profile")
+        btn_import_autoeq.clicked.connect(self._import_autoeq_txt)
+        row_qa1.addWidget(btn_import_autoeq)
+        row_qa1.addStretch(1)
+        qa_lay.addLayout(row_qa1)
+
+        row_xf = QHBoxLayout()
+        self.chk_crossfeed = QCheckBox("Bauer Crossfeed")
+        self.chk_crossfeed.setToolTip("Optional BS2B-style stereo crossfeed for natural headphone staging")
+        self.chk_crossfeed.toggled.connect(self._on_param_control_changed)
+        row_xf.addWidget(self.chk_crossfeed)
+
+        self.sld_crossfeed = QSlider(Qt.Orientation.Horizontal)
+        self.sld_crossfeed.setRange(0, 100)
+        self.sld_crossfeed.setValue(30)
+        self.sld_crossfeed.setMaximumWidth(220)
+        self.sld_crossfeed.valueChanged.connect(self._on_param_control_changed)
+        row_xf.addWidget(self.sld_crossfeed, 1)
+
+        self.lbl_crossfeed = QLabel("30%")
+        row_xf.addWidget(self.lbl_crossfeed)
+
+        self.cmb_crossfeed_cut = QComboBox()
+        self.cmb_crossfeed_cut.addItem("650 Hz", 650)
+        self.cmb_crossfeed_cut.addItem("700 Hz", 700)
+        self.cmb_crossfeed_cut.addItem("850 Hz", 850)
+        self.cmb_crossfeed_cut.setCurrentIndex(1)
+        self.cmb_crossfeed_cut.setMaximumWidth(78)
+        self.cmb_crossfeed_cut.currentIndexChanged.connect(self._on_param_control_changed)
+        row_xf.addWidget(self.cmb_crossfeed_cut)
+        qa_lay.addLayout(row_xf)
+        right_col.addWidget(eqadv_card)
+
+        # Card R2: Hardware Analog Stage
+        hwa_card = QFrame()
+        hwa_card.setObjectName("Card")
+        ha_lay = QVBoxLayout(hwa_card)
+        ha_lay.setContentsMargins(12, 8, 12, 8)
+        ha_lay.setSpacing(6)
+        lbl_ha = QLabel("HARDWARE ANALOG STAGE (STRIX / DISCRETE SOUND CARDS)")
+        lbl_ha.setObjectName("SectionHeader")
+        ha_lay.addWidget(lbl_ha)
+
+        hw_analog_row1 = QHBoxLayout()
+        hw_analog_row1.setSpacing(6)
+        self.chk_hw_dac_unity = QCheckBox("HW DAC Unity")
+        self.chk_hw_dac_unity.setChecked(True)
+        self.chk_hw_dac_unity.setToolTip(
+            "Drive ALSA hardware DAC mixer for lossless 0..100% volume (leaves Scarlett/BlueZ untouched)"
+        )
+        self.chk_hw_dac_unity.toggled.connect(self._on_hw_analog_cfg_changed)
+        hw_analog_row1.addWidget(self.chk_hw_dac_unity)
+
+        self.cmb_hw_amp = QComboBox()
+        self.cmb_hw_amp.addItem("Amp: Auto (Preserve)", LWASAPI_HW_AMP_AUTO)
+        self.cmb_hw_amp.addItem("Amp: Low (<=32Ω IEM)", LWASAPI_HW_AMP_LOW)
+        self.cmb_hw_amp.addItem("Amp: Med (64-150Ω)", LWASAPI_HW_AMP_MED)
+        self.cmb_hw_amp.addItem("Amp: High (600Ω TPA6120)", LWASAPI_HW_AMP_HIGH)
+        self.cmb_hw_amp.currentIndexChanged.connect(self._on_hw_analog_cfg_changed)
+        hw_analog_row1.addWidget(self.cmb_hw_amp)
+
+        self.cmb_hw_route = QComboBox()
+        self.cmb_hw_route.addItem("Route: Auto", LWASAPI_HW_ROUTE_AUTO)
+        self.cmb_hw_route.addItem("Route: Headphones", LWASAPI_HW_ROUTE_HP)
+        self.cmb_hw_route.addItem("Route: Line / Spk", LWASAPI_HW_ROUTE_SPK)
+        self.cmb_hw_route.currentIndexChanged.connect(self._on_hw_analog_cfg_changed)
+        hw_analog_row1.addWidget(self.cmb_hw_route)
+
+        self.chk_hw_rails = QCheckBox("0dB Rails")
+        self.chk_hw_rails.setChecked(False)
+        self.chk_hw_rails.setToolTip("Unmute & normalize ALSA DAC playback switches to 0 dB")
+        self.chk_hw_rails.toggled.connect(self._on_hw_analog_cfg_changed)
+        hw_analog_row1.addWidget(self.chk_hw_rails)
+        ha_lay.addLayout(hw_analog_row1)
+
+        hw_analog_row2 = QHBoxLayout()
+        hw_analog_row2.setSpacing(6)
+        hw_analog_row2.addWidget(QLabel("Analog Drive:"))
+        self.sld_hw_boost = QSlider(Qt.Orientation.Horizontal)
+        self.sld_hw_boost.setRange(0, 24)
+        self.sld_hw_boost.setValue(0)
+        self.sld_hw_boost.setMaximumWidth(130)
+        self.sld_hw_boost.setToolTip("Strix/Soundcard clean soft-knee analog drive boost (0.0 .. +12.0 dB)")
+        self.sld_hw_boost.valueChanged.connect(self._on_hw_boost_slider_changed)
+        self.sld_hw_boost.sliderReleased.connect(self._on_hw_analog_cfg_changed)
+        hw_analog_row2.addWidget(self.sld_hw_boost)
+        self.lbl_hw_boost = QLabel("+0.0 dB")
+        self.lbl_hw_boost.setMinimumWidth(52)
+        hw_analog_row2.addWidget(self.lbl_hw_boost)
+
+        hw_analog_row2.addWidget(QLabel("Mic HW Boost:"))
+        self.sld_hw_mic_boost = QSlider(Qt.Orientation.Horizontal)
+        self.sld_hw_mic_boost.setRange(0, 24)
+        self.sld_hw_mic_boost.setValue(0)
+        self.sld_hw_mic_boost.setMaximumWidth(130)
+        self.sld_hw_mic_boost.setToolTip("ALSA Mic Boost + clean capture preamp makeup (0 .. +24 dB)")
+        self.sld_hw_mic_boost.valueChanged.connect(self._on_hw_mic_boost_slider_changed)
+        self.sld_hw_mic_boost.sliderReleased.connect(self._on_hw_analog_cfg_changed)
+        hw_analog_row2.addWidget(self.sld_hw_mic_boost)
+        self.lbl_hw_mic_boost = QLabel("+0.0 dB")
+        self.lbl_hw_mic_boost.setMinimumWidth(52)
+        hw_analog_row2.addWidget(self.lbl_hw_mic_boost)
+
+        self.btn_hw_analog_reset = QPushButton("Safe Defaults")
+        self.btn_hw_analog_reset.setToolTip("Revert Hardware Analog Stage to non-invasive safe defaults")
+        self.btn_hw_analog_reset.clicked.connect(self._on_hw_analog_reset)
+        hw_analog_row2.addWidget(self.btn_hw_analog_reset)
+        ha_lay.addLayout(hw_analog_row2)
+
+        self.lbl_hw_analog_diag = QLabel("HW Stage: Probing...")
+        self.lbl_hw_analog_diag.setObjectName("BandDynLabel")
+        ha_lay.addWidget(self.lbl_hw_analog_diag)
+        right_col.addWidget(hwa_card)
+
+        right_col.addStretch(1)
+        left_col.addStretch(1)
+        cols_row.addLayout(left_col, 1)
+        cols_row.addLayout(right_col, 1)
+        adv_root.addLayout(cols_row)
+
+        # Card Bottom: Customizable Keyboard Shortcuts
+        sc_card = QFrame()
+        sc_card.setObjectName("Card")
+        sc_lay = QVBoxLayout(sc_card)
+        sc_lay.setContentsMargins(12, 8, 12, 8)
+        sc_lay.setSpacing(6)
+        sc_hdr_row = QHBoxLayout()
+        lbl_sc_h = QLabel("CUSTOMIZABLE KEYBOARD SHORTCUTS")
+        lbl_sc_h.setObjectName("SectionHeader")
+        sc_hdr_row.addWidget(lbl_sc_h)
+        self.lbl_shortcut_status = QLabel("Click any box and press a key combo to customize (saved automatically)")
+        self.lbl_shortcut_status.setObjectName("BandDynLabel")
+        sc_hdr_row.addWidget(self.lbl_shortcut_status, 1)
+        btn_sc_reset = QPushButton("Restore Defaults")
+        btn_sc_reset.setObjectName("CompactBtn")
+        btn_sc_reset.clicked.connect(self._reset_default_shortcuts)
+        sc_hdr_row.addWidget(btn_sc_reset)
+        sc_lay.addLayout(sc_hdr_row)
+
+        sc_grid = QGridLayout()
+        sc_grid.setHorizontalSpacing(14)
+        sc_grid.setVerticalSpacing(4)
+        self.shortcut_edits = {}
+        sc_map = self._get_shortcut_map()
+        half_n = (len(DEFAULT_SHORTCUTS) + 1) // 2
+        for idx_s, (act_id, act_label, _def_seq) in enumerate(DEFAULT_SHORTCUTS):
+            col_blk = 0 if idx_s < half_n else 2
+            row_blk = idx_s if idx_s < half_n else idx_s - half_n
+            lbl_act = QLabel(f"{act_label}:")
+            kedit = QKeySequenceEdit(QKeySequence(sc_map.get(act_id, "")))
+            if hasattr(kedit, "setMaximumSequenceLength"):
+                kedit.setMaximumSequenceLength(1)
+            if hasattr(kedit, "setClearButtonEnabled"):
+                kedit.setClearButtonEnabled(True)
+            kedit.setFixedWidth(155)
+            kedit.keySequenceChanged.connect(lambda seq, k=act_id: self._on_shortcut_edited(k, seq))
+            self.shortcut_edits[act_id] = kedit
+            sc_grid.addWidget(lbl_act, row_blk, col_blk)
+            sc_grid.addWidget(kedit, row_blk, col_blk + 1)
+        sc_grid.setColumnStretch(0, 1)
+        sc_grid.setColumnStretch(2, 1)
+        sc_lay.addLayout(sc_grid)
+        adv_root.addWidget(sc_card)
+        self._refresh_adv_integration_status()
+
+    def _get_shortcut_map(self) -> dict:
+        raw = self.gui_settings.get("shortcuts")
+        out = {k: d for k, _lbl, d in DEFAULT_SHORTCUTS}
+        if isinstance(raw, dict):
+            for k, _lbl, _d in DEFAULT_SHORTCUTS:
+                if k in raw and isinstance(raw[k], str):
+                    out[k] = raw[k].strip()
+        return out
+
+    def _setup_shortcuts(self):
+        self._shortcut_objs = []
+        sc_map = self._get_shortcut_map()
+        actions = {
+            "advanced": self._open_advanced_options,
+            "topology": self._toggle_topology_intro,
+            "debugger": self._open_standalone_debugger,
+            "mute_spk": lambda: subprocess.Popen([CTL_BIN, "mute", "toggle"]),
+            "mute_mic": lambda: subprocess.Popen([CTL_BIN, "mic-mute", "toggle"]),
+            "toggle_eq": self.chk_eq_enable.toggle,
+            "toggle_mic_apo": self.chk_mic_apo.toggle,
+            "vol_up": lambda: self._adjust_vol_step("spk", 5),
+            "vol_down": lambda: self._adjust_vol_step("spk", -5),
+            "mic_up": lambda: self._adjust_vol_step("mic", 5),
+            "mic_down": lambda: self._adjust_vol_step("mic", -5),
+            "bt_reset": self._on_bt_reset_clicked,
+            "refresh": self._refresh_all_now,
+            "quit": self.close,
+        }
+        for act_id, _lbl, _def in DEFAULT_SHORTCUTS:
+            seq_txt = sc_map.get(act_id, "")
+            fn = actions.get(act_id)
+            if seq_txt and fn is not None:
+                sc = QShortcut(QKeySequence(seq_txt), self)
+                sc.setContext(Qt.ShortcutContext.WindowShortcut)
+                sc.activated.connect(fn)
+                self._shortcut_objs.append(sc)
+        if getattr(self, "intro_win", None) is not None:
+            for k_enter in ("Return", "Enter", "Escape"):
+                sc_i = QShortcut(QKeySequence(k_enter), self.intro_win)
+                sc_i.setContext(Qt.ShortcutContext.WindowShortcut)
+                sc_i.activated.connect(self._enter_studio_from_intro)
+                self._shortcut_objs.append(sc_i)
+            for act_id, fn in (("topology", self._toggle_topology_intro), ("advanced", self._open_advanced_options), ("debugger", self._open_standalone_debugger), ("quit", self.close)):
+                seq_txt = sc_map.get(act_id, "")
+                if seq_txt:
+                    sc_iw = QShortcut(QKeySequence(seq_txt), self.intro_win)
+                    sc_iw.setContext(Qt.ShortcutContext.WindowShortcut)
+                    sc_iw.activated.connect(fn)
+                    self._shortcut_objs.append(sc_iw)
+        if getattr(self, "adv_win", None) is not None:
+            sc_esc = QShortcut(QKeySequence("Escape"), self.adv_win)
+            sc_esc.setContext(Qt.ShortcutContext.WindowShortcut)
+            sc_esc.activated.connect(self.adv_win.hide)
+            self._shortcut_objs.append(sc_esc)
+            for act_id, fn in (("advanced", self.adv_win.hide), ("topology", self._open_topology_intro), ("debugger", self._open_standalone_debugger), ("refresh", self._refresh_all_now), ("quit", self.close)):
+                seq_txt = sc_map.get(act_id, "")
+                if seq_txt:
+                    sc_aw = QShortcut(QKeySequence(seq_txt), self.adv_win)
+                    sc_aw.setContext(Qt.ShortcutContext.WindowShortcut)
+                    sc_aw.activated.connect(fn)
+                    self._shortcut_objs.append(sc_aw)
+        self._update_shortcut_hints(sc_map)
+
+    def _rebuild_shortcuts(self):
+        for sc in getattr(self, "_shortcut_objs", []):
+            try:
+                sc.setEnabled(False)
+                sc.deleteLater()
+            except Exception:
+                pass
+        self._shortcut_objs = []
+        self._setup_shortcuts()
+
+    def _update_shortcut_hints(self, sc_map: dict):
+        top_k = sc_map.get("topology") or "Unbound"
+        adv_k = sc_map.get("advanced") or "Unbound"
+        dbg_k = sc_map.get("debugger") or "Unbound"
+        if hasattr(self, "btn_open_topology"):
+            self.btn_open_topology.setText(f"🕸️ Topology ({top_k})" if sc_map.get("topology") else "🕸️ Topology")
+            self.btn_open_topology.setToolTip(f"Open Auto-Graph Signal Topology & Owner's Manual window ({top_k})")
+        if hasattr(self, "btn_open_advanced"):
+            self.btn_open_advanced.setText(f"⚙️ Advanced Options ({adv_k})" if sc_map.get("advanced") else "⚙️ Advanced Options")
+            self.btn_open_advanced.setToolTip(f"Open Advanced Options, Standalone Live Debugger & Hardware Controls ({adv_k})")
+        if hasattr(self, "btn_open_debugger"):
+            self.btn_open_debugger.setText(f"Open Live Debugger Window ({dbg_k})" if sc_map.get("debugger") else "Open Live Debugger Window")
+        if hasattr(self, "chk_eq_enable"):
+            self.chk_eq_enable.setToolTip(f"Toggle 10-Band Dynamic EQ APO ({sc_map.get('toggle_eq') or 'Unbound'})")
+        if hasattr(self, "chk_mic_apo"):
+            self.chk_mic_apo.setToolTip(f"Toggle Capture Mic APO ({sc_map.get('toggle_mic_apo') or 'Unbound'})")
+        if hasattr(self, "lbl_intro_shortcuts"):
+            self.lbl_intro_shortcuts.setText(
+                f"Shortcuts: Enter / Esc -> Studio   •   {top_k} -> Topology   •   {adv_k} -> Advanced Options"
+            )
+
+    def _on_shortcut_edited(self, act_id: str, seq: QKeySequence):
+        new_txt = seq.toString(QKeySequence.SequenceFormat.PortableText).strip()
+        sc_map = self._get_shortcut_map()
+        label_map = {k: lbl for k, lbl, _d in DEFAULT_SHORTCUTS}
+        conflict_lbl = None
+        if new_txt:
+            for other_k, other_seq in list(sc_map.items()):
+                if other_k != act_id and other_seq.lower() == new_txt.lower():
+                    sc_map[other_k] = ""
+                    conflict_lbl = label_map.get(other_k, other_k)
+                    ed_other = self.shortcut_edits.get(other_k)
+                    if ed_other is not None:
+                        ed_other.blockSignals(True)
+                        ed_other.clear()
+                        ed_other.blockSignals(False)
+        sc_map[act_id] = new_txt
+        self.gui_settings["shortcuts"] = sc_map
+        save_gui_settings(self.gui_settings)
+        self._gui_settings_mtime = self._read_gui_settings_mtime()
+        self._rebuild_shortcuts()
+        if hasattr(self, "lbl_shortcut_status"):
+            lbl_name = label_map.get(act_id, act_id)
+            if not new_txt:
+                self.lbl_shortcut_status.setText(f"Cleared shortcut for '{lbl_name}'.")
+            elif conflict_lbl:
+                self.lbl_shortcut_status.setText(f"Bound '{lbl_name}' -> {new_txt} (cleared duplicate on '{conflict_lbl}').")
+            else:
+                self.lbl_shortcut_status.setText(f"Saved '{lbl_name}' -> {new_txt}.")
+
+    def _reset_default_shortcuts(self):
+        defaults = {k: d for k, _lbl, d in DEFAULT_SHORTCUTS}
+        self.gui_settings["shortcuts"] = dict(defaults)
+        save_gui_settings(self.gui_settings)
+        self._gui_settings_mtime = self._read_gui_settings_mtime()
+        for act_id, seq_txt in defaults.items():
+            ed = self.shortcut_edits.get(act_id)
+            if ed is not None:
+                ed.blockSignals(True)
+                ed.setKeySequence(QKeySequence(seq_txt))
+                ed.blockSignals(False)
+        self._rebuild_shortcuts()
+        if hasattr(self, "lbl_shortcut_status"):
+            self.lbl_shortcut_status.setText("Restored all keyboard shortcuts to defaults.")
+
+    def _adjust_vol_step(self, kind: str, delta: int):
+        sld = self.sld_mic if kind == "mic" else self.sld_spk
+        new_v = max(0, min(150, int(sld.value()) + int(delta)))
+        sld.setValue(new_v)
+        self._flush_vol(kind)
+
+    def _refresh_all_now(self):
+        self._last_dev_sig = None
+        self._poll_engine(initial=True)
+        if getattr(self, "adv_win", None) is not None and self.adv_win.isVisible():
+            self._refresh_adv_integration_status()
+
+    def _set_show_topology_intro(self, enabled: bool):
+        enabled = bool(enabled)
+        self.gui_settings["show_topology_intro"] = enabled
+        save_gui_settings(self.gui_settings)
+        self._gui_settings_mtime = self._read_gui_settings_mtime()
+        if hasattr(self, "chk_skip_intro"):
+            self.chk_skip_intro.blockSignals(True)
+            self.chk_skip_intro.setChecked(not enabled)
+            self.chk_skip_intro.blockSignals(False)
+        if hasattr(self, "chk_show_intro_startup"):
+            self.chk_show_intro_startup.blockSignals(True)
+            self.chk_show_intro_startup.setChecked(enabled)
+            self.chk_show_intro_startup.blockSignals(False)
+
+    def _open_topology_intro(self):
+        if getattr(self, "intro_win", None) is None:
+            return
+        if hasattr(self, "btn_enter_studio"):
+            self.btn_enter_studio.setText(
+                "Return to Studio Mixer  ->" if self._studio_entered else "Enter Studio Mixer  ->"
+            )
+        self.intro_win.show()
+        self.intro_win.raise_()
+        self.intro_win.activateWindow()
+        self._sync_graph_anim_timer()
+        self._poll_engine(initial=False)
+        self.graph_canvas.update()
+
+    def _toggle_topology_intro(self):
+        if getattr(self, "intro_win", None) is None:
+            return
+        if self.intro_win.isVisible() and self._studio_entered:
+            self.intro_win.hide()
+            self._sync_graph_anim_timer()
+            self.raise_()
+            self.activateWindow()
+        else:
+            self._open_topology_intro()
+
+    def _enter_studio_from_intro(self):
+        self._studio_entered = True
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if getattr(self, "intro_win", None) is not None:
+            self.intro_win.hide()
+        self._sync_graph_anim_timer()
+        self._poll_engine(initial=False)
+        self.canvas.update()
+
+    def _on_intro_win_close(self, event):
+        if self._closing_all:
+            return True
+        if self._studio_entered or self.isVisible():
+            self.intro_win.hide()
+            self._sync_graph_anim_timer()
+            event.ignore()
+            return False
+        return True
+
+    def _open_advanced_options(self):
+        if getattr(self, "adv_win", None) is None:
+            return
+        self._refresh_adv_integration_status()
+        self.adv_win.show()
+        self.adv_win.raise_()
+        self.adv_win.activateWindow()
+
+    def _on_adv_win_close(self, event):
+        if self._closing_all:
+            return True
+        self.adv_win.hide()
+        event.ignore()
+        return False
+
+    def _open_standalone_debugger(self):
+        if not os.path.exists(DEBUG_SCRIPT):
+            QMessageBox.warning(self.adv_win or self, "Debugger Missing", f"Could not find {DEBUG_SCRIPT}")
+            return
+        try:
+            subprocess.Popen(
+                [sys.executable, DEBUG_SCRIPT],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as e:
+            QMessageBox.warning(self.adv_win or self, "Debugger Launch Error", f"Failed to launch standalone debugger:\n{e}")
+
+    def _run_health_audit(self):
+        parent_w = self.adv_win if (self.adv_win and self.adv_win.isVisible()) else self
+        res = subprocess.run([sys.executable, DEBUG_SCRIPT, "--audit"], capture_output=True, text=True, timeout=15)
+        t = self.current_theme
+        dlg = QDialog(parent_w)
+        dlg.setWindowTitle("Salsa LWASAPI System Health & Process Audit")
+        dlg.resize(840, 520)
+        lay = QVBoxLayout(dlg)
+        txt = QTextEdit(dlg)
+        txt.setReadOnly(True)
+        txt.setStyleSheet(
+            f"background-color: {t['bg_deep']}; color: {t['accent_primary']}; "
+            "font-family: Monospace; font-size: 11px;"
+        )
+        txt.setPlainText((res.stdout or "") + ("\n" + res.stderr if res.stderr else ""))
+        lay.addWidget(txt)
+        btn_close = QPushButton("Close Audit Report")
+        btn_close.clicked.connect(dlg.accept)
+        lay.addWidget(btn_close)
+        dlg.exec()
+
+    def _restart_systemd_service(self, unit_name: str):
+        if self._svc_restart_proc is not None and self._svc_restart_proc.state() != QProcess.ProcessState.NotRunning:
+            return
+        btn = self.btn_rst_engine if "audiodg" in unit_name else self.btn_rst_tray
+        orig_txt = btn.text()
+        btn.setEnabled(False)
+        btn.setText(f"Restarting {unit_name.split('.')[0]}...")
+        proc = QProcess(self)
+        proc.finished.connect(lambda _code, _st, b=btn, ot=orig_txt, p=proc: self._on_service_restarted(b, ot, p))
+        self._svc_restart_proc = proc
+        proc.start("systemctl", ["--user", "restart", unit_name])
+
+    def _on_service_restarted(self, btn: QPushButton, orig_txt: str, proc: QProcess):
+        try:
+            proc.deleteLater()
+        except Exception:
+            pass
+        self._svc_restart_proc = None
+        btn.setEnabled(True)
+        btn.setText(orig_txt)
+        self._last_dev_sig = None
+        QTimer.singleShot(300, lambda: self._poll_engine(initial=True))
+
+    def _refresh_adv_integration_status(self):
+        if not hasattr(self, "lbl_adv_integration"):
+            return
+        steam_bin = os.path.exists(os.path.expanduser("~/.local/bin/salsa-steam-launch"))
+        desktop_ok = os.path.exists(os.path.expanduser("~/.local/share/applications/salsa-lwasapi.desktop"))
+        hook_ok = os.path.exists("/etc/pacman.d/hooks/99-salsa-autosync.hook") or os.path.exists("/var/lib/salsa-autosync")
+        self.lbl_adv_integration.setText(
+            f"Integration: Steam Wrapper {'READY' if steam_bin else 'Off'}  •  "
+            f"Desktop Launchers {'OK' if desktop_ok else 'Missing'}  •  "
+            f"Pacman Hook {'READY' if hook_ok else 'Optional'}"
+        )
+
+    def _reset_all_safe_defaults(self):
+        parent_w = self.adv_win if (self.adv_win and self.adv_win.isVisible()) else self
+        reply = QMessageBox.question(
+            parent_w,
+            "Reset Settings to Safe Defaults",
+            "Reset Dynamic EQ flat (0 dB), bypass Crossfeed, reset Hardware Analog Stage to non-invasive safe defaults, and re-enable the Topology Intro window on startup?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._on_reset_flat_clicked()
+        self._on_hw_analog_reset()
+        self._set_show_topology_intro(True)
 
     # =========================================================================
     # Event Handlers & Real-Time IPC Sync
@@ -3676,7 +4223,8 @@ class SalsaStudioWindow(QMainWindow):
         bench_bin = os.path.join(BASE_DIR, "build", "lwasapi-bench")
         res = subprocess.run([bench_bin], capture_output=True, text=True)
         t = self.current_theme
-        dlg = QDialog(self)
+        parent_w = self.adv_win if (self.adv_win and self.adv_win.isVisible()) else self
+        dlg = QDialog(parent_w)
         dlg.setWindowTitle("Salsa — Linux WASAPI vs. Linux Audio Modules Latency Benchmark")
         dlg.resize(820, 500)
         lay = QVBoxLayout(dlg)
@@ -3698,7 +4246,11 @@ class SalsaStudioWindow(QMainWindow):
         res = subprocess.run([sync_script, "--force"], capture_output=True, text=True)
         self._select_manual_chapter("autosync")
         t = self.current_theme
-        dlg = QDialog(self)
+        parent_w = (
+            self.adv_win if (self.adv_win and self.adv_win.isVisible())
+            else (self.intro_win if (self.intro_win and self.intro_win.isVisible()) else self)
+        )
+        dlg = QDialog(parent_w)
         dlg.setWindowTitle("Salsa LWASAPI Audio Module Auto-Sync Report")
         dlg.resize(760, 360)
         lay = QVBoxLayout(dlg)
@@ -3829,19 +4381,34 @@ class SalsaStudioWindow(QMainWindow):
                 os.execv(sys.executable, [sys.executable, *sys.argv])
         self._last_dev_sig = None
 
+    def _poll_pw_telem_async(self):
+        if self._pw_telem_inflight:
+            return
+        now_m = time.monotonic()
+        if (now_m - self._pw_telem_ts) < 1.2:
+            return
+        self._pw_telem_inflight = True
+        self._pw_telem_ts = now_m
+
+        def _worker():
+            pw_d = None
+            try:
+                snap = snapshot_once(timeout=0.35)
+                telem = snap.get("telemetry") if isinstance(snap, dict) else None
+                if isinstance(telem, dict) and isinstance(telem.get("pw"), dict):
+                    pw_d = telem["pw"]
+            except Exception:
+                pass
+            if pw_d is not None:
+                self._cached_pw_telem = pw_d
+            self._pw_telem_inflight = False
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _get_pw_telem(self) -> dict | None:
-        if not hasattr(self, "debugger_tab"):
-            return None
-        client = getattr(self.debugger_tab, "client", None)
-        if client is not None:
-            snap = client.get_snapshot()
-            telem = snap.get("telemetry") if isinstance(snap, dict) else None
-            if isinstance(telem, dict) and isinstance(telem.get("pw"), dict):
-                return telem["pw"]
-        latest = getattr(self.debugger_tab, "_latest_telem", None)
-        if isinstance(latest, dict) and isinstance(latest.get("pw"), dict):
-            return latest["pw"]
-        return None
+        if getattr(self, "intro_win", None) is not None and self.intro_win.isVisible():
+            self._poll_pw_telem_async()
+        return self._cached_pw_telem
 
     @staticmethod
     def _probe_alsa_playback_caps(pb_id: str):
@@ -3913,15 +4480,23 @@ class SalsaStudioWindow(QMainWindow):
                     self.cmb_bits.setItemText(idx, lbl)
 
     def _poll_engine(self, initial=False):
-        hidden_or_min = (not initial) and (not self.isVisible() or self.isMinimized())
+        intro_visible = bool(
+            getattr(self, "intro_win", None) is not None
+            and self.intro_win.isVisible()
+            and not self.intro_win.isMinimized()
+        )
+        adv_visible = bool(
+            getattr(self, "adv_win", None) is not None
+            and self.adv_win.isVisible()
+            and not self.adv_win.isMinimized()
+        )
+        ui_visible = (self.isVisible() and not self.isMinimized()) or adv_visible
+        hidden_or_min = (not initial) and (not ui_visible) and (not intro_visible)
         want_ms = 500 if hidden_or_min else 80
         if hasattr(self, "timer") and self.timer.interval() != want_ms:
             self.timer.setInterval(want_ms)
         if not initial:
             self._sync_graph_anim_timer()
-
-        ui_visible = self.isVisible() and not self.isMinimized()
-        tab_idx = self.tabs.currentIndex() if hasattr(self, "tabs") else 0
 
         if not self.lib:
             return
@@ -3934,7 +4509,7 @@ class SalsaStudioWindow(QMainWindow):
                 self.btn_engine_toggle.style().unpolish(self.btn_engine_toggle)
                 self.btn_engine_toggle.style().polish(self.btn_engine_toggle)
             self.lbl_latency.setText("LWASAPI Daemon Stopped (Stock PW/WP Revert Mode)")
-            if initial or (ui_visible and tab_idx == 1):
+            if initial or intro_visible:
                 self.graph_canvas.update_graph_state(None, self._get_pw_telem() or {"broker_running": 0})
             return
 
@@ -4073,7 +4648,7 @@ class SalsaStudioWindow(QMainWindow):
             if self.band_dyn_labels[i].text() != d_txt:
                 self.band_dyn_labels[i].setText(d_txt)
 
-        if initial or (ui_visible and tab_idx == 0):
+        if initial or (self.isVisible() and not self.isMinimized()):
             self.canvas.update_telemetry(
                 bool(self.chk_eq_enable.isChecked()),
                 int(self.cmb_dyn_mode.currentData()),
@@ -4089,11 +4664,11 @@ class SalsaStudioWindow(QMainWindow):
             eq_b = f"EQ:{'ON' if st.eq_cfg.enabled else 'OFF'}{'+CF' if st.param_eq.crossfeed_enabled else ''}"
             mic_b = f"Mic:{'Krisp-APO' if st.mic_apo.enabled else 'Raw'}"
             bt_b = f"BT:{bt_cod_s}{' ABR' if st.bt_codec_cfg.wireless_abr_enabled else ''}" if st.bt_active else ("DAC:Unity" if st.hw_analog_info.dac_unity_active else "Out:ALSA")
-            badge_txt = f"✔ REV 6.5 LIVE | {clk_b} | {eq_b} | {mic_b} | {bt_b}"
+            badge_txt = f"✔ REV 6.6 LIVE | {clk_b} | {eq_b} | {mic_b} | {bt_b}"
             if self.lbl_auto_badge.text() != badge_txt:
                 self.lbl_auto_badge.setText(badge_txt)
 
-        if initial or (ui_visible and tab_idx == 1):
+        if initial or intro_visible:
             self.graph_canvas.update_graph_state(st, self._get_pw_telem())
 
         pk_l = 20.0 * math.log10(st.output_peak_l) if st.output_peak_l > 0.0001 else -60.0
@@ -4428,26 +5003,13 @@ class SalsaStudioWindow(QMainWindow):
         self._send_session_control(sid, target_device=str(tgt))
 
     def _sync_graph_anim_timer(self):
-        active = (
-            self.isVisible()
-            and not self.isMinimized()
-            and hasattr(self, "tabs")
-            and self.tabs.currentIndex() == 1
+        active = bool(
+            getattr(self, "intro_win", None) is not None
+            and self.intro_win.isVisible()
+            and not self.intro_win.isMinimized()
         )
         if hasattr(self, "graph_canvas"):
             self.graph_canvas.set_animation_active(active)
-
-    def _on_tab_changed(self, idx: int):
-        self.gui_settings["last_tab"] = int(idx)
-        save_gui_settings(self.gui_settings)
-        self._gui_settings_mtime = self._read_gui_settings_mtime()
-        self._sync_graph_anim_timer()
-        if idx in (0, 1):
-            self._poll_engine(initial=False)
-            if idx == 0:
-                self.canvas.update()
-            else:
-                self.graph_canvas.update()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -4468,30 +5030,38 @@ class SalsaStudioWindow(QMainWindow):
             self._poll_engine(initial=False)
 
     def closeEvent(self, event):
+        self._closing_all = True
         if getattr(self, "_custom_theme_dlg", None) is not None:
             self._custom_theme_dlg.close()
         if not self.isMaximized() and not self.isFullScreen():
             self.gui_settings["window_width"] = max(640, int(self.width()))
             self.gui_settings["window_height"] = max(480, int(self.height()))
-        if hasattr(self, "tabs"):
-            self.gui_settings["last_tab"] = int(self.tabs.currentIndex())
         save_gui_settings(self.gui_settings)
         if hasattr(self, "graph_canvas"):
             self.graph_canvas.set_animation_active(False)
-        if hasattr(self, "debugger_tab"):
-            self.debugger_tab.shutdown()
+        if getattr(self, "intro_win", None) is not None:
+            self.intro_win.close()
+        if getattr(self, "adv_win", None) is not None:
+            self.adv_win.close()
         event.accept()
 
 
 def main():
+    start_debug = "--debug" in sys.argv or "--debugger" in sys.argv
+    if start_debug and os.path.exists(DEBUG_SCRIPT):
+        os.execv(sys.executable, [sys.executable, DEBUG_SCRIPT])
     app = QApplication(sys.argv)
     app.setApplicationName("Salsa — Linux WASAPI")
     app.setDesktopFileName("salsa-lwasapi")
     app.setWindowIcon(create_salsa_icon())
     start_graph = "--graph" in sys.argv or "--manual" in sys.argv or os.path.basename(sys.argv[0]) == "salsa-graph"
-    start_debug = "--debug" in sys.argv or "--debugger" in sys.argv
-    win = SalsaStudioWindow(start_in_graph=start_graph, start_in_debug=start_debug)
-    win.show()
+    win = SalsaStudioWindow(start_in_graph=start_graph, start_in_debug=False)
+    show_intro = bool(win.gui_settings.get("show_topology_intro", True))
+    if start_graph or (show_intro and "--no-intro" not in sys.argv):
+        win._open_topology_intro()
+    else:
+        win._studio_entered = True
+        win.show()
     sys.exit(app.exec())
 
 
