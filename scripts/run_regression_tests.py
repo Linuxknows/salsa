@@ -2,6 +2,7 @@
 """Automated regression, ABI parity, and security test suite for Salsa (LWASAPI)."""
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -69,7 +70,15 @@ def test_c_unit_suite() -> None:
 
 
 def test_python_compile_and_settings_security() -> None:
-    for pyfile in ("salsa-gui.py", "salsa-debug.py", "lwasapi-tray.py", "scripts/gen_pa_proxy.py"):
+    for pyfile in (
+        "salsa_ipc.py",
+        "salsa-gui.py",
+        "salsa-debug.py",
+        "salsa_debug_core.py",
+        "salsa_debug_ui.py",
+        "lwasapi-tray.py",
+        "scripts/gen_pa_proxy.py",
+    ):
         r = run_cmd([sys.executable, "-m", "py_compile", os.path.join(REPO_DIR, pyfile)])
         if r.returncode != 0:
             raise AssertionError(f"py_compile failed for {pyfile}: {r.stderr}")
@@ -585,6 +594,9 @@ with tempfile.TemporaryDirectory(prefix="salsa_rev6_rt_") as tmp_rt, tempfile.Te
     dsp_card = tray.popover.findChild(QtWidgets.QFrame, "SubCard")
     assert dsp_card is not None and dsp_card.height() >= 95, f"SubCard collapsed: {dsp_card.size() if dsp_card else None}"
     assert tray.popover.cmb_eq.height() >= 24, f"cmb_eq collapsed: {tray.popover.cmb_eq.size()}"
+    assert tray.popover.cmb_cap_rate.height() >= 22 and tray.popover.cmb_cap_rate.findData(0) >= 0 and tray.popover.cmb_cap_rate.findData(48000) >= 0
+    assert tray.popover.cmb_mic_preset_tray.height() >= 22 and tray.popover.cmb_mic_preset_tray.count() >= 4
+    assert hasattr(tray.engine, "set_capture_rate") and (tray.engine._lib is None or hasattr(tray.engine._lib, "LWASAPI_SetCaptureSampleRate"))
     assert tray.popover.cmb_tray_theme.height() >= 24, f"cmb_tray_theme collapsed: {tray.popover.cmb_tray_theme.size()}"
     assert tray.popover.btn_midi_test.height() >= 22, f"btn_midi_test collapsed: {tray.popover.btn_midi_test.size()}"
 
@@ -726,6 +738,8 @@ def test_live_rev61_studio_apis() -> None:
     lib.LWASAPI_SetBtCodecConfig.restype = ctypes.c_int32
     lib.LWASAPI_SetHwAnalog.argtypes = [ctypes.POINTER(sg.LwasapiHwAnalogCfg)]
     lib.LWASAPI_SetHwAnalog.restype = ctypes.c_int32
+    lib.LWASAPI_SetCaptureSampleRate.argtypes = [ctypes.c_uint32]
+    lib.LWASAPI_SetCaptureSampleRate.restype = ctypes.c_int32
 
     orig = sg.LwasapiEngineStatus()
     got_orig = False
@@ -735,6 +749,29 @@ def test_live_rev61_studio_apis() -> None:
             break
         time.sleep(0.1)
     assert got_orig, "Failed fetching initial Rev 6.x engine status"
+
+    # Allow BlueZ A2DP route/rate to finish settling after the prior test's restart
+    orig_cap_rate = int(orig.hw_analog_info.reserved)
+    orig_cap_pref = orig_cap_rate if (44100 <= orig_cap_rate <= 192000 and orig_cap_rate != int(orig.hw_sample_rate)) else 0
+    dbg_r = run_cmd([sys.executable, os.path.join(REPO_DIR, "salsa-debug.py"), "--snapshot", "--json"], timeout=10)
+    if dbg_r.returncode == 0 and dbg_r.stdout.strip():
+        try:
+            snap0 = json.loads(dbg_r.stdout).get("telemetry", {})
+            bz = snap0.get("bluez", {})
+            if (bz.get("endpoints_registered") or bz.get("device_path")) and not orig.bt_active:
+                for _ in range(35):
+                    time.sleep(0.1)
+                    lib.LWASAPI_GetEngineStatus(ctypes.byref(orig))
+                    if orig.bt_active:
+                        break
+                orig_cap_rate = int(orig.hw_analog_info.reserved)
+                orig_cap_pref = orig_cap_rate if (44100 <= orig_cap_rate <= 192000 and orig_cap_rate != int(orig.hw_sample_rate)) else 0
+                dbg2 = run_cmd([sys.executable, os.path.join(REPO_DIR, "salsa-debug.py"), "--snapshot", "--json"], timeout=10)
+                if dbg2.returncode == 0 and dbg2.stdout.strip():
+                    snap0 = json.loads(dbg2.stdout).get("telemetry", {})
+            orig_cap_pref = int(snap0.get("capture", {}).get("pref_rate", orig_cap_pref))
+        except Exception:
+            pass
 
     try:
         # 1. Fixed Master Clock & Bit Depth Configuration
@@ -799,6 +836,8 @@ def test_live_rev61_studio_apis() -> None:
             gui_src = fh.read()
         with open(os.path.join(REPO_DIR, "lwasapi-tray.py"), "r", encoding="utf-8") as fh:
             tray_src = fh.read()
+        with open(os.path.join(REPO_DIR, "salsa_ipc.py"), "r", encoding="utf-8") as fh:
+            ipc_src = fh.read()
         with open(os.path.join(REPO_DIR, "src", "lwasapi_audiodg.c"), "r", encoding="utf-8") as fh:
             audiodg_src = fh.read()
         assert "self.lib.LWASAPI_SetEngineConfig(rate, period, bits)" in gui_src
@@ -806,6 +845,9 @@ def test_live_rev61_studio_apis() -> None:
         assert "(44100, 48000, 88200, 96000, 176400, 192000)" in tray_src
         assert "self._rate_hold_until" in tray_src and "self._bt_hold_until" in tray_src
         assert "SalsaAutoGraphCanvas" in gui_src and "self.lbl_auto_badge" in gui_src
+        assert "self.cmb_cap_rate" in gui_src and "self.cmb_mic_preset" in gui_src
+        assert "self.cmb_mic_preset_tray" in tray_src
+        assert "PRESETS" in ipc_src and "MIC_APO_PRESETS" in ipc_src and "def bind_liblwasapi" in ipc_src
         assert "dry_ring" in audiodg_src and "vad_ring" in audiodg_src and "g_mic_demud_flt" in audiodg_src
 
         # 6. Verify 0600 permissions on state & volume files
@@ -828,7 +870,62 @@ def test_live_rev61_studio_apis() -> None:
         assert abs(st.hw_analog_cfg.mic_hw_boost_db - 8.0) < 0.05
         assert ctypes.sizeof(sg.LwasapiEngineStatus) == 7136
 
-        print("[PASS] Rev 6.x live studio APIs (Fixed Clock + Bit Depth, Param EQ, Krisp Mic APO, BT Preflight, HW Analog, 0600 state)")
+        # 8. Split Independent Capture Clock (48 kHz Mic vs High-Rate Master Sink) & Telemetry
+        lib.LWASAPI_SetEngineConfig(192000, int(orig.hw_period_frames), int(orig.hw_format_bits))
+        assert lib.LWASAPI_SetCaptureSampleRate(48000) == 0
+        time.sleep(0.25)
+        assert lib.LWASAPI_GetEngineStatus(ctypes.byref(st)) == 0
+        assert int(st.hw_analog_info.reserved) == 48000, f"Unexpected capture rate: {st.hw_analog_info.reserved}"
+        if shutil.which("pactl"):
+            pa_src = run_cmd(["pactl", "list", "sources", "short"], timeout=5)
+            in_lines = [ln for ln in pa_src.stdout.splitlines() if "salsa_in." in ln]
+            assert in_lines, f"No salsa_in.* source found: {pa_src.stdout}"
+            for ln in in_lines:
+                assert "48000Hz" in ln, f"PA capture source not at 48000Hz: {ln}"
+            pa_snk = run_cmd(["pactl", "list", "sinks", "short"], timeout=5)
+            out_lines = [ln for ln in pa_snk.stdout.splitlines() if "salsa_out." in ln]
+            assert out_lines, f"No salsa_out.* sink found: {pa_snk.stdout}"
+            for ln in out_lines:
+                if int(st.hw_sample_rate) != 48000:
+                    assert f"{int(st.hw_sample_rate)}Hz" in ln, f"PA playback sink mismatch: {ln}"
+        dbg_cap = run_cmd([sys.executable, os.path.join(REPO_DIR, "salsa-debug.py"), "--snapshot", "--json"], timeout=10)
+        assert dbg_cap.returncode == 0, f"salsa-debug --snapshot --json failed: {dbg_cap.stderr}"
+        snap_cap = json.loads(dbg_cap.stdout).get("telemetry", {}).get("capture", {})
+        assert int(snap_cap.get("pref_rate", -1)) == 48000, f"capture.pref_rate mismatch: {snap_cap}"
+        for req_k in ("measured_rate", "kick_count", "is_usb", "duplex_locked"):
+            assert req_k in snap_cap, f"Missing capture telemetry field {req_k}: {snap_cap}"
+
+        # 9. MIDI Key-Press-Only Counter (0x90 vel>0 vs vel=0 Note-Off) & Mic APO Preset CLI
+        ctl_bin = os.path.join(BUILD_DIR, "lwasapi-ctl")
+        st_m0 = sg.LwasapiEngineStatus()
+        st_m1 = sg.LwasapiEngineStatus()
+        st_m2 = sg.LwasapiEngineStatus()
+        assert lib.LWASAPI_GetEngineStatus(ctypes.byref(st_m0)) == 0
+        r_off = run_cmd([ctl_bin, "midi-send", "60", "0"], timeout=5)
+        assert r_off.returncode == 0, f"midi-send 60 0 failed: {r_off.stderr}"
+        time.sleep(0.08)
+        assert lib.LWASAPI_GetEngineStatus(ctypes.byref(st_m1)) == 0
+        assert int(st_m1.midi_events_routed) == int(st_m0.midi_events_routed), (
+            f"vel=0 Note-Off incremented key-press counter: {st_m0.midi_events_routed} -> {st_m1.midi_events_routed}"
+        )
+        r_on = run_cmd([ctl_bin, "midi-send", "60", "100"], timeout=5)
+        assert r_on.returncode == 0, f"midi-send 60 100 failed: {r_on.stderr}"
+        got_inc = False
+        for _ in range(10):
+            time.sleep(0.05)
+            assert lib.LWASAPI_GetEngineStatus(ctypes.byref(st_m2)) == 0
+            if int(st_m2.midi_events_routed) == int(st_m0.midi_events_routed) + 1:
+                got_inc = True
+                break
+        assert got_inc, f"vel=100 key-press did not increment counter: {st_m0.midi_events_routed} -> {st_m2.midi_events_routed}"
+
+        r_mp = run_cmd([ctl_bin, "mic-preset", "discord"], timeout=5)
+        assert r_mp.returncode == 0, f"mic-preset discord failed: {r_mp.stderr}"
+        time.sleep(0.08)
+        assert lib.LWASAPI_GetEngineStatus(ctypes.byref(st)) == 0
+        assert st.mic_apo.enabled == 1 and st.mic_apo.rnnoise_enabled == 1
+
+        print("[PASS] Rev 6.x live studio APIs (Fixed/Split Clock, Telemetry, MIDI Key Presses, Mic Presets, EQ/APO, 0600 state)")
     finally:
         lib.LWASAPI_SetHwAnalog(ctypes.byref(orig.hw_analog_cfg))
         lib.LWASAPI_SetParametricEQ(ctypes.byref(orig.eq_cfg), ctypes.byref(orig.param_eq))
@@ -839,6 +936,7 @@ def test_live_rev61_studio_apis() -> None:
             int(orig.hw_period_frames),
             int(orig.hw_format_bits),
         )
+        lib.LWASAPI_SetCaptureSampleRate(orig_cap_pref)
 
 
 def test_rev62_hw_analog_scoring_and_defaults() -> None:

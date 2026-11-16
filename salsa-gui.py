@@ -2121,40 +2121,7 @@ class SalsaStudioWindow(QMainWindow):
         if os.path.exists(LIB_PATH):
             try:
                 self._lib_mtime = os.path.getmtime(LIB_PATH)
-                self.lib = ctypes.CDLL(LIB_PATH)
-                self.lib.LWASAPI_GetEngineStatus.argtypes = [ctypes.POINTER(LwasapiEngineStatus)]
-                self.lib.LWASAPI_GetEngineStatus.restype = ctypes.c_int32
-                self.lib.LWASAPI_SetEngineConfig.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32]
-                self.lib.LWASAPI_SetEngineConfig.restype = ctypes.c_int32
-                self.lib.LWASAPI_SetDynamicEQ.argtypes = [ctypes.POINTER(LwasapiEqConfig)]
-                self.lib.LWASAPI_SetDynamicEQ.restype = ctypes.c_int32
-                self.lib.LWASAPI_ListDevices.argtypes = [ctypes.POINTER(LwasapiDeviceList)]
-                self.lib.LWASAPI_ListDevices.restype = ctypes.c_int32
-                self.lib.LWASAPI_SetDevices.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-                self.lib.LWASAPI_SetDevices.restype = ctypes.c_int32
-                if hasattr(self.lib, "LWASAPI_SetSessionControl"):
-                    self.lib.LWASAPI_SetSessionControl.argtypes = [
-                        ctypes.c_uint32,
-                        ctypes.c_int32,
-                        ctypes.c_int32,
-                        ctypes.c_char_p,
-                    ]
-                    self.lib.LWASAPI_SetSessionControl.restype = ctypes.c_int32
-                if hasattr(self.lib, "LWASAPI_SetParametricEQ"):
-                    self.lib.LWASAPI_SetParametricEQ.argtypes = [
-                        ctypes.POINTER(LwasapiEqConfig),
-                        ctypes.POINTER(LwasapiParamEqExt),
-                    ]
-                    self.lib.LWASAPI_SetParametricEQ.restype = ctypes.c_int32
-                if hasattr(self.lib, "LWASAPI_SetMicAPO"):
-                    self.lib.LWASAPI_SetMicAPO.argtypes = [ctypes.POINTER(LwasapiMicApoCfg)]
-                    self.lib.LWASAPI_SetMicAPO.restype = ctypes.c_int32
-                if hasattr(self.lib, "LWASAPI_SetBtCodecConfig"):
-                    self.lib.LWASAPI_SetBtCodecConfig.argtypes = [ctypes.POINTER(LwasapiBtCodecCfg)]
-                    self.lib.LWASAPI_SetBtCodecConfig.restype = ctypes.c_int32
-                if hasattr(self.lib, "LWASAPI_SetHwAnalog"):
-                    self.lib.LWASAPI_SetHwAnalog.argtypes = [ctypes.POINTER(LwasapiHwAnalogCfg)]
-                    self.lib.LWASAPI_SetHwAnalog.restype = ctypes.c_int32
+                self.lib = bind_liblwasapi(ctypes.CDLL(LIB_PATH))
             except Exception as e:
                 print(f"[Salsa] Warning loading liblwasapi.so: {e}")
 
@@ -2172,6 +2139,9 @@ class SalsaStudioWindow(QMainWindow):
         self._last_bt_cfg_sig = None
         self._last_hw_analog_sig = None
         self._last_clock_policy_sig = None
+        self._last_cap_rate_sig = None
+        self._last_cap_rate_pref = None
+        self._cap_rate_hold_until = 0.0
         self._mic_apo_hold_until = 0.0
         self._bt_cfg_hold_until = 0.0
         self._hw_analog_hold_until = 0.0
@@ -2406,6 +2376,13 @@ class SalsaStudioWindow(QMainWindow):
         self.cmb_period.setCurrentIndex(2)
         self.cmb_period.currentIndexChanged.connect(self._on_clock_changed)
         period_col.addWidget(self.cmb_period)
+        self.cmb_cap_rate = QComboBox()
+        self.cmb_cap_rate.addItem("Mic Clock: Auto (Follow Master)", 0)
+        for r in self.rates:
+            self.cmb_cap_rate.addItem(f"Mic Clock: {r:,} Hz", r)
+        self.cmb_cap_rate.setToolTip("Pin microphone/capture clock independently (e.g. 48,000 Hz for Discord while keeping headphones at 192 kHz)")
+        self.cmb_cap_rate.currentIndexChanged.connect(self._on_cap_rate_changed)
+        period_col.addWidget(self.cmb_cap_rate)
         top_layout.addLayout(period_col)
 
         bits_col = QVBoxLayout()
@@ -2664,6 +2641,15 @@ class SalsaStudioWindow(QMainWindow):
         self.chk_mic_apo.setObjectName("EqEnableCheck")
         self.chk_mic_apo.toggled.connect(self._on_mic_apo_changed)
         mic_apo_top.addWidget(self.chk_mic_apo)
+        mic_apo_top.addSpacing(8)
+        mic_apo_top.addWidget(QLabel("Mic Preset:"))
+        self.cmb_mic_preset = QComboBox()
+        self.cmb_mic_preset.addItem("Custom Mic APO", "")
+        for pname in MIC_APO_PRESETS:
+            self.cmb_mic_preset.addItem(pname, pname)
+        self.cmb_mic_preset.setToolTip("Load a quick reversible Mic APO profile (e.g. Discord Voice with RNNoise + -50dB gate)")
+        self.cmb_mic_preset.activated.connect(self._on_mic_preset_selected)
+        mic_apo_top.addWidget(self.cmb_mic_preset)
         mic_apo_top.addStretch(1)
         self.lbl_mic_apo_meter = QLabel("Bypassed (Raw Mic)")
         self.lbl_mic_apo_meter.setObjectName("BandDynLabel")
@@ -3087,6 +3073,16 @@ class SalsaStudioWindow(QMainWindow):
         self._last_clock_req = (rate, period, bits, time.monotonic() + 4.0)
         self._last_clock_policy_sig = None
         self.lib.LWASAPI_SetEngineConfig(rate, period, bits)
+        QTimer.singleShot(60, self._poll_engine)
+
+    def _on_cap_rate_changed(self):
+        if self.updating_ui or not self.lib or not hasattr(self.lib, "LWASAPI_SetCaptureSampleRate"):
+            return
+        cap_rate = int(self.cmb_cap_rate.currentData() or 0)
+        self._last_cap_rate_pref = cap_rate
+        self._cap_rate_hold_until = time.monotonic() + 2.0
+        self._last_cap_rate_sig = None
+        self.lib.LWASAPI_SetCaptureSampleRate(cap_rate)
         QTimer.singleShot(60, self._poll_engine)
 
     def _any_eq_slider_down(self) -> bool:
@@ -3555,6 +3551,39 @@ class SalsaStudioWindow(QMainWindow):
         self.current_mic_apo.sidetone_pct = int(self.spn_mic_sidetone.value())
         self.lib.LWASAPI_SetMicAPO(ctypes.byref(self.current_mic_apo))
 
+    def _on_mic_preset_selected(self, *_args):
+        if self.updating_ui or not self.lib or not hasattr(self.lib, "LWASAPI_SetMicAPO"):
+            return
+        pname = self.cmb_mic_preset.currentData() or self.cmb_mic_preset.currentText()
+        p = MIC_APO_PRESETS.get(pname)
+        if not p:
+            return
+        self._mic_apo_hold_until = time.monotonic() + 0.5
+        self.updating_ui = True
+        try:
+            self.chk_mic_apo.setChecked(bool(p["enabled"]))
+            self.chk_mic_hpf.setChecked(bool(p["hpf_enabled"]))
+            self.chk_mic_gate.setChecked(bool(p["gate_enabled"]))
+            self.spn_mic_gate.setValue(int(round(p["gate_thresh_db"])))
+            self.chk_mic_rnnoise.setChecked(bool(p["rnnoise_enabled"]))
+            self.chk_mic_comp.setChecked(bool(p["comp_enabled"]))
+            self.spn_mic_clarity.setValue(float(p["clarity_db"]))
+        finally:
+            self.updating_ui = False
+        self.current_mic_apo.enabled = int(p["enabled"])
+        self.current_mic_apo.hpf_enabled = int(p["hpf_enabled"])
+        self.current_mic_apo.hpf_hz = float(p["hpf_hz"])
+        self.current_mic_apo.gate_enabled = int(p["gate_enabled"])
+        self.current_mic_apo.gate_thresh_db = float(p["gate_thresh_db"])
+        self.current_mic_apo.rnnoise_enabled = int(p["rnnoise_enabled"])
+        self.current_mic_apo.comp_enabled = int(p["comp_enabled"])
+        self.current_mic_apo.comp_thresh_db = float(p["comp_thresh_db"])
+        self.current_mic_apo.comp_ratio = float(p["comp_ratio"])
+        self.current_mic_apo.clarity_db = float(p["clarity_db"])
+        self.current_mic_apo.sidetone_enabled = 1 if self.chk_mic_sidetone.isChecked() else 0
+        self.current_mic_apo.sidetone_pct = int(self.spn_mic_sidetone.value())
+        self.lib.LWASAPI_SetMicAPO(ctypes.byref(self.current_mic_apo))
+
     def _on_bt_cfg_changed(self, *_args):
         if self.updating_ui or not self.lib or not hasattr(self.lib, "LWASAPI_SetBtCodecConfig"):
             return
@@ -3960,8 +3989,28 @@ class SalsaStudioWindow(QMainWindow):
             clk_src_txt = f"Master Clock: {rate / 1000.0:g}kHz / {bits}-bit PCM"
             self.cmb_rate.setToolTip(f"Select engine Master Sample Rate{sup_r_note or ' (44.1–192 kHz)'}.")
             self.cmb_bits.setToolTip(f"Select engine PCM bit depth{sup_b_note or ' (16, 24, or 32-bit)'}.")
+        cap_rate = int(st.hw_analog_info.reserved) if 44100 <= int(st.hw_analog_info.reserved) <= 192000 else rate
+        if cap_rate != rate and "Mic:" not in clk_src_txt:
+            clk_src_txt += f"  •  Mic: {cap_rate / 1000.0:g}kHz"
         if hasattr(self, "lbl_clock_source") and self.lbl_clock_source.text() != clk_src_txt:
             self.lbl_clock_source.setText(clk_src_txt)
+
+        cap_sig = (cap_rate, rate)
+        if hasattr(self, "cmb_cap_rate") and (initial or cap_sig != self._last_cap_rate_sig) and (
+            time.monotonic() >= self._cap_rate_hold_until and not self.cmb_cap_rate.view().isVisible()
+        ):
+            self._last_cap_rate_sig = cap_sig
+            if cap_rate != rate:
+                want_cap_sel = cap_rate
+            elif self._last_cap_rate_pref == rate:
+                want_cap_sel = rate
+            else:
+                want_cap_sel = 0
+            idx_cap = self.cmb_cap_rate.findData(want_cap_sel)
+            if idx_cap >= 0 and self.cmb_cap_rate.currentIndex() != idx_cap:
+                self.cmb_cap_rate.blockSignals(True)
+                self.cmb_cap_rate.setCurrentIndex(idx_cap)
+                self.cmb_cap_rate.blockSignals(False)
 
         clk_policy_sig = (rate, period, bits)
         if (initial or clk_policy_sig != self._last_clock_policy_sig) and not (
@@ -4036,7 +4085,7 @@ class SalsaStudioWindow(QMainWindow):
 
         if hasattr(self, "lbl_auto_badge"):
             bt_cod_s = st.bt_codec.decode("utf-8", "ignore") or "PCM"
-            clk_b = f"{rate // 1000}kHz/{bits}b"
+            clk_b = f"{rate // 1000}k/{cap_rate // 1000}k/{bits}b" if cap_rate != rate else f"{rate // 1000}kHz/{bits}b"
             eq_b = f"EQ:{'ON' if st.eq_cfg.enabled else 'OFF'}{'+CF' if st.param_eq.crossfeed_enabled else ''}"
             mic_b = f"Mic:{'Krisp-APO' if st.mic_apo.enabled else 'Raw'}"
             bt_b = f"BT:{bt_cod_s}{' ABR' if st.bt_codec_cfg.wireless_abr_enabled else ''}" if st.bt_active else ("DAC:Unity" if st.hw_analog_info.dac_unity_active else "Out:ALSA")

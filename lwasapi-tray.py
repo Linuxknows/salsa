@@ -2564,6 +2564,32 @@ class SalsaQuickMixerPopup(QtWidgets.QWidget):
             self.ctrl.engine.set_engine_config(r_int, self._cur_period, self._cur_bits)
             QtCore.QTimer.singleShot(250, self.refresh_live)
 
+    def _on_cap_rate_changed(self) -> None:
+        if self._syncing:
+            return
+        rate = self.cmb_cap_rate.currentData()
+        if rate is not None:
+            r_int = int(rate)
+            self._cap_rate_hold_until = time.monotonic() + 0.8
+            self._last_cap_rate_pref = r_int
+            self.ctrl.engine.set_capture_rate(r_int)
+            QtCore.QTimer.singleShot(250, self.refresh_live)
+
+    def _on_tray_mic_preset_selected(self) -> None:
+        if self._syncing or not getattr(self, "_cur_mic_apo", None):
+            return
+        pname = str(self.cmb_mic_preset_tray.currentData() or "")
+        preset = MIC_APO_PRESETS.get(pname)
+        if not preset:
+            return
+        cfg = LwasapiMicApoCfg()
+        ctypes.memmove(ctypes.byref(cfg), ctypes.byref(self._cur_mic_apo), ctypes.sizeof(LwasapiMicApoCfg))
+        for k, v in preset.items():
+            if hasattr(cfg, k):
+                setattr(cfg, k, int(v) if isinstance(getattr(cfg, k), int) else float(v))
+        self.ctrl.engine.set_mic_apo(cfg)
+        QtCore.QTimer.singleShot(80, self.refresh_live)
+
     def _on_tray_mic_apo_toggled(self) -> None:
         if self._syncing or not getattr(self, "_cur_mic_apo", None):
             return
@@ -2687,7 +2713,9 @@ class SalsaQuickMixerPopup(QtWidgets.QWidget):
                     hw_tag = " · DAC"
                 elif float(st.hw_analog_cfg.analog_boost_db) > 0.05:
                     hw_tag = f" · +{float(st.hw_analog_cfg.analog_boost_db):.1f}dB"
-            rate_str = f"{st.hw_sample_rate / 1000.0:g} kHz · {st.hw_format_bits}b · {fifo}{hw_tag}"
+            cap_r = int(st.hw_analog_info.reserved)
+            cap_tag = f" (Mic {cap_r / 1000.0:g}k)" if (8000 <= cap_r <= 384000 and cap_r != int(st.hw_sample_rate)) else ""
+            rate_str = f"{st.hw_sample_rate / 1000.0:g} kHz{cap_tag} · {st.hw_format_bits}b · {fifo}{hw_tag}"
             self.lbl_hw_badge.setText(rate_str)
             arch_tip = st.hw_analog_info.card_arch_name.decode("utf-8", "replace").strip("\x00 ")
             diag_tip = st.hw_analog_info.diag_note.decode("utf-8", "replace").strip("\x00 ")
@@ -2802,6 +2830,19 @@ class SalsaQuickMixerPopup(QtWidgets.QWidget):
                 idx_r = self.cmb_rate.findData(want_rate_d)
                 if idx_r >= 0:
                     self.cmb_rate.setCurrentIndex(idx_r)
+
+            cap_rate_d = int(st.hw_analog_info.reserved)
+            if now_mono >= self._cap_rate_hold_until and not self.cmb_cap_rate.view().isVisible():
+                cur_cap_sel = int(self.cmb_cap_rate.currentData() or 0)
+                if 44100 <= cap_rate_d <= 192000 and cap_rate_d != want_rate_d:
+                    want_cap_d = cap_rate_d
+                elif cap_rate_d == want_rate_d and cur_cap_sel == want_rate_d:
+                    want_cap_d = want_rate_d
+                else:
+                    want_cap_d = 0
+                idx_c = self.cmb_cap_rate.findData(want_cap_d)
+                if idx_c >= 0:
+                    self.cmb_cap_rate.setCurrentIndex(idx_c)
 
             n_sess = min(st.num_sessions, LWASAPI_MAX_SESSIONS)
             sessions = [st.sessions[i] for i in range(n_sess)]
