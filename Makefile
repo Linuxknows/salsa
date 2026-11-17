@@ -206,8 +206,9 @@ installer: all
 	tag = rev if rev.startswith("v") else f"v{rev}"; \
 	out = f"salsa-lwasapi-installer ({tag}).zip"; tmp = out + ".tmp"; \
 	skip_dirs = {"__pycache__", ".git", ".pytest_cache", "target", "rust_target"}; \
+	skip_names = {"fuzz_wire_diff", "c_wire_ref_fuzz.o"}; \
 	files = []; \
-	[files.extend([os.path.relpath(os.path.join(r, n), ".") for n in sorted(f) if not n.endswith((".pyc", ".zip", ".tmp"))]) for r, d, f in os.walk(".") if (d.__setitem__(slice(None), sorted(x for x in d if x not in skip_dirs)) or True)]; \
+	[files.extend([os.path.relpath(os.path.join(r, n), ".") for n in sorted(f) if n not in skip_names and not n.endswith((".pyc", ".zip", ".tmp", ".a"))]) for r, d, f in os.walk(".") if (d.__setitem__(slice(None), sorted(x for x in d if x not in skip_dirs)) or True)]; \
 	zf = zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED); \
 	[zf.writestr((lambda zi: (setattr(zi, "create_system", 3), setattr(zi, "external_attr", (stat.S_IFLNK | 0o777) << 16), zi)[-1])(zipfile.ZipInfo("salsa-lwasapi/" + p)), os.readlink(p).encode("utf-8")) if os.path.islink(p) else zf.write(p, "salsa-lwasapi/" + p) for p in sorted(files)]; \
 	zf.close(); os.replace(tmp, out); print(f"Built {out} ({len(files)} entries)")' "$(REV)"
