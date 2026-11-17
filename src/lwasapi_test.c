@@ -397,7 +397,7 @@ static int test_capture_and_loopback(const char *shim_dir) {
 }
 
 static int test_rev61_studio_features(void) {
-    printf("[Test 7/7] Rev 6.x Fixed Clock, Parametric EQ, Mic APO & BT Codec APIs...\n");
+    printf("[Test 7/7] v6.x-beta Fixed Clock, Parametric EQ, Mic APO & BT Codec APIs...\n");
     lwasapi_engine_status_t orig;
     if (LWASAPI_GetEngineStatus(&orig) != S_OK) {
         fprintf(stderr, "  -> FAIL: LWASAPI_GetEngineStatus failed\n");
@@ -441,7 +441,7 @@ static int test_rev61_studio_features(void) {
         cur.hw_sample_rate < 44100 ||
         (cur.hw_format_bits != 16 && cur.hw_format_bits != 24 && cur.hw_format_bits != 32)) {
         fprintf(stderr,
-                "  -> FAIL: Rev 6.x state mismatch (eq_type=%u cf=%u mic=%u st=%u rate=%u bits=%u)\n",
+                "  -> FAIL: v6.x-beta state mismatch (eq_type=%u cf=%u mic=%u st=%u rate=%u bits=%u)\n",
                 cur.param_eq.band_type[0], cur.param_eq.crossfeed_enabled,
                 cur.mic_apo.enabled, cur.mic_apo.sidetone_pct,
                 cur.hw_sample_rate, cur.hw_format_bits);
@@ -461,10 +461,10 @@ static int test_rev61_studio_features(void) {
 }
 
 static int test_rev62_hw_analog(void) {
-    printf("[Test 8/8] Testing Rev 6.2 Hardware DAC Unity, Analog Soft-Knee & Amp Architecture...\n");
+    printf("[Test 8/8] Testing v6.2-beta Hardware DAC Unity, Analog Soft-Knee & Amp Architecture...\n");
     lwasapi_engine_status_t orig;
     if (LWASAPI_GetEngineStatus(&orig) != S_OK) {
-        printf("  -> SKIP: Daemon not active for standalone Rev 6.2 HW analog test.\n");
+        printf("  -> SKIP: Daemon not active for standalone v6.2-beta HW analog test.\n");
         return 0;
     }
 
@@ -478,14 +478,14 @@ static int test_rev62_hw_analog(void) {
     if (LWASAPI_GetEngineStatus(&cur) != S_OK ||
         cur.hw_analog_cfg.analog_boost_db < 3.4f ||
         cur.hw_analog_cfg.mic_hw_boost_db < 5.9f) {
-        fprintf(stderr, "  -> FAIL: Rev 6.2 HW analog readback mismatch (boost=%.2f mic=%.2f)\n",
+        fprintf(stderr, "  -> FAIL: v6.2-beta HW analog readback mismatch (boost=%.2f mic=%.2f)\n",
                 cur.hw_analog_cfg.analog_boost_db, cur.hw_analog_cfg.mic_hw_boost_db);
         rc = 1;
     }
 
     LWASAPI_SetHwAnalog(&orig.hw_analog_cfg);
     if (rc == 0) {
-        printf("  -> PASS: Rev 6.2 HW Analog Architecture API & state restoration verified! (Arch: %s)\n",
+        printf("  -> PASS: v6.2-beta HW Analog Architecture API & state restoration verified! (Arch: %s)\n",
                cur.hw_analog_info.card_arch_name[0] ? cur.hw_analog_info.card_arch_name : "Virtual");
     }
     return rc;
@@ -507,7 +507,7 @@ int main(int argc, char **argv) {
     if (test_rev62_hw_analog() != 0) return 1;
 
     printf("========================================================================\n");
-    printf(" ALL 8 LWASAPI FULL-DUPLEX AUDIO, ABI SHIM & REV 6.2 TESTS PASSED!\n");
+    printf(" ALL 8 LWASAPI FULL-DUPLEX AUDIO, ABI SHIM & v6.2-beta TESTS PASSED!\n");
     printf("========================================================================\n");
     return 0;
 }

@@ -148,7 +148,7 @@ print_pc_report() {
     local rev="unknown"
     [[ -f "${BASE_DIR}/VERSION" ]] && rev="$(tr -d ' \t\r\n' < "${BASE_DIR}/VERSION")"
     echo "================================================================================"
-    echo "  Salsa — Linux WASAPI Cross-PC Hardware & Distro Adaptation Profile (Rev ${rev})"
+    echo "  Salsa — Linux WASAPI Cross-PC Hardware & Distro Adaptation Profile (${rev})"
     echo "================================================================================"
     echo "  Host OS / Distro    : ${HOST_OS} (${HOST_ARCH})"
     echo "  Host CPU            : ${HOST_CPU}"

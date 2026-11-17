@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 /**
- * Salsa Rev 6.2 Hardware Analog Architecture, DAC Unity Attenuation,
+ * Salsa v6.2-beta Hardware Analog Architecture, DAC Unity Attenuation,
  * Discrete Headphone Amp / Impedance Stage & USB-HID Control Box Support.
  *
  * Non-invasive by default: leaves active devices untouched until hardware

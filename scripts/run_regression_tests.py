@@ -510,7 +510,16 @@ with tempfile.TemporaryDirectory(prefix="salsa_rev6_rt_") as tmp_rt, tempfile.Te
     fader.setFocus()
     ke = QtGui.QKeyEvent(QtCore.QEvent.Type.KeyPress, QtCore.Qt.Key.Key_Right, QtCore.Qt.KeyboardModifier.NoModifier)
     app.sendEvent(fader, ke)
-    assert fader.value() == prev + 3
+    assert fader.value() == min(150, prev + 5), f"expected +5 key step, got {fader.value()} from {prev}"
+    cur_v = fader.value()
+    we = QtGui.QWheelEvent(
+        QtCore.QPointF(100, 17), QtCore.QPointF(100, 17),
+        QtCore.QPoint(0, 0), QtCore.QPoint(0, -120),
+        QtCore.Qt.MouseButton.NoButton, QtCore.Qt.KeyboardModifier.NoModifier,
+        QtCore.Qt.ScrollPhase.NoScrollPhase, False,
+    )
+    app.sendEvent(fader, we)
+    assert fader.value() == max(0, cur_v - 5), f"expected -5 wheel step, got {fader.value()} from {cur_v}"
 
     assert "Plasma Breeze Emerald" in mod.THEMES
     osd = mod.SalsaOsdOverlay()
@@ -599,6 +608,22 @@ with tempfile.TemporaryDirectory(prefix="salsa_rev6_rt_") as tmp_rt, tempfile.Te
     assert hasattr(tray.engine, "set_capture_rate") and (tray.engine._lib is None or hasattr(tray.engine._lib, "LWASAPI_SetCaptureSampleRate"))
     assert tray.popover.cmb_tray_theme.height() >= 24, f"cmb_tray_theme collapsed: {tray.popover.cmb_tray_theme.size()}"
     assert tray.popover.btn_midi_test.height() >= 22, f"btn_midi_test collapsed: {tray.popover.btn_midi_test.size()}"
+    assert tray.popover.btn_vol_step.text() == "Step ±5%"
+    tray.popover.btn_vol_step.click()
+    assert tray.popover.btn_vol_step.text() == "Step ±10%" and tray.popover.fader_master._step_pct == 10
+    assert mod.load_gui_settings().get("volume_step_pct") == 10
+    for _c in range(3):
+        tray.popover.btn_vol_step.click()
+    assert tray.popover.btn_vol_step.text() == "Step ±5%" and mod.load_gui_settings().get("volume_step_pct") == 5
+    fake_st = mod.LwasapiEngineStatus()
+    fake_st.desktop_volume_pct = 50
+    fake_st.desktop_mic_volume_pct = 80
+    recorded_vols = []
+    tray.engine.get_status = lambda: fake_st
+    tray.engine.set_master_volume = lambda v, _m=-1: recorded_vols.append(("spk", v))
+    tray.engine.set_mic_volume = lambda v, _m=-1: recorded_vols.append(("mic", v))
+    tray._on_sni_scroll(120, "vertical")
+    assert recorded_vols[-1] == ("spk", 55), f"expected 55 after +5% SNI scroll, got {recorded_vols}"
 
     assert tray.popover.pages.currentIndex() == 0
     tray.popover.btn_tab_apps.click()
@@ -644,7 +669,7 @@ with tempfile.TemporaryDirectory(prefix="salsa_rev6_rt_") as tmp_rt, tempfile.Te
 '''
     r_tray = subprocess.run([sys.executable, "-c", probe, tray_script], cwd=REPO_DIR, capture_output=True, text=True, timeout=25)
     if r_tray.returncode != 0:
-        raise AssertionError(f"Rev 6.0 tray test failed:\n{r_tray.stdout}\n{r_tray.stderr}")
+        raise AssertionError(f"v6.0-beta tray test failed:\n{r_tray.stdout}\n{r_tray.stderr}")
 
     # 3. Multi-reset pa_threaded_mainloop tee/context/stream safety test under libsalsa_pa_reconnect.so
     so_path = os.path.join(BUILD_DIR, "libsalsa_pa_reconnect.so")
@@ -714,7 +739,7 @@ int main(void) {
         body = open(steam_wrap, "r", encoding="utf-8").read()
         assert "LD_PRELOAD" in body and "libsalsa_pa_reconnect.so" in body
 
-    print("[PASS] Rev 6.0 KDE tray (glow icon, SwipeFader, OSD, Quick Mixer, 0600 settings) & Steam reconnect checks")
+    print("[PASS] v6.0-beta KDE tray (glow icon, SwipeFader, OSD, Quick Mixer, 0600 settings) & Steam reconnect checks")
 
 
 def test_live_rev61_studio_apis() -> None:
@@ -748,7 +773,7 @@ def test_live_rev61_studio_apis() -> None:
             got_orig = True
             break
         time.sleep(0.1)
-    assert got_orig, "Failed fetching initial Rev 6.x engine status"
+    assert got_orig, "Failed fetching initial v6.x-beta engine status"
 
     # Allow BlueZ A2DP route/rate to finish settling after the prior test's restart
     orig_cap_rate = int(orig.hw_analog_info.reserved)
@@ -847,15 +872,17 @@ def test_live_rev61_studio_apis() -> None:
         assert "SalsaAutoGraphCanvas" in gui_src and "self.lbl_auto_badge" in gui_src
         assert "self.cmb_cap_rate" in gui_src and "self.cmb_mic_preset" in gui_src
         assert "self.intro_win" in gui_src and "self.adv_win" in gui_src and "DEFAULT_SHORTCUTS" in gui_src
+        assert "StepVolumeSlider" in gui_src and "btn_toggle_pacman_hook" in gui_src and "chk_autosync_now" in gui_src
         assert "SalsaLiveDebuggerWidget" not in gui_src and "snapshot_once" in gui_src
         assert "self.cmb_mic_preset_tray" in tray_src
-        assert "PRESETS" in ipc_src and "MIC_APO_PRESETS" in ipc_src and "def bind_liblwasapi" in ipc_src
+        assert "PRESETS" in ipc_src and "MIC_APO_PRESETS" in ipc_src and "normalize_vol_step_pct" in ipc_src
         assert "dry_ring" in audiodg_src and "vad_ring" in audiodg_src and "g_mic_demud_flt" in audiodg_src
 
-        # Offscreen PyQt6 check for Intro <-> Studio <-> Advanced window split and customizable shortcuts
+        # Offscreen PyQt6 check for Intro <-> Studio <-> Advanced window split, Option C & Option 2
         ui_probe = r'''
 import importlib.util, os, tempfile
-from PyQt6.QtGui import QKeySequence
+from PyQt6.QtCore import Qt, QPoint, QPointF
+from PyQt6.QtGui import QKeyEvent, QKeySequence, QWheelEvent
 from PyQt6.QtWidgets import QApplication
 with tempfile.TemporaryDirectory() as tmp:
     os.environ["XDG_CONFIG_HOME"] = tmp
@@ -868,6 +895,21 @@ with tempfile.TemporaryDirectory() as tmp:
     assert not hasattr(w, "tabs") and not hasattr(w, "debugger_tab")
     assert w.intro_win is not None and w.adv_win is not None
     assert len(w.shortcut_edits) == len(sg.DEFAULT_SHORTCUTS)
+    assert w.cmb_vol_step.currentData() == 5 and w.sld_spk.singleStep() == 5
+    w.sld_spk.blockSignals(True)
+    w.sld_spk.setValue(50)
+    w.sld_spk.blockSignals(False)
+    app.sendEvent(w.sld_spk, QWheelEvent(QPointF(20, 10), QPointF(20, 10), QPoint(0, 0), QPoint(0, 120), Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False))
+    assert w.sld_spk.value() == 55, f"expected 55 after +5% wheel, got {w.sld_spk.value()}"
+    app.sendEvent(w.sld_spk, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Left, Qt.KeyboardModifier.NoModifier))
+    assert w.sld_spk.value() == 50, f"expected 50 after -5% key, got {w.sld_spk.value()}"
+    idx10 = w.cmb_vol_step.findData(10)
+    w.cmb_vol_step.setCurrentIndex(idx10)
+    assert w._vol_step_pct == 10 and w.sld_mic.singleStep() == 10
+    assert sg.load_gui_settings().get("volume_step_pct") == 10
+    assert w._shortcut_row_labels["vol_up"].text() == "Speaker Volume +10%:"
+    w.cmb_vol_step.setCurrentIndex(w.cmb_vol_step.findData(5))
+    assert w._vol_step_pct == 5
     w._open_topology_intro()
     app.processEvents()
     assert w.intro_win.isVisible()
@@ -881,6 +923,13 @@ with tempfile.TemporaryDirectory() as tmp:
     w._open_advanced_options()
     app.processEvents()
     assert w.adv_win.isVisible()
+    assert "● Pacman Hook:" in w.lbl_chip_pacman.text()
+    w._is_pacman_hook_installed = lambda: True
+    w._refresh_adv_integration_status()
+    assert w.lbl_chip_pacman.text() == "● Pacman Hook: ACTIVE" and w.btn_toggle_pacman_hook.isChecked()
+    w._is_pacman_hook_installed = lambda: False
+    w._refresh_adv_integration_status()
+    assert w.lbl_chip_pacman.text() == "● Pacman Hook: OFF" and not w.btn_toggle_pacman_hook.isChecked()
     w._on_shortcut_edited("toggle_eq", QKeySequence("Ctrl+M"))
     assert w._get_shortcut_map()["toggle_eq"] == "Ctrl+M"
     assert w._get_shortcut_map()["mute_spk"] == ""
@@ -908,7 +957,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 assert not os.path.islink(p), f"{p} must not be a symlink"
                 assert stat.S_IMODE(os.stat(p).st_mode) == 0o600, f"{p} must have 0600 mode"
 
-        # 7. Rev 6.2/6.3 Live Hardware Analog Architecture + Safe Defaults Verification
+        # 7. v6.2-beta/v6.3-beta Live Hardware Analog Architecture + Safe Defaults Verification
         hw_cfg = sg.LwasapiHwAnalogCfg()
         ctypes.memmove(ctypes.byref(hw_cfg), ctypes.byref(orig.hw_analog_cfg), ctypes.sizeof(hw_cfg))
         hw_cfg.analog_boost_db = 4.0
@@ -974,7 +1023,7 @@ with tempfile.TemporaryDirectory() as tmp:
         assert lib.LWASAPI_GetEngineStatus(ctypes.byref(st)) == 0
         assert st.mic_apo.enabled == 1 and st.mic_apo.rnnoise_enabled == 1
 
-        print("[PASS] Rev 6.x live studio APIs (Fixed/Split Clock, Telemetry, MIDI Key Presses, Mic Presets, EQ/APO, 0600 state)")
+        print("[PASS] v6.x-beta live studio APIs (Fixed/Split Clock, Telemetry, MIDI Key Presses, Mic Presets, EQ/APO, 0600 state)")
     finally:
         lib.LWASAPI_SetHwAnalog(ctypes.byref(orig.hw_analog_cfg))
         lib.LWASAPI_SetParametricEQ(ctypes.byref(orig.eq_cfg), ctypes.byref(orig.param_eq))
@@ -1028,11 +1077,11 @@ int main(void) {
             "-o", bin_p, "-pthread", "-lm",
         ], timeout=20)
         if cc.returncode != 0:
-            raise AssertionError(f"Rev 6.2 scoring test compile failed: {cc.stderr}")
+            raise AssertionError(f"v6.2-beta scoring test compile failed: {cc.stderr}")
         run_r = run_cmd([bin_p], timeout=10)
         if run_r.returncode != 0:
-            raise AssertionError(f"Rev 6.2 scoring test failed: {run_r.stderr}")
-    print("[PASS] Rev 6.2 Hardware Analog safe defaults & Strix/Soar/Scarlett > HDMI card scoring")
+            raise AssertionError(f"v6.2-beta scoring test failed: {run_r.stderr}")
+    print("[PASS] v6.2-beta Hardware Analog safe defaults & Strix/Soar/Scarlett > HDMI card scoring")
 
 
 def main() -> int:

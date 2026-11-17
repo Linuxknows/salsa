@@ -152,13 +152,14 @@ $(BUILD_DIR)/lwasapi-bench: src/lwasapi_bench.c $(BUILD_DIR)/liblwasapi.so | $(B
 test: all
 	python3 scripts/run_regression_tests.py
 
-REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo 5.9))
+REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo v6.7-beta))
 
 installer: all
 	@if [ "$(REV)" != "$$(cat VERSION 2>/dev/null || true)" ]; then printf '%s\n' "$(REV)" > VERSION; fi
 	python3 -c 'import os, stat, sys, zipfile; \
 	rev = sys.argv[1]; \
-	out = f"salsa-lwasapi-installer (Rev_{rev}).zip"; tmp = out + ".tmp"; \
+	tag = rev if rev.startswith("v") else f"v{rev}"; \
+	out = f"salsa-lwasapi-installer ({tag}).zip"; tmp = out + ".tmp"; \
 	skip_dirs = {"__pycache__", ".git", ".pytest_cache"}; \
 	files = []; \
 	[files.extend([os.path.relpath(os.path.join(r, n), ".") for n in sorted(f) if not n.endswith((".pyc", ".zip", ".tmp"))]) for r, d, f in os.walk(".") if (d.__setitem__(slice(None), sorted(x for x in d if x not in skip_dirs)) or True)]; \

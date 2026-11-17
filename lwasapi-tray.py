@@ -41,6 +41,7 @@ if _REAL_DIR not in sys.path:
     sys.path.insert(0, _REAL_DIR)
 
 from salsa_ipc import (  # noqa: E402
+    DEFAULT_VOL_STEP_PCT,
     LWASAPI_CMD_SET_VOLUME,
     LWASAPI_EQ_BANDS,
     LWASAPI_MAX_DEVICES,
@@ -48,6 +49,7 @@ from salsa_ipc import (  # noqa: E402
     MIC_APO_PRESETS,
     PRESETS,
     SUPPORTED_SAMPLE_RATES,
+    SUPPORTED_VOL_STEPS,
     LwasapiBtCodecCfg,
     LwasapiDeviceEntry,
     LwasapiDeviceList,
@@ -59,6 +61,7 @@ from salsa_ipc import (  # noqa: E402
     LwasapiParamEqExt,
     LwasapiSessionInfo,
     bind_liblwasapi,
+    normalize_vol_step_pct,
 )
 
 THEMES = {
@@ -952,10 +955,23 @@ class SwipeFader(QtWidgets.QWidget):
         self._muted = False
         self._compact = compact
         self._dragging = False
+        self._step_pct = DEFAULT_VOL_STEP_PCT
         self.setMinimumHeight(28 if compact else 34)
         self.setMaximumHeight(28 if compact else 34)
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        self.set_step_pct(DEFAULT_VOL_STEP_PCT)
+
+    def set_step_pct(self, step_pct: int) -> None:
+        self._step_pct = normalize_vol_step_pct(step_pct)
+        self.setToolTip(f"Drag, mouse wheel, or Left/Right/Up/Down keys adjust by ±{self._step_pct}%")
+
+    def _apply_step(self, step_units: int) -> None:
+        nv = max(0, min(self._max_val, self._value + int(step_units) * self._step_pct))
+        if nv != self._value:
+            self._value = nv
+            self.update()
+            self.value_committed.emit(self._value)
 
     def set_theme_colors(self, accent: str, track: str, border: str, text: str, muted: str) -> None:
         self._accent = QtGui.QColor(accent)
@@ -1030,26 +1046,18 @@ class SwipeFader(QtWidgets.QWidget):
         dy = ev.angleDelta().y()
         delta = dy if abs(dy) >= abs(dx) else dx
         if delta != 0:
-            step = 2 if delta > 0 else -2
-            nv = max(0, min(self._max_val, self._value + step))
-            if nv != self._value:
-                self._value = nv
-                self.update()
-                self.value_committed.emit(self._value)
+            notches = max(1, round(abs(delta) / 120.0))
+            self._apply_step(notches if delta > 0 else -notches)
         ev.accept()
 
     def keyPressEvent(self, ev: QtGui.QKeyEvent) -> None:
-        if ev.key() in (QtCore.Qt.Key.Key_Right, QtCore.Qt.Key.Key_Up):
-            nv = min(self._max_val, self._value + 3)
-        elif ev.key() in (QtCore.Qt.Key.Key_Left, QtCore.Qt.Key.Key_Down):
-            nv = max(0, self._value - 3)
+        if ev.key() in (QtCore.Qt.Key.Key_Right, QtCore.Qt.Key.Key_Up, QtCore.Qt.Key.Key_PageUp):
+            self._apply_step(1)
+        elif ev.key() in (QtCore.Qt.Key.Key_Left, QtCore.Qt.Key.Key_Down, QtCore.Qt.Key.Key_PageDown):
+            self._apply_step(-1)
         else:
             super().keyPressEvent(ev)
             return
-        if nv != self._value:
-            self._value = nv
-            self.update()
-            self.value_committed.emit(self._value)
         ev.accept()
 
     def paintEvent(self, ev: QtGui.QPaintEvent) -> None:
@@ -1912,6 +1920,13 @@ class SalsaQuickMixerPopup(QtWidgets.QWidget):
         tab_lay.addWidget(self.btn_tab_devices)
         tab_lay.addWidget(self.btn_tab_apps)
         tab_lay.addStretch(1)
+        self._vol_step_pct = normalize_vol_step_pct(load_gui_settings().get("volume_step_pct"))
+        self.btn_vol_step = QtWidgets.QPushButton(f"Step ±{self._vol_step_pct}%")
+        self.btn_vol_step.setObjectName("StepPill")
+        self.btn_vol_step.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.btn_vol_step.setToolTip("Click to cycle mouse-wheel & keyboard volume step (1%, 2%, 5%, 10%)")
+        self.btn_vol_step.clicked.connect(self._cycle_vol_step)
+        tab_lay.addWidget(self.btn_vol_step)
         root.addWidget(tab_wrap)
         root.addWidget(self._make_hline())
 
@@ -2188,6 +2203,28 @@ class SalsaQuickMixerPopup(QtWidgets.QWidget):
             ftr.addWidget(b, 1 if b is self.btn_studio else 0)
         root.addLayout(ftr)
 
+    def _apply_vol_step(self, step_pct: int) -> None:
+        step = normalize_vol_step_pct(step_pct)
+        self._vol_step_pct = step
+        if hasattr(self, "btn_vol_step"):
+            self.btn_vol_step.setText(f"Step ±{step}%")
+        if hasattr(self, "fader_master"):
+            self.fader_master.set_step_pct(step)
+        if hasattr(self, "fader_mic"):
+            self.fader_mic.set_step_pct(step)
+        for _, _, fader, _ in self._app_rows.values():
+            fader.set_step_pct(step)
+
+    def _cycle_vol_step(self) -> None:
+        cur = getattr(self, "_vol_step_pct", DEFAULT_VOL_STEP_PCT)
+        try:
+            idx = SUPPORTED_VOL_STEPS.index(cur)
+        except ValueError:
+            idx = SUPPORTED_VOL_STEPS.index(DEFAULT_VOL_STEP_PCT)
+        nxt = SUPPORTED_VOL_STEPS[(idx + 1) % len(SUPPORTED_VOL_STEPS)]
+        update_gui_settings({"volume_step_pct": nxt})
+        self._apply_vol_step(nxt)
+
     def _on_tray_theme_changed(self) -> None:
         if self._syncing or not hasattr(self, "cmb_tray_theme"):
             return
@@ -2205,6 +2242,7 @@ class SalsaQuickMixerPopup(QtWidgets.QWidget):
         settings = load_gui_settings()
         t = resolve_tray_theme(settings)
         self._theme = t
+        self._apply_vol_step(settings.get("volume_step_pct"))
         if hasattr(self, "cmb_tray_theme"):
             wanted_name = resolve_tray_theme_name(settings)
             idx = self.cmb_tray_theme.findText(wanted_name)
@@ -2312,6 +2350,14 @@ class SalsaQuickMixerPopup(QtWidgets.QWidget):
             }}
             QPushButton#TogglePill:checked {{
                 background-color: {bg_hover}; border-color: {acc}; color: {acc};
+            }}
+            QPushButton#StepPill {{
+                background-color: {bg_deep}; color: {acc};
+                border: 1px solid {border_ctrl}; border-radius: 5px;
+                padding: 2px 7px; font-size: 11px; font-weight: 700;
+            }}
+            QPushButton#StepPill:hover {{
+                background-color: {bg_hover}; border-color: {acc};
             }}
             QPushButton#PrimaryBtn {{
                 background-color: {t["btn_primary_bg"]}; color: #ffffff;
@@ -2681,6 +2727,7 @@ class SalsaQuickMixerPopup(QtWidgets.QWidget):
 
         self._syncing = True
         try:
+            self._apply_vol_step(settings.get("volume_step_pct"))
             self.btn_per_dev_eq.setChecked(
                 bool(settings.get("eq_per_device_enabled", settings.get("eq_per_device", False)))
             )
@@ -2931,6 +2978,7 @@ class SalsaQuickMixerPopup(QtWidgets.QWidget):
                 icon_lbl.setFixedSize(22, 22)
                 icon_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                 fader = SwipeFader(label, accent=(mic_acc if s.is_capture else acc), compact=True)
+                fader.set_step_pct(getattr(self, "_vol_step_pct", DEFAULT_VOL_STEP_PCT))
                 fader.set_theme_colors((mic_acc if s.is_capture else acc), bg_ctrl, border_ctrl, bright, muted)
                 fader.value_changed.connect(lambda v, _sid=sid: self._on_sess_drag(_sid, v))
                 fader.value_committed.connect(lambda v, _sid=sid: self._on_sess_commit(_sid, v))
@@ -3211,8 +3259,9 @@ class AudioEngineTray(QtCore.QObject):
             return
         settings = load_gui_settings()
         t = resolve_tray_theme(settings)
+        step_pct = normalize_vol_step_pct(settings.get("volume_step_pct"))
         notches = max(1, round(abs(delta) / 120.0))
-        step = (3 * notches) if delta > 0 else (-3 * notches)
+        step = (step_pct * notches) if delta > 0 else (-step_pct * notches)
 
         shift_held = bool(QtWidgets.QApplication.keyboardModifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier)
         is_horizontal = str(orientation).lower().startswith("h")

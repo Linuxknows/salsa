@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Salsa Rev 6.6 — Linux WASAPI Studio Control Center, Dynamic EQ & Auto-Graph
+Salsa v6.7-beta — Linux WASAPI Studio Control Center, Dynamic EQ & Auto-Graph
 ==========================================================================
 Fixed-Clock Lossless WaveRT Audio Engine (44.1–192 kHz / 16–32-bit),
 10-Band Dynamic EQ + AutoEQ Importer + Bauer Crossfeed, Capture Mic APO
@@ -157,6 +157,7 @@ BAND_FREQS = ["31 Hz", "62 Hz", "125 Hz", "250 Hz", "500 Hz", "1 kHz", "2 kHz", 
 
 from salsa_ipc import (  # noqa: E402
     DEFAULT_BAND_FREQS_HZ,
+    DEFAULT_VOL_STEP_PCT,
     LWASAPI_BT_CAP_AAC,
     LWASAPI_BT_CAP_APTX,
     LWASAPI_BT_CAP_APTX_HD,
@@ -197,6 +198,7 @@ from salsa_ipc import (  # noqa: E402
     MIC_APO_PRESETS,
     PRESETS,
     SUPPORTED_SAMPLE_RATES,
+    SUPPORTED_VOL_STEPS,
     LwasapiBtCodecCfg,
     LwasapiDeviceEntry,
     LwasapiDeviceList,
@@ -208,6 +210,7 @@ from salsa_ipc import (  # noqa: E402
     LwasapiParamEqExt,
     LwasapiSessionInfo,
     bind_liblwasapi,
+    normalize_vol_step_pct,
 )
 
 CUSTOM_PRESET_NAME = "Custom Salsa Curve"
@@ -726,11 +729,11 @@ def save_gui_settings(data: dict) -> None:
 OWNERS_MANUAL_CHAPTER_DEFS = {
     "overview": (
         "accent_primary",
-        "📘 Chapter 1: Philosophy — Why Salsa Rev 6.6 Needs Zero Manual Patching",
+        "📘 Chapter 1: Philosophy — Why Salsa Needs Zero Manual Patching",
         "Click any node in the live Signal Topology Graph above (or use the chapter buttons) to inspect how each stage works.",
         """
         <p>In traditional Linux audio utilities like <code>qpwgraph</code> or <code>QjackCtl</code>, users are forced to manually drag virtual patch cables between applications, PulseAudio/JACK bridges, resamplers, and hardware sinks. Whenever a game restarts, a browser tab changes sample rate, or a USB interface reconnects, manual patchbays frequently drop connections.</p>
-        <p><b>Salsa Rev 6.6 — Linux WASAPI (<code>lwasapi-audiodg</code>)</b> replaces manual patching with a <b>100% self-wiring Windows WASAPI / WaveRT Audio Device Graph architecture</b>:</p>
+        <p><b>Salsa — Linux WASAPI (<code>lwasapi-audiodg</code>)</b> replaces manual patching with a <b>100% self-wiring Windows WASAPI / WaveRT Audio Device Graph architecture</b>:</p>
         <ul>
             <li><b>Fixed Lossless Master Clock & Bit Depth Control:</b> Lock your hardware and BlueZ engine clock cleanly across <code>44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz</code> and <code>16 / 24 / 32-bit</code> precision without unpredictable clock hunting.</li>
             <li><b>Automatic Session Discovery & Per-App Routing:</b> Native WASAPI, ALSA, PulseAudio, SDL2/SDL3, OpenAL, Proton/Wine, and JACK apps register automatically with persistent per-app volume, mute, and hardware endpoint routing.</li>
@@ -830,7 +833,7 @@ OWNERS_MANUAL_CHAPTER_DEFS = {
         "🎛️ Chapter 12: Capture Mic APO, HW Analog Boost & BlueZ HFP SCO",
         "Neural RNNoise • Discrete Sound Card DAC/Amp • Two-Way Bluetooth HFP Headset Mic",
         """
-        <p>Salsa Rev 6.6 provides studio voice processing, hardware DAC/amp analog boosting, and wireless controls without PipeWire/WirePlumber dependencies:</p>
+        <p>Salsa v6.7-beta provides studio voice processing, hardware DAC/amp analog boosting, and wireless controls without PipeWire/WirePlumber dependencies:</p>
         <ul>
             <li><b>Hardware Analog Architecture:</b> Automatically utilizes ALSA DAC unity volume, discrete headphone amp gain tiers, and USB HID volume dials on supported sound cards like the ASUS Strix Raid DLX.</li>
             <li><b>Capture Mic APO & Sidetone:</b> Toggleable per-session strip featuring Voice HPF, Noise Gate, Neural <code>librnnoise</code> denoising, Clarity shelf, Soft Compressor, and zero-latency headphone Sidetone.</li>
@@ -2121,10 +2124,61 @@ class SalsaPopWindow(QWidget):
         event.accept()
 
 
+class StepVolumeSlider(QSlider):
+    """Horizontal audio volume slider with configurable mouse-wheel & keyboard steps."""
+
+    def __init__(self, step_provider=None, parent=None):
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self._step_provider = step_provider
+        self.sync_step()
+
+    def _current_step(self) -> int:
+        if callable(self._step_provider):
+            return normalize_vol_step_pct(self._step_provider())
+        return DEFAULT_VOL_STEP_PCT
+
+    def sync_step(self) -> None:
+        step = self._current_step()
+        self.setSingleStep(step)
+        self.setPageStep(step)
+        self.setToolTip(f"Drag, mouse wheel, or Left/Right/Up/Down/Page keys adjust by ±{step}%")
+
+    def _apply_step(self, step_units: int) -> None:
+        step = self._current_step()
+        nv = max(self.minimum(), min(self.maximum(), int(self.value()) + int(step_units) * step))
+        if nv != self.value():
+            self.setValue(nv)
+            self.sliderReleased.emit()
+
+    def wheelEvent(self, ev) -> None:
+        dx = ev.angleDelta().x()
+        dy = ev.angleDelta().y()
+        delta = dy if abs(dy) >= abs(dx) else dx
+        if delta != 0:
+            notches = max(1, round(abs(delta) / 120.0))
+            self._apply_step(notches if delta > 0 else -notches)
+        ev.accept()
+
+    def keyPressEvent(self, ev) -> None:
+        if ev.key() in (Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_PageUp):
+            self._apply_step(1)
+            ev.accept()
+            return
+        if ev.key() in (Qt.Key.Key_Left, Qt.Key.Key_Down, Qt.Key.Key_PageDown):
+            self._apply_step(-1)
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
+
 class SalsaStudioWindow(QMainWindow):
     def __init__(self, start_in_graph: bool = False, start_in_debug: bool = False):
         super().__init__()
         self.gui_settings = load_gui_settings()
+        self._vol_step_pct = normalize_vol_step_pct(self.gui_settings.get("volume_step_pct"))
+        self._hook_proc = None
+        self._watcher_proc = None
+        self._shortcut_row_labels = {}
         saved_theme = self.gui_settings.get("theme", DEFAULT_THEME)
         base_seed = THEMES[saved_theme] if saved_theme in THEMES else THEMES[DEFAULT_THEME]
         self.custom_theme = normalize_custom_theme(self.gui_settings.get("custom_theme"), base_seed)
@@ -2289,6 +2343,14 @@ class SalsaStudioWindow(QMainWindow):
             f"padding: 1px 4px; border-radius: 3px; }}"
         )
         self.manual_browser.setHtml(render_manual_chapter(self.current_manual_key, t))
+        if hasattr(self, "lbl_ver_pill"):
+            self.lbl_ver_pill.setStyleSheet(
+                f"background-color: {t['bg_deep']}; color: {t['accent_warn']}; "
+                f"border: 1px solid {t['accent_warn']}; border-radius: 5px; "
+                "padding: 2px 8px; font-weight: 800; font-size: 11px;"
+            )
+        if hasattr(self, "btn_toggle_pacman_hook"):
+            self._refresh_adv_integration_status()
 
     def _on_theme_activated(self, idx: int):
         theme_name = self.cmb_theme.itemText(idx)
@@ -2403,14 +2465,28 @@ class SalsaStudioWindow(QMainWindow):
         top_layout.setSpacing(10)
 
         title_col = QVBoxLayout()
-        self.lbl_title = QLabel("SALSA — LINUX WASAPI STUDIO (REV 6.6)")
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+        self.lbl_title = QLabel("SALSA — LINUX WASAPI STUDIO")
         self.lbl_title.setObjectName("TitleBanner")
+        title_row.addWidget(self.lbl_title)
+        self.lbl_ver_pill = QLabel("v6.7-beta")
+        self.lbl_ver_pill.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        t_init = self.current_theme
+        self.lbl_ver_pill.setStyleSheet(
+            f"background-color: {t_init['bg_deep']}; color: {t_init['accent_warn']}; "
+            f"border: 1px solid {t_init['accent_warn']}; border-radius: 5px; "
+            "padding: 2px 8px; font-weight: 800; font-size: 11px;"
+        )
+        title_row.addWidget(self.lbl_ver_pill)
+        title_row.addStretch(1)
+        title_col.addLayout(title_row)
         self.lbl_subtitle = QLabel(
             f"Fixed-Clock Lossless WaveRT • Hardware DAC/Amp Analog • Mic APO & Studio EQ • Host: {HOST_PROFILE['os']} ({HOST_PROFILE['cpu']})"
         )
         self.lbl_subtitle.setObjectName("SubBanner")
         self.lbl_subtitle.setWordWrap(True)
-        title_col.addWidget(self.lbl_title)
         title_col.addWidget(self.lbl_subtitle)
         top_layout.addLayout(title_col, 2)
 
@@ -2719,9 +2795,24 @@ class SalsaStudioWindow(QMainWindow):
         hw_col.setContentsMargins(12, 6, 12, 6)
         hw_col.setSpacing(3)
 
+        hw_hdr_row = QHBoxLayout()
+        hw_hdr_row.setSpacing(8)
         lbl_hw_hdr = QLabel("FULL-DUPLEX MASTER MIXER & DAW MIDI HUB")
         lbl_hw_hdr.setObjectName("SectionHeader")
-        hw_col.addWidget(lbl_hw_hdr)
+        hw_hdr_row.addWidget(lbl_hw_hdr)
+        hw_hdr_row.addStretch()
+        hw_hdr_row.addWidget(QLabel("Wheel/Key Step:"))
+        self.cmb_vol_step = QComboBox()
+        for step_opt in SUPPORTED_VOL_STEPS:
+            self.cmb_vol_step.addItem(f"{step_opt}%", step_opt)
+        s_idx = self.cmb_vol_step.findData(self._vol_step_pct)
+        if s_idx >= 0:
+            self.cmb_vol_step.setCurrentIndex(s_idx)
+        self.cmb_vol_step.setMinimumWidth(68)
+        self.cmb_vol_step.setToolTip("Mouse wheel and keyboard arrow/shortcut volume step for Speaker, Mic & App sliders")
+        self.cmb_vol_step.currentIndexChanged.connect(self._on_vol_step_changed)
+        hw_hdr_row.addWidget(self.cmb_vol_step)
+        hw_col.addLayout(hw_hdr_row)
 
         self.lbl_endpoints = QLabel("Sink: Detecting... | Mic: Detecting... | PA v35: Initializing...")
         self.lbl_endpoints.setObjectName("EndpointsLabel")
@@ -2787,7 +2878,7 @@ class SalsaStudioWindow(QMainWindow):
         self.lbl_spk = QLabel("Speaker Vol (80%):")
         self.lbl_spk.setMinimumWidth(135)
         spk_row.addWidget(self.lbl_spk)
-        self.sld_spk = QSlider(Qt.Orientation.Horizontal)
+        self.sld_spk = StepVolumeSlider(lambda: self._vol_step_pct)
         self.sld_spk.setRange(0, 150)
         self.sld_spk.setValue(80)
         self._spk_proc = None
@@ -2810,7 +2901,7 @@ class SalsaStudioWindow(QMainWindow):
         self.lbl_mic = QLabel("Mic Capture (100%):")
         self.lbl_mic.setMinimumWidth(135)
         mic_row.addWidget(self.lbl_mic)
-        self.sld_mic = QSlider(Qt.Orientation.Horizontal)
+        self.sld_mic = StepVolumeSlider(lambda: self._vol_step_pct)
         self.sld_mic.setRange(0, 150)
         self.sld_mic.setValue(100)
         self._mic_proc = None
@@ -2901,7 +2992,7 @@ class SalsaStudioWindow(QMainWindow):
         graph_hdr_row.addWidget(lbl_g_title)
         graph_hdr_row.addStretch()
 
-        self.lbl_auto_badge = QLabel("✔ REV 6.6 LIVE | MASTER CLOCK | HW ANALOG DAC | MIC APO | BT ABR")
+        self.lbl_auto_badge = QLabel("✔ v6.7-beta LIVE | MASTER CLOCK | HW ANALOG DAC | MIC APO | BT ABR")
         self.lbl_auto_badge.setObjectName("AutoBadgeLabel")
         graph_hdr_row.addWidget(self.lbl_auto_badge)
         graph_box.addLayout(graph_hdr_row)
@@ -3053,9 +3144,31 @@ class SalsaStudioWindow(QMainWindow):
         g_diag.addWidget(self.btn_rst_tray, 3, 1)
         dc_lay.addLayout(g_diag)
 
-        self.lbl_adv_integration = QLabel("Integration: Checking Steam wrapper, launchers & autosync hook...")
-        self.lbl_adv_integration.setObjectName("BandDynLabel")
-        dc_lay.addWidget(self.lbl_adv_integration)
+        r_chips = QHBoxLayout()
+        r_chips.setSpacing(6)
+        self.lbl_chip_steam = QLabel("● Steam: ...")
+        self.lbl_chip_launchers = QLabel("● Launchers: ...")
+        self.lbl_chip_pacman = QLabel("● Pacman Hook: ...")
+        for chip in (self.lbl_chip_steam, self.lbl_chip_launchers, self.lbl_chip_pacman):
+            r_chips.addWidget(chip)
+        r_chips.addStretch()
+        dc_lay.addLayout(r_chips)
+
+        r_hook_ctrl = QHBoxLayout()
+        r_hook_ctrl.setSpacing(8)
+        self.btn_toggle_pacman_hook = QPushButton("Toggle Pacman Hook (pkexec)")
+        self.btn_toggle_pacman_hook.setObjectName("CompactBtn")
+        self.btn_toggle_pacman_hook.setCheckable(True)
+        self.btn_toggle_pacman_hook.clicked.connect(self._toggle_pacman_hook)
+        r_hook_ctrl.addWidget(self.btn_toggle_pacman_hook, 1)
+
+        self.chk_autosync_now = QCheckBox("Auto-Sync Watcher + Sync Now")
+        self.chk_autosync_now.setToolTip(
+            "Enable/disable lwasapi-module-watcher.path; switching ON runs Sync Audio Modules Now immediately"
+        )
+        self.chk_autosync_now.clicked.connect(self._on_autosync_watcher_clicked)
+        r_hook_ctrl.addWidget(self.chk_autosync_now)
+        dc_lay.addLayout(r_hook_ctrl)
         left_col.addWidget(diag_card)
 
         # Card L2: Engine Ownership, Startup & Appearance
@@ -3258,12 +3371,14 @@ class SalsaStudioWindow(QMainWindow):
         sc_grid.setHorizontalSpacing(14)
         sc_grid.setVerticalSpacing(4)
         self.shortcut_edits = {}
+        self._shortcut_row_labels = {}
         sc_map = self._get_shortcut_map()
         half_n = (len(DEFAULT_SHORTCUTS) + 1) // 2
         for idx_s, (act_id, act_label, _def_seq) in enumerate(DEFAULT_SHORTCUTS):
             col_blk = 0 if idx_s < half_n else 2
             row_blk = idx_s if idx_s < half_n else idx_s - half_n
             lbl_act = QLabel(f"{act_label}:")
+            self._shortcut_row_labels[act_id] = lbl_act
             kedit = QKeySequenceEdit(QKeySequence(sc_map.get(act_id, "")))
             if hasattr(kedit, "setMaximumSequenceLength"):
                 kedit.setMaximumSequenceLength(1)
@@ -3278,6 +3393,7 @@ class SalsaStudioWindow(QMainWindow):
         sc_grid.setColumnStretch(2, 1)
         sc_lay.addLayout(sc_grid)
         adv_root.addWidget(sc_card)
+        self._refresh_shortcut_row_labels()
         self._refresh_adv_integration_status()
 
     def _get_shortcut_map(self) -> dict:
@@ -3300,10 +3416,10 @@ class SalsaStudioWindow(QMainWindow):
             "mute_mic": lambda: subprocess.Popen([CTL_BIN, "mic-mute", "toggle"]),
             "toggle_eq": self.chk_eq_enable.toggle,
             "toggle_mic_apo": self.chk_mic_apo.toggle,
-            "vol_up": lambda: self._adjust_vol_step("spk", 5),
-            "vol_down": lambda: self._adjust_vol_step("spk", -5),
-            "mic_up": lambda: self._adjust_vol_step("mic", 5),
-            "mic_down": lambda: self._adjust_vol_step("mic", -5),
+            "vol_up": lambda: self._adjust_vol_step("spk", self._vol_step_pct),
+            "vol_down": lambda: self._adjust_vol_step("spk", -self._vol_step_pct),
+            "mic_up": lambda: self._adjust_vol_step("mic", self._vol_step_pct),
+            "mic_down": lambda: self._adjust_vol_step("mic", -self._vol_step_pct),
             "bt_reset": self._on_bt_reset_clicked,
             "refresh": self._refresh_all_now,
             "quit": self.close,
@@ -3417,6 +3533,47 @@ class SalsaStudioWindow(QMainWindow):
         self._rebuild_shortcuts()
         if hasattr(self, "lbl_shortcut_status"):
             self.lbl_shortcut_status.setText("Restored all keyboard shortcuts to defaults.")
+
+    def _refresh_shortcut_row_labels(self):
+        step = getattr(self, "_vol_step_pct", DEFAULT_VOL_STEP_PCT)
+        dyn_labels = {
+            "vol_up": f"Speaker Volume +{step}%:",
+            "vol_down": f"Speaker Volume -{step}%:",
+            "mic_up": f"Mic Gain +{step}%:",
+            "mic_down": f"Mic Gain -{step}%:",
+        }
+        for act_id, txt in dyn_labels.items():
+            lbl = self._shortcut_row_labels.get(act_id)
+            if lbl is not None:
+                lbl.setText(txt)
+
+    def _on_vol_step_changed(self, _idx: int = 0):
+        if not hasattr(self, "cmb_vol_step"):
+            return
+        step = self.cmb_vol_step.currentData()
+        self._apply_vol_step(step, save=True)
+
+    def _apply_vol_step(self, step_pct, save: bool = True):
+        step = normalize_vol_step_pct(step_pct)
+        self._vol_step_pct = step
+        if hasattr(self, "cmb_vol_step"):
+            idx = self.cmb_vol_step.findData(step)
+            if idx >= 0 and self.cmb_vol_step.currentIndex() != idx:
+                self.cmb_vol_step.blockSignals(True)
+                self.cmb_vol_step.setCurrentIndex(idx)
+                self.cmb_vol_step.blockSignals(False)
+        for sld in (getattr(self, "sld_spk", None), getattr(self, "sld_mic", None)):
+            if sld is not None and hasattr(sld, "sync_step"):
+                sld.sync_step()
+        for meta in getattr(self, "_sess_widgets", {}).values():
+            w_sld = meta.get("sld")
+            if w_sld is not None and hasattr(w_sld, "sync_step"):
+                w_sld.sync_step()
+        self._refresh_shortcut_row_labels()
+        if save:
+            self.gui_settings["volume_step_pct"] = step
+            save_gui_settings(self.gui_settings)
+            self._gui_settings_mtime = self._read_gui_settings_mtime()
 
     def _adjust_vol_step(self, kind: str, delta: int):
         sld = self.sld_mic if kind == "mic" else self.sld_spk
@@ -3563,17 +3720,150 @@ class SalsaStudioWindow(QMainWindow):
         self._last_dev_sig = None
         QTimer.singleShot(300, lambda: self._poll_engine(initial=True))
 
+    def _is_pacman_hook_installed(self) -> bool:
+        return (
+            os.path.exists("/etc/pacman.d/hooks/99-salsa-autosync.hook")
+            or os.path.exists("/var/lib/salsa-autosync/libpulse-updated")
+        )
+
+    def _is_watcher_enabled(self) -> bool:
+        try:
+            res = subprocess.run(
+                ["systemctl", "--user", "is-active", "lwasapi-module-watcher.path"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            return res.returncode == 0 and res.stdout.strip() == "active"
+        except Exception:
+            return False
+
+    def _set_adv_chip(self, lbl: QLabel, text: str, active: bool | None):
+        t = self.current_theme
+        if active is True:
+            fg, bd = t["accent_primary"], t["border_control"]
+        elif active is False:
+            fg, bd = t["accent_warn"], t["accent_warn"]
+        else:
+            fg, bd = t["text_muted"], t["border_control"]
+        lbl.setText(text)
+        lbl.setStyleSheet(
+            f"background-color: {t['bg_deep']}; color: {fg}; border: 1px solid {bd}; "
+            "border-radius: 5px; padding: 2px 7px; font-weight: 700; font-size: 11px;"
+        )
+
     def _refresh_adv_integration_status(self):
-        if not hasattr(self, "lbl_adv_integration"):
+        if not hasattr(self, "lbl_chip_pacman"):
             return
         steam_bin = os.path.exists(os.path.expanduser("~/.local/bin/salsa-steam-launch"))
         desktop_ok = os.path.exists(os.path.expanduser("~/.local/share/applications/salsa-lwasapi.desktop"))
-        hook_ok = os.path.exists("/etc/pacman.d/hooks/99-salsa-autosync.hook") or os.path.exists("/var/lib/salsa-autosync")
-        self.lbl_adv_integration.setText(
-            f"Integration: Steam Wrapper {'READY' if steam_bin else 'Off'}  •  "
-            f"Desktop Launchers {'OK' if desktop_ok else 'Missing'}  •  "
-            f"Pacman Hook {'READY' if hook_ok else 'Optional'}"
+        has_pacman = os.path.exists("/usr/bin/pacman") and os.path.isdir("/etc/pacman.d")
+        hook_ok = self._is_pacman_hook_installed()
+        watcher_ok = self._is_watcher_enabled()
+
+        self._set_adv_chip(
+            self.lbl_chip_steam,
+            f"● Steam: {'READY' if steam_bin else 'Off'}",
+            True if steam_bin else None,
         )
+        self._set_adv_chip(
+            self.lbl_chip_launchers,
+            f"● Launchers: {'OK' if desktop_ok else 'Missing'}",
+            True if desktop_ok else False,
+        )
+        if not has_pacman:
+            self._set_adv_chip(self.lbl_chip_pacman, "● Pacman Hook: N/A", None)
+        else:
+            self._set_adv_chip(
+                self.lbl_chip_pacman,
+                f"● Pacman Hook: {'ACTIVE' if hook_ok else 'OFF'}",
+                True if hook_ok else False,
+            )
+
+        if hasattr(self, "btn_toggle_pacman_hook"):
+            busy = self._hook_proc is not None and self._hook_proc.state() != QProcess.ProcessState.NotRunning
+            if not busy:
+                self.btn_toggle_pacman_hook.blockSignals(True)
+                self.btn_toggle_pacman_hook.setChecked(bool(hook_ok))
+                self.btn_toggle_pacman_hook.setEnabled(has_pacman)
+                self.btn_toggle_pacman_hook.setText(
+                    "Pacman Hook: ON  (Click to Disable)" if hook_ok else "Toggle Pacman Hook (pkexec)"
+                )
+                self.btn_toggle_pacman_hook.setToolTip(
+                    "Install or remove /etc/pacman.d/hooks/99-salsa-autosync.hook via graphical pkexec"
+                    if has_pacman
+                    else "Pacman ALPM hook applies to Arch/CachyOS systems; Path Watcher handles updates here"
+                )
+                self.btn_toggle_pacman_hook.blockSignals(False)
+
+        if hasattr(self, "chk_autosync_now"):
+            self.chk_autosync_now.blockSignals(True)
+            self.chk_autosync_now.setChecked(watcher_ok)
+            self.chk_autosync_now.setToolTip(
+                f"Path Watcher: {'ACTIVE' if watcher_ok else 'OFF'} (lwasapi-module-watcher.path)\n"
+                "Toggling ON enables the watcher and immediately runs Sync Audio Modules Now."
+            )
+            self.chk_autosync_now.blockSignals(False)
+
+    def _toggle_pacman_hook(self):
+        if self._hook_proc is not None and self._hook_proc.state() != QProcess.ProcessState.NotRunning:
+            return
+        install_sh = os.path.join(BASE_DIR, "install-salsa.sh")
+        if not os.path.exists(install_sh):
+            QMessageBox.warning(self.adv_win or self, "Installer Missing", f"Could not find {install_sh}")
+            self._refresh_adv_integration_status()
+            return
+        installed = self._is_pacman_hook_installed()
+        flag = "--remove-pacman-hook" if installed else "--install-pacman-hook"
+        self.btn_toggle_pacman_hook.setEnabled(False)
+        self.btn_toggle_pacman_hook.setText("Removing Hook (pkexec)..." if installed else "Installing Hook (pkexec)...")
+        proc = QProcess(self)
+        proc.finished.connect(lambda code, _st, fl=flag, p=proc: self._on_pacman_hook_finished(code, fl, p))
+        self._hook_proc = proc
+        proc.start(install_sh, [flag])
+
+    def _on_pacman_hook_finished(self, exit_code: int, flag: str, proc: QProcess):
+        out = ""
+        err = ""
+        try:
+            out = bytes(proc.readAllStandardOutput()).decode("utf-8", "replace").strip()
+            err = bytes(proc.readAllStandardError()).decode("utf-8", "replace").strip()
+            proc.deleteLater()
+        except Exception:
+            pass
+        self._hook_proc = None
+        if exit_code == 0 and flag == "--install-pacman-hook":
+            try:
+                subprocess.run(["systemctl", "--user", "restart", "lwasapi-module-watcher.path"], check=False, timeout=4)
+            except Exception:
+                pass
+            if hasattr(self, "chk_autosync_now") and self.chk_autosync_now.isChecked():
+                self._refresh_adv_integration_status()
+                self._run_module_sync()
+                return
+        elif exit_code != 0:
+            msg = err or out or f"exit code {exit_code}"
+            QMessageBox.warning(
+                self.adv_win or self,
+                "Pacman Hook Update Cancelled / Failed",
+                f"Action ({flag}) did not complete:\n{msg}",
+            )
+        self._refresh_adv_integration_status()
+
+    def _on_autosync_watcher_clicked(self, checked: bool):
+        action = "enable" if checked else "disable"
+        try:
+            subprocess.run(
+                ["systemctl", "--user", action, "--now", "lwasapi-module-watcher.path"],
+                capture_output=True,
+                text=True,
+                timeout=4,
+            )
+        except Exception:
+            pass
+        self._refresh_adv_integration_status()
+        if checked:
+            self._run_module_sync()
 
     def _reset_all_safe_defaults(self):
         parent_w = self.adv_win if (self.adv_win and self.adv_win.isVisible()) else self
@@ -4639,6 +4929,9 @@ class SalsaStudioWindow(QMainWindow):
                         self.chk_eq_per_dev.blockSignals(True)
                         self.chk_eq_per_dev.setChecked(per_dev)
                         self.chk_eq_per_dev.blockSignals(False)
+                disk_step = normalize_vol_step_pct(disk_cfg.get("volume_step_pct"))
+                if disk_step != self._vol_step_pct:
+                    self._apply_vol_step(disk_step, save=False)
 
         gains = [self.band_sliders[i].value() / 10.0 for i in range(LWASAPI_EQ_BANDS)]
         deltas = [st.eq_dyn_delta_db[i] for i in range(LWASAPI_EQ_BANDS)]
@@ -4664,7 +4957,7 @@ class SalsaStudioWindow(QMainWindow):
             eq_b = f"EQ:{'ON' if st.eq_cfg.enabled else 'OFF'}{'+CF' if st.param_eq.crossfeed_enabled else ''}"
             mic_b = f"Mic:{'Krisp-APO' if st.mic_apo.enabled else 'Raw'}"
             bt_b = f"BT:{bt_cod_s}{' ABR' if st.bt_codec_cfg.wireless_abr_enabled else ''}" if st.bt_active else ("DAC:Unity" if st.hw_analog_info.dac_unity_active else "Out:ALSA")
-            badge_txt = f"✔ REV 6.6 LIVE | {clk_b} | {eq_b} | {mic_b} | {bt_b}"
+            badge_txt = f"✔ v6.7-beta LIVE | {clk_b} | {eq_b} | {mic_b} | {bt_b}"
             if self.lbl_auto_badge.text() != badge_txt:
                 self.lbl_auto_badge.setText(badge_txt)
 
@@ -4903,7 +5196,7 @@ class SalsaStudioWindow(QMainWindow):
                 vol_lay = QHBoxLayout(vol_box)
                 vol_lay.setContentsMargins(4, 2, 4, 2)
                 vol_lay.setSpacing(4)
-                sld = QSlider(Qt.Orientation.Horizontal)
+                sld = StepVolumeSlider(lambda: self._vol_step_pct)
                 sld.setRange(0, 150)
                 sld.setValue(e["vol_pct"])
                 lbl = QLabel(f"{e['vol_pct']}%")

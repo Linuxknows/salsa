@@ -324,7 +324,7 @@ static void save_salsa_state(void) {
     atomic_store_explicit(&g_state_dirty, false, memory_order_release);
     salsa_persisted_state_v5_t st;
     memset(&st, 0, sizeof(st));
-    st.magic = 0x53414C57U; /* 'SALW' v5 (Rev 6.3) */
+    st.magic = 0x53414C57U; /* 'SALW' v5 (v6.3-beta) */
 
     pthread_mutex_lock(&g_hw_lock);
     st.sample_rate   = g_pref_sample_rate ? g_pref_sample_rate : g_hw.sample_rate;

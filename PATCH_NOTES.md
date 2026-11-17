@@ -4,7 +4,18 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## Rev 6.6 — Current (`2026-11-16`)
+## v6.7-beta — Current (`2026-11-16`)
+
+### 1. Option C Pacman ALPM Hook Indicator, Toggles & Instant Sync
+- Replaced the read-only Diagnostics integration text in [`salsa-gui.py`](salsa-gui.py) (`_build_advanced_options_window`, `_refresh_adv_integration_status`) with themed status pills (`● Steam`, `● Launchers`, `● Pacman Hook: ACTIVE / OFF`), a clickable `Toggle Pacman Hook (pkexec)` button (`_toggle_pacman_hook`) running non-blocking `install-salsa.sh --install-pacman-hook` / `--remove-pacman-hook`, and an **Auto-Sync Watcher + Sync Now** toggle (`chk_autosync_now` / `_on_autosync_watcher_clicked`) that enables or disables `lwasapi-module-watcher.path` and runs `lwasapi-autosync.sh --force` immediately.
+
+### 2. Configurable 5% Mouse-Wheel & Keyboard Audio Step Sizing + `vX.X-beta` Versioning
+- Added shared `DEFAULT_VOL_STEP_PCT` (`5`), `SUPPORTED_VOL_STEPS` (`1, 2, 5, 10`), and [`normalize_vol_step_pct`](salsa_ipc.py) in [`salsa_ipc.py`](salsa_ipc.py) synced via `gui_settings.json` (`"volume_step_pct"`).
+- Upgraded Studio's Speaker, Mic Gain, and per-app session sliders to [`StepVolumeSlider`](salsa-gui.py) (`±5%` wheel & arrow/`PageUp`/`PageDown` steps matching global keyboard shortcuts) alongside the `Wheel/Key Step` header dropdown (`1% / 2% / 5% / 10%`), updated [`SwipeFader`](lwasapi-tray.py) and `_on_sni_scroll` in [`lwasapi-tray.py`](lwasapi-tray.py) to `±5%` with the synchronized `Step ±5%` badge pill, simplified Chapter 1 Philosophy branding, and transitioned release/installer/UI versioning (`VERSION`, `Makefile`, `install-salsa.sh`, `README.md`, `PATCH_NOTES.md`, `salsa-gui.py`, `src/lwasapi_ctl.c`) to `vX.X-beta`.
+
+---
+
+## v6.6-beta (`2026-11-16`)
 
 ### 1. Multi-Window Studio Flow: Topology Intro, Pop-Out Advanced Options & Standalone Debugger
 - Split the Auto-Graph Signal Topology & Owner's Manual view into its own standalone startup intro window (`_build_topology_intro_window` in [`salsa-gui.py`](salsa-gui.py)) with a `"Don't show Topology Intro on startup"` persistence toggle (`show_topology_intro`), `"Enter Studio Mixer ->"` button, and top-bar `"Topology (F1)"` toggle to reopen anytime (or via `salsa-graph`).
@@ -17,7 +28,7 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## Rev 6.5 (`2026-11-16`)
+## v6.5-beta (`2026-11-16`)
 
 ### 1. Independent Capture / Mic Clock & Zero-Double-Resample Capture Pipeline
 - Split capture clock control (`LWASAPI_SetCaptureSampleRate`, `lwasapi-ctl set-cap-rate <44100..192000|auto>`) across [`include/lwasapi.h`](include/lwasapi.h), [`src/liblwasapi.c`](src/liblwasapi.c), [`src/lwasapi_audiodg.c`](src/lwasapi_audiodg.c), [`src/lwasapi_bluez.c`](src/lwasapi_bluez.c), and [`src/lwasapi_ctl.c`](src/lwasapi_ctl.c) so USB microphones (e.g., Focusrite Scarlett 2i2 at `48,000 Hz` for Discord/voice) run independently of a `192,000 Hz` playback Master Clock.
@@ -30,7 +41,7 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## Rev 6.3 (`2026-11-14`)
+## v6.3-beta (`2026-11-14`)
 
 ### 1. Periodic Full-Duplex Static & Cross-Period Continuity Fixes
 - Eliminated periodic full-duplex playback and capture static/clicks in [`src/lwasapi_pa_server.c`](src/lwasapi_pa_server.c) and [`src/lwasapi_audiodg.c`](src/lwasapi_audiodg.c) using rate-scaled ~0.5 ms de-click fade-outs (`pa_stream_emit_fade_out`) on flush/cork/underrun transitions, Catmull-Rom cubic history continuity (`pa_stream_save_hist`), per-frame capture gain smoothing (`cap_smooth_gain`), and cross-period boundary linear interpolation (`cap_hist_l`/`cap_hist_r` with `clamp_cap_unit`) in `lwasapi_pa_server_push_capture`.
@@ -40,17 +51,17 @@ Chronological changelog organized by installer revision.
 - Updated `SalsaStudioWindow` in [`salsa-gui.py`](salsa-gui.py) to persist and restore `window_width`, `window_height`, and `last_tab` via `save_gui_settings` (preserving disk `tray_*` keys), and synchronized `eq_per_device` / `eq_per_device_enabled` and `chk_eq_per_dev` across [`salsa-gui.py`](salsa-gui.py) and [`lwasapi-tray.py`](lwasapi-tray.py) using `_read_gui_settings_mtime`.
 
 ### 3. Virtual Mix Bus Removal & Simplified Tab-Bar Controls (`Parametric Band` Strip Removed)
-- Removed the 4 Virtual Broadcast Mix Buses (`salsa_bus.*`, `LWASAPI_CMD_SET_MIX_BUS`, `LWASAPI_SetMixBus`, `lwasapi_mix_bus_info_t`, `mix-bus` CLI, virtual bus PA sinks/monitors, and the `VIRTUAL BROADCAST MIX BUSES` GUI panel) across [`include/lwasapi.h`](include/lwasapi.h), [`include/lwasapi_pa_server.h`](include/lwasapi_pa_server.h), [`src/liblwasapi.c`](src/liblwasapi.c), [`src/lwasapi_audiodg.c`](src/lwasapi_audiodg.c), [`src/lwasapi_pa_server.c`](src/lwasapi_pa_server.c), [`src/lwasapi_ctl.c`](src/lwasapi_ctl.c), [`lwasapi-tray.py`](lwasapi-tray.py), and [`salsa-gui.py`](salsa-gui.py) while retaining per-app `play:`/`rec:` routing and `--virtual` fallback, and updated [`VERSION`](VERSION) to `6.3`.
+- Removed the 4 Virtual Broadcast Mix Buses (`salsa_bus.*`, `LWASAPI_CMD_SET_MIX_BUS`, `LWASAPI_SetMixBus`, `lwasapi_mix_bus_info_t`, `mix-bus` CLI, virtual bus PA sinks/monitors, and the `VIRTUAL BROADCAST MIX BUSES` GUI panel) across [`include/lwasapi.h`](include/lwasapi.h), [`include/lwasapi_pa_server.h`](include/lwasapi_pa_server.h), [`src/liblwasapi.c`](src/liblwasapi.c), [`src/lwasapi_audiodg.c`](src/lwasapi_audiodg.c), [`src/lwasapi_pa_server.c`](src/lwasapi_pa_server.c), [`src/lwasapi_ctl.c`](src/lwasapi_ctl.c), [`lwasapi-tray.py`](lwasapi-tray.py), and [`salsa-gui.py`](salsa-gui.py) while retaining per-app `play:`/`rec:` routing and `--virtual` fallback, and updated [`VERSION`](VERSION) to `v6.3-beta`.
 - Removed the `Parametric Band:` / `Freq:` / `Q:` / `Shape:` widgets (`cmb_param_band`, `spn_param_freq`, `spn_param_q`, `cmb_param_shape`) from `TabsCornerSlot` in [`salsa-gui.py`](salsa-gui.py), keeping **Bauer Crossfeed** (`chk_crossfeed`, `sld_crossfeed`, `cmb_crossfeed_cut`), `Import AutoEQ .txt`, and backend `param-eq` CLI / `LWASAPI_SetParametricEQ` DSP support intact.
 
 ### 4. Fixed Master Clock Restoration & Bit Depth Switching / Hardware Lock Feedback
-- Restored Rev 6.0's fixed **Master Sample Rate** selector (`44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz` via `LWASAPI_SetEngineConfig`) across [`include/lwasapi.h`](include/lwasapi.h), [`src/liblwasapi.c`](src/liblwasapi.c), [`src/lwasapi_audiodg.c`](src/lwasapi_audiodg.c), [`src/lwasapi_ctl.c`](src/lwasapi_ctl.c), [`lwasapi-tray.py`](lwasapi-tray.py), [`salsa-gui.py`](salsa-gui.py), [`src/lwasapi_test.c`](src/lwasapi_test.c), and [`scripts/run_regression_tests.py`](scripts/run_regression_tests.py), removing Adaptive Lossless auto-rate switching while preserving `salsa_state.bin` (`'SALW'` v5) compatibility and Bluetooth Wireless ABR (`wireless_abr_enabled`).
+- Restored `v6.0-beta`'s fixed **Master Sample Rate** selector (`44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz` via `LWASAPI_SetEngineConfig`) across [`include/lwasapi.h`](include/lwasapi.h), [`src/liblwasapi.c`](src/liblwasapi.c), [`src/lwasapi_audiodg.c`](src/lwasapi_audiodg.c), [`src/lwasapi_ctl.c`](src/lwasapi_ctl.c), [`lwasapi-tray.py`](lwasapi-tray.py), [`salsa-gui.py`](salsa-gui.py), [`src/lwasapi_test.c`](src/lwasapi_test.c), and [`scripts/run_regression_tests.py`](scripts/run_regression_tests.py), removing Adaptive Lossless auto-rate switching while preserving `salsa_state.bin` (`'SALW'` v5) compatibility and Bluetooth Wireless ABR (`wireless_abr_enabled`).
 - Fixed **Bit Depth / Precision** switching and persistence (`g_pref_format_bits`) in [`src/lwasapi_audiodg.c`](src/lwasapi_audiodg.c) so `reconfigure_engine_rate_impl` detects `bits_changed`, `open_kernel_pcm_device` negotiates ALSA formats ordered by requested bit depth (with `SNDRV_PCM_FORMAT_S24_LE` encoding support alongside `S16_LE`, `S24_3LE`, `S32_LE`, and `FLOAT_LE`) and steps fallback rates down within the same sample-rate family (`192→96→48 kHz`, `176.4→88.2→44.1 kHz`), and Virtual / BlueZ endpoints update and persist requested `16 / 24 / 32`-bit precision.
 - Added `/proc/asound/card*/stream0` playback capability probing plus clear `HW Locked` status/tooltip feedback and `(DAC N/A)` dropdown annotations for unsupported hardware rates and bit depths in [`salsa-gui.py`](salsa-gui.py), [`lwasapi-tray.py`](lwasapi-tray.py), and `cmd_set_rate` in [`src/lwasapi_ctl.c`](src/lwasapi_ctl.c).
 
 ---
 
-## Rev 6.2 (`2026-11-14`)
+## v6.2-beta (`2026-11-14`)
 
 ### 1. Hardware Analog Architecture, DAC Unity Attenuation, Amp Stage & USB-HID Control Box Support
 - Added [`include/lwasapi_hw_analog.h`](include/lwasapi_hw_analog.h) and [`src/lwasapi_hw_analog.c`](src/lwasapi_hw_analog.c) with non-invasive kernel card/mixer probing (`lwasapi_hw_analog_probe`), safe ALSA control syncing (`lwasapi_hw_analog_sync` via `SNDRV_CTL_IOCTL_ELEM_WRITE`), DAC unity volume handling (`lwasapi_hw_analog_is_dac_unity_active`), analog soft-knee amp boost (`lwasapi_hw_analog_softknee_active`), capture makeup (`lwasapi_hw_analog_get_cap_makeup_linear`), ASUS Strix Raid DLX/Soar CM6632AE UAC2 + `/dev/hidraw*` USB-HID volume/mute dial polling (`lwasapi_hw_analog_poll_hid`), and card scoring (`lwasapi_hw_analog_score_card`).
@@ -58,7 +69,7 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## Rev 6.1 (`2026-11-14`)
+## v6.1-beta (`2026-11-14`)
 
 ### 1. Adaptive Lossless Clock Default + Master Resample Override + Wireless Bitrate Adaptation
 - Added Adaptive Lossless stream rate & depth tracking (`adaptive_rate_enabled = 1` default) in [`src/lwasapi_audiodg.c`](src/lwasapi_audiodg.c) and [`src/lwasapi_pa_server.c`](src/lwasapi_pa_server.c), automatically matching the dominant active playback rate (`44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz`) while keeping **Master Resample Override** (`LWASAPI_SetEngineAdaptive` / `lwasapi-ctl set-rate <hz|auto>`) one click away.
@@ -76,7 +87,7 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## Rev 6.0 (`2026-11-14`)
+## v6.0-beta (`2026-11-14`)
 
 ### 1. KDE Plasma 6 System Tray, Emerald Glow Icon, Swipe Faders, Floating OSD & Quick Mixer
 - Rebuilt [`lwasapi-tray.py`](lwasapi-tray.py) around native `org.kde.StatusNotifierItem` D-Bus export (with automatic `QSystemTrayIcon` fallback when `org.kde.StatusNotifierWatcher` is absent) and high-DPI icon rendering in [`TrayIconBank`](lwasapi-tray.py) (`0600` PNGs inside `0700` runtime directory).
@@ -99,7 +110,7 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## Rev 5.9 (`2026-11-14`)
+## v5.9-beta (`2026-11-14`)
 
 ### 1. Persistent Per-App Mixer, Mute & Stream Pinning + Per-Device EQ Auto-Switching
 - Added persistent per-app volume/mute storage in [`src/lwasapi_pa_server.c`](src/lwasapi_pa_server.c) (`~/.config/lwasapi/app_volumes.conf`, saved via atomic `O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW` `0600` temp-file rename inside `0700` dir, `O_NOFOLLOW` + bounded `<= 262144` byte reload, and `sanitize_app_vol_key` against injection/traversal).
@@ -116,11 +127,11 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## Rev 5.8 (`2026-11-14`)
+## v5.8-beta (`2026-11-14`)
 
 ### 1. Installer Revision Tracking & Patch Notes
-- Added [`VERSION`](VERSION) (`5.8`) and updated [`Makefile`](Makefile) `installer` target to package `salsa-lwasapi-installer (Rev_<REV>).zip` automatically.
-- Updated [`install-salsa.sh`](install-salsa.sh) (`print_pc_report`) to display `(Rev 5.8)`.
+- Added [`VERSION`](VERSION) (`v5.8-beta`) and updated [`Makefile`](Makefile) `installer` target to package `salsa-lwasapi-installer (<tag>).zip` automatically.
+- Updated [`install-salsa.sh`](install-salsa.sh) (`print_pc_report`) to display `(v5.8-beta)`.
 - Created [`PATCH_NOTES.md`](PATCH_NOTES.md) changelog.
 
 ### 2. Seamless Firefox Audio Recovery Across Service Restarts & Reboots
@@ -146,7 +157,7 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## Rev 5.7 (`2026-11-13`)
+## v5.7-beta (`2026-11-13`)
 
 ### 7. KDE Panel Reset Fix
 - Fixed leaked file descriptors in [`src/lwasapi_pw_broker.c`](src/lwasapi_pw_broker.c) so `plasmashell` KDE panels remain stable without crashing or resetting.
@@ -162,7 +173,7 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## Pre-Rev 5.7 History (`2026-11-11` – `2026-11-13`)
+## Pre-v5.7-beta History (`2026-11-11` – `2026-11-13`)
 
 ### 11. Pure Zero-PipeWire ScreenCast Video Broker & Crash Fixes (`2026-11-13`)
 - Implemented pure-C [`src/lwasapi_pw_broker.c`](src/lwasapi_pw_broker.c) serving `/run/user/$UID/pipewire-0` (blocking audio nodes on `pipewire-0` while relaying `DmaBuf`/`MemFd` ScreenCast frames), updated `salsa-debug.py` preview & telemetry, and updated the signal topology view in `salsa-gui.py`.

@@ -98,7 +98,7 @@ typedef struct {
     bool              desktop_mic_muted;
     _Atomic uint32_t  desktop_mic_gain_ppm; /* 1000000 = 1.0x linear gain */
 
-    /* Rev 6.1 Active Codec Switcher, Wireless ABR & Diagnostics */
+    /* v6.1-beta Active Codec Switcher, Wireless ABR & Diagnostics */
     void             *ldac_abr;
     uint32_t          pref_codec;            /* LWASAPI_BT_PREF_* */
     uint32_t          ldac_mode;             /* LWASAPI_LDAC_MODE_* */
@@ -115,7 +115,7 @@ typedef struct {
     _Atomic uint32_t  bt_renegotiate_fallback;
     uint64_t          renegotiate_start_ns;
 
-    /* Rev 6.1 Optional Two-Way HFP BTPROTO_SCO Headset Mic (default OFF) */
+    /* v6.1-beta Optional Two-Way HFP BTPROTO_SCO Headset Mic (default OFF) */
     uint32_t          hfp_sco_enabled;       /* 0 = Scarlett default preserved, 1 = HFP SCO permitted */
     _Atomic uint32_t  hfp_sco_active;        /* 1 = BTPROTO_SCO mSBC/CVSD connected */
     char              bt_sco_codec[8];       /* "mSBC" / "CVSD" / "" */

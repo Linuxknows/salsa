@@ -319,6 +319,20 @@ MIC_APO_PRESETS = {
     },
 }
 
+DEFAULT_VOL_STEP_PCT = 5
+SUPPORTED_VOL_STEPS = (1, 2, 5, 10)
+
+
+def normalize_vol_step_pct(val) -> int:
+    """Validate volume wheel/keyboard step percentage against supported options."""
+    try:
+        v = int(str(val).strip().rstrip("%"))
+        if v in SUPPORTED_VOL_STEPS:
+            return v
+    except (TypeError, ValueError):
+        pass
+    return DEFAULT_VOL_STEP_PCT
+
 
 def bind_liblwasapi(lib: ctypes.CDLL) -> ctypes.CDLL:
     """Attach standard ctypes argtypes and restype bindings to loaded liblwasapi.so."""

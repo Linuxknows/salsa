@@ -146,7 +146,7 @@ typedef struct {
  * Control Socket IPC Messages (Used only during session setup/control)
  * ============================================================================ */
 
-/* Rev 6.1 Constants & Enumerations */
+/* v6.1-beta Constants & Enumerations */
 
 #define LWASAPI_FILTER_PEAK        0U
 #define LWASAPI_FILTER_LOW_SHELF   1U
@@ -170,7 +170,7 @@ typedef struct {
 #define LWASAPI_BT_CAP_AAC         (1U << 3)
 #define LWASAPI_BT_CAP_SBC         (1U << 4)
 
-/* Rev 6.2 Hardware Analog Architecture, DAC Unity & Amp Stage Constants */
+/* v6.2-beta Hardware Analog Architecture, DAC Unity & Amp Stage Constants */
 #define LWASAPI_HW_AMP_AUTO        0U /* Preserve card firmware/existing state (default) */
 #define LWASAPI_HW_AMP_LOW         1U /* Low Gain / IEM (<=32 Ohm) */
 #define LWASAPI_HW_AMP_MED         2U /* Medium Gain (64-150 Ohm) */
@@ -371,7 +371,7 @@ typedef struct {
     char     active_playback_id[64];
     char     active_capture_id[64];
 
-    /* Rev 6.1+ Extensions */
+    /* v6.1-beta+ Extensions */
     lwasapi_param_eq_ext_t param_eq;                    /* Per-band freq/type + Crossfeed */
     lwasapi_mic_apo_cfg_t  mic_apo;                     /* Capture Microphone APO settings */
     lwasapi_bt_codec_cfg_t bt_codec_cfg;                /* Codec Switcher / LDAC ABR / HFP SCO telemetry */
@@ -379,7 +379,7 @@ typedef struct {
     float                  mic_apo_peak_out;            /* Post-APO mic peak */
     uint32_t               mic_rnnoise_active;          /* 1 if librnnoise.so.0 loaded */
 
-    /* Rev 6.2 Hardware Analog Architecture, DAC Unity & Amp Telemetry */
+    /* v6.2-beta Hardware Analog Architecture, DAC Unity & Amp Telemetry */
     lwasapi_hw_analog_cfg_t  hw_analog_cfg;
     lwasapi_hw_analog_info_t hw_analog_info;
 } lwasapi_engine_status_t;
