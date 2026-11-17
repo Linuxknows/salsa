@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "lwasapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -250,6 +251,54 @@ int  salsa_bt_select_a2dp_config(int codec_kind, const uint8_t *rcaps, size_t rl
                                  size_t *out_len, uint32_t *out_cap_bit);
 bool salsa_bt_parse_bdaddr(const char *str, size_t len, uint8_t out_b[6]);
 
+typedef struct {
+    size_t   reply_len;
+    int32_t  battery_pct;
+    uint8_t  sco_codec;
+    bool     handled;
+    bool     has_msbc_update;
+    bool     supports_msbc;
+    char     reply[192];
+} salsa_bt_hfp_at_res_t;
+
+bool salsa_bt_hfp_parse_at(const char *line, size_t len, salsa_bt_hfp_at_res_t *out);
+bool salsa_bt_make_batt_path(const char *dev_path, char *out, size_t out_cap);
+bool salsa_bt_extract_mac(const char *id, char *out_mac, size_t out_cap);
+
+size_t salsa_bt_write_rtp_header(uint8_t *out, size_t cap, uint8_t payload_type,
+                                 bool marker, uint16_t seq, uint32_t timestamp,
+                                 uint32_t ssrc);
+size_t salsa_bt_write_rtp_sbc_payload_hdr(uint8_t *out, size_t cap, uint8_t frame_count);
+size_t salsa_bt_pack_s16_to_s24le(const int16_t *pcm_s16, size_t nsamp,
+                                  uint8_t *out_s24, size_t out_cap);
+uint32_t salsa_bt_ldac_eqmid_to_kbps(uint32_t sf, int32_t eqmid);
+uint8_t  salsa_bt_msbc_h2_byte(uint32_t seq);
+size_t   salsa_bt_msbc_rx_strip_offset(const uint8_t *rx, size_t rx_len);
+void     salsa_bt_abr_step_ldac(int32_t cur_eqmid, uint32_t congest_streak,
+                                uint32_t clean_streak, int32_t *out_new_eqmid,
+                                bool *out_clear_congest, bool *out_clear_clean);
+void     salsa_bt_abr_step_aac(uint32_t cur_bps, uint32_t max_bps,
+                               uint32_t congest_streak, uint32_t clean_streak,
+                               uint32_t *out_new_bps, bool *out_clear_congest,
+                               bool *out_clear_clean);
+
+int salsa_bt_ring_write_period(float *tx_ring, const void *wr_frame_atomic,
+                               bool tx_paused, const float *interleaved,
+                               uint32_t frames, uint32_t channels);
+size_t salsa_bt_ring_pop_resampled_s16(const float *tx_ring,
+                                       const void *wr_frame_atomic,
+                                       const void *rd_frame_atomic,
+                                       uint32_t in_rate, uint32_t out_rate,
+                                       bool muted, uint32_t vol_pct,
+                                       bool avrcp_supported,
+                                       int16_t *out_s16, uint32_t needed_frames,
+                                       uint32_t bt_ch, double *io_frac,
+                                       double drift_scale, uint32_t *out_avail_after);
+void salsa_bt_sco_push_pcm(float *cap_ring, const void *wr_frame_atomic,
+                           const int16_t *dec_pcm, uint32_t nsamp,
+                           uint32_t sco_rate, uint32_t eng_rate,
+                           double *io_resamp_pos, float *io_prev_s);
+
 /* ============================================================================
  * 4. PulseAudio Frame Header Validator & PipeWire FD Quota Guard
  * ============================================================================ */
@@ -290,6 +339,167 @@ bool salsa_wire_is_rust(void);
 void salsa_failsafe_record_trip(uint32_t kind, const char *reason);
 void salsa_failsafe_get_stats(salsa_failsafe_stats_t *out);
 void salsa_failsafe_reset_stats(void);
+
+/* ============================================================================
+ * 6. Debug Telemetry & Datagram IPC Helpers
+ * ============================================================================ */
+
+#define SALSA_DBG_DGRAM_MAGIC 0x4C444247u
+#define SALSA_DBG_DGRAM_SZ    244u
+
+void   salsa_dbg_emit_raw(uint8_t sub, uint8_t lvl, uint32_t pid, uint32_t sid,
+                          int32_t v1, int32_t v2, int32_t hr,
+                          const char *op, const char *target, const char *detail);
+bool   salsa_dbg_parse_dgram(const uint8_t *buf, size_t len, void *out_dgram);
+size_t salsa_dbg_escape_json_str(const char *src, char *out, size_t out_cap);
+size_t salsa_dbg_trim_cmd(const uint8_t *raw, size_t len);
+
+/* ============================================================================
+ * 7. Audio DSP, Capture Mic APO, Session Ring Mixer & State Persistence
+ * ============================================================================ */
+
+enum {
+    SALSA_PACK_S32_LE  = 0u,
+    SALSA_PACK_S24_LE  = 1u,
+    SALSA_PACK_S24_3LE = 2u,
+    SALSA_PACK_S16_LE  = 3u,
+    SALSA_PACK_F32_LE  = 4u
+};
+
+typedef struct {
+    float hist_l[3];
+    float hist_r[3];
+    bool  valid;
+} salsa_mic_cubic_state_t;
+
+typedef struct {
+    uint32_t                sample_rate;
+    uint32_t                period_frames;
+    uint32_t                format_bits;
+    uint32_t                cap_sample_rate;
+    char                    target_playback_id[64];
+    char                    target_capture_id[64];
+    lwasapi_eq_config_t     eq_cfg;
+    lwasapi_param_eq_ext_t  param_eq;
+    lwasapi_mic_apo_cfg_t   mic_apo;
+    lwasapi_bt_codec_cfg_t  bt_cfg;
+    lwasapi_hw_analog_cfg_t hw_analog_cfg;
+    uint32_t                desktop_volume_pct;
+    uint32_t                desktop_muted;
+    uint32_t                desktop_mic_volume_pct;
+    uint32_t                desktop_mic_muted;
+    uint32_t                desktop_mic_gain_ppm;
+    bool                    has_saved_vol_state;
+} salsa_runtime_state_t;
+
+void salsa_dsp_clamp_param_eq_ext(lwasapi_param_eq_ext_t *ext);
+void salsa_dsp_clamp_mic_apo_cfg(lwasapi_mic_apo_cfg_t *m);
+void salsa_dsp_process_dynamic_eq(float *buf, uint32_t frames, uint32_t ch, uint32_t rate,
+                                  const lwasapi_eq_config_t *eq_cfg,
+                                  const lwasapi_param_eq_ext_t *param_eq);
+void salsa_dsp_process_capture_mic_apo(float *mic_buf, uint32_t frames, uint32_t rate,
+                                       const lwasapi_mic_apo_cfg_t *cfg);
+void salsa_dsp_get_telem(float *out_band_levels_db, float *out_dyn_delta_db,
+                         float *out_pk_l, float *out_pk_r,
+                         float *out_mic_pk_in, float *out_mic_pk_out,
+                         uint32_t *out_rnnoise_active);
+void salsa_dsp_consume_session_frames(lwasapi_shm_ring_t *r, double *io_phase,
+                                      uint32_t s_rate, uint32_t s_ch,
+                                      bool *io_stream_live, bool *io_underrun_pending,
+                                      uint64_t *io_last_audio_ns,
+                                      float *mix_buf, uint32_t out_frames,
+                                      uint32_t out_channels, uint32_t hw_rate,
+                                      bool replace_output, uint64_t now_ns);
+void salsa_dsp_resample_mic_cubic(const float *in_buf, uint32_t in_frames,
+                                  float *out_buf, uint32_t out_frames,
+                                  salsa_mic_cubic_state_t *st);
+void salsa_dsp_scale_cap_clip(float *buf, uint32_t samples, float gain);
+void salsa_dsp_pack_pcm(const float *mix_buf, uint32_t total_samples,
+                        float master_gain, bool softknee,
+                        uint32_t pack_fmt, void *out_bytes);
+
+void salsa_state_init_defaults(salsa_runtime_state_t *out);
+void salsa_state_load(salsa_runtime_state_t *io_st);
+void salsa_state_save(const salsa_runtime_state_t *st);
+
+/* ============================================================================
+ * 8. Audiodg WaveRT Daemon Entrypoint & BlueZ Adapter Snapshot
+ * ============================================================================ */
+
+typedef struct {
+    bool     initialized;
+    bool     has_bluez_transport;
+    bool     direct_socket_mode;
+    bool     has_capture_hw;
+    bool     endpoints_registered;
+    bool     tx_paused;
+    bool     cap_is_usb;
+    bool     desktop_muted;
+    bool     desktop_mic_muted;
+    int      bt_fd;
+    int      cap_pcm_fd;
+    uint16_t delay_tenths_ms;
+    uint16_t read_mtu;
+    uint16_t write_mtu;
+    uint16_t avrcp_volume;
+    uint32_t bt_sample_rate;
+    uint32_t bt_channels;
+    uint32_t cap_hw_rate;
+    uint32_t cap_hw_channels;
+    int32_t  cap_hw_format;
+    uint32_t cap_measured_rate;
+    uint32_t cap_kick_count;
+    uint32_t desktop_volume_pct;
+    uint32_t desktop_mic_volume_pct;
+    uint32_t desktop_mic_gain_ppm;
+    uint64_t tx_ring_fill;
+    uint64_t tx_packets_sent;
+    uint64_t tx_underruns;
+    uint64_t tx_errors;
+    uint64_t cap_hw_write_frame;
+    char     mac_address[32];
+    char     device_alias[64];
+    char     codec_name[16];
+    char     device_path[128];
+    char     transport_path[160];
+    char     endpoint_path[64];
+    char     cap_device_id[64];
+    char     cap_pcm_path[64];
+    char     capture_device_alias[64];
+} salsa_bt_snapshot_t;
+
+typedef struct {
+    void *(*bt_ptr)(void);
+    void (*get_snapshot)(const void *bt, salsa_bt_snapshot_t *out);
+    void (*rt_master_vol)(const void *bt, uint32_t *out_vol_pct, bool *out_muted);
+    int  (*init_rates)(void *bt, uint32_t engine_sample_rate, uint32_t capture_sample_rate,
+                       const char *preferred_cap_id, const char *preferred_pb_id);
+    void (*set_preferred_target)(void *bt, const char *preferred_pb_id);
+    int  (*reconfigure_rate)(void *bt, uint32_t new_engine_sample_rate);
+    void (*set_tx_enabled)(void *bt, bool enabled);
+    int  (*write_period)(void *bt, const float *interleaved_float, uint32_t frames, uint32_t channels);
+    int  (*open_capture)(void *bt, const char *preferred_cap_id, uint32_t capture_sample_rate);
+    int  (*read_capture_native)(void *bt, float *out_stereo_float, uint32_t max_frames,
+                                uint32_t *out_frames, uint32_t *out_rate,
+                                uint32_t eng_frames, uint32_t eng_rate, uint64_t *io_read_cursor);
+    int  (*enumerate_devices)(const void *bt, const char *active_pb_id,
+                              const char *active_cap_id, lwasapi_device_list_t *out_list);
+    uint64_t (*hw_fingerprint)(const void *bt);
+    int  (*set_volume)(void *bt, int vol_pct, int mute_flag);
+    int  (*set_mic_volume)(void *bt, int vol_pct, int mute_flag);
+    int  (*set_mic_gain_ppm)(void *bt, uint32_t gain_ppm, int vol_pct, int mute_flag);
+    int  (*set_codec_config)(void *bt, const lwasapi_bt_codec_cfg_t *cfg);
+    void (*get_codec_config)(const void *bt, lwasapi_bt_codec_cfg_t *out_cfg);
+    int  (*set_sco_enabled)(void *bt, bool enabled);
+    void (*close)(void *bt);
+    int  (*reset_device)(const char *mac_or_empty, char *out_msg, size_t out_len);
+} salsa_bt_ops_t;
+
+void  salsa_register_bt_ops(const salsa_bt_ops_t *ops);
+void *salsa_audiodg_bt_ptr(void);
+void  salsa_bt_get_snapshot(const void *bt, salsa_bt_snapshot_t *out);
+void  salsa_bt_rt_master_vol(const void *bt, uint32_t *out_vol_pct, bool *out_muted);
+int   salsa_audiodg_main(int argc, char **argv);
 
 #ifdef __cplusplus
 }

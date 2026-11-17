@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Salsa v6.8-beta — Linux WASAPI Studio Control Center, Dynamic EQ & Auto-Graph
+Salsa v6.9-beta — Linux WASAPI Studio Control Center, Dynamic EQ & Auto-Graph
 ==========================================================================
 Fixed-Clock Lossless WaveRT Audio Engine (44.1–192 kHz / 16–32-bit),
 10-Band Dynamic EQ + AutoEQ Importer + Bauer Crossfeed, Capture Mic APO
@@ -771,7 +771,7 @@ OWNERS_MANUAL_CHAPTER_DEFS = {
         "🎹 Chapter 4: Hardware MIDI Controller & Sample-Accurate DAW MIDI Hub",
         "Hardware RawMIDI + ALSA Sequencer + Lock-Free JACK MIDI Ring",
         """
-        <p>Unlike standard audio servers that treat MIDI as an afterthought, Salsa LWASAPI integrates a dedicated real-time MIDI thread (<code>lwasapi_midi.c</code>) directly alongside the audio engine:</p>
+        <p>Unlike standard audio servers that treat MIDI as an afterthought, Salsa LWASAPI integrates a dedicated Rust real-time MIDI thread (<code>midi_hub.rs</code>) directly alongside the audio engine:</p>
         <ul>
             <li><b>Auto-Discovery of Hardware Controllers:</b> The engine automatically scans <code>/dev/snd/midiC*D*</code> and ALSA Sequencer ports, immediately binding your hardware controller (such as <b>Novation FLkey 37</b>) and exposing the virtual <b><code>LWASAPI-MIDI-Hub</code></b> port.</li>
             <li><b>Sample-Accurate Frame Offsets:</b> Incoming MIDI Note-On, Note-Off, Pitch Bend, and CC messages are timestamped with <code>CLOCK_MONOTONIC_RAW</code> and stamped with the exact <code>frame_offset</code> inside the current audio quantum before being pushed into each DAW session's <code>midi_ring[512]</code> lock-free ring buffer.</li>
@@ -786,7 +786,7 @@ OWNERS_MANUAL_CHAPTER_DEFS = {
         <p>The secret behind Salsa LWASAPI's speed is that <b>audio data never travels over Unix sockets or pipes</b>:</p>
         <ul>
             <li><b>Anonymous Shared Memory (<code>memfd_create</code>):</b> When an app opens a session, <code>lwasapi-audiodg</code> allocates a 64-byte-aligned <code>lwasapi_shm_ring_t</code> structure (32,768 stereo float32 frames for 192 kHz headroom) and passes the file descriptor to the client via <code>SCM_RIGHTS</code>.</li>
-            <li><b>Zero-Copy Atomic Pointers:</b> The client writes PCM samples directly into L1/L2-cached shared RAM and updates <code>write_frame</code> with a single C11 <code>memory_order_release</code> atomic instruction (<code>0.075 µs</code> average commit latency).</li>
+            <li><b>Zero-Copy Atomic Pointers:</b> The client writes PCM samples directly into L1/L2-cached shared RAM and updates <code>write_frame</code> with a single atomic release instruction (<code>0.075 µs</code> average commit latency).</li>
             <li><b>Kernel <code>eventfd</code> Wakeups:</b> At the end of each hardware period quantum, the engine triggers the client's kernel <code>eventfd</code>, waking event-driven DAWs and games with sub-millisecond precision.</li>
         </ul>
         """,
@@ -833,7 +833,7 @@ OWNERS_MANUAL_CHAPTER_DEFS = {
         "🎛️ Chapter 12: Capture Mic APO, HW Analog Boost & BlueZ HFP SCO",
         "Neural RNNoise • Discrete Sound Card DAC/Amp • Two-Way Bluetooth HFP Headset Mic",
         """
-        <p>Salsa v6.8-beta provides studio voice processing, hardware DAC/amp analog boosting, and wireless controls without PipeWire/WirePlumber dependencies:</p>
+        <p>Salsa v6.9-beta provides studio voice processing, hardware DAC/amp analog boosting, and wireless controls without PipeWire/WirePlumber dependencies:</p>
         <ul>
             <li><b>Hardware Analog Architecture:</b> Automatically utilizes ALSA DAC unity volume, discrete headphone amp gain tiers, and USB HID volume dials on supported sound cards like the ASUS Strix Raid DLX.</li>
             <li><b>Capture Mic APO & Sidetone:</b> Toggleable per-session strip featuring Voice HPF, Noise Gate, Neural <code>librnnoise</code> denoising, Clarity shelf, Soft Compressor, and zero-latency headphone Sidetone.</li>
@@ -883,10 +883,10 @@ OWNERS_MANUAL_CHAPTER_DEFS = {
     ),
     "vid_broker": (
         "accent_secondary",
-        "🔌 Chapter 11B: Zero-PipeWire Native C Video Broker",
+        "🔌 Chapter 11B: Zero-PipeWire Native Rust Video Broker",
         "$XDG_RUNTIME_DIR/pipewire-0 • Zero libpipewire / Zero WirePlumber / Audio Guard Active",
         """
-        <p><code>lwasapi-audiodg</code> embeds a standalone <b>Video-Only PipeWire Protocol Broker</b> (<code>lwasapi_pw_broker.c</code>) listening directly on <code>/run/user/$UID/pipewire-0</code> without linking <code>libpipewire</code> or <code>libspa</code>:</p>
+        <p><code>lwasapi-audiodg</code> embeds a standalone <b>Video-Only PipeWire Protocol Broker</b> (<code>pw_broker.rs</code>) listening directly on <code>/run/user/$UID/pipewire-0</code> without linking <code>libpipewire</code> or <code>libspa</code>:</p>
         <ul>
             <li><b>Strict Video-Only Admission:</b> Only <code>Video/Source</code>, <code>Stream/Output/Video</code>, and <code>Stream/Input/Video</code> nodes are routed. Any audio node attempts are actively rejected (counted in <code>audio_rejects</code>) so Salsa keeps 100% exclusive audio ownership via Native PA v35 and WaveRT SHM.</li>
             <li><b>Clean KWin Stability & Format Compatibility:</b> Enforces safe fractional <code>maxFramerate</code> bounds to prevent <code>VsyncSource</code> floating-point faults and handles both <code>DmaBuf</code> and <code>MemFd</code> SPA pods for KDE Spectacle, Plasma previews, browsers, OBS, and Discord.</li>
@@ -2471,7 +2471,7 @@ class SalsaStudioWindow(QMainWindow):
         self.lbl_title = QLabel("SALSA — LINUX WASAPI STUDIO")
         self.lbl_title.setObjectName("TitleBanner")
         title_row.addWidget(self.lbl_title)
-        self.lbl_ver_pill = QLabel("v6.8-beta")
+        self.lbl_ver_pill = QLabel("v6.9-beta")
         self.lbl_ver_pill.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         t_init = self.current_theme
         self.lbl_ver_pill.setStyleSheet(
@@ -2992,7 +2992,7 @@ class SalsaStudioWindow(QMainWindow):
         graph_hdr_row.addWidget(lbl_g_title)
         graph_hdr_row.addStretch()
 
-        self.lbl_auto_badge = QLabel("✔ v6.8-beta LIVE | MASTER CLOCK | HW ANALOG DAC | MIC APO | BT ABR")
+        self.lbl_auto_badge = QLabel("✔ v6.9-beta LIVE | MASTER CLOCK | HW ANALOG DAC | MIC APO | BT ABR")
         self.lbl_auto_badge.setObjectName("AutoBadgeLabel")
         graph_hdr_row.addWidget(self.lbl_auto_badge)
         graph_box.addLayout(graph_hdr_row)
@@ -4957,7 +4957,7 @@ class SalsaStudioWindow(QMainWindow):
             eq_b = f"EQ:{'ON' if st.eq_cfg.enabled else 'OFF'}{'+CF' if st.param_eq.crossfeed_enabled else ''}"
             mic_b = f"Mic:{'Krisp-APO' if st.mic_apo.enabled else 'Raw'}"
             bt_b = f"BT:{bt_cod_s}{' ABR' if st.bt_codec_cfg.wireless_abr_enabled else ''}" if st.bt_active else ("DAC:Unity" if st.hw_analog_info.dac_unity_active else "Out:ALSA")
-            badge_txt = f"✔ v6.8-beta LIVE | {clk_b} | {eq_b} | {mic_b} | {bt_b}"
+            badge_txt = f"✔ v6.9-beta LIVE | {clk_b} | {eq_b} | {mic_b} | {bt_b}"
             if self.lbl_auto_badge.text() != badge_txt:
                 self.lbl_auto_badge.setText(badge_txt)
 

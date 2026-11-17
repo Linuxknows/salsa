@@ -22,8 +22,9 @@ use crate::unix_sys::{
     bind_unix_listener_0600, create_memfd, current_hostname, current_pid, current_uid,
     current_username, dbg_emit, dmabuf_sync, do_poll, dup_fd_cloexec, ensure_private_dir,
     eventfd_drain, eventfd_signal, memfd_size_valid, mono_ns, new_eventfd, open_private_shm,
-    recvmsg_with_fds, sendmsg_all_with_fds, socket_peercred, unix_socket_actively_served,
-    unlink_shm_path, MappedMem, PollFd, RecvFdsResult, POLLERR, POLLHUP, POLLIN,
+    recvmsg_with_fds, sendmsg_all_with_fds, set_thread_nice, socket_peercred,
+    unix_socket_actively_served, unlink_shm_path, MappedMem, PollFd, RecvFdsResult, POLLERR,
+    POLLHUP, POLLIN,
 };
 
 use core::ffi::{c_char, c_int};
@@ -665,8 +666,8 @@ impl PwNode {
         if let Some(map) = self.io_map.as_mut() {
             let sl = map.as_mut_slice();
             if sl.len() >= 8 {
-                sl[0..4].copy_from_slice(&status.to_le_bytes());
                 sl[4..8].copy_from_slice(&buf_id.to_le_bytes());
+                atomic_u32_store(sl.as_mut_ptr().cast::<u32>(), status, Ordering::Release);
             }
         }
     }
@@ -675,7 +676,7 @@ impl PwNode {
         if let Some(map) = self.io_map.as_mut() {
             let sl = map.as_mut_slice();
             if sl.len() >= 4 {
-                sl[0..4].copy_from_slice(&status.to_le_bytes());
+                atomic_u32_store(sl.as_mut_ptr().cast::<u32>(), status, Ordering::Release);
             }
         }
     }
@@ -2322,10 +2323,10 @@ impl PwState {
             if let Some(amap) = self.nodes[cidx].act_map.as_mut() {
                 let asl = amap.as_mut_slice();
                 if asl.len() >= 20 {
-                    asl[0..4].copy_from_slice(&1u32.to_le_bytes());
                     asl[8..12].copy_from_slice(&0i32.to_le_bytes());
                     asl[12..16].copy_from_slice(&1i32.to_le_bytes());
                     asl[16..20].copy_from_slice(&0i32.to_le_bytes());
+                    atomic_u32_store(asl.as_mut_ptr().cast::<u32>(), 1, Ordering::Release);
                 }
             }
             if let Some(rfd) = self.nodes[cidx].act_readfd.as_ref() {
@@ -2357,7 +2358,7 @@ impl PwState {
                 sl[8..12].copy_from_slice(&0i32.to_le_bytes());
                 sl[12..16].copy_from_slice(&1i32.to_le_bytes());
                 sl[16..20].copy_from_slice(&1i32.to_le_bytes());
-                sl[0..4].copy_from_slice(&0u32.to_le_bytes());
+                atomic_u32_store(sl.as_mut_ptr().cast::<u32>(), 0, Ordering::Release);
             }
         }
         let Some((st, rec_id)) = self.nodes[nidx].io_read_status_and_buf() else {
@@ -2375,20 +2376,10 @@ impl PwState {
             {
                 continue;
             }
+            // Match C broker behavior: recycle producer's io_map slot without
+            // triggering prod->act_readfd out-of-phase between compositor vblanks.
             if st == PWB_STATUS_NEED_DATA && rec_id != SPA_ID_INVALID {
                 self.nodes[pidx].io_write_status_and_buf(PWB_STATUS_NEED_DATA, rec_id);
-                if let Some(amap) = self.nodes[pidx].act_map.as_mut() {
-                    let asl = amap.as_mut_slice();
-                    if asl.len() >= 20 {
-                        asl[0..4].copy_from_slice(&1u32.to_le_bytes());
-                        asl[8..12].copy_from_slice(&0i32.to_le_bytes());
-                        asl[12..16].copy_from_slice(&1i32.to_le_bytes());
-                        asl[16..20].copy_from_slice(&0i32.to_le_bytes());
-                    }
-                }
-                if let Some(rfd) = self.nodes[pidx].act_readfd.as_ref() {
-                    eventfd_signal(rfd.as_raw_fd());
-                }
             }
         }
     }
@@ -3653,6 +3644,7 @@ impl PwBrokerHandle {
 }
 
 fn broker_thread_main(state: Arc<Mutex<PwState>>, shared: Arc<SharedAtomics>) {
+    set_thread_nice(-10);
     let mut pfds: Vec<PollFd> = Vec::with_capacity(128);
     let mut meta: Vec<(u8, usize)> = Vec::with_capacity(128); // 0=wake, 1=listen, 2=mgr, 3=client, 4=prod_done, 5=cons_done
 
@@ -4495,6 +4487,29 @@ mod tests {
             }
             st.nodes[pidx].io_write_status_and_buf(PWB_STATUS_HAVE_DATA, 0);
             st.on_prod_done_event(pidx);
+
+            let cidx = st
+                .nodes
+                .iter()
+                .position(|n| n.in_use && n.direction == PWB_DIR_IN)
+                .unwrap();
+            if let Some(arfd) = st.nodes[pidx].act_readfd.as_ref() {
+                eventfd_drain(arfd.as_raw_fd());
+            }
+            st.nodes[cidx].io_write_status_and_buf(PWB_STATUS_NEED_DATA, 0);
+            st.on_cons_done_event(cidx);
+            assert_eq!(
+                st.nodes[pidx].io_read_status_and_buf(),
+                Some((PWB_STATUS_NEED_DATA, 0))
+            );
+            if let Some(arfd) = st.nodes[pidx].act_readfd.as_ref() {
+                let mut pfd = [PollFd {
+                    fd: arfd.as_raw_fd(),
+                    events: POLLIN,
+                    revents: 0,
+                }];
+                assert_eq!(do_poll(&mut pfd, 0), 0, "on_cons_done_event must not wake prod.act_readfd");
+            }
 
             // Verify preview SHM received converted frame
             let mut buf_px = [0u8; 4];

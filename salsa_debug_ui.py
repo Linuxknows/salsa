@@ -329,6 +329,9 @@ class SalsaLiveDebuggerWidget(QWidget):
         fs_row.addWidget(self.lbl_net_reset_status)
 
         self.btn_reset_net = QPushButton("Failsafe: Reset PA/PW Network Clients")
+        self.btn_reset_net.setToolTip(
+            "Flushes PulseAudio & PipeWire clients cleanly. Note: resetting PipeWire drops active ScreenCast portal streams (audio clients reconnect automatically)."
+        )
         self.btn_reset_net.clicked.connect(self._on_reset_net_clients)
         fs_row.addWidget(self.btn_reset_net)
 
@@ -1450,13 +1453,43 @@ class SalsaLiveDebuggerWidget(QWidget):
     def _on_reset_net_clients(self) -> None:
         if self._net_reset_busy:
             return
+        pw = self._latest_telem.get("pw") or {}
+        cmd = "RESET_NET_CLIENTS"
+        if bool(pw.get("active_casting")):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("Active ScreenCast Detected")
+            box.setText(
+                "A live PipeWire ScreenCast stream is currently active.\n\n"
+                "Portal ScreenCast apps (Discord / OBS) cannot auto-reconnect if their PipeWire "
+                "socket is flushed — resetting PipeWire will freeze/end the stream."
+            )
+            btn_pa_only = box.addButton(
+                "Reset Audio Only (Keep Stream)", QMessageBox.ButtonRole.AcceptRole
+            )
+            btn_full = box.addButton(
+                "Reset Audio + PipeWire (Ends Stream)", QMessageBox.ButtonRole.DestructiveRole
+            )
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(btn_pa_only)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked == btn_pa_only:
+                cmd = "RESET_PA_CLIENTS"
+            elif clicked == btn_full:
+                cmd = "RESET_NET_CLIENTS"
+            else:
+                return
+
         self._net_reset_busy = True
         self.btn_reset_net.setEnabled(False)
-        self.lbl_net_reset_status.setText("Flushing PA/PW clients...")
+        self.lbl_net_reset_status.setText(
+            "Flushing PA audio clients..." if cmd == "RESET_PA_CLIENTS" else "Flushing PA/PW clients..."
+        )
 
         def worker() -> None:
             try:
-                reply = self.client.send_command_wait("RESET_NET_CLIENTS", timeout=2.5)
+                reply = self.client.send_command_wait(cmd, timeout=2.5)
                 msg = (reply or {}).get("msg") or "Timed out resetting network clients"
                 self.client.send_command("SNAPSHOT")
                 with self._work_lock:

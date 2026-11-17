@@ -221,7 +221,7 @@ def load_screencast_prefs() -> dict[str, Any]:
 
 def save_screencast_prefs(prefs: dict[str, Any]) -> None:
     try:
-        os.makedirs(STATE_DIR, exist_ok=True)
+        os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
         existing: dict[str, Any] = {}
         try:
             with open(GUI_SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -237,9 +237,15 @@ def save_screencast_prefs(prefs: dict[str, Any]) -> None:
         }
         existing["screencast_profile"] = clean
         tmp = f"{GUI_SETTINGS_FILE}.tmp.{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as f:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(existing, f, indent=2)
             f.write("\n")
+        os.chmod(tmp, 0o600)
         os.replace(tmp, GUI_SETTINGS_FILE)
     except OSError:
         pass
@@ -851,7 +857,17 @@ class SystemAuditScanner:
 
     @classmethod
     def check_build_freshness(cls) -> dict[str, Any]:
-        src_files = sorted(glob.glob(os.path.join(BASE_DIR, "src", "*.c")) + glob.glob(os.path.join(BASE_DIR, "include", "*.h")))
+        rust_srcs = sorted(
+            glob.glob(os.path.join(BASE_DIR, "rust", "salsa_net", "src", "*.rs"))
+            + glob.glob(os.path.join(BASE_DIR, "rust", "salsa_net", "src", "bin", "*.rs"))
+            + [os.path.join(BASE_DIR, "rust", "salsa_net", "Cargo.toml")]
+        )
+        rust_rel_deps = tuple(os.path.relpath(p, BASE_DIR) for p in rust_srcs)
+        src_files = sorted(
+            glob.glob(os.path.join(BASE_DIR, "src", "*.c"))
+            + glob.glob(os.path.join(BASE_DIR, "include", "*.h"))
+            + rust_srcs
+        )
         newest_src_path = ""
         newest_src_mtime = 0.0
         for p in src_files:
@@ -865,37 +881,11 @@ class SystemAuditScanner:
 
         lib_deps = ("src/liblwasapi.c", "include/lwasapi.h", "include/lwasapi_debug.h")
         artifact_deps: tuple[tuple[str, tuple[str, ...]], ...] = (
-            (
-                "build/lwasapi-audiodg",
-                (
-                    "src/lwasapi_audiodg.c",
-                    "src/lwasapi_bluez.c",
-                    "src/lwasapi_midi.c",
-                    "src/lwasapi_pa_server.c",
-                    "src/lwasapi_pw_broker.c",
-                    "src/lwasapi_debug.c",
-                    "include/lwasapi.h",
-                    "include/lwasapi_bluez.h",
-                    "include/lwasapi_midi.h",
-                    "include/lwasapi_pa_server.h",
-                    "include/lwasapi_pw_broker.h",
-                    "include/lwasapi_debug.h",
-                ),
-            ),
+            ("build/lwasapi-audiodg", rust_rel_deps),
             ("build/liblwasapi.so", lib_deps),
             ("build/libasound_module_pcm_lwasapi.so", ("src/alsa_plugin_lwasapi.c", *lib_deps)),
             ("build/libsalsa_pa_reconnect.so", ("src/salsa_pa_reconnect.c",)),
-            (
-                "build/lwasapi-ctl",
-                (
-                    "src/lwasapi_ctl.c",
-                    "src/lwasapi_bluez.c",
-                    "src/lwasapi_debug.c",
-                    "include/lwasapi.h",
-                    "include/lwasapi_bluez.h",
-                    "include/lwasapi_debug.h",
-                ),
-            ),
+            ("build/lwasapi-ctl", rust_rel_deps),
             ("build/shims/libasound.so.2", ("src/shim_alsa.c", "src/alsa.version", *lib_deps)),
             ("build/shims/libpulse.so.0", ("src/shim_pulse.c", "src/pulse.version", *lib_deps)),
             ("build/shims/libjack.so.0", ("src/shim_jack.c", *lib_deps)),

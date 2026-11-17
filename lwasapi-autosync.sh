@@ -202,6 +202,7 @@ fi
 # ------------------------------------------------------------------------------
 # 3. Recompile Salsa LWASAPI Engine, ALSA Plugin & Hollow ABI Shims
 # ------------------------------------------------------------------------------
+export PATH="${HOME}/.cargo/bin:${PATH}"
 make -C "${BASE_DIR}" -B >> "${LOG_FILE}" 2>&1
 echo "[${TS}] Recompiled lwasapi-audiodg, liblwasapi.so, and all ALSA/Pulse/JACK shims." | tee -a "${LOG_FILE}"
 

@@ -9,7 +9,7 @@ use std::fs::{self, OpenOptions};
 use std::io;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixDatagram, UnixListener};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,8 +20,15 @@ pub const POLLHUP: c_short = 16;
 pub const POLLNVAL: c_short = 32;
 
 pub const SOL_SOCKET: c_int = 1;
+pub const SO_ERROR: c_int = 4;
+pub const SO_PASSCRED: c_int = 16;
 pub const SO_PEERCRED: c_int = 17;
 pub const SCM_RIGHTS: c_int = 1;
+pub const SCM_CREDENTIALS: c_int = 2;
+pub const SOCK_SEQPACKET: c_int = 5;
+pub const SOCK_NONBLOCK: c_int = 0x800;
+pub const SOCK_CLOEXEC: c_int = 0x80000;
+pub const SHUT_RDWR: c_int = 2;
 
 pub const MSG_DONTWAIT: c_int = 0x40;
 pub const MSG_NOSIGNAL: c_int = 0x4000;
@@ -38,6 +45,8 @@ pub const O_EXCL: c_int = 0x80;
 pub const O_NONBLOCK: c_int = 0x800;
 pub const O_NOFOLLOW: c_int = 0x20000;
 pub const O_CLOEXEC: c_int = 0x80000;
+pub const RTLD_LOCAL: c_int = 0;
+pub const RTLD_NOW: c_int = 2;
 
 pub const PROT_READ: c_int = 1;
 pub const PROT_WRITE: c_int = 2;
@@ -124,6 +133,10 @@ extern "C" {
     fn shm_unlink(name: *const c_char) -> c_int;
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
+    fn socket(domain: c_int, sock_type: c_int, protocol: c_int) -> c_int;
+    fn bind(sockfd: c_int, addr: *const c_void, addrlen: u32) -> c_int;
+    fn connect(sockfd: c_int, addr: *const c_void, addrlen: u32) -> c_int;
+    fn shutdown(sockfd: c_int, how: c_int) -> c_int;
     fn sendmsg(sockfd: c_int, msg: *const MsgHdr, flags: c_int) -> isize;
     fn recvmsg(sockfd: c_int, msg: *mut MsgHdr, flags: c_int) -> isize;
     fn send(sockfd: c_int, buf: *const c_void, len: usize, flags: c_int) -> isize;
@@ -135,42 +148,26 @@ extern "C" {
         optval: *mut c_void,
         optlen: *mut u32,
     ) -> c_int;
+    fn setsockopt(
+        sockfd: c_int,
+        level: c_int,
+        optname: c_int,
+        optval: *const c_void,
+        optlen: u32,
+    ) -> c_int;
+    fn open(path: *const c_char, oflag: c_int, ...) -> c_int;
     fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     fn close(fd: c_int) -> c_int;
+    fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
+    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    fn dlclose(handle: *mut c_void) -> c_int;
     fn getuid() -> u32;
     fn getpid() -> i32;
     fn gethostname(name: *mut c_char, len: usize) -> c_int;
     fn pthread_self() -> c_ulong;
     fn pthread_setschedparam(thread: c_ulong, policy: c_int, param: *const SchedParam) -> c_int;
     fn setpriority(which: c_int, who: u32, prio: c_int) -> c_int;
-}
-
-#[cfg(not(test))]
-extern "C" {
-    fn lwasapi_debug_emit(
-        sub: u8,
-        lvl: u8,
-        pid: u32,
-        sid: u32,
-        op: *const c_char,
-        target: *const c_char,
-        fmt: *const c_char,
-        ...
-    );
-    fn lwasapi_debug_emit_vals(
-        sub: u8,
-        lvl: u8,
-        pid: u32,
-        sid: u32,
-        v1: i32,
-        v2: i32,
-        hr: i32,
-        op: *const c_char,
-        target: *const c_char,
-        fmt: *const c_char,
-        ...
-    );
 }
 
 #[inline]
@@ -217,6 +214,15 @@ pub fn realtime_sec_usec() -> (u32, u32) {
     }
 }
 
+pub fn realtime_ms() -> i64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => (d.as_secs() as i64)
+            .saturating_mul(1000)
+            .saturating_add(i64::from(d.subsec_millis())),
+        Err(_) => 0,
+    }
+}
+
 pub fn enable_realtime(prio: i32, fallback_nice: i32) {
     let sp = SchedParam {
         sched_priority: prio,
@@ -225,6 +231,67 @@ pub fn enable_realtime(prio: i32, fallback_nice: i32) {
         if pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0 {
             let _ = setpriority(PRIO_PROCESS, 0, fallback_nice);
         }
+    }
+}
+
+pub fn try_realtime_fifo(prio: i32) -> bool {
+    let sp = SchedParam {
+        sched_priority: prio,
+    };
+    unsafe { pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) == 0 }
+}
+
+pub fn sleep_abs_mono_ns(target_ns: u64) {
+    extern "C" {
+        fn clock_nanosleep(
+            clock_id: c_int,
+            flags: c_int,
+            request: *const libc_timespec,
+            remain: *mut libc_timespec,
+        ) -> c_int;
+    }
+    const CLOCK_MONOTONIC: c_int = 1;
+    const TIMER_ABSTIME: c_int = 1;
+    let req = libc_timespec {
+        tv_sec: (target_ns / 1_000_000_000) as i64,
+        tv_nsec: (target_ns % 1_000_000_000) as i64,
+    };
+    unsafe {
+        let _ = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &req, ptr::null_mut());
+    }
+}
+
+static TERM_SIGNAL_STOP: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_term_signal(_sig: c_int) {
+    TERM_SIGNAL_STOP.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn install_term_signals() {
+    extern "C" {
+        fn signal(sig: c_int, handler: usize) -> usize;
+    }
+    const SIGINT: c_int = 2;
+    const SIGPIPE: c_int = 13;
+    const SIGTERM: c_int = 15;
+    const SIG_IGN: usize = 1;
+    TERM_SIGNAL_STOP.store(false, std::sync::atomic::Ordering::SeqCst);
+    unsafe {
+        let h = on_term_signal as *const () as usize;
+        let _ = signal(SIGINT, h);
+        let _ = signal(SIGTERM, h);
+        let _ = signal(SIGPIPE, SIG_IGN);
+    }
+}
+
+pub fn term_signal_requested() -> bool {
+    TERM_SIGNAL_STOP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_thread_nice(nice_val: i32) {
+    unsafe {
+        let _ = setpriority(PRIO_PROCESS, 0, nice_val);
     }
 }
 
@@ -518,6 +585,110 @@ pub fn socket_peercred(fd: RawFd) -> Option<UCred> {
     }
 }
 
+pub fn resolve_sock_path_common(env_var: &str, sock_name: &str, fallback: &str) -> String {
+    if let Ok(val) = std::env::var(env_var) {
+        if !val.is_empty() && val.len() < 108 {
+            return val;
+        }
+    }
+    if let Some(dir) = ensure_private_dir() {
+        let joined = format!("{dir}/{sock_name}");
+        if joined.len() < 108 {
+            return joined;
+        }
+    }
+    fallback.to_string()
+}
+
+pub fn bind_unix_dgram_passcred_0600(path: &str) -> Option<UnixDatagram> {
+    if path.is_empty() || path.len() >= 108 {
+        return None;
+    }
+    let _ = fs::remove_file(path);
+    let sock = UnixDatagram::bind(path).ok()?;
+    sock.set_nonblocking(true).ok()?;
+    let one: c_int = 1;
+    let _ = unsafe {
+        setsockopt(
+            sock.as_raw_fd(),
+            SOL_SOCKET,
+            SO_PASSCRED,
+            (&one as *const c_int).cast::<c_void>(),
+            mem::size_of::<c_int>() as u32,
+        )
+    };
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    Some(sock)
+}
+
+pub enum RecvDgramCred {
+    WouldBlock,
+    Err,
+    Packet { len: usize, ucred: Option<UCred> },
+}
+
+pub fn recv_dgram_with_ucred(fd: RawFd, buf: &mut [u8]) -> RecvDgramCred {
+    #[repr(C, align(8))]
+    struct CredCtlBuf {
+        bytes: [u8; 64],
+    }
+    let mut ctl = MaybeUninit::<CredCtlBuf>::zeroed();
+    let mut iov = IoVec {
+        iov_base: buf.as_mut_ptr().cast::<c_void>(),
+        iov_len: buf.len(),
+    };
+    let mut msg = MsgHdr {
+        msg_name: ptr::null_mut(),
+        msg_namelen: 0,
+        _pad0: 0,
+        msg_iov: &mut iov,
+        msg_iovlen: 1,
+        msg_control: ctl.as_mut_ptr().cast::<c_void>(),
+        msg_controllen: mem::size_of::<CredCtlBuf>(),
+        msg_flags: 0,
+        _pad1: 0,
+    };
+
+    let n = unsafe { recvmsg(fd, &mut msg, MSG_DONTWAIT) };
+    if n < 0 {
+        let raw = io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        if raw == 11 || raw == 4 {
+            return RecvDgramCred::WouldBlock;
+        }
+        return RecvDgramCred::Err;
+    }
+
+    let mut out_cred = None;
+    let ctl_ref = unsafe { ctl.assume_init() };
+    let used = msg.msg_controllen.min(ctl_ref.bytes.len());
+    let mut off = 0usize;
+    while off + mem::size_of::<CMsgHdr>() <= used {
+        let hdr = unsafe { ptr::read(ctl_ref.bytes.as_ptr().add(off).cast::<CMsgHdr>()) };
+        if hdr.cmsg_len < mem::size_of::<CMsgHdr>() || off + hdr.cmsg_len > used {
+            break;
+        }
+        if hdr.cmsg_level == SOL_SOCKET
+            && hdr.cmsg_type == SCM_CREDENTIALS
+            && hdr.cmsg_len >= mem::size_of::<CMsgHdr>() + mem::size_of::<UCred>()
+        {
+            let data_ptr = unsafe { ctl_ref.bytes.as_ptr().add(off + mem::size_of::<CMsgHdr>()) };
+            let uc = unsafe { ptr::read_unaligned(data_ptr.cast::<UCred>()) };
+            out_cred = Some(uc);
+            break;
+        }
+        let step = (hdr.cmsg_len + 7) & !7;
+        if step == 0 {
+            break;
+        }
+        off += step;
+    }
+
+    RecvDgramCred::Packet {
+        len: n as usize,
+        ucred: out_cred,
+    }
+}
+
 pub fn unix_socket_actively_served(path: &str, my_pid: u32) -> bool {
     if fs::symlink_metadata(path).is_err() {
         return false;
@@ -548,6 +719,24 @@ pub fn nb_recv(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
     } else {
         Ok(n as usize)
     }
+}
+
+pub fn send_all_nosignal(fd: RawFd, mut buf: &[u8]) -> io::Result<()> {
+    while !buf.is_empty() {
+        let n = unsafe { send(fd, buf.as_ptr().cast::<c_void>(), buf.len(), MSG_NOSIGNAL) };
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        if n == 0 {
+            return Err(io::Error::new(io::ErrorKind::WriteZero, "eof"));
+        }
+        buf = &buf[n as usize..];
+    }
+    Ok(())
 }
 
 #[allow(clippy::result_unit_err)]
@@ -766,29 +955,99 @@ pub fn current_hostname() -> String {
     "salsa-host".to_string()
 }
 
-pub fn dbg_emit(sub: u8, lvl: u8, pid: u32, sid: u32, op: &str, target: &str, detail: &str) {
-    #[cfg(not(test))]
-    {
-        let Ok(c_op) = CString::new(op) else { return };
-        let Ok(c_tgt) = CString::new(target) else { return };
-        let Ok(c_det) = CString::new(detail) else { return };
+#[inline]
+pub fn last_errno() -> i32 {
+    io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+#[inline]
+pub fn socket_raw(domain: c_int, sock_type: c_int, proto: c_int) -> c_int {
+    unsafe { socket(domain, sock_type, proto) }
+}
+
+/// # Safety
+/// `addr` must point to at least `addrlen` readable bytes of a valid `sockaddr`.
+#[inline]
+pub unsafe fn bind_raw(fd: c_int, addr: *const c_void, addrlen: u32) -> c_int {
+    unsafe { bind(fd, addr, addrlen) }
+}
+
+/// # Safety
+/// `addr` must point to at least `addrlen` readable bytes of a valid `sockaddr`.
+#[inline]
+pub unsafe fn connect_raw(fd: c_int, addr: *const c_void, addrlen: u32) -> c_int {
+    unsafe { connect(fd, addr, addrlen) }
+}
+
+/// # Safety
+/// `optval` must point to at least `optlen` readable bytes.
+#[inline]
+pub unsafe fn setsockopt_raw(
+    fd: c_int,
+    level: c_int,
+    optname: c_int,
+    optval: *const c_void,
+    optlen: u32,
+) -> c_int {
+    unsafe { setsockopt(fd, level, optname, optval, optlen) }
+}
+
+/// # Safety
+/// `optval` and `optlen` must be valid writable pointers matching `getsockopt(2)`.
+#[inline]
+pub unsafe fn getsockopt_raw(
+    fd: c_int,
+    level: c_int,
+    optname: c_int,
+    optval: *mut c_void,
+    optlen: *mut u32,
+) -> c_int {
+    unsafe { getsockopt(fd, level, optname, optval, optlen) }
+}
+
+#[inline]
+pub fn shutdown_rdwr(fd: c_int) {
+    if fd >= 0 {
         unsafe {
-            lwasapi_debug_emit(
-                sub,
-                lvl,
-                pid,
-                sid,
-                c_op.as_ptr(),
-                c_tgt.as_ptr(),
-                c"%s".as_ptr(),
-                c_det.as_ptr(),
-            );
+            let _ = shutdown(fd, SHUT_RDWR);
         }
     }
-    #[cfg(test)]
-    {
-        let _ = (sub, lvl, pid, sid, op, target, detail);
+}
+
+#[inline]
+pub fn send_raw(fd: c_int, buf: &[u8], flags: c_int) -> isize {
+    if fd < 0 {
+        return -1;
     }
+    unsafe { send(fd, buf.as_ptr().cast::<c_void>(), buf.len(), flags) }
+}
+
+#[inline]
+pub fn recv_raw(fd: c_int, buf: &mut [u8], flags: c_int) -> isize {
+    if fd < 0 {
+        return -1;
+    }
+    unsafe { recv(fd, buf.as_mut_ptr().cast::<c_void>(), buf.len(), flags) }
+}
+
+#[inline]
+pub fn read_raw(fd: c_int, buf: &mut [u8]) -> isize {
+    if fd < 0 {
+        return -1;
+    }
+    unsafe { read(fd, buf.as_mut_ptr().cast::<c_void>(), buf.len()) }
+}
+
+#[inline]
+pub fn write_raw(fd: c_int, buf: &[u8]) -> isize {
+    if fd < 0 {
+        return -1;
+    }
+    unsafe { write(fd, buf.as_ptr().cast::<c_void>(), buf.len()) }
+}
+
+pub fn dbg_emit(sub: u8, lvl: u8, pid: u32, sid: u32, op: &str, target: &str, detail: &str) {
+    dbg_emit_vals(sub, lvl, pid, sid, 0, 0, 0, op, target, detail);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -810,7 +1069,7 @@ pub fn dbg_emit_vals(
         let Ok(c_tgt) = CString::new(target) else { return };
         let Ok(c_det) = CString::new(detail) else { return };
         unsafe {
-            lwasapi_debug_emit_vals(
+            crate::debug_server::salsa_dbg_emit_raw(
                 sub,
                 lvl,
                 pid,
@@ -820,7 +1079,6 @@ pub fn dbg_emit_vals(
                 hr,
                 c_op.as_ptr(),
                 c_tgt.as_ptr(),
-                c"%s".as_ptr(),
                 c_det.as_ptr(),
             );
         }
@@ -836,6 +1094,74 @@ pub fn close_raw_fd(fd: RawFd) {
     if fd >= 0 {
         unsafe {
             let _ = close(fd);
+        }
+    }
+}
+
+pub fn open_raw_flags(path: &str, flags: c_int) -> RawFd {
+    let Ok(cpath) = CString::new(path) else {
+        return -1;
+    };
+    unsafe { open(cpath.as_ptr(), flags, 0 as c_uint) }
+}
+
+pub fn nb_read_raw(fd: RawFd, buf: &mut [u8]) -> isize {
+    if fd < 0 || buf.is_empty() {
+        return -1;
+    }
+    unsafe { read(fd, buf.as_mut_ptr().cast::<c_void>(), buf.len()) }
+}
+
+/// Executes a raw `ioctl` request on an open file descriptor.
+///
+/// # Safety
+/// `arg` must point to a valid argument structure matching `req` if required by the ioctl.
+pub unsafe fn ioctl_raw(fd: RawFd, req: c_ulong, arg: *mut c_void) -> c_int {
+    if fd < 0 {
+        return -1;
+    }
+    unsafe { ioctl(fd, req, arg) }
+}
+
+/// Opens the first loadable shared library from `cands` with `RTLD_NOW | RTLD_LOCAL`.
+///
+/// # Safety
+/// Loading shared libraries runs their ELF initializers inside the current process.
+pub unsafe fn dl_open_any(cands: &[&str]) -> *mut c_void {
+    for &cand in cands {
+        let Ok(cstr) = CString::new(cand) else {
+            continue;
+        };
+        let h = unsafe { dlopen(cstr.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
+        if !h.is_null() {
+            return h;
+        }
+    }
+    ptr::null_mut()
+}
+
+/// Resolves a symbol address from an open `dlopen` handle.
+///
+/// # Safety
+/// `handle` must be a valid handle returned by `dlopen`/`dl_open_any` and not yet closed.
+pub unsafe fn dl_sym(handle: *mut c_void, symbol: &str) -> *mut c_void {
+    if handle.is_null() {
+        return ptr::null_mut();
+    }
+    let Ok(csym) = CString::new(symbol) else {
+        return ptr::null_mut();
+    };
+    unsafe { dlsym(handle, csym.as_ptr()) }
+}
+
+/// Closes a `dlopen` handle if non-null.
+///
+/// # Safety
+/// `handle` must either be null or a valid open handle with no live references to its symbols.
+pub unsafe fn dl_close(handle: *mut c_void) {
+    if !handle.is_null() {
+        unsafe {
+            let _ = dlclose(handle);
         }
     }
 }

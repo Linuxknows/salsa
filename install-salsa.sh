@@ -269,14 +269,15 @@ if [[ "${ACTION}" == "--uninstall" ]]; then
 fi
 
 ensure_host_dependencies() {
+    export PATH="${HOME}/.cargo/bin:${PATH}"
     local missing=0
-    for cmd in gcc make pkg-config readelf nm python3; do
+    for cmd in gcc make pkg-config readelf nm python3 cargo; do
         if ! command -v "${cmd}" >/dev/null 2>&1; then
             missing=1
             break
         fi
     done
-    if [[ "${missing}" -eq 0 ]] && ! pkg-config --exists alsa libpulse dbus-1 sbc >/dev/null 2>&1; then
+    if [[ "${missing}" -eq 0 ]] && ! pkg-config --exists alsa libpulse >/dev/null 2>&1; then
         missing=1
     fi
     if [[ "${missing}" -eq 0 ]] && ! python3 -c "import PyQt6" >/dev/null 2>&1; then
@@ -293,16 +294,16 @@ ensure_host_dependencies() {
     fi
 
     if command -v pacman >/dev/null 2>&1; then
-        ${ELEVATE} pacman -S --needed --noconfirm gcc make pkgconf binutils alsa-lib libpulse dbus sbc python python-pyqt6 desktop-file-utils
+        ${ELEVATE} pacman -S --needed --noconfirm gcc make pkgconf binutils rust alsa-lib libpulse dbus sbc python python-pyqt6 desktop-file-utils
         ${ELEVATE} pacman -S --needed --noconfirm libfdk-aac >/dev/null 2>&1 || true
     elif command -v apt-get >/dev/null 2>&1; then
-        ${ELEVATE} apt-get update && ${ELEVATE} apt-get install -y build-essential pkg-config binutils libasound2-dev libpulse-dev libdbus-1-dev libsbc-dev python3 python3-pyqt6 desktop-file-utils
+        ${ELEVATE} apt-get update && ${ELEVATE} apt-get install -y build-essential pkg-config binutils cargo rustc libasound2-dev libpulse-dev libdbus-1-3 libsbc1 python3 python3-pyqt6 desktop-file-utils
         ${ELEVATE} apt-get install -y libfdk-aac2 >/dev/null 2>&1 || true
     elif command -v dnf >/dev/null 2>&1; then
-        ${ELEVATE} dnf install -y gcc make pkgconf-pkg-config binutils alsa-lib-devel pulseaudio-libs-devel dbus-devel sbc-devel python3 python3-pyqt6 desktop-file-utils
+        ${ELEVATE} dnf install -y gcc make pkgconf-pkg-config binutils rust cargo alsa-lib-devel pulseaudio-libs-devel dbus-libs sbc python3 python3-pyqt6 desktop-file-utils
         ${ELEVATE} dnf install -y fdk-aac-free >/dev/null 2>&1 || true
     elif command -v zypper >/dev/null 2>&1; then
-        ${ELEVATE} zypper --non-interactive install -y gcc make pkg-config binutils alsa-devel libpulse-devel dbus-1-devel sbc-devel python3 python3-qt6 desktop-file-utils
+        ${ELEVATE} zypper --non-interactive install -y gcc make pkg-config binutils rust cargo alsa-devel libpulse-devel dbus-1 sbc python3 python3-qt6 desktop-file-utils
         ${ELEVATE} zypper --non-interactive install -y libfdk-aac2 >/dev/null 2>&1 || true
     fi
 }

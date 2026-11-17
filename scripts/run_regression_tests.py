@@ -863,8 +863,10 @@ def test_live_rev61_studio_apis() -> None:
             tray_src = fh.read()
         with open(os.path.join(REPO_DIR, "salsa_ipc.py"), "r", encoding="utf-8") as fh:
             ipc_src = fh.read()
-        with open(os.path.join(REPO_DIR, "src", "lwasapi_audiodg.c"), "r", encoding="utf-8") as fh:
+        with open(os.path.join(REPO_DIR, "rust", "salsa_net", "src", "audiodg_engine.rs"), "r", encoding="utf-8") as fh:
             audiodg_src = fh.read()
+        with open(os.path.join(REPO_DIR, "rust", "salsa_net", "src", "dsp.rs"), "r", encoding="utf-8") as fh:
+            dsp_rs_src = fh.read()
         assert "self.lib.LWASAPI_SetEngineConfig(rate, period, bits)" in gui_src
         assert "self.ctrl.engine.set_engine_config(r_int, self._cur_period, self._cur_bits)" in tray_src
         assert "(44100, 48000, 88200, 96000, 176400, 192000)" in tray_src
@@ -876,7 +878,8 @@ def test_live_rev61_studio_apis() -> None:
         assert "SalsaLiveDebuggerWidget" not in gui_src and "snapshot_once" in gui_src
         assert "self.cmb_mic_preset_tray" in tray_src
         assert "PRESETS" in ipc_src and "MIC_APO_PRESETS" in ipc_src and "normalize_vol_step_pct" in ipc_src
-        assert "dry_ring" in audiodg_src and "vad_ring" in audiodg_src and "g_mic_demud_flt" in audiodg_src
+        assert "salsa_dsp_process_capture_mic_apo" in audiodg_src
+        assert "dry_ring" in dsp_rs_src and "vad_ring" in dsp_rs_src and "demud_flt" in dsp_rs_src
 
         # Offscreen PyQt6 check for Intro <-> Studio <-> Advanced window split, Option C & Option 2
         ui_probe = r'''
@@ -1069,12 +1072,11 @@ int main(void) {
         bin_p = os.path.join(tmp_d, "hw_score_test")
         with open(src_p, "w", encoding="utf-8") as fh:
             fh.write(c_test)
+        wire_a = os.path.join(REPO_DIR, "build", "libsalsa_wire.a")
         cc = run_cmd([
             "gcc", "-O2", "-std=c11", f"-I{os.path.join(REPO_DIR, 'include')}",
             src_p,
-            os.path.join(REPO_DIR, "src", "lwasapi_hw_analog.c"),
-            os.path.join(REPO_DIR, "src", "lwasapi_debug.c"),
-            os.path.join(REPO_DIR, "build", "libsalsa_wire.a"),
+            wire_a,
             "-o", bin_p, "-pthread", "-lm", "-ldl",
         ], timeout=20)
         if cc.returncode != 0:
@@ -1129,6 +1131,10 @@ def test_live_rust_wire_failsafe() -> None:
 
         trips_before = int(wire0.get("trips_total", 0))
         resets_before = int(wire0.get("manual_resets", 0))
+        rep_pa = cli.send_command_wait("RESET_PA_CLIENTS", timeout=2.5)
+        assert rep_pa and rep_pa.get("rc", -1) == 0, f"RESET_PA_CLIENTS failed: {rep_pa}"
+        assert "ScreenCast & audio engine preserved" in rep_pa.get("msg", ""), f"Unexpected reply: {rep_pa}"
+
         rep = cli.send_command_wait("RESET_NET_CLIENTS", timeout=2.5)
         assert rep and rep.get("rc", -1) == 0, f"RESET_NET_CLIENTS failed: {rep}"
         assert "audio engine uninterrupted" in rep.get("msg", ""), f"Unexpected reply: {rep}"
@@ -1139,13 +1145,13 @@ def test_live_rust_wire_failsafe() -> None:
         while time.monotonic() - t1 < 2.0:
             snap = cli.get_snapshot()
             w = (snap.get("telemetry") or {}).get("wire") or {}
-            if int(w.get("manual_resets", 0)) >= resets_before + 1:
+            if int(w.get("manual_resets", 0)) >= resets_before + 2:
                 wire1 = w
                 break
             time.sleep(0.08)
-        assert wire1 is not None, "manual_resets did not increment in live wire telemetry"
-        assert int(wire1.get("trips_total", 0)) >= trips_before + 1
-        print("[PASS] Live Rust Wire Core + Silent Failsafe armed + RESET_NET_CLIENTS verified")
+        assert wire1 is not None, "manual_resets did not increment for RESET_PA_CLIENTS + RESET_NET_CLIENTS"
+        assert int(wire1.get("trips_total", 0)) >= trips_before + 2
+        print("[PASS] Live Rust Wire Core + Silent Failsafe armed + RESET_PA_CLIENTS + RESET_NET_CLIENTS verified")
     finally:
         cli.stop()
 

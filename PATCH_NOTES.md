@@ -4,7 +4,19 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## v6.8-beta — Current (`2026-11-16`)
+## v6.9-beta — Current (`2026-11-16`)
+
+### 1. 100% Pure Rust `lwasapi-audiodg` Daemon & `lwasapi-ctl` CLI
+- Completed full migration of the engine, controller, BlueZ A2DP/AVRCP/HFP SCO runtime, ALSA/capture pipeline, HW analog stage, Dynamic EQ/Mic APO DSP, persistent state, debug server, and DAW MIDI hub into the `salsa_net` Rust crate ([`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs), [`bluez_ffi.rs`](rust/salsa_net/src/bluez_ffi.rs), [`bluez_cap.rs`](rust/salsa_net/src/bluez_cap.rs), [`bluez_runtime.rs`](rust/salsa_net/src/bluez_runtime.rs), [`ctl_cli.rs`](rust/salsa_net/src/ctl_cli.rs), [`debug_server.rs`](rust/salsa_net/src/debug_server.rs), [`dsp.rs`](rust/salsa_net/src/dsp.rs), [`hw_analog.rs`](rust/salsa_net/src/hw_analog.rs), [`midi_hub.rs`](rust/salsa_net/src/midi_hub.rs), [`state_conf.rs`](rust/salsa_net/src/state_conf.rs)) with native `[[bin]]` targets [`lwasapi_audiodg.rs`](rust/salsa_net/src/bin/lwasapi_audiodg.rs) and [`lwasapi_ctl.rs`](rust/salsa_net/src/bin/lwasapi_ctl.rs).
+- Replaced static `-ldbus-1` / `-lsbc` linkage in the daemon and CLI with runtime `dlopen`/`dlsym` loaders across [`bluez_ffi.rs`](rust/salsa_net/src/bluez_ffi.rs) and non-variadic `DBusMessageIter` bindings while preserving `BIND_NOW` / PIE Full RELRO hardening (`RUSTFLAGS="-C link-arg=-Wl,-z,relro,-z,now"`).
+
+### 2. Removal of Legacy C-Fallback Backend & Direct Rust Fuzzing
+- Removed the `24,316`-line legacy C backend/fallback/bridge files (`lwasapi_audiodg*.c`, `lwasapi_bluez.c`, `lwasapi_ctl*.c`, `lwasapi_debug*.c`, `lwasapi_dsp_c.c`, `lwasapi_hw_analog.c`, `lwasapi_midi.c`, `lwasapi_pa_server.c`, `lwasapi_pw_broker.c`, and `salsa_wire.c`) along with `USE_RUST_WIRE=0` conditional rules in [`Makefile`](Makefile), leaving C code strictly in the external client `.so` shims/proxies and standalone C bench/test tools.
+- Replaced differential C-reference fuzzing with standalone ASan/UBSan `libFuzzer` verification directly against `libsalsa_wire.a` in [`tests/fuzz/fuzz_wire.c`](tests/fuzz/fuzz_wire.c), updated [`salsa_debug_core.py`](salsa_debug_core.py) build freshness checks to track Rust crate sources, and updated [`install-salsa.sh`](install-salsa.sh) dependency checks for `cargo`/`rustc`.
+
+---
+
+## v6.8-beta (`2026-11-16`)
 
 ### 1. Memory-Safe Rust Wire Core, PulseAudio v35 Server & PipeWire-0 Video Broker
 - Added zero-dependency offline Rust static library `salsa_net` (`libsalsa_wire.a` in [`rust/salsa_net/`](rust/salsa_net/Cargo.toml)) exposing memory-safe bounds-checked parsers, builders, FD-quota accounting, and full UNIX socket daemons across [`pa_server.rs`](rust/salsa_net/src/pa_server.rs), [`pw_broker.rs`](rust/salsa_net/src/pw_broker.rs), [`pa_wire.rs`](rust/salsa_net/src/pa_wire.rs), [`pw_wire.rs`](rust/salsa_net/src/pw_wire.rs), [`bluez_wire.rs`](rust/salsa_net/src/bluez_wire.rs), [`failsafe.rs`](rust/salsa_net/src/failsafe.rs), [`unix_sys.rs`](rust/salsa_net/src/unix_sys.rs), [`c_abi.rs`](rust/salsa_net/src/c_abi.rs), and [`ffi.rs`](rust/salsa_net/src/ffi.rs), declared in [`include/salsa_wire.h`](include/salsa_wire.h) with automatic/selectable `make USE_RUST_WIRE=0` C11 fallback.

@@ -46,7 +46,7 @@ In traditional Linux pro-audio workflows, patchbay utilities like `qpwgraph` or 
 ## 3. Component-by-Component Owner's Guide
 
 ### Stage 1: Automatic Application Recognition, Built-in PA v35 Server & Hollow Shims
-- **Built-in PulseAudio Protocol v35 Server (`$XDG_RUNTIME_DIR/pulse/native`):** `lwasapi-audiodg` directly hosts a native PA protocol UNIX socket inside the engine itself (`lwasapi_pa_server.c`), serving `pactl`, KDE `plasma-pa`, Chromium/Firefox, Discord, Steam/Proton, and Wine with zero `pipewire-pulse` daemon running.
+- **Built-in PulseAudio Protocol v35 Server (`$XDG_RUNTIME_DIR/pulse/native`):** `lwasapi-audiodg` directly hosts a native PA protocol UNIX socket inside the Rust engine ([`pa_server.rs`](rust/salsa_net/src/pa_server.rs)), serving `pactl`, KDE `plasma-pa`, Chromium/Firefox, Discord, Steam/Proton, and Wine with zero `pipewire-pulse` daemon running.
 - **ALSA & OpenAL Soft (`~/.asoundrc` & `~/.config/OpenAL/alsoft.conf`):** Automatically routes default ALSA playback and capture streams through `libasound_module_pcm_lwasapi.so`.
 - **Hollow ABI Shims (`build/shims/`):** Provides drop-in replacements for `libasound.so.2`, `libpulse.so.0`, `libpulse-simple.so.0`, `libpulse-mainloop-glib.so.0`, and `libjack.so.0` that bypass socket IPC and write directly into LWASAPI shared memory.
 
@@ -63,7 +63,7 @@ In traditional Linux pro-audio workflows, patchbay utilities like `qpwgraph` or 
 - **Render Sink & Direct BlueZ A2DP:** Streams 32-bit float audio directly over `org.bluez.MediaEndpoint1` (`AAC` via `libfdk-aac.so.2` with automatic `SBC` fallback + bidirectional AVRCP volume) or kernel `/dev/snd/pcmC*D*` (supporting `S32_LE`, `S24_3LE`, `S16_LE`, `FLOAT_LE` and automatic priority scoring across USB DACs, analog codecs, and HDMI).
 - **Capture Source & Loopback:** Distributes microphone input and post-EQ desktop loopback (`AUDCLNT_STREAMFLAGS_LOOPBACK`) to recording apps in **0.33 ms** round-trip at `192 kHz / 64f`, with live switching via Salsa Studio dropdowns or `lwasapi-ctl set-sink` / `set-source`.
 - **DAW MIDI Hub:** Automatically binds detected hardware MIDI controllers and routes sample-accurate MIDI events to JACK MIDI and ALSA Sequencer DAWs.
-- **Zero-PipeWire Video-Only ScreenCast Broker (`lwasapi_pw_broker.c`):** Directly serves `/run/user/$UID/pipewire-0` using native C protocol handling (zero `libpipewire` / `libspa` linkage) so Wayland `kwin_wayland` + `xdg-desktop-portal` (`OpenPipeWireRemote`) ScreenCast streams route `DmaBuf` and `MemFd` buffers to Discord, OBS Studio, browsers, and KDE previews with live Resolution/FPS caps (`PW_CAST_LIMITS`) and zero-overhead Preview HUD telemetry (`PW_PREVIEW`).
+- **Zero-PipeWire Video-Only ScreenCast Broker ([`pw_broker.rs`](rust/salsa_net/src/pw_broker.rs)):** Directly serves `/run/user/$UID/pipewire-0` using native Rust protocol handling (zero `libpipewire` / `libspa` linkage) so Wayland `kwin_wayland` + `xdg-desktop-portal` (`OpenPipeWireRemote`) ScreenCast streams route `DmaBuf` and `MemFd` buffers to Discord, OBS Studio, browsers, and KDE previews with live Resolution/FPS caps (`PW_CAST_LIMITS`) and zero-overhead Preview HUD telemetry (`PW_PREVIEW`).
 
 ---
 

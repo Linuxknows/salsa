@@ -287,6 +287,340 @@ pub fn parse_bdaddr(bytes: &[u8]) -> Option<[u8; 6]> {
     Some(out)
 }
 
+pub fn extract_mac_from_id(id: &[u8]) -> Option<[u8; 17]> {
+    let clean_end = id.iter().position(|&b| b == 0).unwrap_or(id.len());
+    let mut s = &id[..clean_end];
+    if s.len() >= 6 && s[..6].eq_ignore_ascii_case(b"bluez:") {
+        s = &s[6..];
+    }
+    if s.len() < 17 {
+        return None;
+    }
+    let mut out = [0u8; 17];
+    let mut colons = 0usize;
+    for (i, &ch) in s[..17].iter().enumerate() {
+        if (i % 3) == 2 {
+            if ch != b':' && ch != b'_' && ch != b'-' {
+                return None;
+            }
+            out[i] = b':';
+            colons += 1;
+        } else {
+            if !ch.is_ascii_hexdigit() {
+                return None;
+            }
+            out[i] = ch.to_ascii_uppercase();
+        }
+    }
+    if colons != 5 {
+        return None;
+    }
+    Some(out)
+}
+
+pub fn hfp_make_batt_path(dev_path: &[u8], out: &mut [u8]) -> Option<usize> {
+    const ROOT: &[u8] = b"/org/lwasapi/Battery/";
+    if out.len() <= ROOT.len() {
+        return None;
+    }
+    let clean_end = dev_path.iter().position(|&b| b == 0).unwrap_or(dev_path.len());
+    let clean = &dev_path[..clean_end];
+    let tail = match clean.iter().rposition(|&b| b == b'/') {
+        Some(pos) if pos + 1 < clean.len() => &clean[pos + 1..],
+        _ => b"dev",
+    };
+
+    out.fill(0);
+    out[..ROOT.len()].copy_from_slice(ROOT);
+    let mut pos = ROOT.len();
+    let max_pos = out.len() - 1;
+    for &b in tail {
+        if pos >= max_pos {
+            break;
+        }
+        out[pos] = if b.is_ascii_alphanumeric() || b == b'_' {
+            b
+        } else {
+            b'_'
+        };
+        pos += 1;
+    }
+    out[pos] = 0;
+    Some(pos)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HfpAtAction {
+    pub handled: bool,
+    pub reply: [u8; 192],
+    pub reply_len: usize,
+    pub has_msbc_update: bool,
+    pub supports_msbc: bool,
+    pub sco_codec: u8,     // 0=unchanged, 1=CVSD, 2=mSBC
+    pub battery_pct: i32,  // -1=unchanged, 0..=100=new pct
+}
+
+impl Default for HfpAtAction {
+    fn default() -> Self {
+        Self {
+            handled: false,
+            reply: [0u8; 192],
+            reply_len: 0,
+            has_msbc_update: false,
+            supports_msbc: false,
+            sco_codec: 0,
+            battery_pct: -1,
+        }
+    }
+}
+
+impl HfpAtAction {
+    fn set_reply(&mut self, msg: &[u8]) {
+        let n = msg.len().min(self.reply.len() - 1);
+        self.reply[..n].copy_from_slice(&msg[..n]);
+        self.reply[n] = 0;
+        self.reply_len = n;
+    }
+}
+
+fn parse_dec_prefix_i64(s: &[u8]) -> Option<(i64, usize)> {
+    let mut i = 0usize;
+    while i < s.len() && matches!(s[i], b' ' | b'\t' | b'\r' | b'\n') {
+        i += 1;
+    }
+    if i >= s.len() {
+        return None;
+    }
+    let mut neg = false;
+    if s[i] == b'-' {
+        neg = true;
+        i += 1;
+    } else if s[i] == b'+' {
+        i += 1;
+    }
+    if i >= s.len() || !s[i].is_ascii_digit() {
+        return None;
+    }
+    let mut acc: i64 = 0;
+    while i < s.len() && s[i].is_ascii_digit() {
+        let d = (s[i] - b'0') as i64;
+        acc = acc.saturating_mul(10).saturating_add(d);
+        i += 1;
+    }
+    Some((if neg { -acc } else { acc }, i))
+}
+
+fn parse_bac_supports_msbc(list: &[u8]) -> bool {
+    for (i, &b) in list.iter().enumerate() {
+        if b == b'2' {
+            let left_ok = i == 0 || list[i - 1] == b',' || list[i - 1] == b' ';
+            let right_ok = i + 1 == list.len() || list[i + 1] == b',' || list[i + 1] == b' ';
+            if left_ok && right_ok {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn parse_hfp_at_line(raw: &[u8]) -> HfpAtAction {
+    let mut act = HfpAtAction::default();
+    let nul_end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+    let mut s = &raw[..nul_end];
+    while !s.is_empty() && (s[0] == b' ' || s[0] == b'\t') {
+        s = &s[1..];
+    }
+    if s.is_empty() {
+        return act;
+    }
+
+    if s.starts_with(b"AT+BRSF=") {
+        act.handled = true;
+        act.set_reply(b"\r\n+BRSF: 1536\r\n\r\nOK\r\n");
+    } else if let Some(rest) = s.strip_prefix(b"AT+BAC=") {
+        act.handled = true;
+        act.has_msbc_update = true;
+        act.supports_msbc = parse_bac_supports_msbc(rest);
+        act.set_reply(b"\r\nOK\r\n");
+    } else if let Some(rest) = s.strip_prefix(b"AT+BCS=") {
+        act.handled = true;
+        let c = parse_dec_prefix_i64(rest).map(|(v, _)| v).unwrap_or(0);
+        act.sco_codec = if c == 2 { 2 } else { 1 };
+        act.set_reply(b"\r\nOK\r\n");
+    } else if s == b"AT+CIND=?" {
+        act.handled = true;
+        act.set_reply(
+            b"\r\n+CIND: (\"service\",(0,1)),(\"call\",(0,1)),(\"callsetup\",(0,3)),(\"callheld\",(0,2)),(\"signal\",(0,5)),(\"roam\",(0,1)),(\"battchg\",(0,5))\r\n\r\nOK\r\n",
+        );
+    } else if s == b"AT+CIND?" {
+        act.handled = true;
+        act.set_reply(b"\r\n+CIND: 1,0,0,0,5,0,5\r\n\r\nOK\r\n");
+    } else if s.starts_with(b"AT+CMER=") {
+        act.handled = true;
+        act.set_reply(b"\r\nOK\r\n");
+    } else if s == b"AT+CHLD=?" {
+        act.handled = true;
+        act.set_reply(b"\r\n+CHLD: (0,1,2,3)\r\n\r\nOK\r\n");
+    } else if s == b"AT+BIND=?" {
+        act.handled = true;
+        act.set_reply(b"\r\n+BIND: (1,2)\r\n\r\nOK\r\n");
+    } else if s == b"AT+BIND?" {
+        act.handled = true;
+        act.set_reply(b"\r\n+BIND: 2,1\r\n\r\nOK\r\n");
+    } else if s.starts_with(b"AT+BIND=") {
+        act.handled = true;
+        act.set_reply(b"\r\nOK\r\n");
+    } else if let Some(rest) = s.strip_prefix(b"AT+BIEV=") {
+        act.handled = true;
+        if let Some((ind, used1)) = parse_dec_prefix_i64(rest) {
+            let mut rem = &rest[used1..];
+            while !rem.is_empty() && matches!(rem[0], b' ' | b'\t') {
+                rem = &rem[1..];
+            }
+            if let Some(after_comma) = rem.strip_prefix(b",") {
+                if let Some((val, _)) = parse_dec_prefix_i64(after_comma) {
+                    if ind == 2 && (0..=100).contains(&val) {
+                        act.battery_pct = val as i32;
+                    }
+                }
+            }
+        }
+        act.set_reply(b"\r\nOK\r\n");
+    } else if s.starts_with(b"AT+XAPL=") {
+        act.handled = true;
+        act.set_reply(b"\r\n+XAPL=iPhone,7\r\n\r\nOK\r\n");
+    } else if let Some(rest) = s.strip_prefix(b"AT+IPHONEACCEV=") {
+        act.handled = true;
+        if let Some((count, used0)) = parse_dec_prefix_i64(rest) {
+            if (1..=16).contains(&count) {
+                let mut pos = used0;
+                for _ in 0..count {
+                    while pos < rest.len() && (rest[pos] == b',' || rest[pos] == b' ') {
+                        pos += 1;
+                    }
+                    let Some((key, uk)) = parse_dec_prefix_i64(&rest[pos..]) else {
+                        break;
+                    };
+                    pos += uk;
+                    while pos < rest.len() && (rest[pos] == b',' || rest[pos] == b' ') {
+                        pos += 1;
+                    }
+                    let Some((val, uv)) = parse_dec_prefix_i64(&rest[pos..]) else {
+                        break;
+                    };
+                    pos += uv;
+                    if key == 1 && (0..=9).contains(&val) {
+                        act.battery_pct = ((val + 1) * 10) as i32;
+                    }
+                }
+            }
+        }
+        act.set_reply(b"\r\nOK\r\n");
+    } else if s.starts_with(b"AT") {
+        act.handled = true;
+        act.set_reply(b"\r\nOK\r\n");
+    }
+    act
+}
+
+pub fn write_rtp_header(
+    out: &mut [u8],
+    payload_type: u8,
+    marker: bool,
+    seq: u16,
+    timestamp: u32,
+    ssrc: u32,
+) -> Option<usize> {
+    if out.len() < 12 {
+        return None;
+    }
+    out[0] = 0x80; // v=2, p=0, x=0, cc=0
+    out[1] = (if marker { 0x80 } else { 0 }) | (payload_type & 0x7F);
+    out[2..4].copy_from_slice(&seq.to_be_bytes());
+    out[4..8].copy_from_slice(&timestamp.to_be_bytes());
+    out[8..12].copy_from_slice(&ssrc.to_be_bytes());
+    Some(12)
+}
+
+pub fn write_rtp_sbc_payload_hdr(out: &mut [u8], frame_count: u8) -> Option<usize> {
+    if out.is_empty() {
+        return None;
+    }
+    out[0] = frame_count & 0x0F;
+    Some(1)
+}
+
+pub fn pack_s16_to_s24le(pcm_s16: &[i16], out_s24: &mut [u8]) -> Option<usize> {
+    let need = pcm_s16.len().checked_mul(3)?;
+    if out_s24.len() < need {
+        return None;
+    }
+    for (i, &sample) in pcm_s16.iter().enumerate() {
+        let v = (sample as i32) << 8;
+        let off = i * 3;
+        out_s24[off] = (v & 0xFF) as u8;
+        out_s24[off + 1] = ((v >> 8) & 0xFF) as u8;
+        out_s24[off + 2] = ((v >> 16) & 0xFF) as u8;
+    }
+    Some(need)
+}
+
+#[inline]
+pub fn ldac_eqmid_to_kbps(sf: u32, eqmid: i32) -> u32 {
+    let is_44k = sf == 44100 || sf == 88200;
+    match eqmid {
+        0 => if is_44k { 909 } else { 990 }, // LDACBT_EQMID_HQ
+        1 => if is_44k { 606 } else { 660 }, // LDACBT_EQMID_SQ
+        _ => if is_44k { 303 } else { 330 }, // LDACBT_EQMID_MQ
+    }
+}
+
+#[inline]
+pub fn msbc_h2_byte(seq: u32) -> u8 {
+    const H2: [u8; 4] = [0x08, 0x38, 0xc8, 0xf8];
+    H2[(seq & 3) as usize]
+}
+
+#[inline]
+pub fn msbc_rx_strip_offset(rx: &[u8]) -> usize {
+    if rx.len() >= 2 && rx[0] == 0x01 && (rx[1] & 0x0F) == 0x08 {
+        2
+    } else {
+        0
+    }
+}
+
+#[inline]
+pub fn abr_step_ldac(cur_eqmid: i32, congest_streak: u32, clean_streak: u32) -> (i32, bool, bool) {
+    if congest_streak >= 4 && cur_eqmid < 2 {
+        (cur_eqmid + 1, true, false)
+    } else if clean_streak >= 250 && cur_eqmid > 0 {
+        (cur_eqmid - 1, false, true)
+    } else {
+        (cur_eqmid, false, false)
+    }
+}
+
+#[inline]
+pub fn abr_step_aac(
+    cur_bps: u32,
+    max_bps: u32,
+    congest_streak: u32,
+    clean_streak: u32,
+) -> (u32, bool, bool) {
+    let cur = if cur_bps == 0 { 192_000 } else { cur_bps };
+    let cap = if max_bps == 0 { 256_000 } else { max_bps };
+    if congest_streak >= 4 && cur > 128_000 {
+        let next = if cur > 192_000 { 192_000 } else { 128_000 };
+        (next, true, false)
+    } else if clean_streak >= 300 && cur < cap {
+        let next = cur.saturating_add(32_000).min(cap);
+        (next, false, true)
+    } else {
+        (cur, false, false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,5 +641,60 @@ mod tests {
         assert!(parse_bdaddr(b"00:11:22:33:44:55").is_some());
         assert!(parse_bdaddr(b"00:11:22:33:44:55 ").is_none());
         assert!(parse_bdaddr(b"00-11-22-33-44-55").is_none());
+    }
+
+    #[test]
+    fn hfp_at_commands_and_battery_parsing() {
+        let brsf = parse_hfp_at_line(b"  \tAT+BRSF=4031");
+        assert!(brsf.handled);
+        assert_eq!(&brsf.reply[..brsf.reply_len], b"\r\n+BRSF: 1536\r\n\r\nOK\r\n");
+
+        let bac_yes = parse_hfp_at_line(b"AT+BAC=1,2");
+        assert!(bac_yes.has_msbc_update && bac_yes.supports_msbc);
+        let bac_no = parse_hfp_at_line(b"AT+BAC=1,21");
+        assert!(bac_no.has_msbc_update && !bac_no.supports_msbc);
+
+        let bcs = parse_hfp_at_line(b"AT+BCS=2");
+        assert_eq!(bcs.sco_codec, 2);
+
+        let biev = parse_hfp_at_line(b"AT+BIEV=2,75");
+        assert_eq!(biev.battery_pct, 75);
+        let biev_bad = parse_hfp_at_line(b"AT+BIEV=2,150");
+        assert_eq!(biev_bad.battery_pct, -1);
+
+        let apple = parse_hfp_at_line(b"AT+IPHONEACCEV=2,2,0,1,4");
+        assert_eq!(apple.battery_pct, 50);
+
+        let clcc = parse_hfp_at_line(b"AT+CLCC");
+        assert!(clcc.handled);
+        assert_eq!(&clcc.reply[..clcc.reply_len], b"\r\nOK\r\n");
+    }
+
+    #[test]
+    fn rtp_pack_and_mac_path_sanitization() {
+        let mut pkt = [0u8; 16];
+        assert_eq!(write_rtp_header(&mut pkt, 96, true, 0x1234, 0xabcd_ef01, 1), Some(12));
+        assert_eq!(
+            &pkt[..12],
+            &[0x80, 0xE0, 0x12, 0x34, 0xAB, 0xCD, 0xEF, 0x01, 0, 0, 0, 1]
+        );
+        assert_eq!(write_rtp_sbc_payload_hdr(&mut pkt[12..], 0x27), Some(1));
+        assert_eq!(pkt[12], 0x07);
+
+        let mut s24 = [0u8; 6];
+        assert_eq!(pack_s16_to_s24le(&[0x1234, -1], &mut s24), Some(6));
+        assert_eq!(&s24, &[0x00, 0x34, 0x12, 0x00, 0xFF, 0xFF]);
+
+        let mac = extract_mac_from_id(b"bluez:00_11_22_33_44_55").unwrap();
+        assert_eq!(&mac, b"00:11:22:33:44:55");
+
+        let mut bpath = [0u8; 160];
+        let blen = hfp_make_batt_path(b"/org/bluez/hci0/dev_AA-BB..evil", &mut bpath).unwrap();
+        assert_eq!(
+            &bpath[..blen],
+            b"/org/lwasapi/Battery/dev_AA_BB__evil"
+        );
+        assert_eq!(msbc_rx_strip_offset(&[0x01, 0x38, 0xAD]), 2);
+        assert_eq!(msbc_rx_strip_offset(&[0xAD, 0x00]), 0);
     }
 }

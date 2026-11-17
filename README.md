@@ -2,16 +2,16 @@
 
 "**"You can't spell Salsa without ALSA — because even the cleanest audio chips sound flat until they have a zero-latency dip to taste, with zero chunks dropped and plenty of Dynamic EQ heat!"**
 
-High-Resolution (Up to **192,000 Hz / 32-Bit Float**) Windows WASAPI / WaveRT Zero-Copy Audio Engine, **Rust-Hardened PulseAudio v35 Server & PipeWire-0 Video Broker (with C11 fallback)**, **Direct BlueZ D-Bus A2DP/AVRCP Audio**, **10-Band Real-Time Dynamic EQ APO**, Sample-Accurate **DAW MIDI Hub**, and Automatic **`qpwgraph`-Equivalent Signal Topology & Owner's Manual**, **Designed to remove all PipeWire-Pulse or WirePlumber audio dependencies**.  
+High-Resolution (Up to **192,000 Hz / 32-Bit Float**) Windows WASAPI / WaveRT Zero-Copy Audio Engine, **100% Pure Rust Backend Daemon & CLI (`lwasapi-audiodg` / `lwasapi-ctl`), PA v35 Server & PipeWire-0 Video Broker**, **Direct BlueZ D-Bus A2DP/AVRCP Audio**, **10-Band Real-Time Dynamic EQ APO**, Sample-Accurate **DAW MIDI Hub**, and Automatic **`qpwgraph`-Equivalent Signal Topology & Owner's Manual**, **Designed to remove all PipeWire-Pulse or WirePlumber audio dependencies**.  
 
 ---
 
 ## Quick 1-Command Install on Any Linux PC
 
-Unzip the archive (for example `v6.8-beta` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
+Unzip the archive (for example `v6.9-beta` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
 
 ```bash
-unzip "salsa-lwasapi-installer (v6.8-beta).zip"
+unzip "salsa-lwasapi-installer (v6.9-beta).zip"
 cd salsa-lwasapi
 ./install-salsa.sh
 ```

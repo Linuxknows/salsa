@@ -4,9 +4,12 @@
 use core::ffi::c_char;
 use core::ptr;
 use core::slice;
+use core::sync::atomic::AtomicU64;
 use std::ffi::CStr;
 
+use crate::bluez_media;
 use crate::bluez_wire;
+use crate::debug_server;
 use crate::failsafe;
 use crate::pa_wire::{self, PaPropBag, TagReader};
 use crate::pw_wire::{self, Dict, PodCursor, PWB_MAX_PROPS};
@@ -860,4 +863,309 @@ pub unsafe extern "C" fn salsa_failsafe_get_stats(out: *mut SalsaFailsafeStats) 
 #[no_mangle]
 pub extern "C" fn salsa_failsafe_reset_stats() {
     failsafe::reset_stats();
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SalsaBtHfpAtRes {
+    pub reply_len: usize,
+    pub battery_pct: i32,
+    pub sco_codec: u8,
+    pub handled: bool,
+    pub has_msbc_update: bool,
+    pub supports_msbc: bool,
+    pub reply: [u8; 192],
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_bt_hfp_parse_at(
+    line: *const c_char,
+    len: usize,
+    out: *mut SalsaBtHfpAtRes,
+) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    let out_ref = unsafe { &mut *out };
+    *out_ref = SalsaBtHfpAtRes {
+        reply_len: 0,
+        battery_pct: -1,
+        sco_codec: 0,
+        handled: false,
+        has_msbc_update: false,
+        supports_msbc: false,
+        reply: [0; 192],
+    };
+    if line.is_null() {
+        return false;
+    }
+    let raw = unsafe { slice::from_raw_parts(line.cast::<u8>(), len) };
+    let act = bluez_wire::parse_hfp_at_line(raw);
+    out_ref.reply_len = act.reply_len;
+    out_ref.battery_pct = act.battery_pct;
+    out_ref.sco_codec = act.sco_codec;
+    out_ref.handled = act.handled;
+    out_ref.has_msbc_update = act.has_msbc_update;
+    out_ref.supports_msbc = act.supports_msbc;
+    out_ref.reply = act.reply;
+    act.handled
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_bt_make_batt_path(
+    dev_path: *const c_char,
+    out: *mut c_char,
+    out_cap: usize,
+) -> bool {
+    if out.is_null() || out_cap == 0 {
+        return false;
+    }
+    let dst = unsafe { slice::from_raw_parts_mut(out.cast::<u8>(), out_cap) };
+    dst.fill(0);
+    let src = if dev_path.is_null() {
+        b"".as_slice()
+    } else {
+        unsafe { CStr::from_ptr(dev_path) }.to_bytes()
+    };
+    bluez_wire::hfp_make_batt_path(src, dst).is_some()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_bt_extract_mac(
+    id: *const c_char,
+    out_mac: *mut c_char,
+    out_cap: usize,
+) -> bool {
+    if id.is_null() || out_mac.is_null() || out_cap < 18 {
+        return false;
+    }
+    let src = unsafe { CStr::from_ptr(id) }.to_bytes();
+    let Some(mac) = bluez_wire::extract_mac_from_id(src) else {
+        return false;
+    };
+    let dst = unsafe { slice::from_raw_parts_mut(out_mac.cast::<u8>(), out_cap) };
+    dst[..17].copy_from_slice(&mac);
+    dst[17] = 0;
+    true
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_bt_write_rtp_header(
+    out: *mut u8,
+    cap: usize,
+    payload_type: u8,
+    marker: bool,
+    seq: u16,
+    timestamp: u32,
+    ssrc: u32,
+) -> usize {
+    if out.is_null() {
+        return 0;
+    }
+    let dst = unsafe { slice::from_raw_parts_mut(out, cap) };
+    bluez_wire::write_rtp_header(dst, payload_type, marker, seq, timestamp, ssrc).unwrap_or(0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_bt_write_rtp_sbc_payload_hdr(
+    out: *mut u8,
+    cap: usize,
+    frame_count: u8,
+) -> usize {
+    if out.is_null() {
+        return 0;
+    }
+    let dst = unsafe { slice::from_raw_parts_mut(out, cap) };
+    bluez_wire::write_rtp_sbc_payload_hdr(dst, frame_count).unwrap_or(0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_bt_pack_s16_to_s24le(
+    pcm_s16: *const i16,
+    nsamp: usize,
+    out_s24: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if pcm_s16.is_null() || out_s24.is_null() {
+        return 0;
+    }
+    let src = unsafe { slice::from_raw_parts(pcm_s16, nsamp) };
+    let dst = unsafe { slice::from_raw_parts_mut(out_s24, out_cap) };
+    bluez_wire::pack_s16_to_s24le(src, dst).unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_bt_ldac_eqmid_to_kbps(sf: u32, eqmid: i32) -> u32 {
+    bluez_wire::ldac_eqmid_to_kbps(sf, eqmid)
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_bt_msbc_h2_byte(seq: u32) -> u8 {
+    bluez_wire::msbc_h2_byte(seq)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_bt_msbc_rx_strip_offset(rx: *const u8, rx_len: usize) -> usize {
+    let Some(s) = (unsafe { slice_from_raw(rx, rx_len) }) else {
+        return 0;
+    };
+    bluez_wire::msbc_rx_strip_offset(s)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_bt_abr_step_ldac(
+    cur_eqmid: i32,
+    congest_streak: u32,
+    clean_streak: u32,
+    out_new_eqmid: *mut i32,
+    out_clear_congest: *mut bool,
+    out_clear_clean: *mut bool,
+) {
+    let (neq, cc, cl) = bluez_wire::abr_step_ldac(cur_eqmid, congest_streak, clean_streak);
+    if !out_new_eqmid.is_null() {
+        unsafe { *out_new_eqmid = neq };
+    }
+    if !out_clear_congest.is_null() {
+        unsafe { *out_clear_congest = cc };
+    }
+    if !out_clear_clean.is_null() {
+        unsafe { *out_clear_clean = cl };
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_bt_abr_step_aac(
+    cur_bps: u32,
+    max_bps: u32,
+    congest_streak: u32,
+    clean_streak: u32,
+    out_new_bps: *mut u32,
+    out_clear_congest: *mut bool,
+    out_clear_clean: *mut bool,
+) {
+    let (nb, cc, cl) = bluez_wire::abr_step_aac(cur_bps, max_bps, congest_streak, clean_streak);
+    if !out_new_bps.is_null() {
+        unsafe { *out_new_bps = nb };
+    }
+    if !out_clear_congest.is_null() {
+        unsafe { *out_clear_congest = cc };
+    }
+    if !out_clear_clean.is_null() {
+        unsafe { *out_clear_clean = cl };
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_bt_ring_write_period(
+    tx_ring: *mut f32,
+    wr_frame: *const AtomicU64,
+    tx_paused: bool,
+    interleaved: *const f32,
+    frames: u32,
+    channels: u32,
+) -> i32 {
+    if tx_ring.is_null() || wr_frame.is_null() || interleaved.is_null() {
+        return -1;
+    }
+    let ch = channels as usize;
+    let fr = frames as usize;
+    let Some(in_len) = fr.checked_mul(ch) else {
+        return -1;
+    };
+    let ring = unsafe { slice::from_raw_parts_mut(tx_ring, bluez_media::BT_TX_RING_FRAMES * 2) };
+    let input = unsafe { slice::from_raw_parts(interleaved, in_len) };
+    let wr = unsafe { &*wr_frame };
+    bluez_media::write_tx_period(ring, wr, tx_paused, input, fr, ch)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_bt_ring_pop_resampled_s16(
+    tx_ring: *const f32,
+    wr_frame: *const AtomicU64,
+    rd_frame: *const AtomicU64,
+    in_rate: u32,
+    out_rate: u32,
+    muted: bool,
+    vol_pct: u32,
+    avrcp_supported: bool,
+    out_s16: *mut i16,
+    needed_frames: u32,
+    bt_ch: u32,
+    io_frac: *mut f64,
+    drift_scale: f64,
+    out_avail_after: *mut u32,
+) -> usize {
+    if tx_ring.is_null()
+        || wr_frame.is_null()
+        || rd_frame.is_null()
+        || out_s16.is_null()
+        || io_frac.is_null()
+        || bt_ch == 0
+    {
+        return 0;
+    }
+    let ch = usize::from(bt_ch != 1) + 1;
+    let fr = needed_frames as usize;
+    let Some(out_len) = fr.checked_mul(ch) else {
+        return 0;
+    };
+    let ring = unsafe { slice::from_raw_parts(tx_ring, bluez_media::BT_TX_RING_FRAMES * 2) };
+    let out = unsafe { slice::from_raw_parts_mut(out_s16, out_len) };
+    let wr = unsafe { &*wr_frame };
+    let rd = unsafe { &*rd_frame };
+    let frac = unsafe { &mut *io_frac };
+    let (popped, rem) = bluez_media::pop_bt_resampled_s16(
+        ring,
+        wr,
+        rd,
+        in_rate,
+        out_rate,
+        muted,
+        vol_pct,
+        avrcp_supported,
+        out,
+        fr,
+        bt_ch,
+        frac,
+        drift_scale,
+    );
+    if !out_avail_after.is_null() {
+        unsafe { *out_avail_after = rem };
+    }
+    popped
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_bt_sco_push_pcm(
+    cap_ring: *mut f32,
+    wr_frame: *const AtomicU64,
+    dec_pcm: *const i16,
+    nsamp: u32,
+    sco_rate: u32,
+    eng_rate: u32,
+    io_resamp_pos: *mut f64,
+    io_prev_s: *mut f32,
+) {
+    if cap_ring.is_null()
+        || wr_frame.is_null()
+        || dec_pcm.is_null()
+        || io_resamp_pos.is_null()
+        || io_prev_s.is_null()
+    {
+        return;
+    }
+    let ring = unsafe { slice::from_raw_parts_mut(cap_ring, bluez_media::CAP_RING_FRAMES * 2) };
+    let pcm = unsafe { slice::from_raw_parts(dec_pcm, nsamp as usize) };
+    let wr = unsafe { &*wr_frame };
+    let rpos = unsafe { &mut *io_resamp_pos };
+    let prev = unsafe { &mut *io_prev_s };
+    bluez_media::sco_push_pcm_to_cap_ring(ring, wr, pcm, sco_rate, eng_rate, rpos, prev);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_dbg_trim_cmd(raw: *const u8, len: usize) -> usize {
+    let Some(s) = (unsafe { slice_from_raw(raw, len) }) else {
+        return 0;
+    };
+    debug_server::trim_cmd_line(s).len()
 }
