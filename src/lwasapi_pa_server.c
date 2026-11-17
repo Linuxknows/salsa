@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "../include/lwasapi_pa_server.h"
+#include "../include/salsa_wire.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -187,31 +188,11 @@ enum {
     FMT_S24_32BE  = 12
 };
 
-typedef struct {
-    uint8_t  format;
-    uint8_t  channels;
-    uint32_t rate;
-} pa_wire_ss_t;
-
-typedef struct {
-    uint8_t channels;
-    uint8_t map[32];
-} pa_wire_map_t;
-
-typedef struct {
-    uint8_t  channels;
-    uint32_t values[32];
-} pa_wire_cvol_t;
-
-typedef struct {
-    char key[64];
-    char val[128];
-} pa_kv_t;
-
-typedef struct {
-    pa_kv_t items[24];
-    int     count;
-} pa_propbag_t;
+typedef salsa_pa_wire_ss_t   pa_wire_ss_t;
+typedef salsa_pa_wire_map_t  pa_wire_map_t;
+typedef salsa_pa_wire_cvol_t pa_wire_cvol_t;
+typedef salsa_pa_kv_t        pa_kv_t;
+typedef salsa_pa_propbag_t   pa_propbag_t;
 
 typedef struct {
     uint32_t channel;
@@ -626,132 +607,59 @@ static void tb_put_pcm_format(tagbuf_t *tb) {
  * Tagstruct Reader
  * ============================================================================ */
 
-typedef struct {
-    const uint8_t *p;
-    size_t         len;
-    size_t         pos;
-} tagread_t;
+typedef salsa_pa_tagread_t tagread_t;
 
 static void tr_init(tagread_t *tr, const uint8_t *p, size_t len) {
-    tr->p = p;
-    tr->len = len;
-    tr->pos = 0;
+    salsa_tr_init(tr, p, len);
 }
 
 static bool tr_u32(tagread_t *tr, uint32_t *out) {
-    if (tr->pos + 5 > tr->len || tr->p[tr->pos] != TAG_U32) return false;
-    uint32_t v;
-    memcpy(&v, tr->p + tr->pos + 1, 4);
-    *out = ntohl(v);
-    tr->pos += 5;
-    return true;
+    return salsa_tr_u32(tr, out);
 }
 
 static bool tr_u8(tagread_t *tr, uint8_t *out) {
-    if (tr->pos + 2 > tr->len || tr->p[tr->pos] != TAG_U8) return false;
-    *out = tr->p[tr->pos + 1];
-    tr->pos += 2;
-    return true;
+    return salsa_tr_u8(tr, out);
 }
 
 static bool tr_bool(tagread_t *tr, bool *out) {
-    if (tr->pos + 1 > tr->len) return false;
-    uint8_t t = tr->p[tr->pos];
-    if (t == TAG_BOOLEAN_TRUE) { *out = true; tr->pos++; return true; }
-    if (t == TAG_BOOLEAN_FALSE) { *out = false; tr->pos++; return true; }
-    return false;
+    return salsa_tr_bool(tr, out);
 }
 
 static bool tr_str(tagread_t *tr, const char **out) {
-    if (tr->pos + 1 > tr->len) return false;
-    uint8_t t = tr->p[tr->pos];
-    if (t == TAG_STRING_NULL) {
-        *out = NULL;
-        tr->pos++;
-        return true;
-    }
-    if (t != TAG_STRING) return false;
-    tr->pos++;
-    const char *s = (const char *)(tr->p + tr->pos);
-    size_t rem = tr->len - tr->pos;
-    size_t slen = strnlen(s, rem);
-    if (slen == rem) return false;
-    *out = s;
-    tr->pos += slen + 1;
+    size_t off = 0, slen = 0;
+    bool is_null = false;
+    if (!salsa_tr_str_slice(tr, &off, &slen, &is_null)) return false;
+    (void)slen;
+    *out = is_null ? NULL : (const char *)(tr->p + off);
     return true;
 }
 
 static bool tr_arbitrary(tagread_t *tr, const void **out, size_t *out_len) {
-    if (tr->pos + 5 > tr->len || tr->p[tr->pos] != TAG_ARBITRARY) return false;
-    uint32_t blen;
-    memcpy(&blen, tr->p + tr->pos + 1, 4);
-    blen = ntohl(blen);
-    if (tr->pos + 5 + blen > tr->len) return false;
-    *out = tr->p + tr->pos + 5;
+    size_t off = 0, blen = 0;
+    if (!salsa_tr_arbitrary_slice(tr, &off, &blen)) return false;
+    *out = tr->p + off;
     *out_len = blen;
-    tr->pos += 5 + blen;
     return true;
 }
 
 static bool tr_ss(tagread_t *tr, pa_wire_ss_t *ss) {
-    if (tr->pos + 7 > tr->len || tr->p[tr->pos] != TAG_SAMPLE_SPEC) return false;
-    ss->format   = tr->p[tr->pos + 1];
-    ss->channels = tr->p[tr->pos + 2];
-    uint32_t r;
-    memcpy(&r, tr->p + tr->pos + 3, 4);
-    ss->rate = ntohl(r);
-    tr->pos += 7;
-    return true;
+    return salsa_tr_ss(tr, ss);
 }
 
 static bool tr_map(tagread_t *tr, pa_wire_map_t *m) {
-    if (tr->pos + 2 > tr->len || tr->p[tr->pos] != TAG_CHANNEL_MAP) return false;
-    uint8_t ch = tr->p[tr->pos + 1];
-    if (tr->pos + 2 + ch > tr->len) return false;
-    m->channels = ch > 32 ? 32 : ch;
-    memcpy(m->map, tr->p + tr->pos + 2, m->channels);
-    tr->pos += 2 + ch;
-    return true;
+    return salsa_tr_map(tr, m);
 }
 
 static bool tr_cvol(tagread_t *tr, pa_wire_cvol_t *cv) {
-    if (tr->pos + 2 > tr->len || tr->p[tr->pos] != TAG_CVOLUME) return false;
-    uint8_t ch = tr->p[tr->pos + 1];
-    if (tr->pos + 2 + (size_t)ch * 4 > tr->len) return false;
-    cv->channels = ch > 32 ? 32 : ch;
-    for (uint8_t i = 0; i < cv->channels; i++) {
-        uint32_t v;
-        memcpy(&v, tr->p + tr->pos + 2 + (size_t)i * 4, 4);
-        cv->values[i] = ntohl(v);
-    }
-    tr->pos += 2 + (size_t)ch * 4;
-    return true;
+    return salsa_tr_cvol(tr, cv);
 }
 
 static bool tr_timeval(tagread_t *tr, uint32_t *sec, uint32_t *usec) {
-    if (tr->pos + 9 > tr->len || tr->p[tr->pos] != TAG_TIMEVAL) return false;
-    uint32_t s, u;
-    memcpy(&s, tr->p + tr->pos + 1, 4);
-    memcpy(&u, tr->p + tr->pos + 5, 4);
-    *sec = ntohl(s);
-    *usec = ntohl(u);
-    tr->pos += 9;
-    return true;
+    return salsa_tr_timeval(tr, sec, usec);
 }
 
 static void propbag_set(pa_propbag_t *pb, const char *k, const char *v) {
-    if (!pb || !k || !v) return;
-    for (int i = 0; i < pb->count; i++) {
-        if (strcmp(pb->items[i].key, k) == 0) {
-            snprintf(pb->items[i].val, sizeof(pb->items[i].val), "%s", v);
-            return;
-        }
-    }
-    if (pb->count < 24) {
-        snprintf(pb->items[pb->count].key, sizeof(pb->items[pb->count].key), "%s", k);
-        snprintf(pb->items[pb->count].val, sizeof(pb->items[pb->count].val), "%s", v);
-        pb->count++;
-    }
+    salsa_propbag_set(pb, k, v);
 }
 
 static const char *propbag_get(const pa_propbag_t *pb, const char *k) {
@@ -763,34 +671,11 @@ static const char *propbag_get(const pa_propbag_t *pb, const char *k) {
 }
 
 static bool tr_proplist(tagread_t *tr, pa_propbag_t *pb) {
-    if (tr->pos + 1 > tr->len || tr->p[tr->pos] != TAG_PROPLIST) return false;
-    tr->pos++;
-    while (tr->pos < tr->len) {
-        const char *k = NULL;
-        if (!tr_str(tr, &k)) return false;
-        if (k == NULL) return true;
-        uint32_t vlen = 0;
-        const void *val = NULL;
-        size_t alen = 0;
-        if (!tr_u32(tr, &vlen)) return false;
-        if (!tr_arbitrary(tr, &val, &alen)) return false;
-        if (pb && val && alen > 0) {
-            char tmp[128];
-            size_t c = alen < sizeof(tmp) - 1 ? alen : sizeof(tmp) - 1;
-            memcpy(tmp, val, c);
-            tmp[c] = '\0';
-            propbag_set(pb, k, tmp);
-        }
-    }
-    return false;
+    return salsa_tr_proplist(tr, pb);
 }
 
 static bool tr_skip_format_info(tagread_t *tr) {
-    if (tr->pos + 1 > tr->len || tr->p[tr->pos] != TAG_FORMAT_INFO) return false;
-    tr->pos++;
-    uint8_t enc = 0;
-    if (!tr_u8(tr, &enc)) return false;
-    return tr_proplist(tr, NULL);
+    return salsa_tr_skip_format_info(tr);
 }
 
 /* ============================================================================
@@ -3314,16 +3199,15 @@ static void process_client_io(lwasapi_pa_server_t *srv, pa_client_t *c, short re
                 c->rx_hdr_got += (size_t)r;
                 if (c->rx_hdr_got < PA_PSTREAM_DESC_BYTES) break;
 
-                uint32_t hdr[5];
-                memcpy(hdr, c->rx_hdr, PA_PSTREAM_DESC_BYTES);
-                c->rx_body_len = ntohl(hdr[0]);
-                c->rx_channel  = ntohl(hdr[1]);
-                c->rx_body_got = 0;
-
-                if (c->rx_body_len > 16U * 1024U * 1024U) {
+                uint32_t blen = 0;
+                if (!salsa_pa_parse_frame_hdr(c->rx_hdr, &blen, &c->rx_channel, NULL)) {
+                    salsa_failsafe_record_trip(SALSA_FS_PA_BAD_PKT,
+                                               "PA client exceeded 16MiB frame limit");
                     close_pa_client(srv, c);
                     return;
                 }
+                c->rx_body_len = (size_t)blen;
+                c->rx_body_got = 0;
                 if (c->rx_body_len > 0) {
                     c->rx_body = (uint8_t *)malloc(c->rx_body_len);
                     if (!c->rx_body) { close_pa_client(srv, c); return; }
@@ -4391,5 +4275,24 @@ void lwasapi_pa_server_fill_debug(lwasapi_pa_server_t *srv, lwasapi_dbg_pa_snaps
     }
 
     pthread_mutex_unlock(&srv->lock);
+}
+
+int lwasapi_pa_server_reset_clients(lwasapi_pa_server_t *srv) {
+    if (!srv) return 0;
+    int flushed = 0;
+    pthread_mutex_lock(&srv->lock);
+    for (int i = 0; i < PA_MAX_CLIENTS; i++) {
+        if (srv->clients[i].in_use) {
+            close_pa_client(srv, &srv->clients[i]);
+            flushed++;
+        }
+    }
+    pthread_mutex_unlock(&srv->lock);
+    if (srv->wake_efd >= 0) {
+        uint64_t one = 1u;
+        ssize_t wr = write(srv->wake_efd, &one, 8);
+        (void)wr;
+    }
+    return flushed;
 }
 

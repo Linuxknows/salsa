@@ -26,6 +26,27 @@ SHIM_DIR           := $(BUILD_DIR)/shims
 PA_RECONNECT_DIR   := $(BUILD_DIR)/pa_reconnect
 PA_RECONNECT32_DIR := $(BUILD_DIR)/pa_reconnect32
 
+USE_RUST_WIRE ?= auto
+CARGO := $(shell command -v cargo 2>/dev/null || ([ -x "$(HOME)/.cargo/bin/cargo" ] && echo "$(HOME)/.cargo/bin/cargo"))
+ifeq ($(USE_RUST_WIRE),auto)
+  ifeq ($(CARGO),)
+    USE_RUST_WIRE_EFF := 0
+  else
+    USE_RUST_WIRE_EFF := 1
+  endif
+else
+  USE_RUST_WIRE_EFF := $(USE_RUST_WIRE)
+endif
+
+WIRE_LIB := $(BUILD_DIR)/libsalsa_wire.a
+RUST_SRCS := $(wildcard rust/salsa_net/src/*.rs) rust/salsa_net/Cargo.toml
+
+ifeq ($(USE_RUST_WIRE_EFF),1)
+AUDIODG_NET_SRCS :=
+else
+AUDIODG_NET_SRCS := src/lwasapi_pa_server.c src/lwasapi_pw_broker.c
+endif
+
 OPT_PA32 :=
 ifneq ($(HOST_LIBPULSE32),)
 ifeq ($(HAS_M32),1)
@@ -33,9 +54,10 @@ OPT_PA32 := $(PA_RECONNECT32_DIR)/libpulse.so.0
 endif
 endif
 
-.PHONY: all clean test installer dist
+.PHONY: all clean test rust-test fuzz-diff test-sanitized installer dist
 
-all: $(BUILD_DIR)/lwasapi-audiodg \
+all: $(WIRE_LIB) \
+     $(BUILD_DIR)/lwasapi-audiodg \
      $(BUILD_DIR)/liblwasapi.so \
      $(BUILD_DIR)/libasound_module_pcm_lwasapi.so \
      $(BUILD_DIR)/libsalsa_pa_reconnect.so \
@@ -62,8 +84,20 @@ $(PA_RECONNECT_DIR):
 $(PA_RECONNECT32_DIR):
 	mkdir -p $(PA_RECONNECT32_DIR)
 
-$(BUILD_DIR)/lwasapi-audiodg: src/lwasapi_audiodg.c src/lwasapi_bluez.c src/lwasapi_hw_analog.c src/lwasapi_midi.c src/lwasapi_pa_server.c src/lwasapi_pw_broker.c src/lwasapi_debug.c include/lwasapi.h include/lwasapi_bluez.h include/lwasapi_hw_analog.h include/lwasapi_midi.h include/lwasapi_pa_server.h include/lwasapi_pw_broker.h include/lwasapi_debug.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) src/lwasapi_audiodg.c src/lwasapi_bluez.c src/lwasapi_hw_analog.c src/lwasapi_midi.c src/lwasapi_pa_server.c src/lwasapi_pw_broker.c src/lwasapi_debug.c -o $@ $(LDFLAGS) $(BT_LIBS)
+ifeq ($(USE_RUST_WIRE_EFF),1)
+$(WIRE_LIB): $(RUST_SRCS) | $(BUILD_DIR)
+	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) build --manifest-path rust/salsa_net/Cargo.toml --release --offline --target-dir $(BUILD_DIR)/rust_target
+	cp $(BUILD_DIR)/rust_target/release/libsalsa_wire.a $@
+else
+$(BUILD_DIR)/salsa_wire_c.o: src/salsa_wire.c include/salsa_wire.h include/lwasapi.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c src/salsa_wire.c -o $@
+
+$(WIRE_LIB): $(BUILD_DIR)/salsa_wire_c.o | $(BUILD_DIR)
+	$(AR) rcs $@ $(BUILD_DIR)/salsa_wire_c.o
+endif
+
+$(BUILD_DIR)/lwasapi-audiodg: src/lwasapi_audiodg.c src/lwasapi_bluez.c src/lwasapi_hw_analog.c src/lwasapi_midi.c src/lwasapi_debug.c $(AUDIODG_NET_SRCS) $(WIRE_LIB) include/lwasapi.h include/lwasapi_bluez.h include/lwasapi_hw_analog.h include/lwasapi_midi.h include/lwasapi_pa_server.h include/lwasapi_pw_broker.h include/lwasapi_debug.h include/salsa_wire.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) src/lwasapi_audiodg.c src/lwasapi_bluez.c src/lwasapi_hw_analog.c src/lwasapi_midi.c src/lwasapi_debug.c $(AUDIODG_NET_SRCS) $(WIRE_LIB) -o $@ $(LDFLAGS) $(BT_LIBS)
 
 $(BUILD_DIR)/liblwasapi.so: src/liblwasapi.c include/lwasapi.h include/lwasapi_debug.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -shared -Wl,-soname,liblwasapi.so src/liblwasapi.c -o $@ $(LDFLAGS)
@@ -140,8 +174,8 @@ $(SHIM_DIR)/libjack.so.0: src/shim_jack.c $(BUILD_DIR)/liblwasapi.so | $(SHIM_DI
 		src/shim_jack.c -L$(BUILD_DIR) -llwasapi -o $@ $(LDFLAGS)
 	ln -sf libjack.so.0 $(SHIM_DIR)/libjack.so
 
-$(BUILD_DIR)/lwasapi-ctl: src/lwasapi_ctl.c src/lwasapi_bluez.c src/lwasapi_debug.c include/lwasapi.h include/lwasapi_bluez.h include/lwasapi_debug.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) src/lwasapi_ctl.c src/lwasapi_bluez.c src/lwasapi_debug.c -o $@ $(LDFLAGS) $(BT_LIBS)
+$(BUILD_DIR)/lwasapi-ctl: src/lwasapi_ctl.c src/lwasapi_bluez.c src/lwasapi_debug.c $(WIRE_LIB) include/lwasapi.h include/lwasapi_bluez.h include/lwasapi_debug.h include/salsa_wire.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) src/lwasapi_ctl.c src/lwasapi_bluez.c src/lwasapi_debug.c $(WIRE_LIB) -o $@ $(LDFLAGS) $(BT_LIBS)
 
 $(BUILD_DIR)/lwasapi-test: src/lwasapi_test.c $(BUILD_DIR)/liblwasapi.so | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -Wl,-rpath,'$$ORIGIN' src/lwasapi_test.c -L$(BUILD_DIR) -llwasapi -ldl -o $@ $(LDFLAGS)
@@ -149,10 +183,21 @@ $(BUILD_DIR)/lwasapi-test: src/lwasapi_test.c $(BUILD_DIR)/liblwasapi.so | $(BUI
 $(BUILD_DIR)/lwasapi-bench: src/lwasapi_bench.c $(BUILD_DIR)/liblwasapi.so | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -Wl,-rpath,'$$ORIGIN' src/lwasapi_bench.c -L$(BUILD_DIR) -llwasapi -ldl -o $@ $(LDFLAGS)
 
+rust-test:
+	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) clippy --manifest-path rust/salsa_net/Cargo.toml --offline --all-targets -- -D warnings
+	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) test --manifest-path rust/salsa_net/Cargo.toml --offline
+
+fuzz-diff: $(WIRE_LIB) tests/fuzz/fuzz_wire_diff.c tests/fuzz/c_wire_rename.h src/salsa_wire.c | $(BUILD_DIR)
+	clang -O1 -g -fsanitize=address,undefined -Iinclude -include tests/fuzz/c_wire_rename.h -c src/salsa_wire.c -o $(BUILD_DIR)/c_wire_ref_fuzz.o
+	clang -O1 -g -fsanitize=fuzzer,address,undefined -Iinclude tests/fuzz/fuzz_wire_diff.c $(BUILD_DIR)/c_wire_ref_fuzz.o $(WIRE_LIB) -o $(BUILD_DIR)/fuzz_wire_diff -pthread -lm -ldl
+
+test-sanitized: rust-test fuzz-diff
+	$(BUILD_DIR)/fuzz_wire_diff -runs=250000
+
 test: all
 	python3 scripts/run_regression_tests.py
 
-REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo v6.7-beta))
+REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo v6.8-beta))
 
 installer: all
 	@if [ "$(REV)" != "$$(cat VERSION 2>/dev/null || true)" ]; then printf '%s\n' "$(REV)" > VERSION; fi
@@ -160,7 +205,7 @@ installer: all
 	rev = sys.argv[1]; \
 	tag = rev if rev.startswith("v") else f"v{rev}"; \
 	out = f"salsa-lwasapi-installer ({tag}).zip"; tmp = out + ".tmp"; \
-	skip_dirs = {"__pycache__", ".git", ".pytest_cache"}; \
+	skip_dirs = {"__pycache__", ".git", ".pytest_cache", "target", "rust_target"}; \
 	files = []; \
 	[files.extend([os.path.relpath(os.path.join(r, n), ".") for n in sorted(f) if not n.endswith((".pyc", ".zip", ".tmp"))]) for r, d, f in os.walk(".") if (d.__setitem__(slice(None), sorted(x for x in d if x not in skip_dirs)) or True)]; \
 	zf = zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED); \
@@ -170,4 +215,4 @@ installer: all
 dist: installer
 
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) rust/salsa_net/target

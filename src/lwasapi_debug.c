@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "../include/lwasapi_debug.h"
 #include "../include/lwasapi_paths.h"
+#include "../include/salsa_wire.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -695,7 +696,24 @@ static void serialize_snapshot_json(dbg_jbuf_t *jb, const lwasapi_dbg_snapshot_t
         jbuf_append_json_str(jb, pl->format_summary);
         jbuf_append_cstr(jb, "}");
     }
-    jbuf_append_cstr(jb, "]}}");
+    salsa_failsafe_stats_t fs;
+    salsa_failsafe_get_stats(&fs);
+    jbuf_appendf(jb,
+        "]},\"wire\":{\"backend\":\"%s\",\"is_rust\":%d,\"armed\":%d,"
+        "\"trips_total\":%llu,\"pa_quarantined\":%llu,\"pw_quarantined\":%llu,"
+        "\"bt_fallbacks\":%llu,\"fd_leaks_blocked\":%llu,\"manual_resets\":%llu,"
+        "\"last_reason\":",
+        fs.is_rust ? "rust" : "c_fallback",
+        fs.is_rust ? 1 : 0,
+        fs.armed ? 1 : 0,
+        (unsigned long long)fs.trips_total,
+        (unsigned long long)fs.pa_quarantined,
+        (unsigned long long)fs.pw_quarantined,
+        (unsigned long long)fs.bt_fallbacks,
+        (unsigned long long)fs.fd_leaks_blocked,
+        (unsigned long long)fs.manual_resets);
+    jbuf_append_json_str(jb, fs.last_reason);
+    jbuf_append_cstr(jb, "}}");
 }
 
 static void history_push_ring(dbg_hist_entry_t *ring, size_t *head, size_t *count,

@@ -2,6 +2,7 @@
 #include "../include/lwasapi_pw_broker.h"
 #include "../include/lwasapi_debug.h"
 #include "../include/lwasapi_paths.h"
+#include "../include/salsa_wire.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -3796,14 +3797,23 @@ static int drain_client_socket(struct lwasapi_pw_broker *brk, pwb_client_t *c) {
         if (cm->cmsg_level == SOL_SOCKET && cm->cmsg_type == SCM_RIGHTS) {
             size_t cnt = (cm->cmsg_len - CMSG_LEN(0)) / sizeof(int);
             const int *rfds = (const int *)CMSG_DATA(cm);
+            uint32_t keep = 0;
+            if (!salsa_pwb_fd_quota_check(c->rx_nfds, (uint32_t)cnt, &keep)) {
+                for (size_t i = 0; i < cnt; i++) close(rfds[i]);
+                salsa_failsafe_record_trip(SALSA_FS_FD_QUOTA,
+                                           "PW client exceeded SCM_RIGHTS FD quota (256)");
+                return -1;
+            }
             for (size_t i = 0; i < cnt; i++) {
-                if (c->rx_nfds < 256) c->rx_fds[c->rx_nfds++] = rfds[i];
+                if (i < keep && c->rx_nfds < 256) c->rx_fds[c->rx_nfds++] = rfds[i];
                 else close(rfds[i]);
             }
         }
     }
 
     if (c->rx_len + (size_t)n > (16u * 1024u * 1024u)) {
+        salsa_failsafe_record_trip(SALSA_FS_PW_BAD_PKT,
+                                   "PW client exceeded 16MiB stream buffer limit");
         return -1;
     }
     if (c->rx_len + (size_t)n > c->rx_cap) {
@@ -3820,15 +3830,15 @@ static int drain_client_socket(struct lwasapi_pw_broker *brk, pwb_client_t *c) {
 
     size_t consumed = 0;
     while (c->rx_len - consumed >= 16u) {
-        uint32_t hdr[4];
-        memcpy(hdr, c->rx_buf + consumed, 16);
-        uint32_t oid = hdr[0];
-        uint8_t op = (uint8_t)((hdr[1] >> 24) & 0xffu);
-        uint32_t psz = hdr[1] & 0x00ffffffu;
-        uint32_t seq = hdr[2];
-        uint32_t nfds = hdr[3];
-        if (nfds > 256u) return -1;
-        size_t pkt_len = 16u + pwb_pad8(psz);
+        uint32_t oid = 0, psz = 0, seq = 0, nfds = 0;
+        uint8_t op = 0;
+        size_t pkt_len = 0;
+        if (!salsa_pwb_parse_pkt_hdr(c->rx_buf + consumed, c->rx_len - consumed,
+                                     &oid, &op, &psz, &seq, &nfds, &pkt_len)) {
+            salsa_failsafe_record_trip(SALSA_FS_PW_BAD_PKT,
+                                       "PW client sent oversized or malformed packet header");
+            return -1;
+        }
         if (c->rx_len - consumed < pkt_len) break;
         if (c->rx_nfds < nfds) break;
 
@@ -4490,4 +4500,23 @@ int lwasapi_pw_broker_self_test(lwasapi_pw_broker_t *brk, char *out_msg, size_t 
              "FAIL: info=%d factory=%d done=%d on %s",
              got_info, got_client_node_factory, got_done, brk->socket_path);
     return -1;
+}
+
+int lwasapi_pw_broker_reset_clients(lwasapi_pw_broker_t *brk) {
+    if (!brk) return 0;
+    int flushed = 0;
+    pthread_mutex_lock(&brk->lock);
+    for (uint32_t ci = 0; ci < PWB_MAX_CLIENTS; ci++) {
+        if (brk->clients[ci].in_use) {
+            handle_client_disconnect(brk, &brk->clients[ci]);
+            flushed++;
+        }
+    }
+    pthread_mutex_unlock(&brk->lock);
+    if (brk->wake_efd >= 0) {
+        uint64_t one = 1u;
+        ssize_t wr = write(brk->wake_efd, &one, 8);
+        (void)wr;
+    }
+    return flushed;
 }

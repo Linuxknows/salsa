@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "../include/lwasapi_bluez.h"
 #include "../include/lwasapi_debug.h"
+#include "../include/salsa_wire.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -2534,116 +2535,30 @@ static int select_a2dp_config_for_endpoint(const char *path, const uint8_t *rcap
     *out_len = 0;
     if (out_cap_bit) *out_cap_bit = 0;
 
-    if (strcmp(path, LWASAPI_EP_LDAC) == 0 && rlen >= (int)sizeof(a2dp_ldac_t)) {
-        const a2dp_ldac_t *in = (const a2dp_ldac_t *)rcaps;
-        if (A2DP_GET_VENDOR_ID(in->info) == LDAC_VENDOR_ID &&
-            A2DP_GET_CODEC_ID(in->info) == LDAC_CODEC_ID) {
-            if (out_cap_bit) *out_cap_bit = LWASAPI_BT_CAP_LDAC;
-            a2dp_ldac_t sel;
-            memset(&sel, 0, sizeof(sel));
-            A2DP_SET_VENDOR_HEADER(sel.info, LDAC_VENDOR_ID, LDAC_CODEC_ID);
-            sel.frequency = (in->frequency & LDAC_SAMPLING_FREQ_96000) ? LDAC_SAMPLING_FREQ_96000
-                          : (in->frequency & LDAC_SAMPLING_FREQ_88200) ? LDAC_SAMPLING_FREQ_88200
-                          : (in->frequency & LDAC_SAMPLING_FREQ_48000) ? LDAC_SAMPLING_FREQ_48000
-                          : (in->frequency & LDAC_SAMPLING_FREQ_44100) ? LDAC_SAMPLING_FREQ_44100 : 0;
-            sel.channel_mode = (in->channel_mode & LDAC_CHANNEL_MODE_STEREO) ? LDAC_CHANNEL_MODE_STEREO
-                             : (in->channel_mode & LDAC_CHANNEL_MODE_DUAL)   ? LDAC_CHANNEL_MODE_DUAL
-                             : (in->channel_mode & LDAC_CHANNEL_MODE_MONO)   ? LDAC_CHANNEL_MODE_MONO : 0;
-            if (sel.frequency && sel.channel_mode) {
-                memcpy(out_cfg, &sel, sizeof(sel));
-                *out_len = (int)sizeof(sel);
-                return 0;
-            }
-        }
-    } else if (strcmp(path, LWASAPI_EP_APTXHD) == 0 && rlen >= (int)sizeof(a2dp_aptx_hd_t)) {
-        const a2dp_aptx_hd_t *in = (const a2dp_aptx_hd_t *)rcaps;
-        if (A2DP_GET_VENDOR_ID(in->aptx.info) == APTX_HD_VENDOR_ID &&
-            A2DP_GET_CODEC_ID(in->aptx.info) == APTX_HD_CODEC_ID) {
-            if (out_cap_bit) *out_cap_bit = LWASAPI_BT_CAP_APTX_HD;
-            a2dp_aptx_hd_t sel;
-            memset(&sel, 0, sizeof(sel));
-            A2DP_SET_VENDOR_HEADER(sel.aptx.info, APTX_HD_VENDOR_ID, APTX_HD_CODEC_ID);
-            sel.aptx.frequency = (in->aptx.frequency & APTX_SAMPLING_FREQ_48000) ? APTX_SAMPLING_FREQ_48000
-                               : (in->aptx.frequency & APTX_SAMPLING_FREQ_44100) ? APTX_SAMPLING_FREQ_44100
-                               : (in->aptx.frequency & APTX_SAMPLING_FREQ_32000) ? APTX_SAMPLING_FREQ_32000
-                               : (in->aptx.frequency & APTX_SAMPLING_FREQ_16000) ? APTX_SAMPLING_FREQ_16000 : 0;
-            sel.aptx.channel_mode = (in->aptx.channel_mode & APTX_CHANNEL_MODE_STEREO) ? APTX_CHANNEL_MODE_STEREO
-                                  : (in->aptx.channel_mode & APTX_CHANNEL_MODE_MONO) ? APTX_CHANNEL_MODE_MONO : 0;
-            if (sel.aptx.frequency && sel.aptx.channel_mode) {
-                memcpy(out_cfg, &sel, sizeof(sel));
-                *out_len = (int)sizeof(sel);
-                return 0;
-            }
-        }
-    } else if (strcmp(path, LWASAPI_EP_APTX) == 0 && rlen >= (int)sizeof(a2dp_aptx_t)) {
-        const a2dp_aptx_t *in = (const a2dp_aptx_t *)rcaps;
-        if (A2DP_GET_VENDOR_ID(in->info) == APTX_VENDOR_ID &&
-            A2DP_GET_CODEC_ID(in->info) == APTX_CODEC_ID) {
-            if (out_cap_bit) *out_cap_bit = LWASAPI_BT_CAP_APTX;
-            a2dp_aptx_t sel;
-            memset(&sel, 0, sizeof(sel));
-            A2DP_SET_VENDOR_HEADER(sel.info, APTX_VENDOR_ID, APTX_CODEC_ID);
-            sel.frequency = (in->frequency & APTX_SAMPLING_FREQ_48000) ? APTX_SAMPLING_FREQ_48000
-                          : (in->frequency & APTX_SAMPLING_FREQ_44100) ? APTX_SAMPLING_FREQ_44100
-                          : (in->frequency & APTX_SAMPLING_FREQ_32000) ? APTX_SAMPLING_FREQ_32000
-                          : (in->frequency & APTX_SAMPLING_FREQ_16000) ? APTX_SAMPLING_FREQ_16000 : 0;
-            sel.channel_mode = (in->channel_mode & APTX_CHANNEL_MODE_STEREO) ? APTX_CHANNEL_MODE_STEREO
-                             : (in->channel_mode & APTX_CHANNEL_MODE_MONO) ? APTX_CHANNEL_MODE_MONO : 0;
-            if (sel.frequency && sel.channel_mode) {
-                memcpy(out_cfg, &sel, sizeof(sel));
-                *out_len = (int)sizeof(sel);
-                return 0;
-            }
-        }
-    } else if (strcmp(path, LWASAPI_EP_AAC) == 0 && rlen >= (int)sizeof(a2dp_aac_t)) {
-        if (out_cap_bit) *out_cap_bit = LWASAPI_BT_CAP_AAC;
-        const a2dp_aac_t *in = (const a2dp_aac_t *)rcaps;
-        a2dp_aac_t sel;
-        memset(&sel, 0, sizeof(sel));
-        sel.object_type = (in->object_type & AAC_OBJECT_TYPE_MPEG2_AAC_LC) ? AAC_OBJECT_TYPE_MPEG2_AAC_LC
-                        : (in->object_type & AAC_OBJECT_TYPE_MPEG4_AAC_LC) ? AAC_OBJECT_TYPE_MPEG4_AAC_LC
-                        : in->object_type;
-        uint16_t infreq = ((uint16_t)in->frequency1 << 4) | (in->frequency2 & 0x0F);
-        uint16_t sfreq  = (infreq & AAC_SAMPLING_FREQ_48000) ? AAC_SAMPLING_FREQ_48000
-                        : (infreq & AAC_SAMPLING_FREQ_44100) ? AAC_SAMPLING_FREQ_44100 : AAC_SAMPLING_FREQ_48000;
-        sel.frequency1 = (uint8_t)((sfreq >> 4) & 0xFF);
-        sel.frequency2 = (uint8_t)(sfreq & 0x0F);
-        sel.channels   = (in->channels & AAC_CHANNELS_2) ? AAC_CHANNELS_2 : AAC_CHANNELS_1;
+    int kind = -1;
+    if (strcmp(path, LWASAPI_EP_LDAC) == 0)        kind = SALSA_BT_WIRE_LDAC;
+    else if (strcmp(path, LWASAPI_EP_APTXHD) == 0) kind = SALSA_BT_WIRE_APTX_HD;
+    else if (strcmp(path, LWASAPI_EP_APTX) == 0)   kind = SALSA_BT_WIRE_APTX;
+    else if (strcmp(path, LWASAPI_EP_AAC) == 0)    kind = SALSA_BT_WIRE_AAC;
+    else if (strcmp(path, LWASAPI_EP_SBC) == 0)    kind = SALSA_BT_WIRE_SBC;
+    else return -1;
 
-        uint32_t max_bps = ((uint32_t)in->bitrate1 << 16) | ((uint32_t)in->bitrate2 << 8) | in->bitrate3;
-        if (max_bps == 0) max_bps = 256000;
-        if (max_bps > 256000) max_bps = 256000;
-        sel.vbr      = in->vbr;
-        sel.bitrate1 = (uint8_t)((max_bps >> 16) & 0x7F);
-        sel.bitrate2 = (uint8_t)((max_bps >> 8) & 0xFF);
-        sel.bitrate3 = (uint8_t)(max_bps & 0xFF);
-        memcpy(out_cfg, &sel, sizeof(sel));
-        *out_len = (int)sizeof(sel);
-        return 0;
-    } else if (strcmp(path, LWASAPI_EP_SBC) == 0 && rlen >= (int)sizeof(a2dp_sbc_t)) {
-        if (out_cap_bit) *out_cap_bit = LWASAPI_BT_CAP_SBC;
-        const a2dp_sbc_t *in = (const a2dp_sbc_t *)rcaps;
-        a2dp_sbc_t sel;
-        memset(&sel, 0, sizeof(sel));
-        sel.frequency = (in->frequency & SBC_SAMPLING_FREQ_48000) ? SBC_SAMPLING_FREQ_48000
-                      : (in->frequency & SBC_SAMPLING_FREQ_44100) ? SBC_SAMPLING_FREQ_44100
-                      : (in->frequency & SBC_SAMPLING_FREQ_32000) ? SBC_SAMPLING_FREQ_32000 : SBC_SAMPLING_FREQ_16000;
-        sel.channel_mode = (in->channel_mode & SBC_CHANNEL_MODE_JOINT_STEREO) ? SBC_CHANNEL_MODE_JOINT_STEREO
-                         : (in->channel_mode & SBC_CHANNEL_MODE_STEREO) ? SBC_CHANNEL_MODE_STEREO
-                         : (in->channel_mode & SBC_CHANNEL_MODE_DUAL_CHANNEL) ? SBC_CHANNEL_MODE_DUAL_CHANNEL : SBC_CHANNEL_MODE_MONO;
-        sel.block_length = (in->block_length & SBC_BLOCK_LENGTH_16) ? SBC_BLOCK_LENGTH_16
-                         : (in->block_length & SBC_BLOCK_LENGTH_12) ? SBC_BLOCK_LENGTH_12
-                         : (in->block_length & SBC_BLOCK_LENGTH_8)  ? SBC_BLOCK_LENGTH_8  : SBC_BLOCK_LENGTH_4;
-        sel.subbands = (in->subbands & SBC_SUBBANDS_8) ? SBC_SUBBANDS_8 : SBC_SUBBANDS_4;
-        sel.allocation_method = (in->allocation_method & SBC_ALLOCATION_LOUDNESS) ? SBC_ALLOCATION_LOUDNESS : SBC_ALLOCATION_SNR;
-        sel.min_bitpool = in->min_bitpool < 2 ? 2 : in->min_bitpool;
-        sel.max_bitpool = in->max_bitpool > 53 ? 53 : in->max_bitpool;
-        if (sel.max_bitpool < sel.min_bitpool) sel.max_bitpool = sel.min_bitpool;
-        memcpy(out_cfg, &sel, sizeof(sel));
-        *out_len = (int)sizeof(sel);
-        return 0;
+    if (kind == SALSA_BT_WIRE_SBC && rlen >= 4) {
+        if (rcaps[2] < 2u || rcaps[3] > 53u || rcaps[2] > rcaps[3]) {
+            salsa_failsafe_record_trip(SALSA_FS_BT_FALLBACK,
+                                       "Clamped malformed A2DP SBC bitpool bounds");
+        }
     }
-    return -1;
+
+    size_t ol = 0;
+    int rc = salsa_bt_select_a2dp_config(kind, rcaps, (size_t)rlen, out_cfg, 16u, &ol, out_cap_bit);
+    if (rc == 0) {
+        *out_len = (int)ol;
+    } else {
+        salsa_failsafe_record_trip(SALSA_FS_BT_FALLBACK,
+                                   "Rejected malformed BlueZ A2DP endpoint capability payload");
+    }
+    return rc;
 }
 
 static void acquire_bluez_transport(DBusConnection *conn, lwasapi_bluez_t *bt) {
@@ -5038,13 +4953,8 @@ int lwasapi_bluez_set_mic_gain_ppm(lwasapi_bluez_t *bt, uint32_t gain_ppm, int v
 }
 
 static bool parse_bdaddr_str(const char *str, lwasapi_bdaddr_t *out) {
-    unsigned int b[6] = {0};
-    if (!str || sscanf(str, "%2x:%2x:%2x:%2x:%2x:%2x",
-                       &b[5], &b[4], &b[3], &b[2], &b[1], &b[0]) != 6) {
-        return false;
-    }
-    for (int i = 0; i < 6; i++) out->b[i] = (uint8_t)b[i];
-    return true;
+    if (!str || !out) return false;
+    return salsa_bt_parse_bdaddr(str, strnlen(str, 32u), out->b);
 }
 
 static void bt_stop_sco_capture(lwasapi_bluez_t *bt) {

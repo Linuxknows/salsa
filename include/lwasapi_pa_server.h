@@ -77,4 +77,10 @@ struct lwasapi_dbg_pa_snapshot_tag;
  */
 void lwasapi_pa_server_fill_debug(lwasapi_pa_server_t *srv, lwasapi_dbg_pa_snapshot_t *out);
 
+/**
+ * Flush and disconnect active PulseAudio network clients cleanly without stopping
+ * the lock-free SCHED_FIFO audio engine. Returns number of clients flushed.
+ */
+int lwasapi_pa_server_reset_clients(lwasapi_pa_server_t *srv);
+
 #endif /* LWASAPI_PA_SERVER_H */

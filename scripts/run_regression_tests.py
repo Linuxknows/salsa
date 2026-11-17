@@ -1074,7 +1074,8 @@ int main(void) {
             src_p,
             os.path.join(REPO_DIR, "src", "lwasapi_hw_analog.c"),
             os.path.join(REPO_DIR, "src", "lwasapi_debug.c"),
-            "-o", bin_p, "-pthread", "-lm",
+            os.path.join(REPO_DIR, "build", "libsalsa_wire.a"),
+            "-o", bin_p, "-pthread", "-lm", "-ldl",
         ], timeout=20)
         if cc.returncode != 0:
             raise AssertionError(f"v6.2-beta scoring test compile failed: {cc.stderr}")
@@ -1082,6 +1083,71 @@ int main(void) {
         if run_r.returncode != 0:
             raise AssertionError(f"v6.2-beta scoring test failed: {run_r.stderr}")
     print("[PASS] v6.2-beta Hardware Analog safe defaults & Strix/Soar/Scarlett > HDMI card scoring")
+
+
+def test_rust_wire_core_and_failsafe_reset() -> None:
+    cargo_bin = shutil.which("cargo") or os.path.expanduser("~/.cargo/bin/cargo")
+    if cargo_bin and os.path.exists(cargo_bin):
+        env = dict(os.environ)
+        env["PATH"] = f"{os.path.dirname(cargo_bin)}:{env.get('PATH', '')}"
+        manifest = os.path.join(REPO_DIR, "rust", "salsa_net", "Cargo.toml")
+        r_clippy = run_cmd(
+            [cargo_bin, "clippy", "--manifest-path", manifest, "--offline", "--all-targets", "--", "-D", "warnings"],
+            env=env,
+            timeout=60,
+        )
+        assert r_clippy.returncode == 0, f"cargo clippy failed:\n{r_clippy.stdout}\n{r_clippy.stderr}"
+        r_test = run_cmd(
+            [cargo_bin, "test", "--manifest-path", manifest, "--offline"],
+            env=env,
+            timeout=60,
+        )
+        assert r_test.returncode == 0, f"cargo test failed:\n{r_test.stdout}\n{r_test.stderr}"
+        print("[PASS] Rust salsa_net wire/PA-server/PW-broker clippy + offline tests passed")
+
+
+def test_live_rust_wire_failsafe() -> None:
+    sys.path.insert(0, REPO_DIR)
+    from salsa_debug_core import SalsaDebugClient
+
+    cli = SalsaDebugClient()
+    cli.start()
+    try:
+        telem = None
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 3.0:
+            snap = cli.get_snapshot()
+            t = snap.get("telemetry") or {}
+            if snap.get("connected") and isinstance(t.get("wire"), dict):
+                telem = t
+                break
+            time.sleep(0.08)
+        assert telem is not None, "Did not receive live 'wire' telemetry object over lwasapi_debug"
+        wire0 = telem["wire"]
+        assert wire0.get("armed") == 1, f"Network failsafe not armed: {wire0}"
+        assert wire0.get("is_rust") == 1 and wire0.get("backend") == "rust", f"Expected active Rust wire core: {wire0}"
+
+        trips_before = int(wire0.get("trips_total", 0))
+        resets_before = int(wire0.get("manual_resets", 0))
+        rep = cli.send_command_wait("RESET_NET_CLIENTS", timeout=2.5)
+        assert rep and rep.get("rc", -1) == 0, f"RESET_NET_CLIENTS failed: {rep}"
+        assert "audio engine uninterrupted" in rep.get("msg", ""), f"Unexpected reply: {rep}"
+
+        cli.send_command("SNAPSHOT")
+        wire1 = None
+        t1 = time.monotonic()
+        while time.monotonic() - t1 < 2.0:
+            snap = cli.get_snapshot()
+            w = (snap.get("telemetry") or {}).get("wire") or {}
+            if int(w.get("manual_resets", 0)) >= resets_before + 1:
+                wire1 = w
+                break
+            time.sleep(0.08)
+        assert wire1 is not None, "manual_resets did not increment in live wire telemetry"
+        assert int(wire1.get("trips_total", 0)) >= trips_before + 1
+        print("[PASS] Live Rust Wire Core + Silent Failsafe armed + RESET_NET_CLIENTS verified")
+    finally:
+        cli.stop()
 
 
 def main() -> int:
@@ -1094,11 +1160,13 @@ def main() -> int:
     test_elf_hardening_and_proxy_parity()
     test_rev6_tray_and_steam_reconnect()
     test_rev62_hw_analog_scoring_and_defaults()
+    test_rust_wire_core_and_failsafe_reset()
 
     if is_audiodg_active():
         test_live_daemon_security_and_pw_broker()
         test_live_session_control_reconnect_and_app_volumes()
         test_live_rev61_studio_apis()
+        test_live_rust_wire_failsafe()
     elif args.require_live:
         raise AssertionError("lwasapi-audiodg.service is not active (--require-live specified)")
     else:

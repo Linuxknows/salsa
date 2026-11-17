@@ -129,8 +129,10 @@ class SalsaLiveDebuggerWidget(QWidget):
         self._pending_boundary: Optional[dict[str, Any]] = None
         self._pending_probe_msg: Optional[str] = None
         self._pending_sc_status: Optional[str] = None
+        self._pending_net_reset_msg: Optional[str] = None
         self._scan_busy = False
         self._boundary_busy = False
+        self._net_reset_busy = False
 
         # ScreenCast Broker & Live Feed state (Off by default for zero overhead)
         self._sc_prefs = load_screencast_prefs()
@@ -310,6 +312,27 @@ class SalsaLiveDebuggerWidget(QWidget):
         self.lbl_hw_pill = QLabel("Endpoint: -- | BlueZ: -- | PA v35: -- | MIDI: --")
         self.lbl_hw_pill.setObjectName("DbgStat")
         top_col.addWidget(self.lbl_hw_pill)
+
+        fs_row = QHBoxLayout()
+        fs_row.setSpacing(10)
+
+        self.lbl_wire_pill = QLabel("● Wire Core: connecting...")
+        self.lbl_wire_pill.setObjectName("DbgStat")
+        fs_row.addWidget(self.lbl_wire_pill)
+
+        self.lbl_failsafe_pill = QLabel("● Network Failsafe: waiting...")
+        self.lbl_failsafe_pill.setObjectName("DbgStat")
+        fs_row.addWidget(self.lbl_failsafe_pill, 1)
+
+        self.lbl_net_reset_status = QLabel("")
+        self.lbl_net_reset_status.setObjectName("DbgStat")
+        fs_row.addWidget(self.lbl_net_reset_status)
+
+        self.btn_reset_net = QPushButton("Failsafe: Reset PA/PW Network Clients")
+        self.btn_reset_net.clicked.connect(self._on_reset_net_clients)
+        fs_row.addWidget(self.btn_reset_net)
+
+        top_col.addLayout(fs_row)
         root.addWidget(top_card)
 
         # ------------------------------------------------------------------
@@ -1424,6 +1447,25 @@ class SalsaLiveDebuggerWidget(QWidget):
         self.tbl_events.setRowCount(0)
         self.txt_event_detail.clear()
 
+    def _on_reset_net_clients(self) -> None:
+        if self._net_reset_busy:
+            return
+        self._net_reset_busy = True
+        self.btn_reset_net.setEnabled(False)
+        self.lbl_net_reset_status.setText("Flushing PA/PW clients...")
+
+        def worker() -> None:
+            try:
+                reply = self.client.send_command_wait("RESET_NET_CLIENTS", timeout=2.5)
+                msg = (reply or {}).get("msg") or "Timed out resetting network clients"
+                self.client.send_command("SNAPSHOT")
+                with self._work_lock:
+                    self._pending_net_reset_msg = msg
+            finally:
+                self._net_reset_busy = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _on_export_bundle(self) -> None:
         os.makedirs(DEFAULT_BUNDLE_DIR, exist_ok=True)
         snap = self.client.get_snapshot()
@@ -1521,7 +1563,7 @@ class SalsaLiveDebuggerWidget(QWidget):
                 self._render_screencast_telemetry()
 
         # 3. Drain completed background scans/probes
-        procs = boundary = probe_msg = sc_status = None
+        procs = boundary = probe_msg = sc_status = net_reset_msg = None
         with self._work_lock:
             if self._pending_procs is not None:
                 procs = self._pending_procs
@@ -1535,6 +1577,9 @@ class SalsaLiveDebuggerWidget(QWidget):
             if self._pending_sc_status is not None:
                 sc_status = self._pending_sc_status
                 self._pending_sc_status = None
+            if self._pending_net_reset_msg is not None:
+                net_reset_msg = self._pending_net_reset_msg
+                self._pending_net_reset_msg = None
 
         if procs is not None:
             self._latest_procs = procs
@@ -1546,6 +1591,9 @@ class SalsaLiveDebuggerWidget(QWidget):
             self.txt_probe_out.setPlainText(probe_msg)
         if sc_status is not None:
             self.lbl_sc_status.setText(sc_status)
+        if net_reset_msg is not None:
+            self.lbl_net_reset_status.setText(net_reset_msg)
+            self.btn_reset_net.setEnabled(True)
 
     def _event_matches(self, ev: dict[str, Any]) -> bool:
         want_sub = self.cmb_sub.currentText()
@@ -1694,6 +1742,29 @@ class SalsaLiveDebuggerWidget(QWidget):
                 f"PA v35 Clients: {eng.get('pa_clients', 0)} | MIDI: {eng.get('midi_events_routed', 0)} keys | "
                 f"PW Video: {pw_str}"
             )
+
+        wire = telem.get("wire") or {}
+        if connected and wire:
+            is_rust = bool(wire.get("is_rust"))
+            armed = bool(wire.get("armed", True))
+            trips = int(wire.get("trips_total", 0))
+            if is_rust:
+                self.lbl_wire_pill.setText("● Rust Wire Core + Server/Broker: ACTIVE")
+                self.lbl_wire_pill.setStyleSheet(f"color: {t['accent_primary']}; font-weight: 700;")
+            else:
+                self.lbl_wire_pill.setText("● C11 Wire Fallback Core: ACTIVE")
+                self.lbl_wire_pill.setStyleSheet(f"color: {t['accent_warn']}; font-weight: 700;")
+            self.lbl_failsafe_pill.setText(
+                f"● Network Failsafe: {'ARMED' if armed else 'OFF'} "
+                f"(Quarantines Bad Sockets · Trips: {trips})"
+            )
+            fs_color = t["accent_primary"] if (armed and trips == 0) else t["text_secondary"]
+            self.lbl_failsafe_pill.setStyleSheet(f"color: {fs_color}; font-weight: 600;")
+        elif not connected:
+            self.lbl_wire_pill.setText("● Wire Core: waiting...")
+            self.lbl_wire_pill.setStyleSheet(f"color: {t['text_muted']};")
+            self.lbl_failsafe_pill.setText("● Network Failsafe: waiting...")
+            self.lbl_failsafe_pill.setStyleSheet(f"color: {t['text_muted']};")
 
     def _render_telemetry(self) -> None:
         telem = self._latest_telem

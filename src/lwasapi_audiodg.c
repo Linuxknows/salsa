@@ -7,6 +7,7 @@
 #include "../include/lwasapi_debug.h"
 #include "../include/lwasapi_paths.h"
 #include "../include/lwasapi_hw_analog.h"
+#include "../include/salsa_wire.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -2763,6 +2764,20 @@ static void dbg_fill_snapshot_cb(void *ctx, lwasapi_dbg_snapshot_t *snap) {
 static int dbg_handle_cmd_cb(void *ctx, const char *cmd, char *reply, size_t reply_len) {
     (void)ctx;
     if (!cmd) return -EINVAL;
+    if (strcmp(cmd, "RESET_NET_CLIENTS") == 0) {
+        int pa_n = g_pa_srv ? lwasapi_pa_server_reset_clients(g_pa_srv) : 0;
+        int pw_n = g_pw_brk ? lwasapi_pw_broker_reset_clients(g_pw_brk) : 0;
+        salsa_failsafe_record_trip(SALSA_FS_MANUAL_RESET,
+                                   "Manual PA/PW network client flush via Debugger");
+        lwasapi_debug_emit(LWASAPI_DBG_ENGINE, LWASAPI_DBG_INFO, (uint32_t)getpid(), 0,
+                           "NET_FAILSAFE_RESET", "PA/PW",
+                           "Flushed %d PA + %d PW network clients (audio engine uninterrupted)",
+                           pa_n, pw_n);
+        snprintf(reply, reply_len,
+                 "Flushed %d PA + %d PW network clients (audio engine uninterrupted)",
+                 pa_n, pw_n);
+        return 0;
+    }
     if (!g_pw_brk) {
         snprintf(reply, reply_len, "PW video broker not initialized");
         return -ENODEV;

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Salsa v6.7-beta — Linux WASAPI Studio Control Center, Dynamic EQ & Auto-Graph
+Salsa v6.8-beta — Linux WASAPI Studio Control Center, Dynamic EQ & Auto-Graph
 ==========================================================================
 Fixed-Clock Lossless WaveRT Audio Engine (44.1–192 kHz / 16–32-bit),
 10-Band Dynamic EQ + AutoEQ Importer + Bauer Crossfeed, Capture Mic APO
@@ -833,7 +833,7 @@ OWNERS_MANUAL_CHAPTER_DEFS = {
         "🎛️ Chapter 12: Capture Mic APO, HW Analog Boost & BlueZ HFP SCO",
         "Neural RNNoise • Discrete Sound Card DAC/Amp • Two-Way Bluetooth HFP Headset Mic",
         """
-        <p>Salsa v6.7-beta provides studio voice processing, hardware DAC/amp analog boosting, and wireless controls without PipeWire/WirePlumber dependencies:</p>
+        <p>Salsa v6.8-beta provides studio voice processing, hardware DAC/amp analog boosting, and wireless controls without PipeWire/WirePlumber dependencies:</p>
         <ul>
             <li><b>Hardware Analog Architecture:</b> Automatically utilizes ALSA DAC unity volume, discrete headphone amp gain tiers, and USB HID volume dials on supported sound cards like the ASUS Strix Raid DLX.</li>
             <li><b>Capture Mic APO & Sidetone:</b> Toggleable per-session strip featuring Voice HPF, Noise Gate, Neural <code>librnnoise</code> denoising, Clarity shelf, Soft Compressor, and zero-latency headphone Sidetone.</li>
@@ -2471,7 +2471,7 @@ class SalsaStudioWindow(QMainWindow):
         self.lbl_title = QLabel("SALSA — LINUX WASAPI STUDIO")
         self.lbl_title.setObjectName("TitleBanner")
         title_row.addWidget(self.lbl_title)
-        self.lbl_ver_pill = QLabel("v6.7-beta")
+        self.lbl_ver_pill = QLabel("v6.8-beta")
         self.lbl_ver_pill.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         t_init = self.current_theme
         self.lbl_ver_pill.setStyleSheet(
@@ -2992,7 +2992,7 @@ class SalsaStudioWindow(QMainWindow):
         graph_hdr_row.addWidget(lbl_g_title)
         graph_hdr_row.addStretch()
 
-        self.lbl_auto_badge = QLabel("✔ v6.7-beta LIVE | MASTER CLOCK | HW ANALOG DAC | MIC APO | BT ABR")
+        self.lbl_auto_badge = QLabel("✔ v6.8-beta LIVE | MASTER CLOCK | HW ANALOG DAC | MIC APO | BT ABR")
         self.lbl_auto_badge.setObjectName("AutoBadgeLabel")
         graph_hdr_row.addWidget(self.lbl_auto_badge)
         graph_box.addLayout(graph_hdr_row)
@@ -4957,7 +4957,7 @@ class SalsaStudioWindow(QMainWindow):
             eq_b = f"EQ:{'ON' if st.eq_cfg.enabled else 'OFF'}{'+CF' if st.param_eq.crossfeed_enabled else ''}"
             mic_b = f"Mic:{'Krisp-APO' if st.mic_apo.enabled else 'Raw'}"
             bt_b = f"BT:{bt_cod_s}{' ABR' if st.bt_codec_cfg.wireless_abr_enabled else ''}" if st.bt_active else ("DAC:Unity" if st.hw_analog_info.dac_unity_active else "Out:ALSA")
-            badge_txt = f"✔ v6.7-beta LIVE | {clk_b} | {eq_b} | {mic_b} | {bt_b}"
+            badge_txt = f"✔ v6.8-beta LIVE | {clk_b} | {eq_b} | {mic_b} | {bt_b}"
             if self.lbl_auto_badge.text() != badge_txt:
                 self.lbl_auto_badge.setText(badge_txt)
 

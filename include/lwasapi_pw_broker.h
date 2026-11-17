@@ -87,6 +87,9 @@ void lwasapi_pw_preview_shm_name(char *out_buf, size_t out_len);
 /* Run built-in producer->consumer loopback self-test through broker's socket */
 int  lwasapi_pw_broker_self_test(lwasapi_pw_broker_t *brk, char *out_msg, size_t out_len);
 
+/* Flush and disconnect active PipeWire video broker client sockets cleanly */
+int  lwasapi_pw_broker_reset_clients(lwasapi_pw_broker_t *brk);
+
 #ifdef __cplusplus
 }
 #endif

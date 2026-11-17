@@ -4,7 +4,19 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## v6.7-beta — Current (`2026-11-16`)
+## v6.8-beta — Current (`2026-11-16`)
+
+### 1. Memory-Safe Rust Wire Core, PulseAudio v35 Server & PipeWire-0 Video Broker
+- Added zero-dependency offline Rust static library `salsa_net` (`libsalsa_wire.a` in [`rust/salsa_net/`](rust/salsa_net/Cargo.toml)) exposing memory-safe bounds-checked parsers, builders, FD-quota accounting, and full UNIX socket daemons across [`pa_server.rs`](rust/salsa_net/src/pa_server.rs), [`pw_broker.rs`](rust/salsa_net/src/pw_broker.rs), [`pa_wire.rs`](rust/salsa_net/src/pa_wire.rs), [`pw_wire.rs`](rust/salsa_net/src/pw_wire.rs), [`bluez_wire.rs`](rust/salsa_net/src/bluez_wire.rs), [`failsafe.rs`](rust/salsa_net/src/failsafe.rs), [`unix_sys.rs`](rust/salsa_net/src/unix_sys.rs), [`c_abi.rs`](rust/salsa_net/src/c_abi.rs), and [`ffi.rs`](rust/salsa_net/src/ffi.rs), declared in [`include/salsa_wire.h`](include/salsa_wire.h) with automatic/selectable `make USE_RUST_WIRE=0` C11 fallback.
+- Replaced active C PulseAudio v35 server (`lwasapi_pa_server.c`), PipeWire-0 ScreenCast video broker (`lwasapi_pw_broker.c`), and BlueZ A2DP SEP codec selection / BDADDR parsing (`select_a2dp_config_for_endpoint`, `parse_bdaddr_str` in [`src/lwasapi_bluez.c`](src/lwasapi_bluez.c)) with hardened Rust implementations compiled into `lwasapi-audiodg` and `lwasapi-ctl` via [`Makefile`](Makefile).
+
+### 2. Quiet Wire Failsafe Bar, Non-Disruptive Client Flush & Differential Fuzzing
+- Added silent automatic failsafe telemetry (`"wire"` object emitted by [`src/lwasapi_debug.c`](src/lwasapi_debug.c)) and `RESET_NET_CLIENTS` IPC handling in [`src/lwasapi_audiodg.c`](src/lwasapi_audiodg.c) to flush hung PulseAudio / PipeWire-0 sockets without interrupting active WaveRT hardware audio playback.
+- Added the compact Wire Core & Failsafe status bar (`Reset Hung Clients`) to the standalone debugger in [`salsa_debug_ui.py`](salsa_debug_ui.py), added Clang `libFuzzer` + ASan/UBSan differential fuzzer ([`tests/fuzz/fuzz_wire_diff.c`](tests/fuzz/fuzz_wire_diff.c), `make test-sanitized`), and expanded live regression tests in [`scripts/run_regression_tests.py`](scripts/run_regression_tests.py).
+
+---
+
+## v6.7-beta (`2026-11-16`)
 
 ### 1. Option C Pacman ALPM Hook Indicator, Toggles & Instant Sync
 - Replaced the read-only Diagnostics integration text in [`salsa-gui.py`](salsa-gui.py) (`_build_advanced_options_window`, `_refresh_adv_integration_status`) with themed status pills (`● Steam`, `● Launchers`, `● Pacman Hook: ACTIVE / OFF`), a clickable `Toggle Pacman Hook (pkexec)` button (`_toggle_pacman_hook`) running non-blocking `install-salsa.sh --install-pacman-hook` / `--remove-pacman-hook`, and an **Auto-Sync Watcher + Sync Now** toggle (`chk_autosync_now` / `_on_autosync_watcher_clicked`) that enables or disables `lwasapi-module-watcher.path` and runs `lwasapi-autosync.sh --force` immediately.
