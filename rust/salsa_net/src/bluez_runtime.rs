@@ -711,7 +711,6 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
         let mut frac_pos = 0.0f64;
         let mut next_tick_ns = mono_ns();
         let mut prebuffering = true;
-        let mut prebuf_waits = 0u32;
         let mut avg_avail = 960.0f64;
 
         while rt.tx_thread_running.load(Ordering::Acquire) {
@@ -739,7 +738,6 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
 
             if rt.tx_paused.load(Ordering::Acquire) || !active {
                 prebuffering = true;
-                prebuf_waits = 0;
                 frac_pos = 0.0;
                 avg_avail = margin_in as f64;
                 next_tick_ns = mono_ns();
@@ -768,24 +766,24 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                 let mut avail = wr.saturating_sub(rd);
                 if prebuffering {
                     let goal = est_need_in
-                        .saturating_add((margin_in * 3) / 4)
+                        .saturating_add(margin_in.max(est_need_in))
                         .min((BT_TX_RING_FRAMES as u64) - 1024);
-                    if avail < goal && prebuf_waits < 40 {
-                        prebuf_waits += 1;
+                    if avail < goal {
                         thread::sleep(Duration::from_micros(1500));
                         continue;
                     }
                     prebuffering = false;
-                    prebuf_waits = 0;
                     avg_avail = if avail > est_need_in {
                         (avail - est_need_in) as f64
                     } else {
-                        (margin_in / 2) as f64
+                        margin_in as f64
                     };
                     next_tick_ns = mono_ns();
                 } else if avail > 0 && avail < est_need_in {
-                    for _ in 0..5 {
-                        if !rt.tx_thread_running.load(Ordering::Acquire) {
+                    for _ in 0..20 {
+                        if !rt.tx_thread_running.load(Ordering::Acquire)
+                            || rt.tx_paused.load(Ordering::Acquire)
+                        {
                             break;
                         }
                         thread::sleep(Duration::from_micros(1200));
@@ -1088,7 +1086,6 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                     &format!("TX ring partial pop ({popped}/{expected_pop} frames) -> re-prebuffering"),
                 );
                 prebuffering = true;
-                prebuf_waits = 0;
             }
 
             if pkt_len > 0 && tx_fd >= 0 {
@@ -1260,6 +1257,10 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                 }
             }
 
+            if prebuffering {
+                next_tick_ns = mono_ns();
+                continue;
+            }
             let step_frames = if ts_step == 0 { 1024 } else { ts_step };
             let period_ns = (u64::from(step_frames) * 1_000_000_000) / u64::from(rate);
             next_tick_ns = next_tick_ns.saturating_add(period_ns);

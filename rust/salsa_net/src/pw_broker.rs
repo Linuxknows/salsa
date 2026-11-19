@@ -15,6 +15,7 @@ use crate::pw_wire::{
     intersect_vfmt, parse_param_pod, parse_pkt_hdr, vfmt_name, vfmt_size, vfmt_stride, BufCaps,
     Dict, PodBuilder, PodCursor, VfmtCaps, CMD_NODE, DATA_DMA_BUF, DATA_MEM_FD, DATA_MEM_ID,
     DRM_MOD_INVALID, EVT_NODE, IO_BUFFERS, IO_CLOCK, IO_POSITION, META_BUSY, META_HEADER,
+    META_VIDEO_CROP,
     PARAM_ENUM_FORMAT, PARAM_FORMAT, PWB_MAX_PACKET_SZ, SPA_ASYNC_BIT, SPA_ID_INVALID, SPA_OBJECT,
     SPA_STRUCT,
 };
@@ -52,6 +53,10 @@ const PWB_ACT_CLOCK_SIZE: usize = 160;
 const PWB_ACT_POS_SIZE: usize = 1688;
 const PWB_IO_BUFFERS_SIZE: usize = 16;
 const PWB_META_STRIDE: usize = 4096;
+const PWB_META_HDR_OFF: usize = 0;
+const PWB_META_CROP_OFF: usize = 32;
+const PWB_META_CHUNK_OFF: usize = 56;
+const PWB_META_TOTAL_SZ: usize = 72;
 
 const PWB_PERM_ALL: u32 = 0x1c8;
 const PWB_STATUS_NEED_DATA: u32 = 1 << 0;
@@ -603,6 +608,24 @@ impl PwNode {
             .copy_from_slice(&2u32.to_le_bytes());
         slice[PWB_ACT_POS_OFFSET + 212..PWB_ACT_POS_OFFSET + 216]
             .copy_from_slice(&1u32.to_le_bytes());
+        let now_ns = mono_ns();
+        slice[PWB_ACT_POS_OFFSET + 72..PWB_ACT_POS_OFFSET + 80]
+            .copy_from_slice(&now_ns.to_le_bytes());
+    }
+
+    fn stamp_activation_clock(&mut self, now_ns: u64) {
+        let Some(map) = self.act_map.as_mut() else {
+            return;
+        };
+        let slice = map.as_mut_slice();
+        if slice.len() < PWB_ACT_POS_OFFSET + 96 {
+            return;
+        }
+        let pos = ((now_ns as u128 * 48_000u128) / 1_000_000_000u128) as u64;
+        slice[PWB_ACT_POS_OFFSET + 72..PWB_ACT_POS_OFFSET + 80]
+            .copy_from_slice(&now_ns.to_le_bytes());
+        slice[PWB_ACT_POS_OFFSET + 88..PWB_ACT_POS_OFFSET + 96]
+            .copy_from_slice(&pos.to_le_bytes());
     }
 
     fn apply_target_props(&mut self) {
@@ -770,6 +793,10 @@ struct PwState {
     preview_fps_win_ns: u64,
     preview_fps_win_cnt: u32,
     preview_actual_fps_x100: u32,
+    relay_fps_win_ns: u64,
+    relay_fps_win_cnt: u32,
+    relay_actual_fps_x100: u32,
+    relay_last_frame_ns: u64,
     shared: Arc<SharedAtomics>,
 }
 
@@ -810,6 +837,10 @@ impl PwState {
             preview_fps_win_ns: 0,
             preview_fps_win_cnt: 0,
             preview_actual_fps_x100: 0,
+            relay_fps_win_ns: 0,
+            relay_fps_win_cnt: 0,
+            relay_actual_fps_x100: 0,
+            relay_last_frame_ns: 0,
             shared,
         }
     }
@@ -1298,10 +1329,12 @@ impl PwState {
         for (i, &(dt, ptr_id, dflags, moff, msz)) in items.iter().enumerate() {
             b.int(meta_mem_id as i32);
             b.int((i * PWB_META_STRIDE) as i32);
-            b.int(56);
-            b.int(2);
+            b.int(PWB_META_TOTAL_SZ as i32);
+            b.int(3);
             b.id(META_HEADER);
             b.int(32);
+            b.id(META_VIDEO_CROP);
+            b.int(16);
             b.id(META_BUSY);
             b.int(8);
             b.int(1);
@@ -1878,12 +1911,13 @@ impl PwState {
             self.nodes[cons_idx].mix_ready = true;
         }
 
-        let nbuf = if self.nodes[prod_idx].bcaps.valid
-            && (2..=8).contains(&self.nodes[prod_idx].bcaps.buf_def)
-        {
-            self.nodes[prod_idx].bcaps.buf_def as usize
+        let nbuf = if self.nodes[prod_idx].bcaps.valid {
+            let bmax = self.nodes[prod_idx].bcaps.buf_max.clamp(2, 8);
+            let bmin = self.nodes[prod_idx].bcaps.buf_min.clamp(2, bmax);
+            let target = self.nodes[prod_idx].bcaps.buf_def.max(4);
+            target.clamp(bmin, bmax) as usize
         } else {
-            3
+            4
         };
         let msz = nbuf * PWB_META_STRIDE;
         let mut old_meta = self.nodes[prod_idx].meta_mem_id;
@@ -2140,7 +2174,11 @@ impl PwState {
             s.target_max_w = tw;
             s.target_max_h = th_lim;
             s.target_fps = tfps;
-            s.actual_fps_x100 = self.preview_actual_fps_x100;
+            s.actual_fps_x100 = if self.relay_actual_fps_x100 > 0 {
+                self.relay_actual_fps_x100
+            } else {
+                self.preview_actual_fps_x100
+            };
             s.cast_fps_cap = self.shared.cast_limit_fps.load(Ordering::Relaxed);
         }
 
@@ -2177,10 +2215,15 @@ impl PwState {
             if let Some(mmap) = prod.meta_map.as_ref() {
                 let off = bidx * PWB_META_STRIDE;
                 let sl = mmap.as_slice();
-                if off + 56 <= sl.len() {
-                    coff = u32::from_le_bytes([sl[off + 40], sl[off + 41], sl[off + 42], sl[off + 43]]);
-                    cstride =
-                        i32::from_le_bytes([sl[off + 48], sl[off + 49], sl[off + 50], sl[off + 51]]);
+                if off + PWB_META_TOTAL_SZ <= sl.len() {
+                    let co = off + PWB_META_CHUNK_OFF;
+                    coff = u32::from_le_bytes([sl[co], sl[co + 1], sl[co + 2], sl[co + 3]]);
+                    cstride = i32::from_le_bytes([
+                        sl[co + 8],
+                        sl[co + 9],
+                        sl[co + 10],
+                        sl[co + 11],
+                    ]);
                 }
             }
             let full = src_map.as_slice();
@@ -2251,7 +2294,7 @@ impl PwState {
                 sl[8..12].copy_from_slice(&0i32.to_le_bytes());
                 sl[12..16].copy_from_slice(&1i32.to_le_bytes());
                 sl[16..20].copy_from_slice(&1i32.to_le_bytes());
-                sl[0..4].copy_from_slice(&0u32.to_le_bytes());
+                atomic_u32_store(sl.as_mut_ptr().cast::<u32>(), 0, Ordering::Release);
             }
         }
         let Some((st, buf_id)) = self.nodes[nidx].io_read_status_and_buf() else {
@@ -2261,6 +2304,7 @@ impl PwState {
             return;
         }
         self.nodes[nidx].frames_count += 1;
+        let now_ns = mono_ns();
 
         let cl_fps = self.shared.cast_limit_fps.load(Ordering::Relaxed);
         if cl_fps != self.nodes[nidx].relay_applied_fps {
@@ -2272,13 +2316,42 @@ impl PwState {
                 .links
                 .iter()
                 .any(|lk| lk.in_use && lk.out_node_idx as usize == nidx && lk.io_ready)
-            && !pace_due(mono_ns(), &mut self.nodes[nidx].relay_next_due_ns, cl_fps)
+            && !pace_due(now_ns, &mut self.nodes[nidx].relay_next_due_ns, cl_fps)
         {
             self.nodes[nidx].io_write_status(PWB_STATUS_NEED_DATA);
             return;
         }
 
+        let prod_seq = self.nodes[nidx].frames_count;
+        let mut meta_pkt = None;
+        if let Some(pmap) = self.nodes[nidx].meta_map.as_ref() {
+            let off = (buf_id as usize) * PWB_META_STRIDE;
+            let sl = pmap.as_slice();
+            if off + PWB_META_TOTAL_SZ <= sl.len() {
+                let mut h = [0u8; 32];
+                let mut crop = [0u8; 16];
+                let mut ch = [0u8; 16];
+                h.copy_from_slice(&sl[off + PWB_META_HDR_OFF..off + PWB_META_HDR_OFF + 32]);
+                crop.copy_from_slice(&sl[off + PWB_META_CROP_OFF..off + PWB_META_CROP_OFF + 16]);
+                ch.copy_from_slice(&sl[off + PWB_META_CHUNK_OFF..off + PWB_META_CHUNK_OFF + 16]);
+                let pts = i64::from_le_bytes([
+                    h[8], h[9], h[10], h[11], h[12], h[13], h[14], h[15],
+                ]);
+                if pts <= 0 {
+                    h[8..16].copy_from_slice(&(now_ns as i64).to_le_bytes());
+                }
+                let seq = u64::from_le_bytes([
+                    h[24], h[25], h[26], h[27], h[28], h[29], h[30], h[31],
+                ]);
+                if seq == 0 {
+                    h[24..32].copy_from_slice(&prod_seq.to_le_bytes());
+                }
+                meta_pkt = Some((h, crop, ch));
+            }
+        }
+
         let mut cons_woken = 0u32;
+        let mut stale_to_recycle: Option<u32> = None;
         for li in 0..PWB_MAX_LINKS {
             if !self.links[li].in_use
                 || self.links[li].out_node_idx as usize != nidx
@@ -2294,24 +2367,26 @@ impl PwState {
             {
                 continue;
             }
-            let mut hdr_chunk = None;
-            if let Some(pmap) = self.nodes[nidx].meta_map.as_ref() {
-                let off = (buf_id as usize) * PWB_META_STRIDE;
-                let sl = pmap.as_slice();
-                if off + 56 <= sl.len() {
-                    let mut h = [0u8; 32];
-                    let mut ch = [0u8; 16];
-                    h.copy_from_slice(&sl[off..off + 32]);
-                    ch.copy_from_slice(&sl[off + 40..off + 56]);
-                    hdr_chunk = Some((h, ch));
+            if let Some((cst, prev_buf)) = self.nodes[cidx].io_read_status_and_buf() {
+                if cst == PWB_STATUS_HAVE_DATA
+                    && prev_buf != SPA_ID_INVALID
+                    && prev_buf != buf_id
+                {
+                    stale_to_recycle = Some(prev_buf);
+                    self.shared.frames_dropped.fetch_add(1, Ordering::Relaxed);
                 }
             }
-            if let (Some((h, ch)), Some(cmap)) = (hdr_chunk, self.nodes[cidx].meta_map.as_mut()) {
+            if let (Some((h, crop, ch)), Some(cmap)) =
+                (meta_pkt, self.nodes[cidx].meta_map.as_mut())
+            {
                 let off = (buf_id as usize) * PWB_META_STRIDE;
                 let csl = cmap.as_mut_slice();
-                if off + 56 <= csl.len() {
-                    csl[off..off + 32].copy_from_slice(&h);
-                    csl[off + 40..off + 56].copy_from_slice(&ch);
+                if off + PWB_META_TOTAL_SZ <= csl.len() {
+                    csl[off + PWB_META_HDR_OFF..off + PWB_META_HDR_OFF + 32].copy_from_slice(&h);
+                    csl[off + PWB_META_CROP_OFF..off + PWB_META_CROP_OFF + 16]
+                        .copy_from_slice(&crop);
+                    csl[off + PWB_META_CHUNK_OFF..off + PWB_META_CHUNK_OFF + 16]
+                        .copy_from_slice(&ch);
                 }
             }
 
@@ -2320,6 +2395,7 @@ impl PwState {
             self.links[li].frames_relayed += 1;
             self.nodes[cidx].frames_count += 1;
 
+            self.nodes[cidx].stamp_activation_clock(now_ns);
             if let Some(amap) = self.nodes[cidx].act_map.as_mut() {
                 let asl = amap.as_mut_slice();
                 if asl.len() >= 20 {
@@ -2335,10 +2411,33 @@ impl PwState {
             cons_woken += 1;
         }
 
+        if let Some(prev_buf) = stale_to_recycle {
+            let still_held = (0..PWB_MAX_LINKS).any(|li| {
+                self.links[li].in_use
+                    && self.links[li].out_node_idx as usize == nidx
+                    && self.links[li].io_ready
+                    && self
+                        .nodes
+                        .get(self.links[li].in_node_idx as usize)
+                        .and_then(|cn| cn.io_read_status_and_buf())
+                        .is_some_and(|(s, b)| s == PWB_STATUS_HAVE_DATA && b == prev_buf)
+            });
+            if !still_held {
+                self.nodes[nidx].io_write_status_and_buf(PWB_STATUS_NEED_DATA, prev_buf);
+            }
+        }
+
         if cons_woken > 0 {
             self.shared
                 .frames_relayed_total
                 .fetch_add(1, Ordering::Relaxed);
+            update_fps_meter(
+                now_ns,
+                &mut self.relay_fps_win_ns,
+                &mut self.relay_fps_win_cnt,
+                &mut self.relay_actual_fps_x100,
+            );
+            self.relay_last_frame_ns = now_ns;
             self.copy_frame_to_preview_shm(nidx, buf_id, cons_woken);
         } else {
             self.nodes[nidx].io_write_status(PWB_STATUS_NEED_DATA);
@@ -3264,7 +3363,7 @@ impl PwState {
                 }
                 if (cm & 1) != 0 && np > 0 {
                     for li in 0..PWB_MAX_LINKS {
-                        if !self.links[li].in_use || self.links[li].state >= 2 {
+                        if !self.links[li].in_use {
                             continue;
                         }
                         if self.links[li].out_node_idx as usize != nidx
@@ -3273,6 +3372,43 @@ impl PwState {
                             continue;
                         }
                         let prod_idx = self.links[li].out_node_idx as usize;
+                        let cons_idx = self.links[li].in_node_idx as usize;
+                        if self.links[li].state == 4 && nidx == prod_idx {
+                            let cur_w = self.nodes[prod_idx].neg_w;
+                            let cur_h = self.nodes[prod_idx].neg_h;
+                            let res_changed = !self.nodes[prod_idx].vfmt_candidates.is_empty()
+                                && cur_w > 0
+                                && cur_h > 0
+                                && !self.nodes[prod_idx]
+                                    .vfmt_candidates
+                                    .iter()
+                                    .any(|v| v.w_def == cur_w && v.h_def == cur_h);
+                            if !res_changed {
+                                continue;
+                            }
+                            let pc_idx = self.nodes[prod_idx].client_idx as usize;
+                            let cc_idx = self.nodes[cons_idx].client_idx as usize;
+                            let prod_cn = self.nodes[prod_idx].cn_proxy_id;
+                            let cons_cn = self.nodes[cons_idx].cn_proxy_id;
+                            self.cn_send_command(cc_idx, cons_cn, SPA_NODE_CMD_PAUSE);
+                            self.cn_send_command(pc_idx, prod_cn, SPA_NODE_CMD_PAUSE);
+                            self.cn_send_port_use_buffers_clear(cc_idx, cons_idx, 0);
+                            self.cn_send_port_use_buffers_clear(pc_idx, prod_idx, 0);
+                            self.links[li].state = 1;
+                            self.links[li].io_ready = false;
+                            self.links[li].buffers_ready = false;
+                            self.links[li].mod_fixated = false;
+                            self.links[li].awaiting_mod_fixation = false;
+                            self.nodes[prod_idx].free_buffers();
+                            self.nodes[prod_idx].awaiting_port_buffers = false;
+                            if !self.negotiate_and_activate_link(li) {
+                                self.destroy_link(li);
+                            }
+                            continue;
+                        }
+                        if self.links[li].state >= 2 {
+                            continue;
+                        }
                         if self.nodes[prod_idx].n_bufs > 0
                             || self.nodes[prod_idx].vfmt_candidates.is_empty()
                         {
@@ -3316,14 +3452,18 @@ impl PwState {
                             payload[ebody + 7],
                         ]);
                         if otype == EVT_NODE && oid == SPA_NODE_EVT_REQUEST_PROCESS {
+                            self.nodes[nidx].stamp_activation_clock(mono_ns());
                             if let Some(amap) = self.nodes[nidx].act_map.as_mut() {
                                 let asl = amap.as_mut_slice();
                                 if asl.len() >= 20 {
-                                    asl[0..4].copy_from_slice(&0u32.to_le_bytes());
                                     asl[8..12].copy_from_slice(&0i32.to_le_bytes());
                                     asl[12..16].copy_from_slice(&1i32.to_le_bytes());
                                     asl[16..20].copy_from_slice(&0i32.to_le_bytes());
-                                    asl[0..4].copy_from_slice(&1u32.to_le_bytes());
+                                    atomic_u32_store(
+                                        asl.as_mut_ptr().cast::<u32>(),
+                                        1,
+                                        Ordering::Release,
+                                    );
                                 }
                             }
                             if let Some(rfd) = self.nodes[nidx].act_readfd.as_ref() {
@@ -4119,6 +4259,15 @@ pub unsafe extern "C" fn lwasapi_pw_broker_fill_debug(
         );
         copy_str_to_c(&mut dl.format_summary, &sum);
     }
+
+    if out.active_casting != 0
+        && st.relay_actual_fps_x100 > 0
+        && mono_ns().saturating_sub(st.relay_last_frame_ns) <= 2_000_000_000
+    {
+        out.actual_fps_x100 = st.relay_actual_fps_x100;
+    } else if out.preview_requested == 0 {
+        out.actual_fps_x100 = 0;
+    }
 }
 
 #[no_mangle]
@@ -4526,6 +4675,36 @@ mod tests {
         let mut snap: LwasapiDbgPwSnapshot = unsafe { mem::zeroed() };
         unsafe { lwasapi_pw_broker_fill_debug(brk, &mut snap) };
         assert!(snap.frames_relayed_total >= 1);
+
+        // Verify relay FPS meter updates actual_fps_x100 even when live preview is disabled
+        unsafe { lwasapi_pw_broker_set_preview(brk, false, 0) };
+        {
+            let h = unsafe { &*brk };
+            let mut st = h.state.lock().unwrap();
+            let pidx = st
+                .nodes
+                .iter()
+                .position(|n| n.in_use && n.direction == PWB_DIR_OUT)
+                .unwrap();
+            let cidx = st
+                .nodes
+                .iter()
+                .position(|n| n.in_use && n.direction == PWB_DIR_IN)
+                .unwrap();
+            st.nodes[cidx].io_write_status_and_buf(PWB_STATUS_NEED_DATA, 0);
+            st.relay_fps_win_ns = mono_ns().saturating_sub(500_000_000);
+            st.relay_fps_win_cnt = 29;
+            st.nodes[pidx].io_write_status_and_buf(PWB_STATUS_HAVE_DATA, 0);
+            st.on_prod_done_event(pidx);
+        }
+        let mut snap_noprev: LwasapiDbgPwSnapshot = unsafe { mem::zeroed() };
+        unsafe { lwasapi_pw_broker_fill_debug(brk, &mut snap_noprev) };
+        assert_eq!(snap_noprev.preview_requested, 0);
+        assert!(
+            snap_noprev.actual_fps_x100 >= 5000,
+            "expected zero-preview relay FPS >= 50.00, got {}",
+            snap_noprev.actual_fps_x100
+        );
 
         unsafe { lwasapi_pw_broker_stop(brk) };
         let _ = fs::remove_dir_all(&tmp_dir);

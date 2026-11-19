@@ -803,6 +803,7 @@ pub const SPA_ID_INVALID: u32 = 0xffff_ffff;
 pub const DRM_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
 pub const SPA_ASYNC_BIT: u32 = 0x4000_0000;
 pub const META_HEADER: u32 = 1;
+pub const META_VIDEO_CROP: u32 = 2;
 pub const META_BUSY: u32 = 7;
 pub const IO_BUFFERS: u32 = 1;
 pub const IO_CLOCK: u32 = 3;

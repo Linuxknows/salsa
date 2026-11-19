@@ -25,8 +25,9 @@ use crate::failsafe;
 use crate::pa_wire::{
     self, cvol_to_milli, decode_sample, encode_sample, format_sample_bits, format_sample_size,
     frame_packet, parse_frame_hdr, pct_to_pa_vol, std_channel_map, PaCVolume, PaChannelMap,
-    PaPropBag, PaSampleSpec, TagBuilder, TagReader, PA_TAG_S64, PA_TAG_U32, PA_TAG_U64,
-    PA_TAG_U8, PA_TAG_USEC, PA_TAG_VOLUME, PA_VOLUME_NORM,
+    PaFormatInfo, PaPropBag, PaSampleSpec, TagBuilder, TagReader, FMT_FLOAT32LE, PA_ENCODING_ANY,
+    PA_ENCODING_PCM, PA_SAMPLE_MAX, PA_TAG_S64, PA_TAG_U32, PA_TAG_U64, PA_TAG_U8, PA_TAG_USEC,
+    PA_TAG_VOLUME, PA_VOLUME_NORM,
 };
 use crate::unix_sys::{
     self, bind_unix_listener_0600, current_hostname, current_pid, current_uid, current_username,
@@ -44,9 +45,9 @@ const PA_SERVER_COOKIE_ID: u32 = 0x5341_4C53;
 const PA_MAX_CLIENTS: usize = 32;
 const PA_MAX_STREAMS: usize = 48;
 const PA_MAX_OUT_QUEUE: usize = 2048;
-const PA_STREAM_RING_FRAMES: usize = 32768;
+const PA_STREAM_RING_FRAMES: usize = 262_144;
 const PA_STREAM_RING_MASK: usize = PA_STREAM_RING_FRAMES - 1;
-const PA_DEFAULT_MAXLENGTH: u32 = 4 * 1024 * 1024;
+const PA_DEFAULT_MAXLENGTH: u32 = 8 * 1024 * 1024;
 const PA_PSTREAM_DESC_BYTES: usize = 20;
 const PA_MAX_DOI_PERIOD: usize = 2048;
 const PA_MAX_STABLE_IDS: usize = 128;
@@ -147,6 +148,7 @@ const ERR_COMMAND: u32 = 2;
 const ERR_INVALID: u32 = 3;
 const ERR_NOENTITY: u32 = 5;
 const ERR_PROTOCOL: u32 = 7;
+const ERR_NOTSUPPORTED: u32 = 19;
 const ERR_NOEXTENSION: u32 = 21;
 
 struct RtCursor {
@@ -230,21 +232,27 @@ struct PaRtStream {
     mix_peak_l: AtomicU32,
     mix_peak_r: AtomicU32,
     period_frames: AtomicU32,
-    ring_l: Vec<AtomicU32>,
-    ring_r: Vec<AtomicU32>,
+    ring_l: Box<[AtomicU32]>,
+    ring_r: Box<[AtomicU32]>,
     period_l: Vec<AtomicU32>,
     period_r: Vec<AtomicU32>,
     cursor: Mutex<RtCursor>,
 }
 
+const _: () = {
+    assert!(core::mem::size_of::<AtomicU32>() == core::mem::size_of::<u32>());
+    assert!(core::mem::align_of::<AtomicU32>() == core::mem::align_of::<u32>());
+};
+
+fn alloc_zeroed_atomic_ring(len: usize) -> Box<[AtomicU32]> {
+    let raw = Box::into_raw(vec![0u32; len].into_boxed_slice()) as *mut [AtomicU32];
+    unsafe { Box::from_raw(raw) }
+}
+
 impl PaRtStream {
     fn new() -> Self {
-        let mut ring_l = Vec::with_capacity(PA_STREAM_RING_FRAMES);
-        let mut ring_r = Vec::with_capacity(PA_STREAM_RING_FRAMES);
-        for _ in 0..PA_STREAM_RING_FRAMES {
-            ring_l.push(AtomicU32::new(0));
-            ring_r.push(AtomicU32::new(0));
-        }
+        let ring_l = alloc_zeroed_atomic_ring(PA_STREAM_RING_FRAMES);
+        let ring_r = alloc_zeroed_atomic_ring(PA_STREAM_RING_FRAMES);
         let mut period_l = Vec::with_capacity(PA_MAX_DOI_PERIOD);
         let mut period_r = Vec::with_capacity(PA_MAX_DOI_PERIOD);
         for _ in 0..PA_MAX_DOI_PERIOD {
@@ -363,6 +371,7 @@ struct PaClient {
     rx_body_len: usize,
     rx_body_got: usize,
     rx_channel: u32,
+    last_cmd: u32,
     out_q: VecDeque<OutPacket>,
 }
 
@@ -388,6 +397,7 @@ impl PaClient {
             rx_body_len: 0,
             rx_body_got: 0,
             rx_channel: 0,
+            last_cmd: 0,
             out_q: VecDeque::with_capacity(32),
         }
     }
@@ -416,6 +426,7 @@ impl PaClient {
         self.rx_body_len = 0;
         self.rx_body_got = 0;
         self.rx_channel = 0;
+        self.last_cmd = 0;
         self.out_q.clear();
     }
 
@@ -443,7 +454,25 @@ impl PaClient {
     }
 
     fn reply_err(&mut self, tag: u32, pa_err: u32) {
-        let lvl = if pa_err == ERR_NOEXTENSION {
+        let cname = pa_cmd_name(self.last_cmd);
+        let benign_race = pa_err == ERR_NOEXTENSION
+            || (pa_err == ERR_NOENTITY
+                && matches!(
+                    self.last_cmd,
+                    CMD_GET_SINK_INPUT_INFO
+                        | CMD_GET_SOURCE_OUTPUT_INFO
+                        | CMD_GET_CLIENT_INFO
+                        | CMD_GET_MODULE_INFO
+                        | CMD_DELETE_PLAYBACK_STREAM
+                        | CMD_DELETE_RECORD_STREAM
+                        | CMD_CORK_PLAYBACK_STREAM
+                        | CMD_CORK_RECORD_STREAM
+                        | CMD_FLUSH_PLAYBACK_STREAM
+                        | CMD_FLUSH_RECORD_STREAM
+                        | CMD_GET_PLAYBACK_LATENCY
+                        | CMD_GET_RECORD_LATENCY
+                ));
+        let lvl = if benign_race {
             LWASAPI_DBG_TRACE
         } else {
             LWASAPI_DBG_WARN
@@ -463,7 +492,7 @@ impl PaClient {
             -(pa_err as i32),
             "PA_ERR",
             tgt,
-            &format!("PA reply error={pa_err} on tag={tag}"),
+            &format!("PA reply error={pa_err} on {cname} (tag={tag})"),
         );
         let mut tb = TagBuilder::new(32);
         tb.put_u32(PA_TAG_U32, CMD_ERROR);
@@ -647,27 +676,41 @@ impl PaState {
     }
 
     fn get_default_sink_pa_name(&self) -> String {
+        let devs = &self.cached_devices.devices[..self.cached_dev_count()];
         let act = c_str_to_string(&self.cached_status.active_playback_id);
-        if !act.is_empty() {
+        if !act.is_empty()
+            && act != "virtual"
+            && devs
+                .iter()
+                .any(|d| d.is_capture == 0 && c_str_to_string(&d.id) == act)
+        {
             return make_pa_sink_name(&act);
         }
-        for d in &self.cached_devices.devices[..self.cached_dev_count()] {
-            if d.is_capture == 0 && d.is_active != 0 {
-                return make_pa_sink_name(&c_str_to_string(&d.id));
-            }
+        if let Some(d) = devs.iter().find(|d| d.is_capture == 0 && d.is_active != 0) {
+            return make_pa_sink_name(&c_str_to_string(&d.id));
+        }
+        if let Some(d) = devs.iter().find(|d| d.is_capture == 0) {
+            return make_pa_sink_name(&c_str_to_string(&d.id));
         }
         "salsa_out.virtual".to_string()
     }
 
     fn get_default_source_pa_name(&self) -> String {
+        let devs = &self.cached_devices.devices[..self.cached_dev_count()];
         let act = c_str_to_string(&self.cached_status.active_capture_id);
-        if !act.is_empty() {
+        if !act.is_empty()
+            && act != "virtual"
+            && devs
+                .iter()
+                .any(|d| d.is_capture != 0 && c_str_to_string(&d.id) == act)
+        {
             return make_pa_source_name(&act);
         }
-        for d in &self.cached_devices.devices[..self.cached_dev_count()] {
-            if d.is_capture != 0 {
-                return make_pa_source_name(&c_str_to_string(&d.id));
-            }
+        if let Some(d) = devs.iter().find(|d| d.is_capture != 0 && d.is_active != 0) {
+            return make_pa_source_name(&c_str_to_string(&d.id));
+        }
+        if let Some(d) = devs.iter().find(|d| d.is_capture != 0) {
+            return make_pa_source_name(&c_str_to_string(&d.id));
         }
         let sink_n = self.get_default_sink_pa_name();
         format!("{sink_n}.monitor")
@@ -708,6 +751,9 @@ impl PaState {
     }
 
     fn resolve_pa_target_name(&self, is_source: bool, req_nm: Option<&str>) -> String {
+        let has_hw_pb = self.cached_devices.devices[..self.cached_dev_count()]
+            .iter()
+            .any(|d| d.is_capture == 0);
         match req_nm {
             None => {
                 if is_source {
@@ -719,6 +765,12 @@ impl PaState {
             Some("@DEFAULT_SINK@") => self.get_default_sink_pa_name(),
             Some("@DEFAULT_SOURCE@") if is_source => self.get_default_source_pa_name(),
             Some("@DEFAULT_MONITOR@") if is_source => {
+                format!("{}.monitor", self.get_default_sink_pa_name())
+            }
+            Some("salsa_out.virtual") if !is_source && has_hw_pb => {
+                self.get_default_sink_pa_name()
+            }
+            Some("salsa_out.virtual.monitor") if is_source && has_hw_pb => {
                 format!("{}.monitor", self.get_default_sink_pa_name())
             }
             Some(s) => s.to_string(),
@@ -1249,6 +1301,7 @@ impl PaState {
         let ch = sm.ss.channels;
         let fmt = sm.ss.format;
         let prebuf = sm.prebuf;
+        let cmap = sm.map;
 
         let rs = &rt.streams[si];
         let mut wr = rs.wr_frame.load(Ordering::Relaxed);
@@ -1261,15 +1314,75 @@ impl PaState {
             frames = free_f;
         }
 
-        for i in 0..frames {
-            let fp = &pcm[i * fsz..];
-            let l = decode_sample(fp, fmt);
-            let r = if ch >= 2 && fp.len() > ssz {
-                decode_sample(&fp[ssz..], fmt)
+        if ch <= 2 {
+            for i in 0..frames {
+                let fp = &pcm[i * fsz..];
+                let l = decode_sample(fp, fmt);
+                let r = if ch >= 2 && fp.len() >= ssz * 2 {
+                    decode_sample(&fp[ssz..], fmt)
+                } else {
+                    l
+                };
+                rs.ring_set(wr as usize + i, l, r);
+            }
+        } else {
+            let ch_n = (ch as usize).min(32);
+            let mut w_l = [0.0f32; 32];
+            let mut w_r = [0.0f32; 32];
+            let mut sum_l = 0.0f32;
+            let mut sum_r = 0.0f32;
+            for c in 0..ch_n {
+                let pos = if c < cmap.channels as usize {
+                    cmap.map[c]
+                } else {
+                    12
+                };
+                let (gl, gr) = match pos {
+                    0 | 3 | 4 | 44 | 47 | 50 => (0.707_106_77, 0.707_106_77), // mono / centers
+                    7 => (0.5, 0.5),                                          // LFE
+                    1 => (1.0, 0.0),                                          // front-left
+                    2 => (0.0, 1.0),                                          // front-right
+                    5 | 10 | 45 | 48 => (0.707_106_77, 0.0),                  // rear/side/top left
+                    6 | 11 | 46 | 49 => (0.0, 0.707_106_77),                  // rear/side/top right
+                    8 => (0.85, 0.35),                                        // front-left-of-center
+                    9 => (0.35, 0.85),                                        // front-right-of-center
+                    _ => {
+                        if c % 2 == 0 {
+                            (0.5, 0.0)
+                        } else {
+                            (0.0, 0.5)
+                        }
+                    }
+                };
+                w_l[c] = gl;
+                w_r[c] = gr;
+                sum_l += gl;
+                sum_r += gr;
+            }
+            let max_sum = sum_l.max(sum_r);
+            let norm = if max_sum > 1.5 {
+                1.0 / max_sum.sqrt()
             } else {
-                l
+                1.0
             };
-            rs.ring_set(wr as usize + i, l, r);
+            for c in 0..ch_n {
+                w_l[c] *= norm;
+                w_r[c] *= norm;
+            }
+            for i in 0..frames {
+                let fp = &pcm[i * fsz..];
+                let mut l = 0.0f32;
+                let mut r = 0.0f32;
+                for c in 0..ch_n {
+                    let off = c * ssz;
+                    if off + ssz <= fp.len() {
+                        let s = decode_sample(&fp[off..], fmt);
+                        l += s * w_l[c];
+                        r += s * w_r[c];
+                    }
+                }
+                rs.ring_set(wr as usize + i, l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0));
+            }
         }
 
         let new_wr = wr + frames as u64;
@@ -1395,6 +1508,7 @@ impl PaState {
             failsafe::record_trip(failsafe::FS_PA_BAD_PKT, b"PA truncated control header quarantined");
             return;
         };
+        self.clients[ci].last_cmd = cmd;
 
         if !pa_is_lifecycle_cmd(cmd) {
             let pid = self.clients[ci].pid;
@@ -2256,7 +2370,7 @@ impl PaState {
                 }
                 let (
                     Some(mut ss),
-                    Some(mp),
+                    Some(mut mp),
                     Some(sink_idx),
                     Some(sink_nm_opt),
                     Some(maxl),
@@ -2324,15 +2438,25 @@ impl PaState {
                 if ver >= 18 {
                     let _ = tr.read_bool();
                 }
+                self.refresh_device_cache();
+                let hw_rate = self.cached_status.hw_sample_rate;
+                let mut req_formats: Vec<PaFormatInfo> = Vec::new();
                 if ver >= 21 {
                     if let Some(nf) = tr.read_u8() {
                         for _ in 0..nf {
-                            let _ = tr.skip_format_info();
+                            if let Some(fi) = tr.read_format_info(hw_rate) {
+                                req_formats.push(fi);
+                            }
                         }
                     }
                 }
+                if let Err(err_code) =
+                    resolve_stream_format_spec(&mut ss, &mut mp, &req_formats, hw_rate)
+                {
+                    self.clients[ci].reply_err(tag, err_code);
+                    return;
+                }
 
-                self.refresh_device_cache();
                 let (actual_sink_idx, actual_sink_nm) = self
                     .resolve_sink_idx_and_name(sink_idx, sink_nm.as_deref())
                     .unwrap_or_else(|| {
@@ -2343,13 +2467,7 @@ impl PaState {
                     self.clients[ci].reply_err(tag, ERR_INVALID);
                     return;
                 };
-                if ss.rate == 0 || ss.rate > 768_000 {
-                    ss.rate = 48000;
-                }
-                if ss.channels == 0 || ss.channels > 32 {
-                    ss.channels = 2;
-                }
-                let frame_size = (format_sample_size(ss.format) * ss.channels as u32).max(4);
+                let frame_size = (format_sample_size(ss.format) * ss.channels as u32).max(1);
                 let mut eff_tl = tl;
                 if adjust_latency && eff_tl != PA_INVALID_INDEX && eff_tl > 0 {
                     let sink_bytes =
@@ -2364,11 +2482,7 @@ impl PaState {
                 sm.is_playback = true;
                 sm.target_dev_idx = actual_sink_idx;
                 sm.ss = ss;
-                sm.map = if mp.channels == ss.channels {
-                    mp
-                } else {
-                    std_channel_map(ss.channels)
-                };
+                sm.map = mp;
                 sm.props = pb;
                 sm.name = sm
                     .props
@@ -2379,10 +2493,11 @@ impl PaState {
                 enforce_playback_attr(sm, maxl, eff_tl, minr, preb);
 
                 if volume_set && cv.channels > 0 {
-                    self.streams[si].vol = cv;
+                    let norm_cv = normalize_stream_cvol(&cv, ss.channels);
+                    self.streams[si].vol = norm_cv;
                     rt.streams[si]
                         .volume_milli
-                        .store(cvol_to_milli(&cv), Ordering::Relaxed);
+                        .store(cvol_to_milli(&norm_cv), Ordering::Relaxed);
                 } else {
                     self.streams[si].vol.channels = ss.channels;
                     for v in &mut self.streams[si].vol.values[..ss.channels as usize] {
@@ -2414,7 +2529,7 @@ impl PaState {
 
                 let sm = &mut self.streams[si];
                 sm.requested_bytes_total = sm.tlength as u64;
-                let mut tb = TagBuilder::begin_reply(tag, 256);
+                let mut tb = TagBuilder::begin_reply(tag, 384);
                 tb.put_u32(PA_TAG_U32, sm.channel);
                 tb.put_u32(PA_TAG_U32, sm.index);
                 tb.put_u32(PA_TAG_U32, sm.tlength);
@@ -2435,7 +2550,7 @@ impl PaState {
                     tb.put_u64_raw(PA_TAG_USEC, 5000);
                 }
                 if ver >= 21 {
-                    tb.put_pcm_format();
+                    tb.put_pcm_format_spec(&sm.ss, &sm.map);
                 }
                 let sidx = sm.index;
                 let srate = sm.ss.rate;
@@ -2477,7 +2592,7 @@ impl PaState {
                 }
                 let (
                     Some(mut ss),
-                    Some(mp),
+                    Some(mut mp),
                     Some(src_idx),
                     Some(src_nm_opt),
                     Some(maxl),
@@ -2525,10 +2640,15 @@ impl PaState {
                     let _ = tr.read_bool();
                     let _ = tr.read_bool();
                 }
+                self.refresh_device_cache();
+                let hw_rate = self.cached_status.hw_sample_rate;
+                let mut req_formats: Vec<PaFormatInfo> = Vec::new();
                 if ver >= 22 {
                     if let Some(nf) = tr.read_u8() {
                         for _ in 0..nf {
-                            let _ = tr.skip_format_info();
+                            if let Some(fi) = tr.read_format_info(hw_rate) {
+                                req_formats.push(fi);
+                            }
                         }
                     }
                     if let Some(cvol_in) = tr.read_cvol() {
@@ -2543,8 +2663,13 @@ impl PaState {
                         }
                     }
                 }
+                if let Err(err_code) =
+                    resolve_stream_format_spec(&mut ss, &mut mp, &req_formats, hw_rate)
+                {
+                    self.clients[ci].reply_err(tag, err_code);
+                    return;
+                }
 
-                self.refresh_device_cache();
                 let (actual_src_idx, actual_src_nm, is_mon) = if doi != PA_INVALID_INDEX {
                     let Some(target_si) = self.find_stream_by_index(doi) else {
                         self.clients[ci].reply_err(tag, ERR_NOENTITY);
@@ -2579,6 +2704,15 @@ impl PaState {
                                 let anm = self.get_default_source_pa_name();
                                 let im = anm.contains(".monitor");
                                 (aidx, anm, im)
+                            } else if src_nm.as_deref().is_some_and(|s| s.ends_with(".monitor")) {
+                                let mon_nm = format!("{}.monitor", self.get_default_sink_pa_name());
+                                self.resolve_source_idx_and_name(PA_INVALID_INDEX, Some(&mon_nm))
+                                    .unwrap_or((self.find_active_source_idx(), mon_nm, true))
+                            } else if src_nm.as_deref().is_some_and(|s| s.starts_with("salsa_in.")) {
+                                let anm = self.get_default_source_pa_name();
+                                let im = anm.contains(".monitor");
+                                self.resolve_source_idx_and_name(PA_INVALID_INDEX, Some(&anm))
+                                    .unwrap_or((self.find_active_source_idx(), anm, im))
                             } else {
                                 self.clients[ci].reply_err(tag, ERR_NOENTITY);
                                 return;
@@ -2599,13 +2733,7 @@ impl PaState {
                     self.clients[ci].reply_err(tag, ERR_INVALID);
                     return;
                 };
-                if ss.rate == 0 || ss.rate > 768_000 {
-                    ss.rate = 48000;
-                }
-                if ss.channels == 0 || ss.channels > 32 {
-                    ss.channels = 2;
-                }
-                let frame_size = (format_sample_size(ss.format) * ss.channels as u32).max(4);
+                let frame_size = (format_sample_size(ss.format) * ss.channels as u32).max(1);
                 let sm = &mut self.streams[si];
                 sm.is_playback = false;
                 sm.is_monitor = is_mon;
@@ -2613,11 +2741,7 @@ impl PaState {
                 sm.direct_on_input = doi;
                 sm.target_dev_idx = actual_src_idx;
                 sm.ss = ss;
-                sm.map = if mp.channels == ss.channels {
-                    mp
-                } else {
-                    std_channel_map(ss.channels)
-                };
+                sm.map = mp;
                 sm.props = pb;
                 sm.name = sm
                     .props
@@ -2626,14 +2750,17 @@ impl PaState {
                     .unwrap_or_else(|| self.clients[ci].name.clone());
                 sm.frame_size = frame_size;
                 let _ = maxl;
-                sm.maxlength = (PA_STREAM_RING_FRAMES as u32) * frame_size;
+                sm.maxlength = (PA_STREAM_RING_FRAMES as u32)
+                    .saturating_mul(frame_size)
+                    .min(PA_DEFAULT_MAXLENGTH);
                 enforce_record_attr(sm, frags);
 
                 if volume_set && cv.channels > 0 {
-                    self.streams[si].vol = cv;
+                    let norm_cv = normalize_stream_cvol(&cv, ss.channels);
+                    self.streams[si].vol = norm_cv;
                     rt.streams[si]
                         .volume_milli
-                        .store(cvol_to_milli(&cv), Ordering::Relaxed);
+                        .store(cvol_to_milli(&norm_cv), Ordering::Relaxed);
                 } else {
                     self.streams[si].vol.channels = ss.channels;
                     for v in &mut self.streams[si].vol.values[..ss.channels as usize] {
@@ -2659,7 +2786,7 @@ impl PaState {
                 rt.streams[si].active.store(1, Ordering::Release);
 
                 let sm = &self.streams[si];
-                let mut tb = TagBuilder::begin_reply(tag, 256);
+                let mut tb = TagBuilder::begin_reply(tag, 384);
                 tb.put_u32(PA_TAG_U32, sm.channel);
                 tb.put_u32(PA_TAG_U32, sm.index);
                 if ver >= 9 {
@@ -2677,7 +2804,7 @@ impl PaState {
                     tb.put_u64_raw(PA_TAG_USEC, 5000);
                 }
                 if ver >= 22 {
-                    tb.put_pcm_format();
+                    tb.put_pcm_format_spec(&sm.ss, &sm.map);
                 }
                 let sidx = sm.index;
                 let s_ch = sm.ss.channels;
@@ -3549,13 +3676,97 @@ fn ensure_pulse_cookie(out_cookie: &mut [u8; PA_NATIVE_COOKIE_LEN], out_valid: &
     }
 }
 
+fn resolve_stream_format_spec(
+    ss: &mut PaSampleSpec,
+    mp: &mut PaChannelMap,
+    formats: &[PaFormatInfo],
+    hw_rate: u32,
+) -> Result<(), u32> {
+    if !formats.is_empty() {
+        let Some(fi) = formats
+            .iter()
+            .find(|f| f.encoding == PA_ENCODING_PCM || f.encoding == PA_ENCODING_ANY)
+        else {
+            return Err(ERR_NOTSUPPORTED);
+        };
+        if ss.format >= PA_SAMPLE_MAX {
+            if let Some(fmt) = fi.sample_format {
+                ss.format = fmt;
+            }
+        }
+        if ss.rate == 0 || ss.rate > 768_000 {
+            if let Some(rate) = fi.rate {
+                ss.rate = rate;
+            }
+        }
+        if ss.channels == 0 || ss.channels > 32 {
+            if let Some(ch) = fi.channels {
+                ss.channels = ch;
+            } else if let Some(cm) = fi.channel_map {
+                ss.channels = cm.channels;
+            }
+        }
+        if let Some(cm) = fi.channel_map {
+            if mp.channels == 0 || (ss.channels > 0 && cm.channels == ss.channels) {
+                *mp = cm;
+            }
+        }
+    }
+    if ss.format >= PA_SAMPLE_MAX {
+        ss.format = FMT_FLOAT32LE;
+    }
+    let fallback_rate = if (8000..=768_000).contains(&hw_rate) {
+        hw_rate
+    } else {
+        48000
+    };
+    if ss.rate == 0 || ss.rate > 768_000 {
+        ss.rate = fallback_rate;
+    }
+    if ss.channels == 0 || ss.channels > 32 {
+        ss.channels = if mp.channels > 0 && mp.channels <= 32 {
+            mp.channels
+        } else {
+            2
+        };
+    }
+    if mp.channels != ss.channels {
+        *mp = std_channel_map(ss.channels);
+    }
+    Ok(())
+}
+
+fn normalize_stream_cvol(cv: &PaCVolume, channels: u8) -> PaCVolume {
+    let ch = if channels == 0 { 2 } else { channels.min(32) };
+    if cv.channels == ch {
+        return *cv;
+    }
+    let src_n = cv.channels.min(32) as usize;
+    let avg = if src_n > 0 {
+        let sum: u64 = cv.values[..src_n].iter().map(|&v| v as u64).sum();
+        (sum / src_n as u64) as u32
+    } else {
+        PA_VOLUME_NORM
+    };
+    let mut out = PaCVolume {
+        channels: ch,
+        values: [0; 32],
+    };
+    for v in &mut out.values[..ch as usize] {
+        *v = avg;
+    }
+    out
+}
+
 fn enforce_playback_attr(s: &mut PaStreamMeta, maxl: u32, tl: u32, minr: u32, preb: u32) {
     if s.frame_size == 0 {
         return;
     }
     let fsz = s.frame_size;
     let rate = if s.ss.rate != 0 { s.ss.rate } else { 48000 };
-    let max_ring = (PA_STREAM_RING_FRAMES as u32) * fsz;
+    let max_ring = (PA_STREAM_RING_FRAMES as u32)
+        .saturating_mul(fsz)
+        .min(PA_DEFAULT_MAXLENGTH);
     let mut bytes_10ms = if rate >= 100 { (rate / 100) * fsz } else { fsz };
     if rate >= 1000 && bytes_10ms < fsz * 256 {
         bytes_10ms = fsz * 256;
@@ -3568,7 +3779,7 @@ fn enforce_playback_attr(s: &mut PaStreamMeta, maxl: u32, tl: u32, minr: u32, pr
     bytes_5ms = bytes_5ms.max(fsz);
     let bytes_20ms = bytes_10ms * 2;
 
-    s.maxlength = if maxl == PA_INVALID_INDEX || maxl > PA_DEFAULT_MAXLENGTH || maxl > max_ring {
+    s.maxlength = if maxl == PA_INVALID_INDEX || maxl > max_ring {
         max_ring
     } else {
         maxl
@@ -4073,7 +4284,7 @@ fn put_sink_input_entry(
         tb.put_bool(true);
     }
     if ver >= 21 {
-        tb.put_pcm_format();
+        tb.put_pcm_format_spec(&s.ss, &s.map);
     }
 }
 
@@ -4113,7 +4324,7 @@ fn put_source_output_entry(
         tb.put_bool(muted);
         tb.put_bool(true);
         tb.put_bool(true);
-        tb.put_pcm_format();
+        tb.put_pcm_format_spec(&s.ss, &s.map);
     }
 }
 
@@ -5188,4 +5399,60 @@ pub unsafe extern "C" fn lwasapi_pa_server_reset_clients(srv: *mut PaServerHandl
     }
     h.rt.signal_wake();
     flushed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_pa_callbacks() -> LwasapiPaCallbacks {
+        unsafe { mem::zeroed() }
+    }
+
+    #[test]
+    fn default_names_and_virtual_aliases_prefer_active_hw_device() {
+        let mut st = PaState::new(
+            empty_pa_callbacks(),
+            String::new(),
+            String::new(),
+        );
+        st.devices_cache_valid = true;
+        st.cached_devices.num_devices = 2;
+
+        // Playback device 0: Bluetooth headphones
+        copy_str_to_c(&mut st.cached_devices.devices[0].id, "bt_AA_BB");
+        copy_str_to_c(&mut st.cached_devices.devices[0].name, "Bose QC Ultra 2 HP");
+        st.cached_devices.devices[0].is_capture = 0;
+        st.cached_devices.devices[0].is_bluetooth = 1;
+        st.cached_devices.devices[0].is_active = 1;
+
+        // Capture device 1: USB Scarlett mic
+        copy_str_to_c(&mut st.cached_devices.devices[1].id, "hw:2,0");
+        copy_str_to_c(&mut st.cached_devices.devices[1].name, "Scarlett 2i2");
+        st.cached_devices.devices[1].is_capture = 1;
+        st.cached_devices.devices[1].is_active = 1;
+
+        // Case 1: status reports "virtual" even though hardware playback device exists.
+        copy_str_to_c(&mut st.cached_status.active_playback_id, "virtual");
+        assert_eq!(st.get_default_sink_pa_name(), "salsa_out.bt_AA_BB");
+
+        // Case 2: status reports stale "hw:6,0" missing from cached_devices.
+        copy_str_to_c(&mut st.cached_status.active_playback_id, "hw:6,0");
+        copy_str_to_c(&mut st.cached_status.active_capture_id, "hw:9,0");
+        assert_eq!(st.get_default_sink_pa_name(), "salsa_out.bt_AA_BB");
+        assert_eq!(st.get_default_source_pa_name(), "salsa_in.hw_2_0");
+
+        // Virtual aliases resolve cleanly to the active HW sink and its monitor.
+        let resolved_sink = st.resolve_sink_idx_and_name(PA_INVALID_INDEX, Some("salsa_out.virtual"));
+        assert_eq!(
+            resolved_sink.as_ref().map(|(_, nm)| nm.as_str()),
+            Some("salsa_out.bt_AA_BB")
+        );
+        let resolved_mon =
+            st.resolve_source_idx_and_name(PA_INVALID_INDEX, Some("salsa_out.virtual.monitor"));
+        assert_eq!(
+            resolved_mon.as_ref().map(|(_, nm, mon)| (nm.as_str(), *mon)),
+            Some(("salsa_out.bt_AA_BB.monitor", true))
+        );
+    }
 }

@@ -5,6 +5,7 @@ Direct engine telemetry & control via liblwasapi.so + binary IPC + org.kde.Statu
 """
 
 import ctypes
+import fcntl
 import json
 import os
 import re
@@ -3418,11 +3419,177 @@ class AudioEngineTray(QtCore.QObject):
         self._launch_script(SALSA_DEBUG)
 
 
+_TRAY_LOCK_FD: int | None = None
+
+
+def _runtime_lwasapi_dir() -> str:
+    uid = os.getuid()
+    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
+    base_rt = os.path.join(xdg, "lwasapi")
+    os.makedirs(base_rt, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(base_rt, 0o700)
+    except OSError:
+        pass
+    return base_rt
+
+
+def _is_tray_pid(pid: int) -> bool:
+    if pid <= 1 or pid == os.getpid():
+        return False
+    try:
+        st = os.stat(f"/proc/{pid}")
+        if st.st_uid != os.getuid():
+            return False
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            cmd = fh.read().replace(b"\x00", b" ").decode("utf-8", "ignore")
+        return "lwasapi-tray.py" in cmd
+    except OSError:
+        return False
+
+
+def _pid_in_tray_systemd_unit(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/cgroup", "r", encoding="utf-8", errors="ignore") as fh:
+            return "lwasapi-tray.service" in fh.read()
+    except OSError:
+        return False
+
+
+def _tray_systemd_unit_active_or_enabled() -> bool:
+    for verb in ("is-active", "is-enabled"):
+        try:
+            r = subprocess.run(
+                ["systemctl", "--user", verb, "--quiet", "lwasapi-tray.service"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            )
+            if r.returncode == 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _acquire_tray_single_instance_lock(replace_unmanaged: bool = False) -> bool:
+    global _TRAY_LOCK_FD
+    lock_path = os.path.join(_runtime_lwasapi_dir(), "tray.lock")
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+    except OSError:
+        return True
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+            os.close(fd)
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            holder_pid = 0
+            try:
+                raw = os.pread(fd, 32, 0).decode("ascii", "ignore").strip()
+                if raw.isdigit():
+                    holder_pid = int(raw)
+            except OSError:
+                holder_pid = 0
+            acquired = False
+            if replace_unmanaged and _is_tray_pid(holder_pid) and not _pid_in_tray_systemd_unit(holder_pid):
+                try:
+                    os.kill(holder_pid, signal.SIGTERM)
+                except OSError:
+                    pass
+                deadline = time.monotonic() + 1.5
+                while time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        acquired = True
+                        break
+                    except BlockingIOError:
+                        pass
+            if not acquired:
+                os.close(fd)
+                return False
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+        _TRAY_LOCK_FD = fd
+        return True
+    except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return True
+
+
+def _strip_xsmp_args(argv: list[str]) -> tuple[list[str], bool]:
+    cleaned: list[str] = [argv[0]] if argv else ["lwasapi-tray.py"]
+    has_session_flag = any(
+        a in ("-session", "--session", "-sm-client-id", "--sm-client-id")
+        or a.startswith(("-session=", "--session=", "-sm-client-id=", "--sm-client-id="))
+        for a in argv[1:]
+    )
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-session", "--session", "-sm-client-id", "--sm-client-id"):
+            i += 2
+            continue
+        if arg.startswith(("-session=", "--session=", "-sm-client-id=", "--sm-client-id=")):
+            i += 1
+            continue
+        if arg == "-name" and has_session_flag:
+            i += 2
+            continue
+        if arg == "--replace":
+            i += 1
+            continue
+        cleaned.append(arg)
+        i += 1
+    return cleaned, has_session_flag
+
+
 def main() -> int:
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+    qt_argv, is_session_restore = _strip_xsmp_args(sys.argv)
+    invoked_by_systemd = _pid_in_tray_systemd_unit(os.getpid())
+
+    # Never allow KDE/X11 session restoration to spawn a duplicate alongside lwasapi-tray.service.
+    if is_session_restore and not invoked_by_systemd and _tray_systemd_unit_active_or_enabled():
+        print("[lwasapi-tray] Ignoring stale desktop session restore; managed by lwasapi-tray.service.", file=sys.stderr)
+        return 0
+
+    if not os.environ.get("QT_QPA_PLATFORM") and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        print("[lwasapi-tray] No graphical display (DISPLAY/WAYLAND_DISPLAY unset); exiting cleanly.", file=sys.stderr)
+        return 1
+
+    replace_unmanaged = invoked_by_systemd or ("--replace" in sys.argv[1:])
+    if not _acquire_tray_single_instance_lock(replace_unmanaged=replace_unmanaged):
+        print("[lwasapi-tray] Another Salsa tray instance is already running; exiting.", file=sys.stderr)
+        return 0
+
     if not os.environ.get("QT_QPA_PLATFORM") and os.environ.get("DISPLAY"):
         os.environ["QT_QPA_PLATFORM"] = "xcb"
-    app = QtWidgets.QApplication(sys.argv)
+
+    # Prevent Qt xcb/libSM from registering with ksmserver/XSMP so shutdown/restart never saves a duplicate copy.
+    saved_sm = os.environ.pop("SESSION_MANAGER", None)
+    app = QtWidgets.QApplication(qt_argv)
+    if saved_sm is not None:
+        os.environ["SESSION_MANAGER"] = saved_sm
+
+    def _suppress_session_save(sm: QtGui.QSessionManager) -> None:
+        try:
+            sm.setRestartHint(QtGui.QSessionManager.RestartHint.RestartNever)
+        except Exception:
+            pass
+
+    app.commitDataRequest.connect(_suppress_session_save)
+    app.saveStateRequest.connect(_suppress_session_save)
+
     app.setApplicationName("Salsa Tray")
     app.setDesktopFileName("lwasapi-tray")
     app.setQuitOnLastWindowClosed(False)

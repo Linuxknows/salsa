@@ -69,21 +69,21 @@ $(PA_RECONNECT32_DIR):
 
 $(WIRE_LIB): $(RUST_SRCS) | $(BUILD_DIR)
 	RUSTFLAGS="-C link-arg=-Wl,-z,relro,-z,now" PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) build --manifest-path rust/salsa_net/Cargo.toml --release --offline --target-dir $(BUILD_DIR)/rust_target --lib --bins
-	cp $(BUILD_DIR)/rust_target/release/libsalsa_wire.a $@
+	cp $(BUILD_DIR)/rust_target/release/libsalsa_wire.a $@.tmp && mv -f $@.tmp $@
 
 $(BUILD_DIR)/lwasapi-audiodg: $(WIRE_LIB) | $(BUILD_DIR)
-	cp $(BUILD_DIR)/rust_target/release/lwasapi-audiodg $@
+	cp $(BUILD_DIR)/rust_target/release/lwasapi-audiodg $@.tmp && mv -f $@.tmp $@
 
 $(BUILD_DIR)/liblwasapi.so: src/liblwasapi.c include/lwasapi.h include/lwasapi_debug.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -shared -Wl,-soname,liblwasapi.so src/liblwasapi.c -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) -shared -Wl,-soname,liblwasapi.so src/liblwasapi.c -o $@.tmp $(LDFLAGS) && mv -f $@.tmp $@
 
 $(BUILD_DIR)/libasound_module_pcm_lwasapi.so: src/alsa_plugin_lwasapi.c $(BUILD_DIR)/liblwasapi.so | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -shared -Wl,-soname,libasound_module_pcm_lwasapi.so \
 		-Wl,-rpath,'$$ORIGIN' \
-		src/alsa_plugin_lwasapi.c -L$(BUILD_DIR) -llwasapi $(HOST_LIBASOUND) -o $@ $(LDFLAGS)
+		src/alsa_plugin_lwasapi.c -L$(BUILD_DIR) -llwasapi $(HOST_LIBASOUND) -o $@.tmp $(LDFLAGS) && mv -f $@.tmp $@
 
 $(BUILD_DIR)/libsalsa_pa_reconnect.so: src/salsa_pa_reconnect.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -shared -Wl,-soname,libsalsa_pa_reconnect.so src/salsa_pa_reconnect.c -lpulse -ldl -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) -shared -Wl,-soname,libsalsa_pa_reconnect.so src/salsa_pa_reconnect.c -lpulse -ldl -o $@.tmp $(LDFLAGS) && mv -f $@.tmp $@
 
 $(BUILD_DIR)/salsa_pa_reconnect_proxy.o: src/salsa_pa_reconnect.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -DSALSA_PA_PROXY -DSALSA_HOST_LIBPULSE=\"$(HOST_LIBPULSE)\" -c src/salsa_pa_reconnect.c -o $@
@@ -95,8 +95,8 @@ $(PA_RECONNECT_DIR)/libpulse.so.0: $(BUILD_DIR)/salsa_pa_reconnect_proxy.o $(BUI
 	$(CC) $(CFLAGS) -shared -Wl,-soname,libpulse.so.0 \
 		-Wl,--version-script=src/pulse.version \
 		-Wl,-z,nodelete \
-		$(BUILD_DIR)/salsa_pa_reconnect_proxy.o $(BUILD_DIR)/salsa_pa_proxy_stubs.S -ldl -o $@ $(LDFLAGS)
-	ln -sf libpulse.so.0 $(PA_RECONNECT_DIR)/libpulse.so
+		$(BUILD_DIR)/salsa_pa_reconnect_proxy.o $(BUILD_DIR)/salsa_pa_proxy_stubs.S -ldl -o $@.tmp $(LDFLAGS) && mv -f $@.tmp $@
+	ln -sf libpulse.so.0 $(PA_RECONNECT_DIR)/libpulse.so.tmp && mv -f $(PA_RECONNECT_DIR)/libpulse.so.tmp $(PA_RECONNECT_DIR)/libpulse.so
 
 ifneq ($(OPT_PA32),)
 CFLAGS32 := -m32 -O3 -Wall -Wextra -std=c11 -fPIC -DPIC -fstack-protector-strong -D_FORTIFY_SOURCE=2 -Iinclude
@@ -111,54 +111,54 @@ $(PA_RECONNECT32_DIR)/libpulse.so.0: $(BUILD_DIR)/salsa_pa_reconnect_proxy32.o $
 	$(CC) $(CFLAGS32) -shared -Wl,-soname,libpulse.so.0 \
 		-Wl,--version-script=src/pulse.version \
 		-Wl,-z,nodelete \
-		$(BUILD_DIR)/salsa_pa_reconnect_proxy32.o $(BUILD_DIR)/salsa_pa_proxy_stubs32.S -ldl -o $@ $(LDFLAGS)
-	ln -sf libpulse.so.0 $(PA_RECONNECT32_DIR)/libpulse.so
+		$(BUILD_DIR)/salsa_pa_reconnect_proxy32.o $(BUILD_DIR)/salsa_pa_proxy_stubs32.S -ldl -o $@.tmp $(LDFLAGS) && mv -f $@.tmp $@
+	ln -sf libpulse.so.0 $(PA_RECONNECT32_DIR)/libpulse.so.tmp && mv -f $(PA_RECONNECT32_DIR)/libpulse.so.tmp $(PA_RECONNECT32_DIR)/libpulse.so
 endif
 
 $(SHIM_DIR)/libasound.so.2: src/shim_alsa.c $(BUILD_DIR)/liblwasapi.so src/alsa.version | $(SHIM_DIR)
 	$(CC) $(CFLAGS) -shared -Wl,-soname,libasound.so.2 \
 		-Wl,--version-script=src/alsa.version \
 		-Wl,-rpath,'$$ORIGIN/..' \
-		src/shim_alsa.c -L$(BUILD_DIR) -llwasapi -ldl -o $@ $(LDFLAGS)
-	ln -sf libasound.so.2 $(SHIM_DIR)/libasound.so
+		src/shim_alsa.c -L$(BUILD_DIR) -llwasapi -ldl -o $@.tmp $(LDFLAGS) && mv -f $@.tmp $@
+	ln -sf libasound.so.2 $(SHIM_DIR)/libasound.so.tmp && mv -f $(SHIM_DIR)/libasound.so.tmp $(SHIM_DIR)/libasound.so
 
 $(SHIM_DIR)/libpulse-simple.so.0: src/shim_pulse.c $(BUILD_DIR)/liblwasapi.so src/pulse.version | $(SHIM_DIR)
 	$(CC) $(CFLAGS) -shared -Wl,-soname,libpulse-simple.so.0 \
 		-Wl,--version-script=src/pulse.version \
 		-Wl,-rpath,'$$ORIGIN/..' \
-		src/shim_pulse.c -L$(BUILD_DIR) -llwasapi -o $@ $(LDFLAGS)
-	ln -sf libpulse-simple.so.0 $(SHIM_DIR)/libpulse-simple.so
+		src/shim_pulse.c -L$(BUILD_DIR) -llwasapi -o $@.tmp $(LDFLAGS) && mv -f $@.tmp $@
+	ln -sf libpulse-simple.so.0 $(SHIM_DIR)/libpulse-simple.so.tmp && mv -f $(SHIM_DIR)/libpulse-simple.so.tmp $(SHIM_DIR)/libpulse-simple.so
 
 $(SHIM_DIR)/libpulse.so.0: src/shim_pulse.c $(BUILD_DIR)/liblwasapi.so src/pulse.version | $(SHIM_DIR)
 	$(CC) $(CFLAGS) -shared -Wl,-soname,libpulse.so.0 \
 		-Wl,--version-script=src/pulse.version \
 		-Wl,-rpath,'$$ORIGIN/..' \
-		src/shim_pulse.c -L$(BUILD_DIR) -llwasapi -o $@ $(LDFLAGS)
-	ln -sf libpulse.so.0 $(SHIM_DIR)/libpulse.so
+		src/shim_pulse.c -L$(BUILD_DIR) -llwasapi -o $@.tmp $(LDFLAGS) && mv -f $@.tmp $@
+	ln -sf libpulse.so.0 $(SHIM_DIR)/libpulse.so.tmp && mv -f $(SHIM_DIR)/libpulse.so.tmp $(SHIM_DIR)/libpulse.so
 
 $(SHIM_DIR)/libpulse-mainloop-glib.so.0: src/shim_pulse.c $(BUILD_DIR)/liblwasapi.so src/pulse.version | $(SHIM_DIR)
 	$(CC) $(CFLAGS) -shared -Wl,-soname,libpulse-mainloop-glib.so.0 \
 		-Wl,--version-script=src/pulse.version \
 		-Wl,-rpath,'$$ORIGIN/..' \
-		src/shim_pulse.c -L$(BUILD_DIR) -llwasapi -o $@ $(LDFLAGS)
-	ln -sf libpulse-mainloop-glib.so.0 $(SHIM_DIR)/libpulse-mainloop-glib.so
+		src/shim_pulse.c -L$(BUILD_DIR) -llwasapi -o $@.tmp $(LDFLAGS) && mv -f $@.tmp $@
+	ln -sf libpulse-mainloop-glib.so.0 $(SHIM_DIR)/libpulse-mainloop-glib.so.tmp && mv -f $(SHIM_DIR)/libpulse-mainloop-glib.so.tmp $(SHIM_DIR)/libpulse-mainloop-glib.so
 
 $(SHIM_DIR)/libjack.so.0: src/shim_jack.c $(BUILD_DIR)/liblwasapi.so | $(SHIM_DIR)
 	$(CC) $(CFLAGS) -shared -Wl,-soname,libjack.so.0 \
 		-Wl,-rpath,'$$ORIGIN/..' \
-		src/shim_jack.c -L$(BUILD_DIR) -llwasapi -o $@ $(LDFLAGS)
-	ln -sf libjack.so.0 $(SHIM_DIR)/libjack.so
+		src/shim_jack.c -L$(BUILD_DIR) -llwasapi -o $@.tmp $(LDFLAGS) && mv -f $@.tmp $@
+	ln -sf libjack.so.0 $(SHIM_DIR)/libjack.so.tmp && mv -f $(SHIM_DIR)/libjack.so.tmp $(SHIM_DIR)/libjack.so
 
 .PHONY: fuzz-wire
 
 $(BUILD_DIR)/lwasapi-ctl: $(WIRE_LIB) | $(BUILD_DIR)
-	cp $(BUILD_DIR)/rust_target/release/lwasapi-ctl $@
+	cp $(BUILD_DIR)/rust_target/release/lwasapi-ctl $@.tmp && mv -f $@.tmp $@
 
 $(BUILD_DIR)/lwasapi-test: src/lwasapi_test.c $(BUILD_DIR)/liblwasapi.so | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -Wl,-rpath,'$$ORIGIN' src/lwasapi_test.c -L$(BUILD_DIR) -llwasapi -ldl -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) -Wl,-rpath,'$$ORIGIN' src/lwasapi_test.c -L$(BUILD_DIR) -llwasapi -ldl -o $@.tmp $(LDFLAGS) && mv -f $@.tmp $@
 
 $(BUILD_DIR)/lwasapi-bench: src/lwasapi_bench.c $(BUILD_DIR)/liblwasapi.so | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -Wl,-rpath,'$$ORIGIN' src/lwasapi_bench.c -L$(BUILD_DIR) -llwasapi -ldl -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) -Wl,-rpath,'$$ORIGIN' src/lwasapi_bench.c -L$(BUILD_DIR) -llwasapi -ldl -o $@.tmp $(LDFLAGS) && mv -f $@.tmp $@
 
 rust-test:
 	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) clippy --manifest-path rust/salsa_net/Cargo.toml --offline --all-targets -- -D warnings
@@ -173,7 +173,7 @@ test-sanitized: rust-test fuzz-wire
 test: all
 	python3 scripts/run_regression_tests.py
 
-REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo v6.9-beta))
+REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo v7.0-beta))
 
 installer: all
 	@if [ "$(REV)" != "$$(cat VERSION 2>/dev/null || true)" ]; then printf '%s\n' "$(REV)" > VERSION; fi

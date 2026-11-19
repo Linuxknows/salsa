@@ -880,16 +880,21 @@ class SystemAuditScanner:
                 pass
 
         lib_deps = ("src/liblwasapi.c", "include/lwasapi.h", "include/lwasapi_debug.h")
-        artifact_deps: tuple[tuple[str, tuple[str, ...]], ...] = (
+        proxy_deps = ("src/salsa_pa_reconnect.c", "src/pulse.version", "scripts/gen_pa_proxy.py")
+        artifact_list: list[tuple[str, tuple[str, ...]]] = [
             ("build/lwasapi-audiodg", rust_rel_deps),
             ("build/liblwasapi.so", lib_deps),
             ("build/libasound_module_pcm_lwasapi.so", ("src/alsa_plugin_lwasapi.c", *lib_deps)),
             ("build/libsalsa_pa_reconnect.so", ("src/salsa_pa_reconnect.c",)),
+            ("build/pa_reconnect/libpulse.so.0", proxy_deps),
             ("build/lwasapi-ctl", rust_rel_deps),
             ("build/shims/libasound.so.2", ("src/shim_alsa.c", "src/alsa.version", *lib_deps)),
             ("build/shims/libpulse.so.0", ("src/shim_pulse.c", "src/pulse.version", *lib_deps)),
             ("build/shims/libjack.so.0", ("src/shim_jack.c", *lib_deps)),
-        )
+        ]
+        if os.path.exists(os.path.join(BASE_DIR, "build/pa_reconnect32/libpulse.so.0")):
+            artifact_list.append(("build/pa_reconnect32/libpulse.so.0", proxy_deps))
+        artifact_deps: tuple[tuple[str, tuple[str, ...]], ...] = tuple(artifact_list)
         rows: list[dict[str, Any]] = []
         any_stale = False
         for rel, deps in artifact_deps:
@@ -989,7 +994,7 @@ class SystemAuditScanner:
 
     @classmethod
     def inspect_pipewire_boundary(cls) -> dict[str, Any]:
-        """Verify PipeWire boundary is either Salsa Pure-C Video Broker or video-only WirePlumber."""
+        """Verify PipeWire boundary is either Salsa Pure-Rust Video Broker or video-only WirePlumber."""
         wp_audio_nodes: list[str] = []
         wp_video_nodes: list[str] = []
         rt_dir = _runtime_dir()
@@ -1023,7 +1028,7 @@ class SystemAuditScanner:
         else:
             err = "pw-dump not installed"
         return {
-            "broker": "Salsa Pure-C Video Broker" if salsa_owns_pw0 else "Upstream PipeWire",
+            "broker": "Salsa Pure-Rust Video Broker" if salsa_owns_pw0 else "Upstream PipeWire",
             "zero_pw_mode": zero_pw_mode,
             "salsa_owns_pw0": salsa_owns_pw0,
             "pw0_owner": pw0.get("peer_comm") or "",

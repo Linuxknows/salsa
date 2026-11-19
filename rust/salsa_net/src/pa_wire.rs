@@ -315,6 +315,71 @@ impl<'a> TagReader<'a> {
         let _enc = self.read_u8()?;
         self.read_proplist(None)
     }
+
+    pub fn read_format_info(&mut self, preferred_rate: u32) -> Option<PaFormatInfo> {
+        let r = self.rem()?;
+        if *r.first()? != PA_TAG_FORMAT_INFO {
+            return None;
+        }
+        self.pos += 1;
+        let encoding = self.read_u8()?;
+        let r_pl = self.rem()?;
+        if *r_pl.first()? != PA_TAG_PROPLIST {
+            return None;
+        }
+        self.pos += 1;
+
+        let mut fi = PaFormatInfo {
+            encoding,
+            sample_format: None,
+            rate: None,
+            channels: None,
+            channel_map: None,
+        };
+        let pref_rate = if (8000..=768_000).contains(&preferred_rate) {
+            preferred_rate
+        } else {
+            48000
+        };
+
+        for _ in 0..512 {
+            if self.pos >= self.buf.len() {
+                return None;
+            }
+            let Some((k_off, k_len)) = self.read_str_slice()? else {
+                return Some(fi);
+            };
+            let _vlen = self.read_u32()?;
+            let (a_off, a_len) = self.read_arbitrary_slice()?;
+            let key = core::str::from_utf8(&self.buf[k_off..k_off + k_len]).unwrap_or("");
+            let val_bytes = cstr_bytes(&self.buf[a_off..a_off + a_len]);
+            let val = core::str::from_utf8(val_bytes).unwrap_or("").trim();
+            match key {
+                "format.sample_format" => {
+                    if let Some(fmt) = parse_format_sample_fmt_prop(val) {
+                        fi.sample_format = Some(fmt);
+                    }
+                }
+                "format.rate" => {
+                    if let Some(rate) = parse_format_u32_prop(val, 8000, 768_000, pref_rate) {
+                        fi.rate = Some(rate);
+                    }
+                }
+                "format.channels" => {
+                    if let Some(ch) = parse_format_u32_prop(val, 1, 32, 2) {
+                        fi.channels = Some(ch as u8);
+                    }
+                }
+                "format.channel_map" => {
+                    if let Some(cm) = parse_format_channel_map_prop(val) {
+                        fi.channel_map = Some(cm);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
 }
 
 pub const PA_TAG_U64: u8 = b'R';
@@ -324,6 +389,9 @@ pub const PA_TAG_VOLUME: u8 = b'V';
 pub const PA_VOLUME_NORM: u32 = 0x10000;
 pub const PA_INVALID_INDEX: u32 = 0xFFFF_FFFF;
 pub const PA_CMD_REPLY: u32 = 2;
+
+pub const PA_ENCODING_ANY: u8 = 0;
+pub const PA_ENCODING_PCM: u8 = 1;
 
 pub const FMT_U8: u8 = 0;
 pub const FMT_ALAW: u8 = 1;
@@ -338,6 +406,271 @@ pub const FMT_S24LE: u8 = 9;
 pub const FMT_S24BE: u8 = 10;
 pub const FMT_S24_32LE: u8 = 11;
 pub const FMT_S24_32BE: u8 = 12;
+pub const PA_SAMPLE_MAX: u8 = 13;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaFormatInfo {
+    pub encoding: u8,
+    pub sample_format: Option<u8>,
+    pub rate: Option<u32>,
+    pub channels: Option<u8>,
+    pub channel_map: Option<PaChannelMap>,
+}
+
+pub fn sample_format_to_str(fmt: u8) -> &'static str {
+    match fmt {
+        FMT_U8 => "u8",
+        FMT_ALAW => "aLaw",
+        FMT_ULAW => "uLaw",
+        FMT_S16LE => "s16le",
+        FMT_S16BE => "s16be",
+        FMT_FLOAT32LE => "float32le",
+        FMT_FLOAT32BE => "float32be",
+        FMT_S32LE => "s32le",
+        FMT_S32BE => "s32be",
+        FMT_S24LE => "s24le",
+        FMT_S24BE => "s24be",
+        FMT_S24_32LE => "s24-32le",
+        FMT_S24_32BE => "s24-32be",
+        _ => "float32le",
+    }
+}
+
+pub fn parse_sample_format(s: &str) -> Option<u8> {
+    let t = s.trim().trim_matches('"');
+    if t.eq_ignore_ascii_case("u8") {
+        Some(FMT_U8)
+    } else if t.eq_ignore_ascii_case("alaw") {
+        Some(FMT_ALAW)
+    } else if t.eq_ignore_ascii_case("ulaw") {
+        Some(FMT_ULAW)
+    } else if t.eq_ignore_ascii_case("s16le") {
+        Some(FMT_S16LE)
+    } else if t.eq_ignore_ascii_case("s16be") {
+        Some(FMT_S16BE)
+    } else if t.eq_ignore_ascii_case("float32le") {
+        Some(FMT_FLOAT32LE)
+    } else if t.eq_ignore_ascii_case("float32be") {
+        Some(FMT_FLOAT32BE)
+    } else if t.eq_ignore_ascii_case("s32le") {
+        Some(FMT_S32LE)
+    } else if t.eq_ignore_ascii_case("s32be") {
+        Some(FMT_S32BE)
+    } else if t.eq_ignore_ascii_case("s24le") {
+        Some(FMT_S24LE)
+    } else if t.eq_ignore_ascii_case("s24be") {
+        Some(FMT_S24BE)
+    } else if t.eq_ignore_ascii_case("s24-32le") || t.eq_ignore_ascii_case("s24_32le") {
+        Some(FMT_S24_32LE)
+    } else if t.eq_ignore_ascii_case("s24-32be") || t.eq_ignore_ascii_case("s24_32be") {
+        Some(FMT_S24_32BE)
+    } else {
+        None
+    }
+}
+
+pub fn channel_position_to_str(pos: u8) -> &'static str {
+    match pos {
+        0 => "mono",
+        1 => "front-left",
+        2 => "front-right",
+        3 => "front-center",
+        4 => "rear-center",
+        5 => "rear-left",
+        6 => "rear-right",
+        7 => "lfe",
+        8 => "front-left-of-center",
+        9 => "front-right-of-center",
+        10 => "side-left",
+        11 => "side-right",
+        12 => "aux0",
+        13 => "aux1",
+        14 => "aux2",
+        15 => "aux3",
+        16 => "aux4",
+        17 => "aux5",
+        18 => "aux6",
+        19 => "aux7",
+        20 => "aux8",
+        21 => "aux9",
+        22 => "aux10",
+        23 => "aux11",
+        24 => "aux12",
+        25 => "aux13",
+        26 => "aux14",
+        27 => "aux15",
+        28 => "aux16",
+        29 => "aux17",
+        30 => "aux18",
+        31 => "aux19",
+        32 => "aux20",
+        33 => "aux21",
+        34 => "aux22",
+        35 => "aux23",
+        36 => "aux24",
+        37 => "aux25",
+        38 => "aux26",
+        39 => "aux27",
+        40 => "aux28",
+        41 => "aux29",
+        42 => "aux30",
+        43 => "aux31",
+        44 => "top-center",
+        45 => "top-front-left",
+        46 => "top-front-right",
+        47 => "top-front-center",
+        48 => "top-rear-left",
+        49 => "top-rear-right",
+        50 => "top-rear-center",
+        _ => "aux0",
+    }
+}
+
+pub fn parse_channel_position(s: &str) -> Option<u8> {
+    let t = s.trim().trim_matches('"');
+    match t {
+        "mono" => Some(0),
+        "front-left" | "left" => Some(1),
+        "front-right" | "right" => Some(2),
+        "front-center" | "center" => Some(3),
+        "rear-center" => Some(4),
+        "rear-left" => Some(5),
+        "rear-right" => Some(6),
+        "lfe" | "subwoofer" => Some(7),
+        "front-left-of-center" => Some(8),
+        "front-right-of-center" => Some(9),
+        "side-left" => Some(10),
+        "side-right" => Some(11),
+        "top-center" => Some(44),
+        "top-front-left" => Some(45),
+        "top-front-right" => Some(46),
+        "top-front-center" => Some(47),
+        "top-rear-left" => Some(48),
+        "top-rear-right" => Some(49),
+        "top-rear-center" => Some(50),
+        _ => {
+            if let Some(rest) = t.strip_prefix("aux") {
+                let n: u8 = rest.parse().ok()?;
+                if n < 32 {
+                    return Some(12 + n);
+                }
+            }
+            None
+        }
+    }
+}
+
+pub fn parse_channel_map_str(s: &str) -> Option<PaChannelMap> {
+    let clean = s.trim().trim_matches('"').trim();
+    if clean.is_empty() {
+        return None;
+    }
+    let mut out = PaChannelMap::default();
+    let mut n = 0usize;
+    for part in clean.split(',') {
+        if n >= 32 {
+            return None;
+        }
+        out.map[n] = parse_channel_position(part)?;
+        n += 1;
+    }
+    if n == 0 {
+        return None;
+    }
+    out.channels = n as u8;
+    Some(out)
+}
+
+pub fn format_channel_map_str(m: &PaChannelMap) -> String {
+    let ch = m.channels.min(32) as usize;
+    if ch == 0 {
+        return "front-left,front-right".to_string();
+    }
+    let mut out = String::with_capacity(ch * 14);
+    for (i, &pos) in m.map.iter().enumerate().take(ch) {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(channel_position_to_str(pos));
+    }
+    out
+}
+
+fn parse_format_sample_fmt_prop(val: &str) -> Option<u8> {
+    let v = val.trim();
+    if let Some(inner) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        for item in inner.split(',') {
+            if let Some(fmt) = parse_sample_format(item) {
+                return Some(fmt);
+            }
+        }
+        None
+    } else {
+        parse_sample_format(v)
+    }
+}
+
+fn parse_format_channel_map_prop(val: &str) -> Option<PaChannelMap> {
+    let v = val.trim();
+    if let Some(inner) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        // String array of quoted comma-separated maps, e.g. [ "front-left,front-right", "mono" ]
+        let mut rest = inner.trim();
+        while let Some(start) = rest.find('"') {
+            let after = &rest[start + 1..];
+            let end = after.find('"')?;
+            let cand = &after[..end];
+            if let Some(cm) = parse_channel_map_str(cand) {
+                return Some(cm);
+            }
+            rest = &after[end + 1..];
+        }
+        None
+    } else {
+        parse_channel_map_str(v)
+    }
+}
+
+fn parse_json_int_field(obj: &str, field: &str) -> Option<u32> {
+    let needle = format!("\"{field}\"");
+    let pos = obj.find(&needle)?;
+    let after = &obj[pos + needle.len()..];
+    let colon = after.find(':')?;
+    let rest = after[colon + 1..].trim_start();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<u32>().ok()
+}
+
+fn parse_format_u32_prop(val: &str, min_ok: u32, max_ok: u32, preferred: u32) -> Option<u32> {
+    let v = val.trim();
+    if let Ok(n) = v.parse::<u32>() {
+        return (min_ok..=max_ok).contains(&n).then_some(n);
+    }
+    if let Some(inner) = v.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        let lo = parse_json_int_field(inner, "min").unwrap_or(min_ok).max(min_ok);
+        let hi = parse_json_int_field(inner, "max").unwrap_or(max_ok).min(max_ok);
+        if lo <= hi {
+            return Some(preferred.clamp(lo, hi));
+        }
+        return None;
+    }
+    if let Some(inner) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        let mut first_valid: Option<u32> = None;
+        for part in inner.split(',') {
+            if let Ok(n) = part.trim().parse::<u32>() {
+                if (min_ok..=max_ok).contains(&n) {
+                    if n == preferred {
+                        return Some(n);
+                    }
+                    if first_valid.is_none() {
+                        first_valid = Some(n);
+                    }
+                }
+            }
+        }
+        return first_valid;
+    }
+    None
+}
 
 impl PaPropBag {
     pub fn set_kv(&mut self, key: &str, val: &str) {
@@ -463,8 +796,36 @@ impl TagBuilder {
 
     pub fn put_pcm_format(&mut self) {
         self.buf.push(PA_TAG_FORMAT_INFO);
-        self.put_u8(PA_TAG_U8, 1);
+        self.put_u8(PA_TAG_U8, PA_ENCODING_PCM);
         self.put_proplist(None);
+    }
+
+    fn put_proplist_kv(&mut self, key: &str, val: &str) {
+        let kb = key.as_bytes();
+        self.buf.push(PA_TAG_STRING);
+        self.buf.extend_from_slice(kb);
+        self.buf.push(0);
+        let vb = val.as_bytes();
+        let vlen = (vb.len() + 1) as u32;
+        self.put_u32(PA_TAG_U32, vlen);
+        self.put_u32(PA_TAG_ARBITRARY, vlen);
+        self.buf.extend_from_slice(vb);
+        self.buf.push(0);
+    }
+
+    pub fn put_pcm_format_spec(&mut self, ss: &PaSampleSpec, map: &PaChannelMap) {
+        self.buf.push(PA_TAG_FORMAT_INFO);
+        self.put_u8(PA_TAG_U8, PA_ENCODING_PCM);
+        self.buf.push(PA_TAG_PROPLIST);
+        let fmt_val = format!("\"{}\"", sample_format_to_str(ss.format));
+        self.put_proplist_kv("format.sample_format", &fmt_val);
+        let rate_val = ss.rate.to_string();
+        self.put_proplist_kv("format.rate", &rate_val);
+        let ch_val = ss.channels.to_string();
+        self.put_proplist_kv("format.channels", &ch_val);
+        let cm_val = format!("\"{}\"", format_channel_map_str(map));
+        self.put_proplist_kv("format.channel_map", &cm_val);
+        self.put_str(None);
     }
 
     pub fn into_vec(self) -> Vec<u8> {
@@ -643,5 +1004,70 @@ mod tests {
         assert!(tr.read_proplist(Some(&mut decoded)).is_some());
         assert_eq!(decoded.get_str("application.name").as_deref(), Some("SalsaRust"));
         assert_eq!(decoded.get_str("media.role").as_deref(), Some("music"));
+    }
+
+    #[test]
+    fn format_info_pcm_roundtrip_stereo_and_surround() {
+        let ss_stereo = PaSampleSpec {
+            format: FMT_FLOAT32LE,
+            channels: 2,
+            rate: 48000,
+        };
+        let map_stereo = parse_channel_map_str("front-left,front-right").unwrap();
+        let mut tb = TagBuilder::new(256);
+        tb.put_pcm_format_spec(&ss_stereo, &map_stereo);
+        let wire = tb.into_vec();
+        let mut tr = TagReader::new(&wire, 0).unwrap();
+        let fi = tr.read_format_info(48000).unwrap();
+        assert_eq!(fi.encoding, PA_ENCODING_PCM);
+        assert_eq!(fi.sample_format, Some(FMT_FLOAT32LE));
+        assert_eq!(fi.rate, Some(48000));
+        assert_eq!(fi.channels, Some(2));
+        assert_eq!(fi.channel_map, Some(map_stereo));
+
+        let ss_51 = PaSampleSpec {
+            format: FMT_S16LE,
+            channels: 6,
+            rate: 44100,
+        };
+        let map_51 =
+            parse_channel_map_str("front-left,front-right,front-center,lfe,rear-left,rear-right")
+                .unwrap();
+        let mut tb2 = TagBuilder::new(256);
+        tb2.put_pcm_format_spec(&ss_51, &map_51);
+        let wire2 = tb2.into_vec();
+        let mut tr2 = TagReader::new(&wire2, 0).unwrap();
+        let fi2 = tr2.read_format_info(48000).unwrap();
+        assert_eq!(fi2.encoding, PA_ENCODING_PCM);
+        assert_eq!(fi2.sample_format, Some(FMT_S16LE));
+        assert_eq!(fi2.rate, Some(44100));
+        assert_eq!(fi2.channels, Some(6));
+        assert_eq!(fi2.channel_map, Some(map_51));
+    }
+
+    #[test]
+    fn format_info_parses_ranges_and_arrays() {
+        let mut tb = TagBuilder::new(256);
+        tb.buf.push(PA_TAG_FORMAT_INFO);
+        tb.put_u8(PA_TAG_U8, PA_ENCODING_PCM);
+        tb.buf.push(PA_TAG_PROPLIST);
+        tb.put_proplist_kv("format.sample_format", "[ \"s16le\", \"float32le\" ]");
+        tb.put_proplist_kv("format.rate", "{ \"min\": 8000, \"max\": 192000 }");
+        tb.put_proplist_kv("format.channels", "[ 1, 2, 6 ]");
+        tb.put_proplist_kv(
+            "format.channel_map",
+            "[ \"front-left,front-right\", \"mono\" ]",
+        );
+        tb.put_str(None);
+        let wire = tb.into_vec();
+        let mut tr = TagReader::new(&wire, 0).unwrap();
+        let fi = tr.read_format_info(96000).unwrap();
+        assert_eq!(fi.sample_format, Some(FMT_S16LE));
+        assert_eq!(fi.rate, Some(96000));
+        assert_eq!(fi.channels, Some(2));
+        assert_eq!(
+            fi.channel_map,
+            parse_channel_map_str("front-left,front-right")
+        );
     }
 }

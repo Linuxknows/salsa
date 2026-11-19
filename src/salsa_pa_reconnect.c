@@ -1426,6 +1426,24 @@ static void internal_stream_state_cb(pa_stream *rs, void *ud) {
         ws->reported_state = PA_STREAM_READY;
         ws->last_stream_index = real_pa_stream_get_index(rs);
         ws->last_device_index = real_pa_stream_get_device_index(rs);
+        if (real_pa_stream_get_sample_spec) {
+            const pa_sample_spec *nss = real_pa_stream_get_sample_spec(rs);
+            if (nss && pa_sample_spec_valid(nss)) ws->ss = *nss;
+        }
+        if (real_pa_stream_get_channel_map) {
+            const pa_channel_map *ncm = real_pa_stream_get_channel_map(rs);
+            if (ncm && pa_channel_map_valid(ncm)) {
+                ws->cmap = *ncm;
+                ws->has_cmap = true;
+            }
+        }
+        if (real_pa_stream_get_buffer_attr) {
+            const pa_buffer_attr *nba = real_pa_stream_get_buffer_attr(rs);
+            if (nba) {
+                ws->attr = *nba;
+                ws->has_attr = true;
+            }
+        }
 
         /* Reconcile cork state in case app called pa_stream_cork during teardown/creating */
         int cur_corked = real_pa_stream_is_corked ? real_pa_stream_is_corked(rs) : -1;
@@ -3013,7 +3031,29 @@ pa_stream *pa_stream_new_extended(pa_context *c, const char *name, pa_format_inf
         rs = real_pa_stream_new_extended(wctx->real_ctx, name, formats, n_formats, p);
         if (!rs) return NULL;
     }
-    wstream_t *ws = alloc_wstream(wctx, rs, name, NULL, NULL, p);
+    pa_sample_spec init_ss = { .format = PA_SAMPLE_FLOAT32LE, .rate = 48000, .channels = 2 };
+    pa_channel_map init_cmap;
+    pa_channel_map_init_stereo(&init_cmap);
+    if (n_formats > 0 && formats) {
+        for (unsigned int i = 0; i < n_formats; i++) {
+            if (!formats[i]) continue;
+            pa_sample_spec cand_ss;
+            pa_channel_map cand_cm;
+            pa_sample_spec_init(&cand_ss);
+            pa_channel_map_init(&cand_cm);
+            if (pa_format_info_to_sample_spec(formats[i], &cand_ss, &cand_cm) == 0 &&
+                pa_sample_spec_valid(&cand_ss)) {
+                init_ss = cand_ss;
+                if (pa_channel_map_valid(&cand_cm) && cand_cm.channels == cand_ss.channels) {
+                    init_cmap = cand_cm;
+                } else {
+                    pa_channel_map_init_extend(&init_cmap, cand_ss.channels, PA_CHANNEL_MAP_DEFAULT);
+                }
+                break;
+            }
+        }
+    }
+    wstream_t *ws = alloc_wstream(wctx, rs, name, &init_ss, &init_cmap, p);
     if (!ws) {
         if (rs) real_pa_stream_unref(rs);
         return NULL;

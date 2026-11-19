@@ -4,7 +4,25 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## v6.9-beta — Current (`2026-11-16`)
+## v7.0-beta — Current (`2026-11-18`)
+
+### 1. Local Video Playback (VLC / `mpv` / Haruna) — PulseAudio `pa_format_info` Negotiation
+- Added full protocol v21+ `pa_format_info` parsing/serialization (`PaFormatInfo`, `read_format_info`, `put_pcm_format_spec`) in [`pa_wire.rs`](rust/salsa_net/src/pa_wire.rs) and wired it into playback/record stream creation and sink-input/source-output replies in [`pa_server.rs`](rust/salsa_net/src/pa_server.rs), fixing `pa_stream_new_extended` clients that previously received `PA_SAMPLE_INVALID` / `0 Hz` and aborted (`SRC ratio outside [1/256, 256] range`, crashes in `pa_cvolume_set()` / `pa_bytes_to_usec()`).
+- Hardened [`salsa_pa_reconnect.c`](src/salsa_pa_reconnect.c) so reconnects never expose a zero-initialized sample spec, enlarged the per-stream ring to absorb VLC's ~1.25 s upfront write burst (no more `playback way too early` silence loops), and decoded all channels in `handle_data_memblock` so 5.1/7.1 MKV center/LFE/surrounds are no longer dropped.
+
+### 2. Discord / PipeWire ScreenCast — Full Resolution, Smooth FPS & A/V Sync
+- [`pw_broker.rs`](rust/salsa_net/src/pw_broker.rs) now renegotiates format and buffers on `PORT_UPDATE` for active links (resize / fullscreen), forwards `SPA_META_VideoCrop` ([`pw_wire.rs`](rust/salsa_net/src/pw_wire.rs)), raises buffer headroom from 3 to 4–6, and recycles unconsumed consumer buffers back to KWin instead of leaking them on 120/240 Hz displays.
+- Stamps monotonic `clock.nsec` / `clock.position` and `SPA_META_Header.pts` / `seq` on every frame for accurate WebRTC A/V sync, and reports live relay FPS (`relay_actual_fps_x100`) whenever a link is actively casting, not only while preview is open.
+
+### 3. Debug Audit Reliability Fixes
+- Atomic `.tmp` + `mv -f` installs for every binary, archive, shared library and symlink in [`Makefile`](Makefile), with stale `.tmp` sweeps in [`lwasapi-autosync.sh`](lwasapi-autosync.sh) — rebuilding while the daemon runs no longer hits `ETXTBSY` or crashes running clients.
+- [`pa_server.rs`](rust/salsa_net/src/pa_server.rs) validates default sink/source IDs against cached devices, maps `salsa_out.virtual(.monitor)` to the active hardware sink, falls back gracefully on stale `salsa_in.*` names, and logs the failing PA command name while downgrading benign teardown races to `TRACE` (silences `ERR_NOENTITY` bursts from `plasmashell` / Discord).
+- [`bluez_runtime.rs`](rust/salsa_net/src/bluez_runtime.rs) waits for a two-packet A2DP startup prebuffer and extends the inline refill wait to `24 ms`, eliminating startup `BT_TX_UNDERRUN`s.
+- [`salsa_debug_core.py`](salsa_debug_core.py) / [`salsa_debug_ui.py`](salsa_debug_ui.py) track `pa_reconnect` build freshness, label the "Salsa Pure-Rust Video Broker", preserve saved cast-limit preferences on close, and show live ScreenCast FPS; [`lwasapi-tray.py`](lwasapi-tray.py) / [`install-salsa.sh`](install-salsa.sh) add single-instance session-restore guards.
+
+---
+
+## v6.9-beta (`2026-11-16`)
 
 ### 1. 100% Pure Rust `lwasapi-audiodg` Daemon & `lwasapi-ctl` CLI
 - Completed full migration of the engine, controller, BlueZ A2DP/AVRCP/HFP SCO runtime, ALSA/capture pipeline, HW analog stage, Dynamic EQ/Mic APO DSP, persistent state, debug server, and DAW MIDI hub into the `salsa_net` Rust crate ([`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs), [`bluez_ffi.rs`](rust/salsa_net/src/bluez_ffi.rs), [`bluez_cap.rs`](rust/salsa_net/src/bluez_cap.rs), [`bluez_runtime.rs`](rust/salsa_net/src/bluez_runtime.rs), [`ctl_cli.rs`](rust/salsa_net/src/ctl_cli.rs), [`debug_server.rs`](rust/salsa_net/src/debug_server.rs), [`dsp.rs`](rust/salsa_net/src/dsp.rs), [`hw_analog.rs`](rust/salsa_net/src/hw_analog.rs), [`midi_hub.rs`](rust/salsa_net/src/midi_hub.rs), [`state_conf.rs`](rust/salsa_net/src/state_conf.rs)) with native `[[bin]]` targets [`lwasapi_audiodg.rs`](rust/salsa_net/src/bin/lwasapi_audiodg.rs) and [`lwasapi_ctl.rs`](rust/salsa_net/src/bin/lwasapi_ctl.rs).

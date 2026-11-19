@@ -136,6 +136,7 @@ class SalsaLiveDebuggerWidget(QWidget):
 
         # ScreenCast Broker & Live Feed state (Off by default for zero overhead)
         self._sc_prefs = load_screencast_prefs()
+        self._sc_limits_dirty = False
         self.shm_reader = ScreenCastShmReader()
         self.dryrun_cap = DryRunDesktopCapturer(interval_sec=0.35)
         self.dryrun_cap.set_target_fps(int(self._sc_prefs.get("fps_val", 60)))
@@ -181,7 +182,8 @@ class SalsaLiveDebuggerWidget(QWidget):
         self.shm_reader.close()
         if self._sc_mode != "Off (Zero Overhead)":
             self.client.send_command("PW_PREVIEW 0")
-        self.client.send_command("PW_CAST_LIMITS 0 0 0")
+        if self._sc_limits_dirty and not bool(self._sc_prefs.get("cap_real_cast", False)):
+            self.client.send_command("PW_CAST_LIMITS 0 0 0")
         self.ext_logs.stop_all()
         self.client.stop()
 
@@ -916,6 +918,7 @@ class SalsaLiveDebuggerWidget(QWidget):
 
     def _send_pw_cast_limits_cmd(self) -> None:
         _rk, mw, mh, fps_val, cap_real = self._current_sc_profile()
+        self._sc_limits_dirty = True
         if cap_real:
             self.client.send_command(f"PW_CAST_LIMITS {mw} {mh} {fps_val}")
         else:
@@ -987,7 +990,8 @@ class SalsaLiveDebuggerWidget(QWidget):
 
     def _on_sc_profile_changed(self) -> None:
         rk, _mw, _mh, fps_val, cap_real = self._current_sc_profile()
-        save_screencast_prefs({"res_key": rk, "fps_val": fps_val, "cap_real_cast": cap_real})
+        self._sc_prefs = {"res_key": rk, "fps_val": fps_val, "cap_real_cast": cap_real}
+        save_screencast_prefs(self._sc_prefs)
         self._sc_mirror_cache_key = None
         self._sc_mirror_cache_img = None
         self._sc_ui_fps_times.clear()
@@ -1386,8 +1390,9 @@ class SalsaLiveDebuggerWidget(QWidget):
         self.lbl_sc_metrics.setText(
             f"Clients: {pw.get('num_clients', 0)} | Nodes: {pw.get('num_nodes', 0)} | "
             f"Links: {pw.get('num_links', 0)} | Relayed: {pw.get('frames_relayed_total', 0)} | "
-            f"Dropped: {pw.get('frames_dropped', 0)} | DmaBuf: {pw.get('dmabuf_streams', 0)} | "
-            f"MemFd: {pw.get('memfd_streams', 0)} | Audio Rejects: {pw.get('audio_rejects', 0)}"
+            f"Dropped: {pw.get('frames_dropped', 0)} | FPS: {pw.get('actual_fps_x100', 0) / 100.0:.1f} | "
+            f"DmaBuf: {pw.get('dmabuf_streams', 0)} | MemFd: {pw.get('memfd_streams', 0)} | "
+            f"Audio Rejects: {pw.get('audio_rejects', 0)}"
         )
 
         clients = pw.get("clients") or []

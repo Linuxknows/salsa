@@ -231,7 +231,7 @@ fn cmd_status() -> i32 {
     };
 
     println!("================================================================================");
-    println!(" Salsa v6.9-beta — Linux WASAPI Studio Engine (Fixed/Split Clock + HW Analog)");
+    println!(" Salsa v7.0-beta — Linux WASAPI Studio Engine (Fixed/Split Clock + HW Analog)");
     println!("================================================================================");
     println!(" Render / Sink Endpoint : {hw_device} [{act_pb}]");
     println!(" Capture / Mic Endpoint : {hw_cap} [{act_cap}]");
@@ -2178,7 +2178,7 @@ fn cmd_disable_auto() -> i32 {
 fn print_usage(prog: &str) {
     eprint!(
         "Usage: {prog} <command>\n\
-  status                                    Show Salsa v6.9-beta engine, BlueZ, PA socket & HW analog status\n\
+  status                                    Show Salsa v7.0-beta engine, BlueZ, PA socket & HW analog status\n\
   bench                                     Run live latency benchmark vs. Native PA / ALSA\n\
   sync-modules                              Sync ELF symbol versions, rebuild shims & self-heal configs\n\
   devices                                   List active WaveRT ALSA, BlueZ A2DP & MIDI endpoints\n\

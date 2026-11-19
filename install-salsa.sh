@@ -339,22 +339,32 @@ RestartSec=1
 WantedBy=default.target
 EOF
 
-cat > "${SYSTEMD_USER_DIR}/lwasapi-tray.service" <<EOF
-[Unit]
-Description=Salsa — Linux WASAPI Pure Native Audio System Tray Switcher
-After=graphical-session.target lwasapi-audiodg.service
+TRAY_WANTED_BY="default.target"
+TRAY_PART_OF=""
+if systemctl --user is-active --quiet graphical-session.target 2>/dev/null || \
+   [[ -n "${KDE_FULL_SESSION:-}" ]] || \
+   [[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* || "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]]; then
+    TRAY_WANTED_BY="graphical-session.target"
+    TRAY_PART_OF="PartOf=graphical-session.target"
+fi
 
-[Service]
-Type=simple
-WorkingDirectory=${BASE_DIR}
-ExecStart=${PYTHON_BIN} ${BASE_DIR}/lwasapi-tray.py
-KillMode=process
-Restart=on-failure
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-EOF
+{
+    echo "[Unit]"
+    echo "Description=Salsa — Linux WASAPI Pure Native Audio System Tray Switcher"
+    [[ -n "${TRAY_PART_OF}" ]] && echo "${TRAY_PART_OF}"
+    echo "After=graphical-session.target lwasapi-audiodg.service"
+    echo ""
+    echo "[Service]"
+    echo "Type=simple"
+    echo "WorkingDirectory=${BASE_DIR}"
+    echo "ExecStart=${PYTHON_BIN} ${BASE_DIR}/lwasapi-tray.py"
+    echo "KillMode=process"
+    echo "Restart=on-failure"
+    echo "RestartSec=2"
+    echo ""
+    echo "[Install]"
+    echo "WantedBy=${TRAY_WANTED_BY}"
+} > "${SYSTEMD_USER_DIR}/lwasapi-tray.service"
 
 cat > "${SYSTEMD_USER_DIR}/lwasapi-module-watcher.path" <<EOF
 [Unit]
@@ -570,6 +580,21 @@ if command -v kwriteconfig6 >/dev/null 2>&1 && { [[ "${XDG_CURRENT_DESKTOP:-}" =
             qdbus6 org.kde.kded6 /kded loadModule audioshortcutsservice >/dev/null 2>&1 || true
         fi
     fi
+    if [[ ! -L "${HOME}/.config/ksmserverrc" ]]; then
+        CUR_EXCL=""
+        if command -v kreadconfig6 >/dev/null 2>&1; then
+            CUR_EXCL="$(kreadconfig6 --file "${HOME}/.config/ksmserverrc" --group General --key excludeApps --default "" 2>/dev/null || true)"
+        fi
+        NEW_EXCL="${CUR_EXCL}"
+        for ex in lwasapi-tray lwasapi-tray.py lwasapi-tray.desktop; do
+            if [[ ",${NEW_EXCL}," != *",${ex},"* ]]; then
+                NEW_EXCL="${NEW_EXCL:+${NEW_EXCL},}${ex}"
+            fi
+        done
+        if [[ "${NEW_EXCL}" != "${CUR_EXCL}" ]]; then
+            kwriteconfig6 --file "${HOME}/.config/ksmserverrc" --group General --key excludeApps "${NEW_EXCL}" >/dev/null 2>&1 || true
+        fi
+    fi
 fi
 
 RUNTIME_SUBDIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/lwasapi"
@@ -582,6 +607,7 @@ systemctl --user daemon-reload
 systemctl --user reset-failed lwasapi-audiodg.service lwasapi-tray.service lwasapi-module-watcher.path lwasapi-module-watcher.service lwasapi-module-watcher.timer >/dev/null 2>&1 || true
 systemctl --user stop lwasapi-audiodg.service >/dev/null 2>&1 || true
 "${BASE_DIR}/build/lwasapi-ctl" enable-auto
+systemctl --user disable lwasapi-tray.service >/dev/null 2>&1 || true
 systemctl --user enable lwasapi-audiodg.service lwasapi-tray.service lwasapi-module-watcher.path lwasapi-module-watcher.timer
 systemctl --user restart lwasapi-audiodg.service lwasapi-tray.service lwasapi-module-watcher.path lwasapi-module-watcher.timer
 
