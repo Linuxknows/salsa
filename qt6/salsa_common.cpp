@@ -10,6 +10,7 @@
 #include <QPen>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QProxyStyle>
 #include <QStandardPaths>
 #include <QTextEdit>
 #include <QVBoxLayout>
@@ -198,8 +199,36 @@ QPalette buildSalsaPalette(const SalsaThemeData& t) {
     return pal;
 }
 
+namespace {
+
+// Make left-clicking anywhere on any QSlider seek directly to the cursor and begin dragging
+// instead of Qt/Breeze's default single-page-step jump.
+class SalsaSliderProxyStyle final : public QProxyStyle {
+public:
+    using QProxyStyle::QProxyStyle;
+
+    int styleHint(
+        StyleHint hint,
+        const QStyleOption* option = nullptr,
+        const QWidget* widget = nullptr,
+        QStyleHintReturn* returnData = nullptr) const override {
+        if (hint == SH_Slider_AbsoluteSetButtons) {
+            return static_cast<int>(Qt::LeftButton | Qt::MiddleButton);
+        }
+        if (hint == SH_Slider_PageSetButtons) {
+            return static_cast<int>(Qt::NoButton);
+        }
+        return QProxyStyle::styleHint(hint, option, widget, returnData);
+    }
+};
+
+}  // namespace
+
 void applyGlobalFontScale(QApplication* app, int fontPct) {
     if (!app) return;
+    if (!dynamic_cast<SalsaSliderProxyStyle*>(app->style())) {
+        app->setStyle(new SalsaSliderProxyStyle(app->style()));
+    }
     QFont f = app->font();
     f.setFamily(QStringLiteral("Inter"));
     f.setPixelSize(scaledPx(12, fontPct));
@@ -351,11 +380,7 @@ QString buildSalsaStylesheet(const SalsaThemeData& t, bool mini, int fontPct) {
                " QPushButton#PrimaryBtn { background-color: %1; border-color: %2; color: %3; font-weight: 700; }"
                " QPushButton#PrimaryBtn:hover { background-color: %4; }"
                " QPushButton#AccentBtn { background-color: %5; border-color: %6; color: %7; font-weight: 700; }"
-               " QPushButton#AccentBtn:hover { background-color: %8; }"
-               " QSlider::groove:vertical { background: %9; width: %10px; border-radius: 3px; }"
-               " QSlider::handle:vertical { background: %11; border: 2px solid %12; height: %13px; margin: 0 %14px; border-radius: 5px; }"
-               " QSlider::groove:horizontal { background: %9; height: %10px; border-radius: 3px; }"
-               " QSlider::handle:horizontal { background: %15; border: 2px solid %12; width: %16px; margin: %14px 0; border-radius: 5px; }")
+               " QPushButton#AccentBtn:hover { background-color: %8; }")
                .arg(c("btn_primary_bg", "#047857"),
                     c("btn_primary_border", "#00e676"),
                     c("btn_primary_text", "#ffffff"),
@@ -363,8 +388,17 @@ QString buildSalsaStylesheet(const SalsaThemeData& t, bool mini, int fontPct) {
                     c("btn_accent_bg", "#be123c"),
                     c("btn_accent_border", "#fb7185"),
                     c("btn_accent_text", "#ffffff"),
-                    c("btn_accent_hover", "#e11d48"),
-                    c("bg_control", "#232830"),
+                    c("btn_accent_hover", "#e11d48"));
+
+    qss += QStringLiteral(
+               " QSlider::groove:vertical { background: %1; border: 1px solid %2; width: %3px; border-radius: 3px; }"
+               " QSlider::add-page:vertical { background: %4; border-radius: 3px; }"
+               " QSlider::handle:vertical { background: %4; border: 2px solid %5; height: %6px; margin: 0 %7px; border-radius: 5px; }"
+               " QSlider::groove:horizontal { background: %1; border: 1px solid %2; height: %3px; border-radius: 3px; }"
+               " QSlider::sub-page:horizontal { background: %8; border-radius: 3px; }"
+               " QSlider::handle:horizontal { background: %8; border: 2px solid %5; width: %9px; margin: %7px 0; border-radius: 5px; }")
+               .arg(c("bg_deep", "#0c0e11"),
+                    c("border_control", "#334155"),
                     QString::number(sliderGroove),
                     c("accent_primary", "#00e676"),
                     c("handle_border", "#ffffff"),
@@ -485,14 +519,21 @@ void StepVolumeSlider::wheelEvent(QWheelEvent* event) {
     int dy = event->angleDelta().y();
     int dx = event->angleDelta().x();
     int raw = dy != 0 ? dy : dx;
-    if (raw == 0) {
+    int notches = 1;
+    if (raw != 0) {
+        notches = std::max<int>(1, static_cast<int>(std::lround(std::abs(raw) / 120.0)));
+    } else {
         const QPoint pd = event->pixelDelta();
         raw = pd.y() != 0 ? pd.y() : pd.x();
+        notches = std::max<int>(1, static_cast<int>(std::lround(std::abs(raw) / 24.0)));
     }
     if (raw != 0) {
-        const int step = std::max(1, stepFn_ ? stepFn_() : 5);
+        const int step = std::max(1, stepFn_ ? stepFn_() : 5) * notches;
         const int nxt = std::clamp(value() + (raw > 0 ? step : -step), minimum(), maximum());
-        if (nxt != value()) setValue(nxt);
+        if (nxt != value()) {
+            setValue(nxt);
+            emit sliderReleased();
+        }
         event->accept();
         return;
     }
@@ -502,23 +543,17 @@ void StepVolumeSlider::wheelEvent(QWheelEvent* event) {
 void StepVolumeSlider::keyPressEvent(QKeyEvent* event) {
     const int k = event->key();
     const int step = std::max(1, stepFn_ ? stepFn_() : 5);
-    if (k == Qt::Key_Right || k == Qt::Key_Up) {
-        setValue(std::clamp(value() + step, minimum(), maximum()));
-        event->accept();
-        return;
-    }
-    if (k == Qt::Key_Left || k == Qt::Key_Down) {
-        setValue(std::clamp(value() - step, minimum(), maximum()));
-        event->accept();
-        return;
-    }
-    if (k == Qt::Key_PageUp) {
-        setValue(std::clamp(value() + step * 2, minimum(), maximum()));
-        event->accept();
-        return;
-    }
-    if (k == Qt::Key_PageDown) {
-        setValue(std::clamp(value() - step * 2, minimum(), maximum()));
+    int delta = 0;
+    if (k == Qt::Key_Right || k == Qt::Key_Up) delta = step;
+    else if (k == Qt::Key_Left || k == Qt::Key_Down) delta = -step;
+    else if (k == Qt::Key_PageUp) delta = step * 2;
+    else if (k == Qt::Key_PageDown) delta = -step * 2;
+    if (delta != 0) {
+        const int nxt = std::clamp(value() + delta, minimum(), maximum());
+        if (nxt != value()) {
+            setValue(nxt);
+            emit sliderReleased();
+        }
         event->accept();
         return;
     }

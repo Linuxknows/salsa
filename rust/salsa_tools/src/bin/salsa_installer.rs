@@ -16,7 +16,11 @@ use salsa_wire::unix_sys::reset_sigpipe_default;
 const ICON_SIZES: [u32; 5] = [512, 256, 128, 64, 48];
 
 const PACMAN_HOOK_PATH: &str = "/etc/pacman.d/hooks/99-salsa-autosync.hook";
-const LEGACY_PACMAN_HOOK_PATH: &str = "/etc/pacman.d/hooks/95-salsa-autosync.hook";
+const LEGACY_PACMAN_HOOK_PATHS: [&str; 3] = [
+    "/etc/pacman.d/hooks/95-salsa-autosync.hook",
+    "/etc/pacman.d/hooks/99-lwasapi-autosync.hook",
+    "/etc/pacman.d/hooks/lwasapi-autosync.hook",
+];
 const AUTOSYNC_MARKER_DIR: &str = "/var/lib/salsa-autosync";
 const AUTOSYNC_MARKER_PATH: &str = "/var/lib/salsa-autosync/libpulse-updated";
 const PACMAN_HOOK_CONTENT: &str = "[Trigger]\n\
@@ -27,8 +31,10 @@ Type = Package\n\
 Target = libpulse\n\
 Target = lib32-libpulse\n\
 Target = alsa-lib\n\
+Target = lib32-alsa-lib\n\
 Target = jack2\n\
 Target = pipewire\n\
+Target = pipewire-alsa\n\
 Target = pipewire-pulse\n\
 Target = pipewire-jack\n\
 Target = fdk-aac\n\
@@ -36,11 +42,13 @@ Target = libfdk-aac\n\
 Target = libldac\n\
 Target = libfreeaptx\n\
 Target = bluez\n\
+Target = dbus\n\
+Target = qt6-base\n\
 \n\
 [Action]\n\
 Description = Marking Salsa WASAPI runtime modules for ABI auto-sync...\n\
 When = PostTransaction\n\
-Exec = /bin/sh -c '/usr/bin/mkdir -p /var/lib/salsa-autosync && /usr/bin/touch /var/lib/salsa-autosync/libpulse-updated'\n";
+Exec = /bin/sh -c '/usr/bin/mkdir -p /var/lib/salsa-autosync && /usr/bin/date +%s%N > /var/lib/salsa-autosync/libpulse-updated'\n";
 
 fn sh_single_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -284,7 +292,7 @@ fn write_user_units(root: &Path) -> Result<(), String> {
          \n\
          [Path]\n\
          PathChanged={pkg_db}\n\
-         PathChanged=/var/lib/salsa-autosync/libpulse-updated\n"
+         PathModified=/var/lib/salsa-autosync/libpulse-updated\n"
     );
     for lib in [
         "libasound.so.2",
@@ -867,10 +875,18 @@ fn do_check(root: &Path) -> ExitCode {
 
     if Path::new("/etc/pacman.d").is_dir() {
         let hook = Path::new(PACMAN_HOOK_PATH).is_file();
+        let up_to_date = hook
+            && fs::read_to_string(PACMAN_HOOK_PATH).is_ok_and(|cur| cur == PACMAN_HOOK_CONTENT);
         println!(
             "  [{}] Pacman autosync hook ({PACMAN_HOOK_PATH}): {}",
-            if hook { "OK" } else { "INFO" },
-            if hook { "installed" } else { "not installed (run --install-pacman-hook)" }
+            if up_to_date { "OK" } else { "INFO" },
+            if up_to_date {
+                "installed & up-to-date"
+            } else if hook {
+                "outdated trigger (re-run --install-pacman-hook to refresh)"
+            } else {
+                "not installed (run --install-pacman-hook)"
+            }
         );
     }
 
@@ -1060,11 +1076,13 @@ fn do_install_pacman_hook() -> ExitCode {
             eprintln!("Failed writing {PACMAN_HOOK_PATH}: {e}");
             return ExitCode::from(1);
         }
-        let _ = fs::remove_file(LEGACY_PACMAN_HOOK_PATH);
+        for legacy in LEGACY_PACMAN_HOOK_PATHS {
+            let _ = fs::remove_file(legacy);
+        }
         let marker_dir = Path::new(AUTOSYNC_MARKER_DIR);
         let _ = fs::create_dir_all(marker_dir);
         let _ = fs::set_permissions(marker_dir, Permissions::from_mode(0o755));
-        let _ = write_atomic_secure(Path::new(AUTOSYNC_MARKER_PATH), b"", 0o644);
+        let _ = write_atomic_secure(Path::new(AUTOSYNC_MARKER_PATH), b"0\n", 0o644);
         println!("[OK] Installed {PACMAN_HOOK_PATH}");
         return ExitCode::SUCCESS;
     }
@@ -1074,7 +1092,9 @@ fn do_install_pacman_hook() -> ExitCode {
 fn do_remove_pacman_hook() -> ExitCode {
     if getuid() == 0 {
         let _ = fs::remove_file(PACMAN_HOOK_PATH);
-        let _ = fs::remove_file(LEGACY_PACMAN_HOOK_PATH);
+        for legacy in LEGACY_PACMAN_HOOK_PATHS {
+            let _ = fs::remove_file(legacy);
+        }
         let _ = fs::remove_file(AUTOSYNC_MARKER_PATH);
         let _ = fs::remove_dir(AUTOSYNC_MARKER_DIR);
         println!("[OK] Removed {PACMAN_HOOK_PATH}");

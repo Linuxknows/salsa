@@ -506,38 +506,6 @@ fn cmd_status() -> i32 {
     println!();
     println!("--------------------------------------------------------------------------------");
     println!(
-        " Capture Microphone APO : {} | Peak In: {:.2} -> Out: {:.2}",
-        if st.mic_apo.enabled != 0 {
-            "ACTIVE"
-        } else {
-            "BYPASSED (Raw Scarlett/HW Passthrough)"
-        },
-        st.mic_apo_peak_in,
-        st.mic_apo_peak_out
-    );
-    let rnn_mode = if st.mic_rnnoise_active != 0 {
-        "Neural"
-    } else if st.mic_apo.rnnoise_enabled != 0 {
-        "Spectral"
-    } else {
-        "Idle"
-    };
-    println!(
-        "   HPF: {} ({:.0}Hz) | Gate: {} ({:.0}dB) | RNNoise: {} ({rnn_mode}) | Comp: {} ({:.0}dB {:.1}:1) | Clarity: {:+.1}dB | Sidetone: {} ({}%)",
-        if st.mic_apo.hpf_enabled != 0 { "ON" } else { "OFF" },
-        st.mic_apo.hpf_hz,
-        if st.mic_apo.gate_enabled != 0 { "ON" } else { "OFF" },
-        st.mic_apo.gate_thresh_db,
-        if st.mic_apo.rnnoise_enabled != 0 { "ON" } else { "OFF" },
-        if st.mic_apo.comp_enabled != 0 { "ON" } else { "OFF" },
-        st.mic_apo.comp_thresh_db,
-        st.mic_apo.comp_ratio,
-        st.mic_apo.clarity_db,
-        if st.mic_apo.sidetone_enabled != 0 { "ON" } else { "OFF" },
-        st.mic_apo.sidetone_pct
-    );
-    println!("--------------------------------------------------------------------------------");
-    println!(
         " Active Audio & PulseAudio Client Sessions ({}):",
         st.num_sessions
     );

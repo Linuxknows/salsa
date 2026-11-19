@@ -456,8 +456,14 @@ fn run_sync_locked(
             build_stale
         ),
     );
+    let jobs = thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(1, 16);
     let mut cmd = Command::new("make");
-    cmd.arg("-C").arg(base_dir);
+    cmd.arg("-C")
+        .arg(base_dir)
+        .arg(format!("-j{jobs}"));
     if let Some(f) = make_target_flag {
         cmd.arg(f);
     }
@@ -503,6 +509,16 @@ fn run_sync_locked(
         );
         let _ = Command::new("systemctl")
             .args(["--user", "restart", "lwasapi-audiodg.service"])
+            .status();
+    }
+    if systemd_is_active("lwasapi-tray.service") {
+        log_line(
+            st_dir,
+            opts.quiet,
+            "Restarting active lwasapi-tray.service...",
+        );
+        let _ = Command::new("systemctl")
+            .args(["--user", "restart", "lwasapi-tray.service"])
             .status();
     }
 

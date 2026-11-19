@@ -334,11 +334,11 @@ pub fn render_manual_chapter_pango(key: &str, t: &SalsaTheme, host: &HostProfile
             ),
             "mic_in" => (
                 "accent_mic",
-                "🎙️ Chapter 3: Full-Duplex Mic Capture, Capture APO & HFP BTPROTO_SCO",
-                "Hardware Mic Input -> Optional Capture APO (HPF/Gate/RNNoise/Comp/Sidetone) -> Apps",
-                "Salsa LWASAPI operates a true <b>full-duplex WaveRT engine</b> that simultaneously captures microphone audio while rendering playback:".into(),
+                "🎙️ Chapter 3: Full-Duplex Hardware Mic Capture & HFP BTPROTO_SCO",
+                "Hardware Mic Input -> Direct Raw WaveRT Capture -> Apps",
+                "Salsa LWASAPI operates a true <b>full-duplex WaveRT engine</b> that captures raw microphone audio cleanly while rendering playback:".into(),
                 vec![
-                    format!("<b>Bypassable Real-Time Capture Mic APO:</b> Disabled by default so pro interfaces like Focusrite Scarlett 2i2 pass completely raw. When toggled ON, voice input runs through a Voice HPF, hysteresis Noise Gate, neural {} suppression, Clarity shelf, soft Voice Compressor, and optional zero-latency headphone Sidetone (injected post-loopback so OBS never echoes).", c("librnnoise")),
+                    "<b>Bit-Exact Raw Interface Capture:</b> USB/PCIe audio interfaces (such as Focusrite Scarlett 2i2) pass directly through the WaveRT capture ring with optional analog HW boost and split capture clock support.".into(),
                     format!("<b>Desktop Mic Gain &amp; Mute Synchronization:</b> Adjusting microphone gain or mute in KDE Plasma, {}, Tray, or Salsa Studio syncs directly through Salsa's native PA v35 server and {} with zero WirePlumber dependency.", c("pactl"), c("lwasapi-audiodg")),
                 ],
             ),
@@ -391,7 +391,7 @@ pub fn render_manual_chapter_pango(key: &str, t: &SalsaTheme, host: &HostProfile
                 "After Parametric Dynamic EQ, Crossfeed, and Limiter processing, the 32-bit float master bus delivers directly to your active endpoint:".into(),
                 vec![
                     format!("<b>BlueZ Codec Switcher &amp; Adaptive Bitrate (ABR):</b> Inspect remote headset SEPs, view negotiation diagnostics, switch codecs live (Auto, LDAC, aptX HD, aptX, AAC, SBC), and scale LDAC ({}) or AAC ({}) automatically on RF congestion.", c("990 / 660 / 330 kbps"), c("256 / 192 / 128 kbps")),
-                    format!("<b>Echo-Free Loopback Monitor:</b> Copies clean post-EQ desktop audio to OBS ({}) BEFORE injecting Capture Mic APO headphone sidetone.", c("lwasapi_default_sink.monitor")),
+                    format!("<b>Echo-Free Loopback Monitor:</b> Copies clean post-EQ desktop audio directly to OBS ({}) with zero capture bleed.", c("lwasapi_default_sink.monitor")),
                 ],
             ),
             "autosync" => (
@@ -458,12 +458,12 @@ pub fn render_manual_chapter_pango(key: &str, t: &SalsaTheme, host: &HostProfile
             ),
             "mix_bt" => (
                 "accent_warn",
-                "🎛️ Chapter 12: Capture Mic APO, HW Analog Boost & BlueZ HFP SCO",
-                "Neural RNNoise • Discrete Sound Card DAC/Amp • Two-Way Bluetooth HFP Headset Mic",
-                "Salsa V1.19.0 unifies studio voice processing, discrete sound card analog stages, and wireless headset controls:".into(),
+                "🎛️ Chapter 12: HW Analog Boost & BlueZ HFP SCO",
+                "Discrete Sound Card DAC/Amp • Two-Way Bluetooth HFP Headset Mic",
+                "Salsa V1.19.0 unifies discrete sound card analog stages and wireless headset controls:".into(),
                 vec![
                     "<b>Hardware Analog Architecture:</b> Utilizes ALSA DAC unity volume, discrete headphone amp gain tiers (32Ω / 150Ω / 600Ω TPA6120), Analog Soft-Knee Drive, and USB HID volume dials (e.g. ASUS Strix Raid DLX / Focusrite Scarlett).".into(),
-                    format!("<b>Capture Mic APO &amp; HFP {}:</b> Toggleable Krisp-style voice chain plus optional two-way Bluetooth HFP mSBC/CVSD headset mic support.", c("BTPROTO_SCO")),
+                    format!("<b>Two-Way Bluetooth HFP {}:</b> Optional two-way Bluetooth HFP mSBC/CVSD headset mic support alongside lossless output codecs.", c("BTPROTO_SCO")),
                 ],
             ),
             _ => (

@@ -27,7 +27,6 @@ pub const DEFAULT_SHORTCUTS: &[(&str, &str, &str)] = &[
     ("mute_spk", "Mute Speaker", "Ctrl+M"),
     ("mute_mic", "Mute Mic", "Ctrl+Shift+M"),
     ("toggle_eq", "Toggle Dynamic EQ", "Ctrl+E"),
-    ("toggle_mic_apo", "Toggle Krisp Mic APO", "Ctrl+K"),
     ("vol_up", "Speaker Volume +Step", "Ctrl+Up"),
     ("vol_down", "Speaker Volume -Step", "Ctrl+Down"),
     ("mic_up", "Mic Gain +Step", "Ctrl+Alt+Up"),

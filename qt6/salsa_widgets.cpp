@@ -365,18 +365,15 @@ void SalsaAutoGraphCanvas::paintEvent(QPaintEvent*) {
              appsLines, cSec, false, true);
 
     const uint32_t capKhz = std::max<uint32_t>(1, data_.capSampleRate / 1000);
-    const QString micBadge = data_.micApoEnabled ? QStringLiteral("%1k APO").arg(capKhz) : QStringLiteral("%1k Raw").arg(capKhz);
-    const QString micApoLine = data_.micApoEnabled
-                                   ? QStringLiteral("APO: %1 @ %2 kHz")
-                                         .arg(data_.micRnnoiseActive ? QStringLiteral("Krisp-RNN") : QStringLiteral("Spectral"))
-                                         .arg(data_.capSampleRate / 1000.0, 0, 'g', 4)
-                                   : QStringLiteral("APO: Bypassed (Raw)");
-    const QString micSideLine = (data_.micApoEnabled && data_.micSidetoneEnabled)
-                                    ? QStringLiteral("Sidetone: %1% | HFP: %2").arg(data_.micSidetonePct).arg(data_.btActive ? QStringLiteral("ON") : QStringLiteral("OFF"))
-                                    : QStringLiteral("Sidetone: OFF | OBS Monitor Safe");
+    const QString micBadge = QStringLiteral("%1k RAW").arg(capKhz);
+    const QString micRateLine = QStringLiteral("Capture: %1 kHz Direct Raw")
+                                    .arg(data_.capSampleRate / 1000.0, 0, 'g', 4);
+    const QString micBtLine = QStringLiteral("Gain: %1% | HFP SCO: %2")
+                                  .arg(data_.micVol)
+                                  .arg(data_.btActive ? QStringLiteral("READY") : QStringLiteral("OFF"));
     drawNode(p, QStringLiteral("mic_in"), QStringLiteral("mic_in"), rMic,
-             QStringLiteral("Mic & Capture APO"), micBadge,
-             {QStringLiteral("Dev: %1").arg(data_.hwMic), micApoLine, micSideLine},
+             QStringLiteral("Hardware Mic Input"), micBadge,
+             {QStringLiteral("Dev: %1").arg(data_.hwMic), micRateLine, micBtLine},
              cMic, false, true);
 
     drawNode(p, QStringLiteral("midi_in"), QStringLiteral("midi_in"), rMidi,
@@ -558,7 +555,7 @@ double SalsaSpectrumCanvas::bandX(int idx, double w) const {
 
 double SalsaSpectrumCanvas::gainToY(double db, double h) const {
     const double padTop = 18.0;
-    const double padBot = 28.0;
+    const double padBot = 34.0;
     const double usable = std::max(60.0, h - padTop - padBot);
     const double cl = std::clamp(db, -18.0, 18.0);
     return padTop + usable * (1.0 - (cl + 18.0) / 36.0);
@@ -566,7 +563,7 @@ double SalsaSpectrumCanvas::gainToY(double db, double h) const {
 
 double SalsaSpectrumCanvas::yToGain(double y, double h) const {
     const double padTop = 18.0;
-    const double padBot = 28.0;
+    const double padBot = 34.0;
     const double usable = std::max(60.0, h - padTop - padBot);
     const double norm = 1.0 - ((y - padTop) / usable);
     return std::clamp(norm * 36.0 - 18.0, -18.0, 18.0);
@@ -610,7 +607,7 @@ void SalsaSpectrumCanvas::mouseMoveEvent(QMouseEvent* event) {
     const int hov = hitBand(pos);
     if (hov != hoverBand_) {
         hoverBand_ = hov;
-        setCursor(hov >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        setCursor(hov >= 0 ? Qt::SizeVerCursor : Qt::ArrowCursor);
         update();
     }
 }
@@ -618,6 +615,7 @@ void SalsaSpectrumCanvas::mouseMoveEvent(QMouseEvent* event) {
 void SalsaSpectrumCanvas::mouseReleaseEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton && draggingBand_ >= 0) {
         draggingBand_ = -1;
+        setCursor(hoverBand_ >= 0 ? Qt::SizeVerCursor : Qt::ArrowCursor);
         update();
     }
 }
@@ -625,7 +623,8 @@ void SalsaSpectrumCanvas::mouseReleaseEvent(QMouseEvent* event) {
 void SalsaSpectrumCanvas::wheelEvent(QWheelEvent* event) {
     const int idx = hoverBand_ >= 0 ? hoverBand_ : hitBand(event->position());
     if (idx >= 0) {
-        const int dy = event->angleDelta().y();
+        int dy = event->angleDelta().y();
+        if (dy == 0) dy = event->pixelDelta().y();
         if (dy != 0) {
             double q = bandQ_[idx];
             q += (dy > 0 ? 0.15 : -0.15);

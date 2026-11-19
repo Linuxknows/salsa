@@ -920,6 +920,16 @@ pub extern "C" fn salsa_render_manual_chapter_html(
     to_c_string(html)
 }
 
+fn pacman_hook_installed() -> bool {
+    const HOOK_PATHS: [&str; 4] = [
+        "/etc/pacman.d/hooks/99-salsa-autosync.hook",
+        "/etc/pacman.d/hooks/95-salsa-autosync.hook",
+        "/etc/pacman.d/hooks/99-lwasapi-autosync.hook",
+        "/etc/pacman.d/hooks/lwasapi-autosync.hook",
+    ];
+    HOOK_PATHS.iter().any(|p| Path::new(p).exists())
+}
+
 #[no_mangle]
 pub extern "C" fn salsa_get_integration_status_json() -> *mut c_char {
     let home = home_dir();
@@ -928,8 +938,7 @@ pub extern "C" fn salsa_get_integration_status_json() -> *mut c_char {
         .join(".local/share/applications/salsa-lwasapi.desktop")
         .exists();
     let has_pacman = Path::new("/usr/bin/pacman").exists() && Path::new("/etc/pacman.d").is_dir();
-    let pacman_hook = Path::new("/etc/pacman.d/hooks/99-lwasapi-autosync.hook").exists()
-        || Path::new("/etc/pacman.d/hooks/lwasapi-autosync.hook").exists();
+    let pacman_hook = pacman_hook_installed();
     let watcher_enabled = run_cmd_bounded(
         "systemctl",
         &["--user", "is-enabled", "--quiet", "lwasapi-module-watcher.path"],
@@ -997,8 +1006,7 @@ pub extern "C" fn salsa_toggle_pacman_hook() -> *mut c_char {
     if !inst.exists() {
         return to_c_string(format!("Installer not found at {}", inst.display()));
     }
-    let installed = Path::new("/etc/pacman.d/hooks/99-lwasapi-autosync.hook").exists()
-        || Path::new("/etc/pacman.d/hooks/lwasapi-autosync.hook").exists();
+    let installed = pacman_hook_installed();
     let flag = if installed {
         "--remove-pacman-hook"
     } else {

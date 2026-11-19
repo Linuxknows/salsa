@@ -32,6 +32,7 @@
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPen>
 #include <QPixmap>
 #include <QPushButton>
@@ -527,12 +528,12 @@ class PeakBarWidget : public QWidget {
     Q_OBJECT
 public:
     explicit PeakBarWidget(QWidget* parent = nullptr) : QWidget(parent) {
-        setFixedHeight(10);
+        setFixedHeight(8);
     }
 
     void setPeaks(float pkL, float pkR, const QColor& acc) {
-        pkL_ = std::clamp(pkL, 0.0f, 1.5f);
-        pkR_ = std::clamp(pkR, 0.0f, 1.5f);
+        pkL_ = std::clamp(pkL, 0.0f, 1.0f);
+        pkR_ = std::clamp(pkR, 0.0f, 1.0f);
         accent_ = acc;
         update();
     }
@@ -542,27 +543,24 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         const double w = static_cast<double>(width());
-        const double h = static_cast<double>(height());
-        const double barH = (h - 2.0) * 0.5;
 
-        auto drawChan = [&](double y, float linear) {
-            const double db = linear > 1e-6f ? 20.0 * std::log10(linear) : -60.0;
-            const double norm = std::clamp((db + 60.0) / 60.0, 0.0, 1.0);
+        auto drawChan = [&](int row, float val) {
+            const double y = static_cast<double>(row * 4);
             p.setPen(Qt::NoPen);
-            p.setBrush(QColor(255, 255, 255, 24));
-            p.drawRoundedRect(QRectF(0.0, y, w, barH), 2.0, 2.0);
-            if (norm > 0.01) {
+            p.setBrush(QColor(QStringLiteral("#0f172a")));
+            p.drawRoundedRect(QRectF(0.0, y, w, 3.0), 1.5, 1.5);
+            if (val > 0.005f) {
+                const double fw = static_cast<double>(val) * w;
                 QLinearGradient lg(0.0, 0.0, w, 0.0);
-                lg.setColorAt(0.0, accent_.darker(115));
-                lg.setColorAt(0.75, accent_);
-                lg.setColorAt(0.95, QColor(245, 158, 11));
-                lg.setColorAt(1.0, QColor(239, 68, 68));
+                lg.setColorAt(0.0, accent_);
+                lg.setColorAt(0.75, QColor(QStringLiteral("#F59E0B")));
+                lg.setColorAt(1.0, QColor(QStringLiteral("#EF4444")));
                 p.setBrush(lg);
-                p.drawRoundedRect(QRectF(0.0, y, std::max(3.0, w * norm), barH), 2.0, 2.0);
+                p.drawRoundedRect(QRectF(0.0, y, fw, 3.0), 1.5, 1.5);
             }
         };
-        drawChan(0.0, pkL_);
-        drawChan(barH + 2.0, pkR_);
+        drawChan(0, pkL_);
+        drawChan(1, pkR_);
     }
 
 private:
@@ -591,7 +589,7 @@ public:
 
     void updateMetrics(int fontPct) {
         fontPct_ = normalizeFontScalePct(fontPct);
-        setFixedHeight(scaledPx(compact_ ? 29 : 34, fontPct_));
+        setFixedHeight(scaledPx(compact_ ? 28 : 34, fontPct_));
         update();
     }
 
@@ -664,10 +662,20 @@ protected:
     }
 
     void wheelEvent(QWheelEvent* event) override {
-        const int dy = event->angleDelta().y() != 0 ? event->angleDelta().y() : event->angleDelta().x();
-        if (dy != 0) {
-            const int step = std::max(1, stepFn_ ? stepFn_() : 5);
-            const int nxt = std::clamp(value_ + (dy > 0 ? step : -step), 0, 150);
+        const int dx = event->angleDelta().x();
+        const int dy = event->angleDelta().y();
+        int delta = std::abs(dy) >= std::abs(dx) ? dy : dx;
+        int notches = 1;
+        if (delta != 0) {
+            notches = std::max<int>(1, static_cast<int>(std::lround(std::abs(delta) / 120.0)));
+        } else {
+            const QPoint pd = event->pixelDelta();
+            delta = std::abs(pd.y()) >= std::abs(pd.x()) ? pd.y() : pd.x();
+            notches = std::max<int>(1, static_cast<int>(std::lround(std::abs(delta) / 24.0)));
+        }
+        if (delta != 0) {
+            const int step = std::max(1, stepFn_ ? stepFn_() : 5) * notches;
+            const int nxt = std::clamp(value_ + (delta > 0 ? step : -step), 0, 150);
             if (nxt != value_) {
                 value_ = nxt;
                 update();
@@ -715,69 +723,74 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
         const double w = static_cast<double>(width());
         const double h = static_cast<double>(height());
-        const double pad = 3.0;
         const QRectF r(1.0, 1.0, w - 2.0, h - 2.0);
+        const double rad = r.height() / 2.0;
 
         p.setBrush(trackBg_);
-        p.setPen(QPen(dragging_ ? accent_ : trackBorder_, dragging_ ? 1.5 : 1.0));
-        p.drawRoundedRect(r, 8.0, 8.0);
+        p.setPen(QPen(dragging_ ? accent_ : trackBorder_, 1.2));
+        p.drawRoundedRect(r, rad, rad);
 
-        const double frac = muted_ ? 0.0 : std::clamp(static_cast<double>(value_) / 100.0, 0.0, 1.0);
-        const double boostFrac = (!muted_ && value_ > 100) ? std::clamp(static_cast<double>(value_ - 100) / 50.0, 0.0, 1.0) : 0.0;
-        if (frac > 0.0) {
-            const double fillW = std::max(8.0, (w - pad * 2.0) * frac);
-            QLinearGradient lg(pad, 0.0, pad + fillW, 0.0);
-            QColor leftCol = accent_;
-            leftCol.setAlpha(150);
-            QColor rightCol = accent_.lighter(115);
-            rightCol.setAlpha(210);
-            lg.setColorAt(0.0, leftCol);
-            lg.setColorAt(1.0, rightCol);
+        // Unity 100% tick mark (subtle vertical notch)
+        const double ux = r.left() + (100.0 / 150.0) * r.width();
+        p.setPen(QPen(QColor(255, 255, 255, 38), 1.0));
+        p.drawLine(QPointF(ux, r.top() + 5.0), QPointF(ux, r.bottom() - 5.0));
+
+        // Active fill pill clipped inside capsule groove
+        const double frac = std::clamp(static_cast<double>(value_) / 150.0, 0.0, 1.0);
+        const QColor fillCol = muted_ ? QColor(QStringLiteral("#64748b")) : accent_;
+        if (frac > 0.005) {
+            p.save();
+            QPainterPath clip;
+            clip.addRoundedRect(r, rad, rad);
+            p.setClipPath(clip);
+            const double fw = std::max(r.height() * 0.5, frac * r.width());
+            QLinearGradient lg(r.left(), 0.0, r.left() + fw, 0.0);
+            QColor c0 = fillCol;
+            c0.setAlpha(compact_ ? 150 : 175);
+            QColor c1 = fillCol;
+            c1.setAlpha(230);
+            lg.setColorAt(0.0, c0);
+            lg.setColorAt(1.0, c1);
             p.setPen(Qt::NoPen);
             p.setBrush(lg);
-            p.drawRoundedRect(QRectF(pad, pad, fillW, h - pad * 2.0), 6.0, 6.0);
-        }
-        if (boostFrac > 0.0) {
-            const double bW = std::max(4.0, (w - pad * 2.0) * boostFrac * 0.35);
-            p.setPen(Qt::NoPen);
-            p.setBrush(QColor(245, 158, 11, 215));
-            p.drawRoundedRect(QRectF(w - pad - bW, pad, bW, h - pad * 2.0), 5.0, 5.0);
+            p.drawRoundedRect(QRectF(r.left(), r.top(), fw, r.height()), rad, rad);
+            p.restore();
+
+            // Circular thumb knob near fill edge
+            const double tx = std::clamp(
+                r.left() + frac * r.width(),
+                r.left() + r.height() * 0.48,
+                r.right() - r.height() * 0.48);
+            const double tr = r.height() * (compact_ ? 0.30 : 0.33);
+            p.setBrush(QColor(QStringLiteral("#F8FAFC")));
+            p.setPen(QPen(fillCol, 2.0));
+            p.drawEllipse(QPointF(tx, r.center().y()), tr, tr);
         }
 
-        // Subtle bottom fill edge accent so no bar ever crosses text labels
-        if (!muted_ && frac > 0.0) {
-            const double fillW = std::max(8.0, (w - pad * 2.0) * frac);
-            p.setBrush(QColor(255, 255, 255, 165));
-            p.setPen(Qt::NoPen);
-            p.drawRoundedRect(QRectF(pad + 4.0, h - pad - 2.2, std::max(4.0, fillW - 8.0), 1.8), 1.0, 1.0);
-        }
-
+        // Crisp label & percentage text with subtle shadow so text stays legible across the circular thumb
         QFont f(QStringLiteral("Inter"));
         f.setPixelSize(scaledPx(compact_ ? 11 : 12, fontPct_));
         f.setWeight(QFont::Bold);
         p.setFont(f);
+        const QFontMetrics fm(f);
+        const QRectF leftRect = r.adjusted(12.0, 0.0, -54.0, 0.0);
+        const QString elidedLbl = fm.elidedText(label_, Qt::ElideRight, std::max(20, static_cast<int>(leftRect.width())));
+        const QRectF rightRect = r.adjusted(10.0, 0.0, -12.0, 0.0);
         const QString pctText = muted_ ? QStringLiteral("MUTED") : QStringLiteral("%1%").arg(value_);
-        const QFontMetricsF fm(f);
-        const double pctW = fm.horizontalAdvance(pctText) + 14.0;
-        const QString elidedLbl = fm.elidedText(label_, Qt::ElideRight, std::max(20.0, w - pctW - 22.0));
-        const QRectF lblRect(10.0, 0.0, std::max(20.0, w - pctW - 22.0), h);
 
-        // Crisp dark text shadow for high readability over both filled & unfilled halves
-        p.setPen(QColor(0, 0, 0, 145));
-        p.drawText(QRectF(w - pctW - 7.0, 1.0, pctW, h), Qt::AlignVCenter | Qt::AlignRight, pctText);
-        p.drawText(lblRect.translated(1.0, 1.0), Qt::AlignVCenter | Qt::AlignLeft, elidedLbl);
-
-        p.setPen(muted_ ? QColor(QStringLiteral("#fca5a5")) : txtBright_);
-        p.drawText(QRectF(w - pctW - 8.0, 0.0, pctW, h), Qt::AlignVCenter | Qt::AlignRight, pctText);
+        p.setPen(QColor(10, 14, 20, 180));
+        p.drawText(leftRect.translated(1.0, 1.0), Qt::AlignVCenter | Qt::AlignLeft, elidedLbl);
+        p.drawText(rightRect.translated(1.0, 1.0), Qt::AlignVCenter | Qt::AlignRight, pctText);
 
         p.setPen(muted_ ? txtMuted_ : txtBright_);
-        p.drawText(lblRect, Qt::AlignVCenter | Qt::AlignLeft, elidedLbl);
+        p.drawText(leftRect, Qt::AlignVCenter | Qt::AlignLeft, elidedLbl);
+        p.drawText(rightRect, Qt::AlignVCenter | Qt::AlignRight, pctText);
     }
 
 private:
     void setFromPos(double x) {
-        const double pad = 4.0;
-        const double usable = std::max(20.0, static_cast<double>(width()) - pad * 2.0);
+        const double pad = 6.0;
+        const double usable = std::max(10.0, static_cast<double>(width()) - pad * 2.0);
         const double norm = std::clamp((x - pad) / usable, 0.0, 1.0);
         const int nxt = std::clamp(static_cast<int>(std::lround(norm * 150.0)), 0, 150);
         if (nxt != value_) {
@@ -855,44 +868,106 @@ public:
     }
 
 protected:
+    void drawAudioSymbol(QPainter& p, const QColor& accent) {
+        const double cy = static_cast<double>(height()) / 2.0;
+        const QColor strokeCol = muted_ ? QColor(QStringLiteral("#94A3B8")) : QColor(QStringLiteral("#CBD5E1"));
+        const QColor waveCol = muted_ ? QColor(QStringLiteral("#EF4444")) : accent;
+
+        p.save();
+        if (!isMic_) {
+            QPainterPath cone;
+            cone.moveTo(19.0, cy - 4.8);
+            cone.lineTo(24.5, cy - 4.8);
+            cone.lineTo(31.5, cy - 11.2);
+            cone.lineTo(31.5, cy + 11.2);
+            cone.lineTo(24.5, cy + 4.8);
+            cone.lineTo(19.0, cy + 4.8);
+            cone.closeSubpath();
+
+            p.setBrush(QColor(strokeCol.red(), strokeCol.green(), strokeCol.blue(), 28));
+            p.setPen(QPen(strokeCol, 1.9, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawPath(cone);
+
+            if (muted_) {
+                p.setPen(QPen(waveCol, 2.1, Qt::SolidLine, Qt::RoundCap));
+                p.drawLine(QPointF(36.0, cy - 4.5), QPointF(44.5, cy + 4.5));
+                p.drawLine(QPointF(44.5, cy - 4.5), QPointF(36.0, cy + 4.5));
+            } else {
+                p.setPen(QPen(waveCol, 2.0, Qt::SolidLine, Qt::RoundCap));
+                p.setBrush(Qt::NoBrush);
+                if (pct_ >= 1) {
+                    p.drawArc(QRectF(29.0, cy - 6.0, 11.0, 12.0), -46 * 16, 92 * 16);
+                }
+                if (pct_ >= 35) {
+                    p.drawArc(QRectF(31.5, cy - 10.5, 16.0, 21.0), -48 * 16, 96 * 16);
+                }
+            }
+        } else {
+            p.setBrush(QColor(strokeCol.red(), strokeCol.green(), strokeCol.blue(), 28));
+            p.setPen(QPen(strokeCol, 1.85, Qt::SolidLine, Qt::RoundCap));
+            p.drawRoundedRect(QRectF(25.5, cy - 12.5, 8.0, 14.5), 4.0, 4.0);
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(waveCol, 1.9, Qt::SolidLine, Qt::RoundCap));
+            p.drawArc(QRectF(22.5, cy - 7.5, 14.0, 14.0), -180 * 16, 180 * 16);
+            p.drawLine(QPointF(29.5, cy + 6.5), QPointF(29.5, cy + 11.5));
+            p.drawLine(QPointF(24.5, cy + 11.5), QPointF(34.5, cy + 11.5));
+            if (muted_) {
+                p.drawLine(QPointF(20.0, cy + 10.0), QPointF(39.0, cy - 10.0));
+            }
+        }
+        p.restore();
+    }
+
     void paintEvent(QPaintEvent*) override {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        const QRectF r = rect().adjusted(2, 2, -2, -2);
-        p.setBrush(QColor(17, 19, 24, 236));
-        p.setPen(QPen(QColor(56, 70, 88, 220), 1.5));
+        const double w = static_cast<double>(width());
+        const double h = static_cast<double>(height());
+        const QRectF r(1.0, 1.0, w - 2.0, h - 2.0);
+
+        QLinearGradient bgGrad(0.0, 0.0, 0.0, h);
+        bgGrad.setColorAt(0.0, QColor(34, 40, 50, 198));
+        bgGrad.setColorAt(1.0, QColor(20, 24, 31, 212));
+        p.setBrush(bgGrad);
+        p.setPen(QPen(QColor(255, 255, 255, 42), 1.0));
         p.drawRoundedRect(r, 14.0, 14.0);
 
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(255, 255, 255, 15), 1.0));
+        p.drawRoundedRect(QRectF(2.0, 2.0, w - 4.0, h - 4.0), 13.0, 13.0);
+
+        drawAudioSymbol(p, accent_);
+
+        const QRectF textRect(58.0, 11.0, w - 76.0, 24.0);
         QFont ft(QStringLiteral("Inter"));
-        ft.setPixelSize(scaledPx(12, fontPct_));
-        ft.setWeight(QFont::Bold);
+        ft.setPixelSize(scaledPx(13, fontPct_));
+        ft.setWeight(QFont::Medium);
         p.setFont(ft);
-        p.setPen(QColor(QStringLiteral("#e2e8f0")));
-        const QString prefix = isMic_ ? QStringLiteral("Mic: ") : QStringLiteral("Output: ");
-        p.drawText(QRectF(16.0, 10.0, r.width() - 96.0, 22.0), Qt::AlignLeft | Qt::AlignVCenter, prefix + title_);
+        p.setPen(muted_ ? QColor(QStringLiteral("#FCA5A5")) : QColor(241, 245, 249, 238));
+        const QString rawLabel = muted_ ? QStringLiteral("Muted — %1").arg(title_)
+                                        : QStringLiteral("%1% — %2").arg(pct_).arg(title_);
+        const QString elided = QFontMetricsF(ft).elidedText(rawLabel, Qt::ElideRight, textRect.width());
+        p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, elided);
 
-        p.setPen(muted_ ? QColor(QStringLiteral("#f87171")) : accent_);
-        const QString valStr = muted_ ? QStringLiteral("MUTED") : QStringLiteral("%1%").arg(pct_);
-        p.drawText(QRectF(r.width() - 88.0, 10.0, 74.0, 22.0), Qt::AlignRight | Qt::AlignVCenter, valStr);
-
-        const QRectF bar(16.0, r.height() - 24.0, r.width() - 32.0, 10.0);
+        const QRectF bar(58.0, h - 24.0, w - 76.0, 12.0);
         p.setPen(Qt::NoPen);
-        p.setBrush(QColor(255, 255, 255, 26));
+        p.setBrush(QColor(255, 255, 255, 28));
         p.drawRoundedRect(bar, 5.0, 5.0);
 
-        const double frac = muted_ ? 0.0 : std::clamp(static_cast<double>(pct_) / 150.0, 0.0, 1.0);
+        const double frac = muted_ ? 0.0 : std::clamp(static_cast<double>(pct_) / 100.0, 0.0, 1.0);
         if (frac > 0.0) {
+            const double fillW = std::max(8.0, frac * bar.width());
             QLinearGradient lg(bar.left(), 0.0, bar.right(), 0.0);
             if (isMic_) {
-                lg.setColorAt(0.0, accent_.darker(110));
+                lg.setColorAt(0.0, accent_.darker(120));
                 lg.setColorAt(1.0, accent_.lighter(115));
             } else {
-                lg.setColorAt(0.0, QColor(QStringLiteral("#0f8b6d")));
-                lg.setColorAt(0.65, QColor(QStringLiteral("#1db97f")));
-                lg.setColorAt(1.0, pct_ <= 100 ? QColor(QStringLiteral("#34d399")) : QColor(QStringLiteral("#f59e0b")));
+                lg.setColorAt(0.0, QColor(QStringLiteral("#0F8B6D")));
+                lg.setColorAt(0.65, QColor(QStringLiteral("#1DB97F")));
+                lg.setColorAt(1.0, pct_ <= 100 ? QColor(QStringLiteral("#34D399")) : QColor(QStringLiteral("#F59E0B")));
             }
             p.setBrush(lg);
-            p.drawRoundedRect(QRectF(bar.left(), bar.top(), std::max(8.0, bar.width() * frac), bar.height()), 5.0, 5.0);
+            p.drawRoundedRect(QRectF(bar.left(), bar.top(), fillW, bar.height()), 5.0, 5.0);
         }
     }
 
@@ -997,7 +1072,6 @@ private:
     SalsaEngineStatus status_{};
     SalsaDeviceList devices_{};
     bool engineOnline_ = false;
-    QJsonArray micApoPresets_;
     QString lastDevSig_;
     QString lastPbForRates_;
     QList<int> supportedPbRates_;
@@ -1009,7 +1083,10 @@ private:
     qint64 rateHoldUntilMs_ = 0;
     qint64 capRateHoldUntilMs_ = 0;
     qint64 btHoldUntilMs_ = 0;
-    qint64 micApoHoldUntilMs_ = 0;
+    qint64 spkHoldUntilMs_ = 0;
+    qint64 lastSpkSendMs_ = 0;
+    qint64 micHoldUntilMs_ = 0;
+    qint64 lastMicSendMs_ = 0;
     int anchorPanelLoc_ = 4;
     int anchorBottom_ = 0;
     QRect anchorAvail_;
@@ -1061,12 +1138,10 @@ private:
     QPushButton* btnPerDevEq_ = nullptr;
     QPushButton* btnLimiter_ = nullptr;
     QPushButton* btnMidiTest_ = nullptr;
-    QPushButton* btnMicApo_ = nullptr;
     QPushButton* btnCrossfeed_ = nullptr;
     QComboBox* cmbBtCodec_ = nullptr;
     QPushButton* btnBtAbr_ = nullptr;
     QComboBox* cmbCapRate_ = nullptr;
-    QComboBox* cmbMicPreset_ = nullptr;
     QComboBox* cmbTrayTheme_ = nullptr;
 
     QLabel* lblAppCount_ = nullptr;
@@ -1079,6 +1154,8 @@ private:
         QLabel* iconLbl = nullptr;
         SwipeFader* fader = nullptr;
         QPushButton* btnMute = nullptr;
+        qint64 holdUntilMs = 0;
+        qint64 lastSentMs = 0;
     };
     std::vector<PopupAppRow> appRows_;
 
@@ -1125,7 +1202,6 @@ TrayController::TrayController(bool withSni, QObject* parent)
             themeName_ = QStringLiteral("Follow Studio Theme");
         }
     }
-    micApoPresets_ = parseJsonArr(SalsaStr(salsa_mic_apo_presets_json()).toQString());
 
     osd_ = new SalsaOsdOverlay();
     buildPopup();
@@ -1399,11 +1475,20 @@ void TrayController::buildPopup() {
     faderSpk_ = new SwipeFader(QStringLiteral("Master Output"), theme_.qcolor("accent_primary", "#00e676"), false, devPage);
     faderSpk_->setStepProvider([this]() { return volStepPct_; });
     connect(faderSpk_, &SwipeFader::valueChanged, this, [this](int v) {
-        osdSuppressUntilMs_ = nowMs() + 900;
-        salsa_set_master_volume(v, status_.desktop_muted ? 1 : 0);
+        const qint64 now = nowMs();
+        osdSuppressUntilMs_ = now + 900;
+        spkHoldUntilMs_ = now + 450;
+        if (now - lastSpkSendMs_ >= 35) {
+            lastSpkSendMs_ = now;
+            salsa_set_master_volume(v, status_.desktop_muted ? 1 : 0);
+        }
     });
     connect(faderSpk_, &SwipeFader::valueCommitted, this, [this](int v) {
-        osdSuppressUntilMs_ = nowMs() + 900;
+        const qint64 now = nowMs();
+        osdSuppressUntilMs_ = now + 900;
+        spkHoldUntilMs_ = now + 450;
+        lastSpkSendMs_ = now;
+        lastSpkVol_ = v;
         salsa_set_master_volume(v, status_.desktop_muted ? 1 : 0);
     });
     spkRow->addWidget(faderSpk_, 1);
@@ -1449,11 +1534,20 @@ void TrayController::buildPopup() {
     faderMic_ = new SwipeFader(QStringLiteral("Mic / Input Gain"), theme_.qcolor("accent_secondary", "#38bdf8"), false, devPage);
     faderMic_->setStepProvider([this]() { return volStepPct_; });
     connect(faderMic_, &SwipeFader::valueChanged, this, [this](int v) {
-        osdSuppressUntilMs_ = nowMs() + 900;
-        salsa_set_mic_volume(v, status_.desktop_mic_muted ? 1 : 0);
+        const qint64 now = nowMs();
+        osdSuppressUntilMs_ = now + 900;
+        micHoldUntilMs_ = now + 450;
+        if (now - lastMicSendMs_ >= 35) {
+            lastMicSendMs_ = now;
+            salsa_set_mic_volume(v, status_.desktop_mic_muted ? 1 : 0);
+        }
     });
     connect(faderMic_, &SwipeFader::valueCommitted, this, [this](int v) {
-        osdSuppressUntilMs_ = nowMs() + 900;
+        const qint64 now = nowMs();
+        osdSuppressUntilMs_ = now + 900;
+        micHoldUntilMs_ = now + 450;
+        lastMicSendMs_ = now;
+        lastMicVol_ = v;
         salsa_set_mic_volume(v, status_.desktop_mic_muted ? 1 : 0);
     });
     micRow->addWidget(faderMic_, 1);
@@ -1587,23 +1681,9 @@ void TrayController::buildPopup() {
     modeRow->addWidget(btnMidiTest_);
     dspLay->addLayout(modeRow);
 
-    // Row 3: Mic APO + Crossfeed + BT Codec + BT ABR
+    // Row 3: Crossfeed + BT Codec + BT ABR
     auto* apoRow = new QHBoxLayout();
     apoRow->setSpacing(5);
-
-    btnMicApo_ = new QPushButton(QStringLiteral("Mic APO"), dspFrame);
-    btnMicApo_->setObjectName(QStringLiteral("TogglePill"));
-    btnMicApo_->setCheckable(true);
-    btnMicApo_->setCursor(Qt::PointingHandCursor);
-    btnMicApo_->setToolTip(QStringLiteral("Toggle real-time Capture Mic APO (HPF, Gate, RNNoise, Comp)"));
-    connect(btnMicApo_, &QPushButton::clicked, this, [this](bool checked) {
-        if (syncingUi_) return;
-        micApoHoldUntilMs_ = nowMs() + 700;
-        status_.mic_apo.enabled = checked ? 1 : 0;
-        salsa_set_mic_apo(&status_.mic_apo);
-        QTimer::singleShot(80, this, [this]() { syncFromEngine(false); });
-    });
-    apoRow->addWidget(btnMicApo_);
 
     btnCrossfeed_ = new QPushButton(QStringLiteral("Crossfeed"), dspFrame);
     btnCrossfeed_->setObjectName(QStringLiteral("TogglePill"));
@@ -1647,12 +1727,12 @@ void TrayController::buildPopup() {
     apoRow->addWidget(btnBtAbr_);
     dspLay->addLayout(apoRow);
 
-    // Row 4: Mic Rate + Mic Profile
-    auto* micClockRow = new QHBoxLayout();
-    micClockRow->setSpacing(6);
+    // Row 4: Mic Rate + Quick Mixer Theme
+    auto* micThemeRow = new QHBoxLayout();
+    micThemeRow->setSpacing(6);
     auto* lblMicSr = new QLabel(QStringLiteral("Mic Rate"), dspFrame);
     lblMicSr->setObjectName(QStringLiteral("DimLabel"));
-    micClockRow->addWidget(lblMicSr);
+    micThemeRow->addWidget(lblMicSr);
 
     cmbCapRate_ = new QComboBox(dspFrame);
     cmbCapRate_->addItem(QStringLiteral("Auto (Follow Master)"), 0);
@@ -1667,51 +1747,11 @@ void TrayController::buildPopup() {
         salsa_set_capture_sample_rate(static_cast<uint32_t>(r));
         QTimer::singleShot(250, this, [this]() { syncFromEngine(false); });
     });
-    micClockRow->addWidget(cmbCapRate_, 1);
+    micThemeRow->addWidget(cmbCapRate_, 1);
 
-    auto* lblMp = new QLabel(QStringLiteral("Mic Profile"), dspFrame);
-    lblMp->setObjectName(QStringLiteral("DimLabel"));
-    micClockRow->addWidget(lblMp);
-
-    cmbMicPreset_ = new QComboBox(dspFrame);
-    cmbMicPreset_->addItem(QStringLiteral("Custom Mic APO"), QString());
-    for (const QJsonValue& mv : micApoPresets_) {
-        const QString mn = mv.toObject().value(QStringLiteral("name")).toString();
-        if (!mn.isEmpty()) cmbMicPreset_->addItem(mn, mn);
-    }
-    cmbMicPreset_->setToolTip(QStringLiteral("Apply quick reversible Capture Mic APO voice preset"));
-    connect(cmbMicPreset_, &QComboBox::activated, this, [this](int idx) {
-        if (syncingUi_) return;
-        const QString pname = cmbMicPreset_->itemData(idx).toString();
-        if (pname.isEmpty()) return;
-        for (const QJsonValue& mv : micApoPresets_) {
-            const QJsonObject mo = mv.toObject();
-            if (mo.value(QStringLiteral("name")).toString() == pname) {
-                micApoHoldUntilMs_ = nowMs() + 700;
-                SalsaMicApoCfg cfg = status_.mic_apo;
-                cfg.enabled = static_cast<uint32_t>(mo.value(QStringLiteral("enabled")).toInt(1));
-                cfg.hpf_enabled = static_cast<uint32_t>(mo.value(QStringLiteral("hpf_enabled")).toInt(1));
-                cfg.gate_enabled = static_cast<uint32_t>(mo.value(QStringLiteral("gate_enabled")).toInt(1));
-                cfg.gate_thresh_db = static_cast<float>(mo.value(QStringLiteral("gate_thresh_db")).toDouble(-50.0));
-                cfg.rnnoise_enabled = static_cast<uint32_t>(mo.value(QStringLiteral("rnnoise_enabled")).toInt(1));
-                cfg.comp_enabled = static_cast<uint32_t>(mo.value(QStringLiteral("comp_enabled")).toInt(1));
-                cfg.clarity_db = static_cast<float>(mo.value(QStringLiteral("clarity_db")).toDouble(1.5));
-                status_.mic_apo = cfg;
-                salsa_set_mic_apo(&cfg);
-                QTimer::singleShot(80, this, [this]() { syncFromEngine(false); });
-                break;
-            }
-        }
-    });
-    micClockRow->addWidget(cmbMicPreset_, 1);
-    dspLay->addLayout(micClockRow);
-
-    // Row 5: Quick Mixer Theme
-    auto* themeRow = new QHBoxLayout();
-    themeRow->setSpacing(6);
     auto* lblTheme = new QLabel(QStringLiteral("Theme"), dspFrame);
     lblTheme->setObjectName(QStringLiteral("DimLabel"));
-    themeRow->addWidget(lblTheme);
+    micThemeRow->addWidget(lblTheme);
 
     cmbTrayTheme_ = new QComboBox(dspFrame);
     for (const QString& tn : allThemeNames(true)) {
@@ -1722,8 +1762,8 @@ void TrayController::buildPopup() {
         const QString choice = cmbTrayTheme_->itemData(idx).toString().trimmed();
         if (!choice.isEmpty()) selectTrayTheme(choice);
     });
-    themeRow->addWidget(cmbTrayTheme_, 1);
-    dspLay->addLayout(themeRow);
+    micThemeRow->addWidget(cmbTrayTheme_, 1);
+    dspLay->addLayout(micThemeRow);
 
     devLay->addWidget(dspFrame);
     devLay->addStretch(1);
@@ -2207,20 +2247,42 @@ void TrayController::toggleMicMute() {
     syncFromEngine(false);
 }
 
-void TrayController::handleScroll(int delta, const QString& /*orientation*/) {
+void TrayController::handleScroll(int delta, const QString& orientation) {
     if (!engineOnline_ || delta == 0) return;
     osdSuppressUntilMs_ = nowMs() + 900;
-    const int dir = delta > 0 ? 1 : -1;
-    const int cur = static_cast<int>(status_.desktop_volume_pct);
-    const int nxt = std::clamp(cur + dir * volStepPct_, 0, 150);
-    salsa_set_master_volume(nxt, 0);
-    status_.desktop_volume_pct = static_cast<uint32_t>(nxt);
-    status_.desktop_muted = 0;
-    if (osd_) {
-        osd_->showVolume(
-            nxt, false,
-            cFixedStr(status_.hw_device, sizeof(status_.hw_device)),
-            false, theme_.qcolor("accent_primary", "#00e676"), fontPct_, lastTrayRawPt_);
+    const int notches = std::max<int>(1, static_cast<int>(std::lround(std::abs(delta) / 120.0)));
+    const int step = (delta > 0 ? 1 : -1) * volStepPct_ * notches;
+    const bool shiftHeld = (QApplication::keyboardModifiers() & Qt::ShiftModifier) != 0;
+    const bool isHorizontal = orientation.trimmed().toLower().startsWith('h');
+
+    if (isHorizontal || shiftHeld) {
+        const int cur = static_cast<int>(status_.desktop_mic_volume_pct);
+        const int nxt = std::clamp(cur + step, 0, 150);
+        micHoldUntilMs_ = nowMs() + 450;
+        lastMicVol_ = nxt;
+        lastMicMute_ = (status_.desktop_mic_muted != 0);
+        salsa_set_mic_volume(nxt, -1);
+        status_.desktop_mic_volume_pct = static_cast<uint32_t>(nxt);
+        if (osd_) {
+            osd_->showVolume(
+                nxt, status_.desktop_mic_muted != 0,
+                cFixedStr(status_.hw_capture_device, sizeof(status_.hw_capture_device)),
+                true, theme_.qcolor("accent_secondary", "#38bdf8"), fontPct_, lastTrayRawPt_);
+        }
+    } else {
+        const int cur = static_cast<int>(status_.desktop_volume_pct);
+        const int nxt = std::clamp(cur + step, 0, 150);
+        spkHoldUntilMs_ = nowMs() + 450;
+        lastSpkVol_ = nxt;
+        lastSpkMute_ = (status_.desktop_muted != 0);
+        salsa_set_master_volume(nxt, -1);
+        status_.desktop_volume_pct = static_cast<uint32_t>(nxt);
+        if (osd_) {
+            osd_->showVolume(
+                nxt, status_.desktop_muted != 0,
+                cFixedStr(status_.hw_device, sizeof(status_.hw_device)),
+                false, theme_.qcolor("accent_primary", "#00e676"), fontPct_, lastTrayRawPt_);
+        }
     }
     if (popupWin_ && popupWin_->isVisible()) populateQuickMixer();
     syncFromEngine(false);
@@ -2353,20 +2415,20 @@ void TrayController::populateQuickMixer() {
 
     populateDeviceCombos();
 
-    if (!faderSpk_->isDragging()) {
+    const qint64 tnow = nowMs();
+
+    if (!faderSpk_->isDragging() && tnow >= spkHoldUntilMs_) {
         faderSpk_->setLabel(cFixedStr(status_.hw_device, sizeof(status_.hw_device)));
         faderSpk_->setValue(static_cast<int>(status_.desktop_volume_pct), status_.desktop_muted != 0);
     }
     btnSpkMute_->setText(status_.desktop_muted ? QStringLiteral("Unmute") : QStringLiteral("Mute"));
     peakBar_->setPeaks(status_.output_peak_l, status_.output_peak_r, theme_.qcolor("accent_primary", "#00e676"));
 
-    if (!faderMic_->isDragging()) {
+    if (!faderMic_->isDragging() && tnow >= micHoldUntilMs_) {
         faderMic_->setLabel(cFixedStr(status_.hw_capture_device, sizeof(status_.hw_capture_device)));
         faderMic_->setValue(static_cast<int>(status_.desktop_mic_volume_pct), status_.desktop_mic_muted != 0);
     }
     btnMicMute_->setText(status_.desktop_mic_muted ? QStringLiteral("Unmute") : QStringLiteral("Mute"));
-
-    const qint64 tnow = nowMs();
 
     // Quick DSP state sync
     if (tnow >= eqHoldUntilMs_) {
@@ -2379,9 +2441,6 @@ void TrayController::populateQuickMixer() {
             if (pi < 0) pi = cmbQuickEqPreset_->findData(QStringLiteral("builtin:") + pn);
             if (pi >= 0) cmbQuickEqPreset_->setCurrentIndex(pi);
         }
-    }
-    if (tnow >= micApoHoldUntilMs_) {
-        btnMicApo_->setChecked(status_.mic_apo.enabled != 0);
     }
 
     // BT Codec & ABR
@@ -2472,10 +2531,26 @@ void TrayController::populateQuickMixer() {
                 theme_.qcolor("text_bright", "#f8fafc"),
                 theme_.qcolor("text_muted", "#94a3b8"));
             fader->setValue(static_cast<int>(s.volume_milli / 10), s.muted != 0);
-            connect(fader, &SwipeFader::valueChanged, this, [sid](int v) {
-                salsa_set_session_control(sid, v, -1, nullptr);
+            connect(fader, &SwipeFader::valueChanged, this, [this, sid](int v) {
+                const qint64 now = nowMs();
+                for (auto& ar : appRows_) {
+                    if (ar.sid != sid) continue;
+                    ar.holdUntilMs = now + 450;
+                    if (now - ar.lastSentMs >= 35) {
+                        ar.lastSentMs = now;
+                        salsa_set_session_control(sid, v, -1, nullptr);
+                    }
+                    break;
+                }
             });
-            connect(fader, &SwipeFader::valueCommitted, this, [sid](int v) {
+            connect(fader, &SwipeFader::valueCommitted, this, [this, sid](int v) {
+                const qint64 now = nowMs();
+                for (auto& ar : appRows_) {
+                    if (ar.sid != sid) continue;
+                    ar.holdUntilMs = now + 450;
+                    ar.lastSentMs = now;
+                    break;
+                }
                 salsa_set_session_control(sid, v, -1, nullptr);
             });
             rlay->addWidget(fader, 1);
@@ -2494,7 +2569,7 @@ void TrayController::populateQuickMixer() {
             });
             rlay->addWidget(btnM);
             appsLay_->insertWidget(appsLay_->count() - 1, rw);
-            appRows_.push_back({sid, rw, iconLbl, fader, btnM});
+            appRows_.push_back({sid, rw, iconLbl, fader, btnM, 0, 0});
         }
     } else {
         for (uint32_t i = 0; i < ns; ++i) {
@@ -2505,7 +2580,7 @@ void TrayController::populateQuickMixer() {
                 rawNm.isEmpty() ? QStringLiteral("App #%1").arg(s.client_pid) : rawNm);
             appRows_[i].iconLbl->setPixmap(iconResolver_.pixmapFor(rawNm, s.client_pid, s.is_capture != 0, 20));
             appRows_[i].fader->setLabel(nm);
-            if (!appRows_[i].fader->isDragging()) {
+            if (!appRows_[i].fader->isDragging() && tnow >= appRows_[i].holdUntilMs) {
                 appRows_[i].fader->setValue(static_cast<int>(s.volume_milli / 10), s.muted != 0);
             }
             appRows_[i].btnMute->setText(s.muted ? QStringLiteral("Unmute") : QStringLiteral("Mute"));

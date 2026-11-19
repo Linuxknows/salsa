@@ -130,8 +130,6 @@ private:
     void savePerDeviceEqForSink(const QString& sinkId);
     bool loadPerDeviceEqForSink(const QString& sinkId);
 
-    void onMicApoChanged();
-    void onMicPresetActivated(int idx);
     void onSinkActivated(int idx);
     void onSourceActivated(int idx);
     void onBtResetClicked();
@@ -142,6 +140,8 @@ private:
     void onVolStepChanged();
     void onSpkSliderMoved(int v);
     void onMicSliderMoved(int v);
+    void onSessionSliderMoved(uint32_t sid, int v);
+    void flushSessionVolume(uint32_t sid, int v);
 
     void openTopologyWindow();
     void enterStudioFromTopology();
@@ -165,14 +165,12 @@ private:
     QString currentThemeName_;
     QJsonArray builtinEqPresets_;
     QJsonArray savedAutoEq_;
-    QJsonArray micApoPresets_;
     QMap<QString, QString> shortcutsMap_;
 
     SalsaEngineStatus status_{};
     SalsaDeviceList devices_{};
     SalsaEqConfig eqCfg_{};
     SalsaParamEqExt paramExt_{};
-    SalsaMicApoCfg micApo_{};
     SalsaBtCodecCfg btCfg_{};
     SalsaHwAnalogCfg hwAnalog_{};
     bool hasStatus_ = false;
@@ -181,7 +179,6 @@ private:
     QString currentManualKey_ = QStringLiteral("overview");
 
     qint64 eqHoldUntilMs_ = 0;
-    qint64 micApoHoldUntilMs_ = 0;
     qint64 btHoldUntilMs_ = 0;
     qint64 hwHoldUntilMs_ = 0;
     qint64 spkHoldUntilMs_ = 0;
@@ -228,19 +225,6 @@ private:
     std::array<QLabel*, SALSA_EQ_BANDS> bandDynLbls_{};
     std::array<QLabel*, SALSA_EQ_BANDS> bandFreqLbls_{};
 
-    // Mic APO widgets
-    QCheckBox* chkMicApo_ = nullptr;
-    QComboBox* cmbMicPreset_ = nullptr;
-    QLabel* lblMicMeter_ = nullptr;
-    QCheckBox* chkMicHpf_ = nullptr;
-    QCheckBox* chkMicGate_ = nullptr;
-    QSpinBox* spnMicGate_ = nullptr;
-    QCheckBox* chkMicRnnoise_ = nullptr;
-    QCheckBox* chkMicComp_ = nullptr;
-    QDoubleSpinBox* spnMicClarity_ = nullptr;
-    QCheckBox* chkMicSidetone_ = nullptr;
-    QSpinBox* spnMicSidetone_ = nullptr;
-
     // Master Mixer + BT + Sessions
     QComboBox* cmbVolStep_ = nullptr;
     QLabel* lblEndpoints_ = nullptr;
@@ -267,6 +251,8 @@ private:
         QPushButton* btnMute = nullptr;
         QComboBox* cmbRoute = nullptr;
         QTableWidgetItem* fmtItem = nullptr;
+        qint64 holdUntilMs = 0;
+        qint64 lastSentMs = 0;
     };
     std::vector<SessRowWidgets> sessRows_;
 
@@ -377,7 +363,6 @@ StudioController::StudioController(bool forceStudio, QObject* parent)
     currentThemeName_ = guiSettings_.value(QStringLiteral("theme")).toString(QStringLiteral("Obsidian Glass"));
     builtinEqPresets_ = parseJsonArr(SalsaStr(salsa_builtin_eq_presets_json()).toQString());
     savedAutoEq_ = parseJsonArr(SalsaStr(salsa_saved_autoeq_list_json()).toQString());
-    micApoPresets_ = parseJsonArr(SalsaStr(salsa_mic_apo_presets_json()).toQString());
 
     const QJsonArray defSc = parseJsonArr(SalsaStr(salsa_default_shortcuts_json()).toQString());
     const QJsonObject savedSc = guiSettings_.value(QStringLiteral("shortcuts")).toObject();
@@ -567,13 +552,14 @@ void StudioController::buildMainWindow() {
     titleCol->addLayout(titleRow);
 
     lblSubtitle_ = new QLabel(
-        QStringLiteral("Fixed-Clock Lossless WaveRT • Hardware DAC/Amp Analog • Mic APO & Studio EQ • Host: %1 (%2)")
+        QStringLiteral("Fixed-Clock Lossless WaveRT • Hardware DAC/Amp Analog • Dynamic Studio EQ • Host: %1 (%2)")
             .arg(hostProf_.value(QStringLiteral("os")).toString(),
                  hostProf_.value(QStringLiteral("cpu")).toString()),
         topCard);
     lblSubtitle_->setObjectName(QStringLiteral("SubBanner"));
     lblSubtitle_->setWordWrap(true);
     titleCol->addWidget(lblSubtitle_);
+    titleCol->addStretch(1);
     topLay->addLayout(titleCol, 2);
 
     auto* rateCol = new QVBoxLayout();
@@ -589,10 +575,11 @@ void StudioController::buildMainWindow() {
     lblClockSrc_ = new QLabel(QStringLiteral("Clock: 48kHz / 32-bit"), topCard);
     lblClockSrc_->setObjectName(QStringLiteral("BandDynLabel"));
     rateCol->addWidget(lblClockSrc_);
+    rateCol->addStretch(1);
     topLay->addLayout(rateCol);
 
     auto* periodCol = new QVBoxLayout();
-    periodCol->addWidget(new QLabel(QStringLiteral("Quantum:"), topCard));
+    periodCol->addWidget(new QLabel(QStringLiteral("Quantum & Mic Rate:"), topCard));
     cmbPeriod_ = new QComboBox(topCard);
     for (int p : {64, 128, 256, 512, 1024, 2048}) cmbPeriod_->addItem(QStringLiteral("%1 frames").arg(p), p);
     cmbPeriod_->setCurrentIndex(2);
@@ -605,6 +592,7 @@ void StudioController::buildMainWindow() {
     }
     connect(cmbCapRate_, &QComboBox::currentIndexChanged, this, [this]() { onCapRateChanged(); });
     periodCol->addWidget(cmbCapRate_);
+    periodCol->addStretch(1);
     topLay->addLayout(periodCol);
 
     auto* bitsCol = new QVBoxLayout();
@@ -615,6 +603,7 @@ void StudioController::buildMainWindow() {
     cmbBits_->addItem(QStringLiteral("16-Bit PCM"), 16);
     connect(cmbBits_, &QComboBox::currentIndexChanged, this, [this]() { onClockChanged(); });
     bitsCol->addWidget(cmbBits_);
+    bitsCol->addStretch(1);
     topLay->addLayout(bitsCol);
 
     auto* themeCol = new QVBoxLayout();
@@ -624,6 +613,7 @@ void StudioController::buildMainWindow() {
     cmbTheme_->setCurrentText(currentThemeName_);
     connect(cmbTheme_, &QComboBox::activated, this, [this](int idx) { onThemeActivated(idx); });
     themeCol->addWidget(cmbTheme_);
+    themeCol->addStretch(1);
     topLay->addLayout(themeCol);
 
     auto* engCol = new QVBoxLayout();
@@ -797,9 +787,12 @@ void StudioController::buildMainWindow() {
 
         auto* sld = new QSlider(Qt::Vertical, eqCard);
         sld->setRange(-180, 180);
-        sld->setMinimumHeight(44);
+        sld->setSingleStep(5);
+        sld->setPageStep(10);
+        sld->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+        sld->setMinimumHeight(scaledPx(112, fontPct_));
         connect(sld, &QSlider::valueChanged, this, [this, i](int v) { onBandSliderChanged(i, v); });
-        colBox->addWidget(sld, 0, Qt::AlignHCenter);
+        colBox->addWidget(sld, 1, Qt::AlignHCenter);
 
         auto* ld = new QLabel(QStringLiteral("Δ 0.0dB"), eqCard);
         ld->setAlignment(Qt::AlignCenter);
@@ -817,88 +810,10 @@ void StudioController::buildMainWindow() {
         bandDynLbls_[i] = ld;
         bandFreqLbls_[i] = lf;
     }
-    eqLay->addLayout(fadersGrid);
-    studioLay->addWidget(eqCard, 3);
+    eqLay->addLayout(fadersGrid, 1);
+    studioLay->addWidget(eqCard, 4);
 
-    // 2. Mic APO Card
-    auto* micCard = new QFrame(tabStudio);
-    micCard->setObjectName(QStringLiteral("Card"));
-    auto* micCol = new QVBoxLayout(micCard);
-    micCol->setContentsMargins(10, 6, 10, 6);
-    micCol->setSpacing(4);
-
-    auto* micTop = new QHBoxLayout();
-    chkMicApo_ = new QCheckBox(QStringLiteral("KRISP-STYLE CAPTURE MIC APO (HW Passes Raw When OFF)"), micCard);
-    chkMicApo_->setObjectName(QStringLiteral("EqEnableCheck"));
-    connect(chkMicApo_, &QCheckBox::toggled, this, [this]() { if (!updatingUi_) onMicApoChanged(); });
-    micTop->addWidget(chkMicApo_);
-    micTop->addSpacing(8);
-    micTop->addWidget(new QLabel(QStringLiteral("Mic Preset:"), micCard));
-    cmbMicPreset_ = new QComboBox(micCard);
-    cmbMicPreset_->addItem(QStringLiteral("Custom Mic APO"), QString());
-    for (const QJsonValue& mv : micApoPresets_) {
-        const QString mn = mv.toObject().value(QStringLiteral("name")).toString();
-        if (!mn.isEmpty()) cmbMicPreset_->addItem(mn, mn);
-    }
-    connect(cmbMicPreset_, &QComboBox::activated, this, [this](int idx) { onMicPresetActivated(idx); });
-    micTop->addWidget(cmbMicPreset_);
-    micTop->addStretch(1);
-    lblMicMeter_ = new QLabel(QStringLiteral("Bypassed (Raw Mic)"), micCard);
-    lblMicMeter_->setObjectName(QStringLiteral("BandDynLabel"));
-    micTop->addWidget(lblMicMeter_);
-    micCol->addLayout(micTop);
-
-    auto* micCtrl = new QHBoxLayout();
-    micCtrl->setSpacing(6);
-    chkMicHpf_ = new QCheckBox(QStringLiteral("HPF 80Hz"), micCard);
-    chkMicHpf_->setChecked(true);
-    connect(chkMicHpf_, &QCheckBox::toggled, this, [this]() { if (!updatingUi_) onMicApoChanged(); });
-    micCtrl->addWidget(chkMicHpf_);
-
-    chkMicGate_ = new QCheckBox(QStringLiteral("Gate"), micCard);
-    chkMicGate_->setChecked(true);
-    connect(chkMicGate_, &QCheckBox::toggled, this, [this]() { if (!updatingUi_) onMicApoChanged(); });
-    micCtrl->addWidget(chkMicGate_);
-    spnMicGate_ = new QSpinBox(micCard);
-    spnMicGate_->setRange(-80, -10);
-    spnMicGate_->setValue(-50);
-    spnMicGate_->setSuffix(QStringLiteral(" dB"));
-    connect(spnMicGate_, &QSpinBox::valueChanged, this, [this]() { if (!updatingUi_) onMicApoChanged(); });
-    micCtrl->addWidget(spnMicGate_);
-
-    chkMicRnnoise_ = new QCheckBox(QStringLiteral("RNNoise AI"), micCard);
-    chkMicRnnoise_->setChecked(true);
-    connect(chkMicRnnoise_, &QCheckBox::toggled, this, [this]() { if (!updatingUi_) onMicApoChanged(); });
-    micCtrl->addWidget(chkMicRnnoise_);
-
-    chkMicComp_ = new QCheckBox(QStringLiteral("Comp"), micCard);
-    chkMicComp_->setChecked(true);
-    connect(chkMicComp_, &QCheckBox::toggled, this, [this]() { if (!updatingUi_) onMicApoChanged(); });
-    micCtrl->addWidget(chkMicComp_);
-
-    micCtrl->addWidget(new QLabel(QStringLiteral("Clarity:"), micCard));
-    spnMicClarity_ = new QDoubleSpinBox(micCard);
-    spnMicClarity_->setRange(-6.0, 9.0);
-    spnMicClarity_->setSingleStep(0.5);
-    spnMicClarity_->setValue(1.5);
-    spnMicClarity_->setSuffix(QStringLiteral(" dB"));
-    connect(spnMicClarity_, &QDoubleSpinBox::valueChanged, this, [this]() { if (!updatingUi_) onMicApoChanged(); });
-    micCtrl->addWidget(spnMicClarity_);
-
-    chkMicSidetone_ = new QCheckBox(QStringLiteral("Sidetone"), micCard);
-    connect(chkMicSidetone_, &QCheckBox::toggled, this, [this]() { if (!updatingUi_) onMicApoChanged(); });
-    micCtrl->addWidget(chkMicSidetone_);
-    spnMicSidetone_ = new QSpinBox(micCard);
-    spnMicSidetone_->setRange(0, 100);
-    spnMicSidetone_->setValue(25);
-    spnMicSidetone_->setSuffix(QStringLiteral("%"));
-    connect(spnMicSidetone_, &QSpinBox::valueChanged, this, [this]() { if (!updatingUi_) onMicApoChanged(); });
-    micCtrl->addWidget(spnMicSidetone_);
-    micCtrl->addStretch(1);
-    micCol->addLayout(micCtrl);
-    studioLay->addWidget(micCard);
-
-    // 3. Bottom Mixer & Sessions Row
+    // 2. Bottom Mixer & Sessions Row
     auto* botLay = new QHBoxLayout();
     botLay->setSpacing(10);
 
@@ -923,11 +838,14 @@ void StudioController::buildMainWindow() {
 
     lblEndpoints_ = new QLabel(QStringLiteral("Sink: Detecting... | Mic: Detecting... | PA v35: Initializing..."), hwCard);
     lblEndpoints_->setObjectName(QStringLiteral("EndpointsLabel"));
+    lblEndpoints_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     hwCol->addWidget(lblEndpoints_);
 
     auto* devRow = new QHBoxLayout();
     devRow->addWidget(new QLabel(QStringLiteral("Output Sink:"), hwCard));
     cmbSink_ = new QComboBox(hwCard);
+    cmbSink_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    cmbSink_->setMinimumContentsLength(14);
     cmbSink_->addItem(QStringLiteral("Auto-Priority (BT A2DP > USB > Analog > HDMI)"), QStringLiteral("auto"));
     connect(cmbSink_, &QComboBox::activated, this, [this](int i) { onSinkActivated(i); });
     devRow->addWidget(cmbSink_, 1);
@@ -936,6 +854,8 @@ void StudioController::buildMainWindow() {
     devRow->addWidget(btnBtReset_);
     devRow->addWidget(new QLabel(QStringLiteral("Mic Input:"), hwCard));
     cmbSource_ = new QComboBox(hwCard);
+    cmbSource_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    cmbSource_->setMinimumContentsLength(14);
     cmbSource_->addItem(QStringLiteral("Auto-Priority (USB Mic > HDA > Virtual)"), QStringLiteral("auto"));
     connect(cmbSource_, &QComboBox::activated, this, [this](int i) { onSourceActivated(i); });
     devRow->addWidget(cmbSource_, 1);
@@ -972,6 +892,7 @@ void StudioController::buildMainWindow() {
 
     lblBtDiag_ = new QLabel(QStringLiteral("BT: Standby"), hwCard);
     lblBtDiag_->setObjectName(QStringLiteral("BandDynLabel"));
+    lblBtDiag_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     btRow->addWidget(lblBtDiag_, 1);
     hwCol->addLayout(btRow);
 
@@ -1018,6 +939,7 @@ void StudioController::buildMainWindow() {
     hwCol->addLayout(micRow);
 
     lblMidiStatus_ = new QLabel(QStringLiteral("DAW MIDI Hub: Auto-Detecting (0 key presses)"), hwCard);
+    lblMidiStatus_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     hwCol->addWidget(lblMidiStatus_);
     botLay->addWidget(hwCard, 5);
 
@@ -1036,7 +958,7 @@ void StudioController::buildMainWindow() {
         QStringLiteral("Mode"), QStringLiteral("Format"), QStringLiteral("Volume"),
         QStringLiteral("Mute"), QStringLiteral("Route")});
     auto* shdr = tblSessions_->horizontalHeader();
-    shdr->setMinimumSectionSize(26);
+    shdr->setMinimumSectionSize(28);
     shdr->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     shdr->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     shdr->setSectionResizeMode(2, QHeaderView::Stretch);
@@ -1045,18 +967,18 @@ void StudioController::buildMainWindow() {
     shdr->setSectionResizeMode(5, QHeaderView::Fixed);
     shdr->setSectionResizeMode(6, QHeaderView::ResizeToContents);
     shdr->setSectionResizeMode(7, QHeaderView::Fixed);
-    tblSessions_->setColumnWidth(5, 84);
-    tblSessions_->setColumnWidth(7, 122);
-    tblSessions_->setMinimumHeight(110);
+    tblSessions_->setColumnWidth(5, scaledPx(96, fontPct_));
+    tblSessions_->setColumnWidth(7, scaledPx(126, fontPct_));
+    tblSessions_->setMinimumHeight(130);
     tblSessions_->verticalHeader()->setVisible(false);
-    tblSessions_->verticalHeader()->setDefaultSectionSize(30);
+    tblSessions_->verticalHeader()->setDefaultSectionSize(32);
     tblSessions_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tblSessions_->setSelectionMode(QAbstractItemView::NoSelection);
     sessCol->addWidget(tblSessions_);
     botLay->addWidget(sessCard, 7);
 
-    studioLay->addLayout(botLay, 2);
-    if (spectrum_) spectrum_->setMinimumHeight(130);
+    studioLay->addLayout(botLay, 3);
+    if (spectrum_) spectrum_->setMinimumHeight(140);
     scroll->setWidget(tabStudio);
     root->addWidget(scroll, 1);
 }
@@ -1100,7 +1022,7 @@ void StudioController::buildTopologyWindow() {
     graphHdrRow->addStretch(1);
 
     auto* lblAutoBadge = new QLabel(
-        QStringLiteral("✔ V1.19.0 LIVE | MASTER CLOCK | HW ANALOG DAC | MIC APO | BT ABR"),
+        QStringLiteral("✔ V1.19.0 LIVE | MASTER CLOCK | HW ANALOG DAC | DYNAMIC EQ | BT ABR"),
         graphCard);
     lblAutoBadge->setObjectName(QStringLiteral("AutoBadgeLabel"));
     graphHdrRow->addWidget(lblAutoBadge);
@@ -1325,6 +1247,7 @@ void StudioController::buildAdvancedWindow() {
     auto* hookRow = new QHBoxLayout();
     btnTogglePacman_ = new QPushButton(QStringLiteral("Toggle Pacman Hook (pkexec)"), diagCard);
     btnTogglePacman_->setObjectName(QStringLiteral("CompactBtn"));
+    btnTogglePacman_->setCheckable(true);
     connect(btnTogglePacman_, &QPushButton::clicked, this, [this]() {
         const SalsaStr msg(salsa_toggle_pacman_hook());
         refreshAdvIntegration();
@@ -1667,6 +1590,13 @@ void StudioController::applyThemeAndFontAll(bool saveSettings) {
 
     if (spectrum_) spectrum_->setTheme(currentTheme_, fontPct_);
     if (graphCanvas_) graphCanvas_->setTheme(currentTheme_, fontPct_);
+    for (QSlider* bs : bandSliders_) {
+        if (bs) bs->setMinimumHeight(scaledPx(112, fontPct_));
+    }
+    if (tblSessions_) {
+        tblSessions_->setColumnWidth(5, scaledPx(96, fontPct_));
+        tblSessions_->setColumnWidth(7, scaledPx(126, fontPct_));
+    }
     selectManualChapter(currentManualKey_);
     if (advWin_ && advWin_->isVisible()) refreshAdvIntegration();
 
@@ -1703,12 +1633,32 @@ void StudioController::applyDynamicShortcuts() {
     addSc(QStringLiteral("topology"), [this]() { openTopologyWindow(); });
     addSc(QStringLiteral("advanced"), [this]() { openAdvancedWindow(); });
     addSc(QStringLiteral("debugger"), [this]() { openLiveDebuggerWindow(); });
-    addSc(QStringLiteral("vol_up"), [this]() { sldSpk_->setValue(std::clamp(sldSpk_->value() + volStepPct_, 0, 150)); });
-    addSc(QStringLiteral("vol_down"), [this]() { sldSpk_->setValue(std::clamp(sldSpk_->value() - volStepPct_, 0, 150)); });
+    addSc(QStringLiteral("vol_up"), [this]() {
+        if (!sldSpk_) return;
+        sldSpk_->setValue(std::clamp(sldSpk_->value() + volStepPct_, 0, 150));
+        spkSendTimer_->start(0);
+    });
+    addSc(QStringLiteral("vol_down"), [this]() {
+        if (!sldSpk_) return;
+        sldSpk_->setValue(std::clamp(sldSpk_->value() - volStepPct_, 0, 150));
+        spkSendTimer_->start(0);
+    });
+    addSc(QStringLiteral("mic_up"), [this]() {
+        if (!sldMic_) return;
+        sldMic_->setValue(std::clamp(sldMic_->value() + volStepPct_, 0, 150));
+        micSendTimer_->start(0);
+    });
+    addSc(QStringLiteral("mic_down"), [this]() {
+        if (!sldMic_) return;
+        sldMic_->setValue(std::clamp(sldMic_->value() - volStepPct_, 0, 150));
+        micSendTimer_->start(0);
+    });
     addSc(QStringLiteral("mute_spk"), [this]() { if (btnSpkMute_) btnSpkMute_->click(); });
     addSc(QStringLiteral("mute_mic"), [this]() { if (btnMicMute_) btnMicMute_->click(); });
-    addSc(QStringLiteral("eq_toggle"), [this]() { if (chkEqEnable_) chkEqEnable_->toggle(); });
-    addSc(QStringLiteral("mic_apo_toggle"), [this]() { if (chkMicApo_) chkMicApo_->toggle(); });
+    addSc(QStringLiteral("toggle_eq"), [this]() { if (chkEqEnable_) chkEqEnable_->toggle(); });
+    addSc(QStringLiteral("bt_reset"), [this]() { onBtResetClicked(); });
+    addSc(QStringLiteral("refresh"), [this]() { pollEngine(false); });
+    addSc(QStringLiteral("quit"), [this]() { shutdownAll(); });
     addSc(QStringLiteral("reset_flat"), [this]() { onResetFlatClicked(); });
 
     // Universal Zoom shortcuts across Studio windows
@@ -2134,44 +2084,6 @@ void StudioController::onCapRateChanged() {
     saveStudioSettings();
 }
 
-void StudioController::onMicApoChanged() {
-    micApoHoldUntilMs_ = nowMs() + 650;
-    micApo_.enabled = chkMicApo_->isChecked() ? 1 : 0;
-    micApo_.hpf_enabled = chkMicHpf_->isChecked() ? 1 : 0;
-    micApo_.hpf_hz = 80.0f;
-    micApo_.gate_enabled = chkMicGate_->isChecked() ? 1 : 0;
-    micApo_.gate_thresh_db = static_cast<float>(spnMicGate_->value());
-    micApo_.rnnoise_enabled = chkMicRnnoise_->isChecked() ? 1 : 0;
-    micApo_.comp_enabled = chkMicComp_->isChecked() ? 1 : 0;
-    micApo_.comp_thresh_db = -20.0f;
-    micApo_.comp_ratio = 3.0f;
-    micApo_.clarity_db = static_cast<float>(spnMicClarity_->value());
-    micApo_.sidetone_enabled = chkMicSidetone_->isChecked() ? 1 : 0;
-    micApo_.sidetone_pct = static_cast<uint32_t>(spnMicSidetone_->value());
-    salsa_set_mic_apo(&micApo_);
-}
-
-void StudioController::onMicPresetActivated(int idx) {
-    const QString name = cmbMicPreset_->itemData(idx).toString();
-    if (name.isEmpty()) return;
-    for (const QJsonValue& mv : micApoPresets_) {
-        const QJsonObject mo = mv.toObject();
-        if (mo.value(QStringLiteral("name")).toString() == name) {
-            updatingUi_ = true;
-            chkMicApo_->setChecked(mo.value(QStringLiteral("enabled")).toInt(1) != 0);
-            chkMicHpf_->setChecked(mo.value(QStringLiteral("hpf_enabled")).toInt(1) != 0);
-            chkMicGate_->setChecked(mo.value(QStringLiteral("gate_enabled")).toInt(1) != 0);
-            spnMicGate_->setValue(mo.value(QStringLiteral("gate_thresh_db")).toInt(-50));
-            chkMicRnnoise_->setChecked(mo.value(QStringLiteral("rnnoise_enabled")).toInt(1) != 0);
-            chkMicComp_->setChecked(mo.value(QStringLiteral("comp_enabled")).toInt(1) != 0);
-            spnMicClarity_->setValue(mo.value(QStringLiteral("clarity_db")).toDouble(1.5));
-            updatingUi_ = false;
-            onMicApoChanged();
-            break;
-        }
-    }
-}
-
 void StudioController::onSinkActivated(int idx) {
     const QString targetId = cmbSink_->itemData(idx).toString();
     if (chkEqPerDev_->isChecked() && !lastSinkId_.isEmpty()) savePerDeviceEqForSink(lastSinkId_);
@@ -2241,6 +2153,30 @@ void StudioController::onMicSliderMoved(int v) {
     lblMic_->setText(QStringLiteral("Mic Capture (%1%):").arg(v));
     micHoldUntilMs_ = nowMs() + 350;
     if (!micSendTimer_->isActive()) micSendTimer_->start(40);
+}
+
+void StudioController::onSessionSliderMoved(uint32_t sid, int v) {
+    const qint64 now = nowMs();
+    for (auto& rw : sessRows_) {
+        if (rw.sid != sid) continue;
+        rw.holdUntilMs = now + 450;
+        if (now - rw.lastSentMs >= 40) {
+            rw.lastSentMs = now;
+            salsa_set_session_control(sid, v, -1, nullptr);
+        }
+        break;
+    }
+}
+
+void StudioController::flushSessionVolume(uint32_t sid, int v) {
+    const qint64 now = nowMs();
+    for (auto& rw : sessRows_) {
+        if (rw.sid != sid) continue;
+        rw.holdUntilMs = now + 450;
+        rw.lastSentMs = now;
+        break;
+    }
+    salsa_set_session_control(sid, v, -1, nullptr);
 }
 
 void StudioController::syncGraphTimer() {
@@ -2341,6 +2277,9 @@ void StudioController::refreshAdvIntegration() {
     chkAutosyncNow_->setChecked(watch);
     chkAutosyncNow_->blockSignals(false);
     btnTogglePacman_->setChecked(pac);
+    btnTogglePacman_->setText(
+        pac ? QStringLiteral("Remove Pacman Hook (pkexec)")
+            : QStringLiteral("Install Pacman Hook (pkexec)"));
     btnEngineToggle_->setText(
         eng ? QStringLiteral("Engine: SALSA NATIVE AUDIO (Revert to PW/WP)")
             : QStringLiteral("Engine: PIPEWIRE/WP FALLBACK (Restore Salsa Native)"));
@@ -2476,26 +2415,6 @@ void StudioController::pollEngine(bool initial) {
     const double pkR = st.output_peak_r > 1e-6f ? 20.0 * std::log10(st.output_peak_r) : -60.0;
     lblPeaks_->setText(QStringLiteral("Output Peak L/R: %1 / %2 dBFS").arg(pkL, 0, 'f', 1).arg(pkR, 0, 'f', 1));
 
-    if (tNow >= micApoHoldUntilMs_) {
-        micApo_ = st.mic_apo;
-        chkMicApo_->setChecked(micApo_.enabled != 0);
-        chkMicHpf_->setChecked(micApo_.hpf_enabled != 0);
-        chkMicGate_->setChecked(micApo_.gate_enabled != 0);
-        spnMicGate_->setValue(static_cast<int>(std::lround(micApo_.gate_thresh_db)));
-        chkMicRnnoise_->setChecked(micApo_.rnnoise_enabled != 0);
-        chkMicComp_->setChecked(micApo_.comp_enabled != 0);
-        spnMicClarity_->setValue(micApo_.clarity_db);
-        chkMicSidetone_->setChecked(micApo_.sidetone_enabled != 0);
-        spnMicSidetone_->setValue(static_cast<int>(micApo_.sidetone_pct));
-    }
-    const double micInDb = st.mic_apo_peak_in > 1e-6f ? 20.0 * std::log10(st.mic_apo_peak_in) : -60.0;
-    const double micOutDb = st.mic_apo_peak_out > 1e-6f ? 20.0 * std::log10(st.mic_apo_peak_out) : -60.0;
-    lblMicMeter_->setText(
-        st.mic_apo.enabled ? QStringLiteral("%1 | In:%2 Out:%3 dBFS")
-                                 .arg(st.mic_rnnoise_active ? QStringLiteral("RNNoise ON") : QStringLiteral("Spectral"))
-                                 .arg(micInDb, 0, 'f', 0).arg(micOutDb, 0, 'f', 0)
-                           : QStringLiteral("Bypassed (Raw Mic)"));
-
     if (tNow >= btHoldUntilMs_) {
         btCfg_ = st.bt_codec_cfg;
         if (int ci = cmbBtCodec_->findData(static_cast<int>(btCfg_.preferred_codec)); ci >= 0) cmbBtCodec_->setCurrentIndex(ci);
@@ -2572,8 +2491,12 @@ void StudioController::pollEngine(bool initial) {
             auto* sld = new StepVolumeSlider([this]() { return volStepPct_; }, Qt::Horizontal, tblSessions_);
             sld->setRange(0, 150);
             sld->setValue(static_cast<int>(s.volume_milli / 10));
-            connect(sld, &QSlider::valueChanged, this, [this, sid](int v) {
-                salsa_set_session_control(sid, v, -1, nullptr);
+            connect(sld, &QSlider::valueChanged, this, [this, sid, sld](int v) {
+                if (sld->signalsBlocked()) return;
+                onSessionSliderMoved(sid, v);
+            });
+            connect(sld, &QSlider::sliderReleased, this, [this, sid, sld]() {
+                flushSessionVolume(sid, sld->value());
             });
             tblSessions_->setCellWidget(row, 5, sld);
 
@@ -2589,6 +2512,8 @@ void StudioController::pollEngine(bool initial) {
             tblSessions_->setCellWidget(row, 6, btnM);
 
             auto* cmbR = new QComboBox(tblSessions_);
+            cmbR->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+            cmbR->setMinimumContentsLength(12);
             cmbR->addItem(QStringLiteral("Default Sink/Mic"), QStringLiteral("auto"));
             for (uint32_t d = 0; d < std::min<uint32_t>(devices_.num_devices, SALSA_MAX_DEVICES); ++d) {
                 if ((devices_.devices[d].is_capture != 0) == (s.is_capture != 0)) {
@@ -2603,17 +2528,29 @@ void StudioController::pollEngine(bool initial) {
                 salsa_set_session_control(sid, -1, -1, dId.toUtf8().constData());
             });
             tblSessions_->setCellWidget(row, 7, cmbR);
-            sessRows_.push_back({sid, sld, btnM, cmbR, fmtIt});
+            sessRows_.push_back({sid, sld, btnM, cmbR, fmtIt, 0, 0});
         }
     } else {
         for (uint32_t i = 0; i < ns; ++i) {
             const auto& s = st.sessions[i];
             auto& rw = sessRows_[i];
-            rw.fmtItem->setText(QStringLiteral("%1Hz/%2ch").arg(s.sample_rate).arg(s.channels));
-            if (!rw.volSlider->isSliderDown()) {
+            rw.fmtItem->setText(QStringLiteral("%1k/%2ch").arg(s.sample_rate / 1000.0, 0, 'g', 4).arg(s.channels));
+            if (!rw.volSlider->isSliderDown() && tNow >= rw.holdUntilMs) {
                 rw.volSlider->blockSignals(true);
                 rw.volSlider->setValue(static_cast<int>(s.volume_milli / 10));
                 rw.volSlider->blockSignals(false);
+            }
+            rw.btnMute->blockSignals(true);
+            rw.btnMute->setChecked(s.muted != 0);
+            rw.btnMute->setText(s.muted ? QStringLiteral("Muted") : QStringLiteral("Mute"));
+            rw.btnMute->blockSignals(false);
+            if (!rw.cmbRoute->view()->isVisible()) {
+                const QString tgt = cFixedStr(s.target_device, sizeof(s.target_device));
+                if (int ri = rw.cmbRoute->findData(tgt); ri >= 0 && rw.cmbRoute->currentIndex() != ri) {
+                    rw.cmbRoute->blockSignals(true);
+                    rw.cmbRoute->setCurrentIndex(ri);
+                    rw.cmbRoute->blockSignals(false);
+                }
             }
         }
     }
@@ -2645,10 +2582,6 @@ void StudioController::pollEngine(bool initial) {
         ag.eqPreset = cFixedStr(st.eq_cfg.preset_name, sizeof(st.eq_cfg.preset_name));
         ag.limiterEnabled = st.eq_cfg.limiter_enabled != 0;
         ag.crossfeedEnabled = st.param_eq.crossfeed_enabled != 0;
-        ag.micApoEnabled = st.mic_apo.enabled != 0;
-        ag.micRnnoiseActive = st.mic_rnnoise_active != 0;
-        ag.micSidetoneEnabled = st.mic_apo.sidetone_enabled != 0;
-        ag.micSidetonePct = st.mic_apo.sidetone_pct;
         ag.capSampleRate = st.hw_sample_rate;
         ag.hwArch = cFixedStr(st.hw_analog_info.card_arch_name, sizeof(st.hw_analog_info.card_arch_name));
         ag.hwAmpTier = st.hw_analog_cfg.hp_amp_tier;
