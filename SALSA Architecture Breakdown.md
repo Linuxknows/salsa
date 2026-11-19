@@ -3,7 +3,7 @@
 ## 1. Philosophy: Why Salsa LWASAPI Needs Zero Manual Patching
 In traditional Linux pro-audio workflows, patchbay utilities like `qpwgraph` or `QjackCtl` require you to manually drag virtual cables between applications, PulseAudio/JACK bridges, resamplers, and hardware sinks. Whenever an application restarts, changes sample rate, or switches APIs, those manual routes frequently disconnect.
 
-**Salsa — Linux WASAPI (`lwasapi`)** eliminates manual patching completely by implementing a **Windows WASAPI / WaveRT Audio Device Graph (`lwasapi-audiodg`)** architecture natively on Linux:
+**Salsa — Linux WASAPI (`lwasapi`)** eliminates manual patching completely by implementing a **WASAPI / WaveRT Audio Device Graph (`lwasapi-audiodg`)** architecture natively on Linux:
 - **100% Automatic Self-Wiring Topology:** Every playback application, microphone capture stream, desktop loopback stream, and hardware MIDI controller is automatically discovered and connected in `0.25 ms` without user intervention.
 - **Automatic Multi-Rate Resampling:** Applications streaming at `44.1 kHz`, `48 kHz`, or `96 kHz` are automatically resampled and mixed into your high-resolution master clock (configurable up to **`192,000 Hz` / `32-bit Float`**).
 
