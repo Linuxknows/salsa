@@ -29,7 +29,7 @@ const SKIP_NAMES: &[&str] = &[
     "salsa-regression",
 ];
 
-const SKIP_SUFFIXES: &[&str] = &[".pyc", ".zip", ".tmp", ".a"];
+const SKIP_SUFFIXES: &[&str] = &[".pyc", ".zip", ".tmp", ".a", ".o", ".moc"];
 
 fn collect_entries(
     root: &Path,
@@ -145,7 +145,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let tag = if rev.starts_with('v') {
+    let tag = if rev.starts_with(['v', 'V']) {
         rev.clone()
     } else {
         format!("v{rev}")

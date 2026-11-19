@@ -196,6 +196,9 @@ fn ensure_host_deps(check_only: bool) -> Result<Vec<String>, String> {
             println!("Attempting dependency check via pacman (requires sudo)...");
             let mut args = vec!["pacman", "-S", "--needed", "--noconfirm"];
             args.extend(["base-devel", "pkgconf", "alsa-lib", "libpulse", "zlib", "qt6-base"]);
+            if missing.iter().any(|m| m == "cargo") {
+                args.push("rust");
+            }
             let _ = Command::new("sudo").args(&args).status();
         }
     } else {
@@ -683,8 +686,14 @@ fn do_install(root: &Path) -> ExitCode {
         .and_then(JsonValue::as_bool)
         .unwrap_or(true)
     {
+        let jobs_flag = format!(
+            "-j{}",
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        );
         if !Command::new("make")
-            .args(["-C", &root.to_string_lossy(), "all"])
+            .args(["-C", &root.to_string_lossy(), &jobs_flag, "all"])
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
@@ -758,7 +767,7 @@ fn do_check(root: &Path) -> ExitCode {
         println!("  [FAIL] {e}");
         failures += 1;
     } else {
-        println!("  [OK] Host toolchain & audio libraries available");
+        println!("  [OK] Host toolchain, Qt6 & core audio libraries available");
     }
 
     let freshness = SystemAuditScanner::check_build_freshness(root);

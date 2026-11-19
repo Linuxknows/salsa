@@ -4,9 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALLER_BIN="${SCRIPT_DIR}/build/salsa-installer"
 
-if [[ ! -x "${INSTALLER_BIN}" || "${SCRIPT_DIR}/rust/salsa_tools/src/bin/salsa_installer.rs" -nt "${INSTALLER_BIN}" || "${SCRIPT_DIR}/rust/Cargo.toml" -nt "${INSTALLER_BIN}" ]]; then
+if [[ ! -x "${INSTALLER_BIN}" || "${SCRIPT_DIR}/rust/salsa_tools/src/bin/salsa_installer.rs" -nt "${INSTALLER_BIN}" || "${SCRIPT_DIR}/rust/salsa_tools/src/debug_core.rs" -nt "${INSTALLER_BIN}" || "${SCRIPT_DIR}/rust/salsa_tools/src/host.rs" -nt "${INSTALLER_BIN}" || "${SCRIPT_DIR}/rust/Cargo.toml" -nt "${INSTALLER_BIN}" ]]; then
     if command -v make >/dev/null 2>&1; then
-        make -C "${SCRIPT_DIR}" build/salsa-installer
+        make -C "${SCRIPT_DIR}" -j"$(nproc 2>/dev/null || echo 4)" build/salsa-installer
     else
         CARGO_BIN="$(command -v cargo 2>/dev/null || echo "${HOME}/.cargo/bin/cargo")"
         HOST_LP="$(ldconfig -p 2>/dev/null | awk '/libpulse\.so\.0 / && $0 !~ /lib32/ {print $NF; exit}')"

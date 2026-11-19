@@ -265,13 +265,13 @@ $(QT6_OBJ_DIR)/salsa_debug.o: qt6/salsa_debug.cpp $(QT6_OBJ_DIR)/salsa_debug.moc
 	$(CXX) -std=c++20 -O2 -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/lwasapi-tray: $(WIRE_LIB) $(QT6_COMMON_OBJS) $(QT6_OBJ_DIR)/lwasapi_tray.o | $(BUILD_DIR)
-	$(CXX) $(QT6_COMMON_OBJS) $(QT6_OBJ_DIR)/lwasapi_tray.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) $(QT6_TRAY_LIBS) -o $@.tmp && mv -f $@.tmp $@
+	$(CXX) $(QT6_COMMON_OBJS) $(QT6_OBJ_DIR)/lwasapi_tray.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) $(QT6_TRAY_LIBS) -Wl,-z,relro,-z,now -Wl,-S -o $@.tmp && mv -f $@.tmp $@
 
 $(BUILD_DIR)/salsa-debug: $(WIRE_LIB) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_debug.o | $(BUILD_DIR)
-	$(CXX) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_debug.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) -o $@.tmp && mv -f $@.tmp $@
+	$(CXX) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_debug.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) -Wl,-z,relro,-z,now -Wl,-S -o $@.tmp && mv -f $@.tmp $@
 
 $(BUILD_DIR)/salsa-studio: $(WIRE_LIB) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_studio.o | $(BUILD_DIR)
-	$(CXX) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_studio.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) -o $@.tmp && mv -f $@.tmp $@
+	$(CXX) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_studio.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) -Wl,-z,relro,-z,now -Wl,-S -o $@.tmp && mv -f $@.tmp $@
 
 rust-test:
 	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) clippy --manifest-path rust/Cargo.toml --workspace --offline --all-targets -- -D warnings
