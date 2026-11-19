@@ -1969,6 +1969,7 @@ void TrayController::setFontPct(int pct, bool persist) {
     fontPct_ = normalizeFontScalePct(pct);
     if (persist) {
         salsa_save_font_scale(fontPct_);
+        lastSettingsMtimeNs_ = salsa_gui_settings_mtime_ns();
     }
     applyThemeAndFont(false);
     if (popupWin_ && popupWin_->isVisible()) {
@@ -2698,7 +2699,7 @@ void TrayController::checkSettingsSync() {
     if (mtime != 0 && mtime != lastSettingsMtimeNs_) {
         lastSettingsMtimeNs_ = mtime;
         guiSettings_ = loadGuiSettings();
-        const int diskPct = normalizeFontScalePct(guiSettings_.value(QStringLiteral("font_scale_pct")).toInt(fontPct_));
+        const int diskPct = normalizeFontScalePct(salsa_load_font_scale());
         volStepPct_ = normalizeVolStepPct(guiSettings_.value(QStringLiteral("volume_step_pct")).toInt(volStepPct_));
         if (btnVolStep_) btnVolStep_->setText(QStringLiteral("Step ±%1%").arg(volStepPct_));
 
@@ -2706,10 +2707,14 @@ void TrayController::checkSettingsSync() {
         const QString newTName = guiSettings_.value(QStringLiteral("tray_theme")).toString().trimmed();
         if (!newTName.isEmpty()) themeName_ = newTName;
         rebuildEqPresetCombo();
-        if (diskPct != fontPct_) {
+        const bool fontChanged = (diskPct != fontPct_);
+        if (fontChanged) {
             fontPct_ = diskPct;
         }
         applyThemeAndFont(false);
+        if (fontChanged && popupWin_ && popupWin_->isVisible()) {
+            positionAndShowPopup(lastTrayRawPt_);
+        }
     }
 }
 

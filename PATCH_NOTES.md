@@ -7,7 +7,7 @@ Chronological changelog organized by installer revision.
 ## V1.19.0 — Current (`2026-11-19`)
 
 ### 1. Native C++20 Qt6 GUIs (`salsa-studio`, `salsa-debug`, `lwasapi-tray`) & Global Font Scaling
-- Replaced legacy Python/PyQt6 scripts with native C++20 Qt6 frontends ([`qt6/`](qt6/)) linked directly to the Rust FFI bridge ([`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs) / [`salsa_bridge.h`](qt6/salsa_bridge.h)) with `Ctrl+=`/`Ctrl+-`/`Ctrl+0` & persisted `Aa-`/`Aa+` global font scaling across Studio, Topology, Advanced Options, Live Debugger, Quick Mixer popup, context menu, and OSD.
+- Replaced legacy Python/PyQt6 scripts with native C++20 Qt6 frontends ([`qt6/`](qt6/)) linked directly to the Rust FFI bridge ([`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs) / [`salsa_bridge.h`](qt6/salsa_bridge.h)) with `Ctrl+=`/`Ctrl+-`/`Ctrl+0` & synchronized `Aa-`/`Aa+` global font scaling (`ui_font_scale_pct`) across Studio, Topology, Advanced Options, Live Debugger, Quick Mixer popup, context menu, and OSD, plus responsive telemetry card wrapping, `0.01%`-resolution RT CPU metering, and unclipped stream/session tables.
 - Restored the `v6.9` Signal Topology & Owner's Manual window (`--topology` / `--graph`) with live signal flow animation, translucent tinted node cards, pixel-exact typography, and 12 interactive manual chapters ([`salsa_widgets.cpp`](qt6/salsa_widgets.cpp), [`salsa_studio.cpp`](qt6/salsa_studio.cpp)).
 - Fixed imported AutoEQ `.txt` profile persistence & reload ([`studio_helpers.rs`](rust/salsa_ui/src/studio_helpers.rs)) and per-device EQ switching so custom imported AutoEQ curves are remembered rather than overwritten.
 

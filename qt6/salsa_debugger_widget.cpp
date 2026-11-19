@@ -119,8 +119,20 @@ void SalsaLiveDebuggerWidget::setTheme(const SalsaThemeData& theme, int fontPct)
     const QString accPri = theme_.color("accent_primary", "#00e676");
     const QString selBg = theme_.color("combo_popup_sel_bg", "#1e3a2f");
 
+    if (lblConn_) {
+        QFont cf(QStringLiteral("Monospace"));
+        cf.setPixelSize(scaledPx(11, fontPct_));
+        cf.setWeight(QFont::Bold);
+        lblConn_->setFont(cf);
+    }
+    const int rowH = scaledPx(24, fontPct_);
+    for (QTableWidget* tbl : {tblEvents_, tblProcs_, tblWasapi_, tblPaClients_, tblPaStreams_, tblUnits_, tblSockets_}) {
+        if (tbl) tbl->verticalHeader()->setDefaultSectionSize(rowH);
+    }
+
     setStyleSheet(QStringLiteral(
                       "QWidget#DbgRoot { background-color: %1; color: %2; font-size: %3px; }"
+                      " QWidget#DbgRoot QLabel, QWidget#DbgRoot QCheckBox, QWidget#DbgRoot QPushButton, QWidget#DbgRoot QComboBox { font-size: %3px; }"
                       " QFrame#DbgCard { background-color: %4; border: 1px solid %5; border-radius: 8px; }"
                       " QLabel#DbgHeader { font-size: %6px; font-weight: 700; color: %7; }"
                       " QLabel#DbgStat { font-family: Monospace; font-size: %3px; color: %8; }"
@@ -129,7 +141,7 @@ void SalsaLiveDebuggerWidget::setTheme(const SalsaThemeData& theme, int fontPct)
                       " QTableWidget { background-color: %9; color: %2; gridline-color: %5; border: 1px solid %5;"
                       " border-radius: 6px; selection-background-color: %11; selection-color: %12; font-size: %3px; }"
                       " QHeaderView::section, QTableCornerButton::section { background-color: %4; color: %8;"
-                      " border: 1px solid %5; padding: 3px 6px; font-weight: 700; }")
+                      " border: 1px solid %5; padding: 3px 6px; font-weight: 700; font-size: %3px; }")
                       .arg(bgMain, txtPri, QString::number(fs), bgCard, bdCard, QString::number(hdrFs),
                            accPri, txtSec, bgDeep, bdCtrl, selBg, txtBrt));
 }
@@ -153,7 +165,14 @@ void SalsaLiveDebuggerWidget::buildUi(int initialTab) {
 
     lblRtPill_ = new QLabel(QStringLiteral("RT: waiting..."), topCard);
     lblRtPill_->setObjectName(QStringLiteral("DbgStat"));
+    lblRtPill_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    lblRtPill_->setMinimumWidth(0);
     row1->addWidget(lblRtPill_, 1);
+    topCol->addLayout(row1);
+
+    auto* row2 = new QHBoxLayout();
+    row2->setSpacing(6);
+    row2->addStretch(1);
 
     btnPause_ = new QPushButton(QStringLiteral("Pause Stream"), topCard);
     btnPause_->setCheckable(true);
@@ -161,11 +180,11 @@ void SalsaLiveDebuggerWidget::buildUi(int initialTab) {
         paused_ = on;
         btnPause_->setText(on ? QStringLiteral("Resume Stream") : QStringLiteral("Pause Stream"));
     });
-    row1->addWidget(btnPause_);
+    row2->addWidget(btnPause_);
 
     auto* btnClear = new QPushButton(QStringLiteral("Clear Events"), topCard);
     connect(btnClear, &QPushButton::clicked, this, &SalsaLiveDebuggerWidget::onClearEvents);
-    row1->addWidget(btnClear);
+    row2->addWidget(btnClear);
 
     auto* btnResetRt = new QPushButton(QStringLiteral("Reset RT Stats"), topCard);
     connect(btnResetRt, &QPushButton::clicked, this, [this]() {
@@ -174,13 +193,13 @@ void SalsaLiveDebuggerWidget::buildUi(int initialTab) {
             salsa_dbg_request_snapshot(dbg_);
         }
     });
-    row1->addWidget(btnResetRt);
+    row2->addWidget(btnResetRt);
 
     auto* btnSnap = new QPushButton(QStringLiteral("Snapshot Now"), topCard);
     connect(btnSnap, &QPushButton::clicked, this, [this]() {
         if (dbg_) salsa_dbg_request_snapshot(dbg_);
     });
-    row1->addWidget(btnSnap);
+    row2->addWidget(btnSnap);
 
     auto* btnExport = new QPushButton(QStringLiteral("Export Bundle"), topCard);
     connect(btnExport, &QPushButton::clicked, this, [this]() {
@@ -188,7 +207,7 @@ void SalsaLiveDebuggerWidget::buildUi(int initialTab) {
         if (txtProbeOut_) txtProbeOut_->setPlainText(msg.toQString());
         lblRtPill_->setText(msg.toQString());
     });
-    row1->addWidget(btnExport);
+    row2->addWidget(btnExport);
 
     btnResetNet_ = new QPushButton(QStringLiteral("Reset PW / Video Clients"), topCard);
     btnResetNet_->setToolTip(QStringLiteral("Safely disconnects stale PipeWire ScreenCast portal clients"));
@@ -199,8 +218,8 @@ void SalsaLiveDebuggerWidget::buildUi(int initialTab) {
             salsa_dbg_request_snapshot(dbg_);
         }
     });
-    row1->addWidget(btnResetNet_);
-    topCol->addLayout(row1);
+    row2->addWidget(btnResetNet_);
+    topCol->addLayout(row2);
     root->addWidget(topCard);
 
     subtabs_ = new QTabWidget(this);
@@ -366,19 +385,24 @@ QWidget* SalsaLiveDebuggerWidget::buildTelemetryTab() {
     auto makeCard = [&](const QString& hdrText, QLabel** outLbl, QProgressBar** outBar = nullptr) {
         auto* card = new QFrame(w);
         card->setObjectName(QStringLiteral("DbgCard"));
+        card->setMinimumWidth(0);
         auto* cl = new QVBoxLayout(card);
         cl->setContentsMargins(10, 8, 10, 8);
         auto* hdr = new QLabel(hdrText, card);
         hdr->setObjectName(QStringLiteral("DbgHeader"));
+        hdr->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        hdr->setWordWrap(true);
         cl->addWidget(hdr);
         auto* lbl = new QLabel(QStringLiteral("Waiting for snapshot..."), card);
         lbl->setObjectName(QStringLiteral("DbgStat"));
+        lbl->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         lbl->setWordWrap(true);
         cl->addWidget(lbl);
         if (outBar) {
             auto* bar = new QProgressBar(card);
-            bar->setRange(0, 100);
+            bar->setRange(0, 1000);
             bar->setValue(0);
+            bar->setFormat(QStringLiteral("0.00% RT CPU"));
             cl->addWidget(bar);
             *outBar = bar;
         }
@@ -405,8 +429,14 @@ QWidget* SalsaLiveDebuggerWidget::buildTelemetryTab() {
     tblPaClients_ = new QTableWidget(0, 5, paSplit);
     tblPaClients_->setHorizontalHeaderLabels({
         QStringLiteral("Idx"), QStringLiteral("PID"), QStringLiteral("App"),
-        QStringLiteral("Proto"), QStringLiteral("Out Count")});
-    tblPaClients_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+        QStringLiteral("Proto"), QStringLiteral("Out")});
+    auto* pcHdr = tblPaClients_->horizontalHeader();
+    pcHdr->setMinimumSectionSize(32);
+    pcHdr->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    pcHdr->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    pcHdr->setSectionResizeMode(2, QHeaderView::Stretch);
+    pcHdr->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    pcHdr->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     tblPaClients_->verticalHeader()->setVisible(false);
     tblPaClients_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     paSplit->addWidget(tblPaClients_);
@@ -415,10 +445,20 @@ QWidget* SalsaLiveDebuggerWidget::buildTelemetryTab() {
     tblPaStreams_->setHorizontalHeaderLabels({
         QStringLiteral("Idx"), QStringLiteral("PID"), QStringLiteral("Stream"),
         QStringLiteral("Type"), QStringLiteral("Fmt"), QStringLiteral("Fill / Cap"), QStringLiteral("Peak / Vol")});
-    tblPaStreams_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    auto* psHdr = tblPaStreams_->horizontalHeader();
+    psHdr->setMinimumSectionSize(32);
+    psHdr->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    psHdr->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    psHdr->setSectionResizeMode(2, QHeaderView::Stretch);
+    psHdr->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    psHdr->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    psHdr->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    psHdr->setSectionResizeMode(6, QHeaderView::ResizeToContents);
     tblPaStreams_->verticalHeader()->setVisible(false);
     tblPaStreams_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     paSplit->addWidget(tblPaStreams_);
+    paSplit->setStretchFactor(0, 2);
+    paSplit->setStretchFactor(1, 3);
     lay->addWidget(paSplit, 1);
     return w;
 }
@@ -635,6 +675,8 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
 
     lblScProfileBadge_ = new QLabel(QStringLiteral("Profile: Source @ Source Hz"), ctrlCard);
     lblScProfileBadge_->setObjectName(QStringLiteral("DbgStat"));
+    lblScProfileBadge_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    lblScProfileBadge_->setMinimumWidth(0);
     r2->addWidget(lblScProfileBadge_, 1);
 
     btnScLive_ = new QPushButton(QStringLiteral("Enable Live Feed (OFF)"), ctrlCard);
@@ -679,6 +721,8 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
     auto* r3 = new QHBoxLayout();
     lblScStats_ = new QLabel(QStringLiteral("PW Video Broker: Waiting for snapshot..."), ctrlCard);
     lblScStats_->setObjectName(QStringLiteral("DbgStat"));
+    lblScStats_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    lblScStats_->setMinimumWidth(0);
     r3->addWidget(lblScStats_, 1);
 
     lblScDmabufBadge_ = new QLabel(QStringLiteral("IDLE"), ctrlCard);
@@ -923,7 +967,8 @@ void SalsaLiveDebuggerWidget::renderTelemetryTab() {
     const QJsonObject midi = latestSnapshot_.value(QStringLiteral("midi")).toObject();
 
     const double loadPct = rt.value(QStringLiteral("cpu_load_pct")).toDouble(0.0);
-    barRtLoad_->setValue(std::clamp(static_cast<int>(std::lround(loadPct)), 0, 100));
+    barRtLoad_->setValue(std::clamp(static_cast<int>(std::lround(loadPct * 10.0)), 0, 1000));
+    barRtLoad_->setFormat(QStringLiteral("%1% RT CPU").arg(loadPct, 0, 'f', 2));
     lblEngSummary_->setText(
         QStringLiteral("Sink: %1\nClock: %2 Hz / %3-bit | Quantum: %4f (%5 ch)\nCycles: %6 | XRUNs: %7 | PA v35: %8 (%9 clients)\nRT eq=%10µs mix=%11µs hw=%12µs")
             .arg(eng.value(QStringLiteral("hw_device")).toString())

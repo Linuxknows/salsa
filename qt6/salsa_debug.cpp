@@ -53,6 +53,8 @@ public:
         titleCol->addWidget(lblTitle);
         lblSub_ = new QLabel(QStringLiteral("Zero-Overhead Stream, Routing, Process Audit, Hardware Probes & Wayland ScreenCast"), topCard);
         lblSub_->setObjectName(QStringLiteral("SubBanner"));
+        lblSub_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        lblSub_->setMinimumWidth(0);
         titleCol->addWidget(lblSub_);
         topLay->addLayout(titleCol, 1);
 
@@ -78,34 +80,30 @@ public:
         topLay->addWidget(cmbTheme_);
 
         fontBar_ = new FontScaleBar(fontPct_, false, topCard);
-        connect(fontBar_, &FontScaleBar::fontScaleChanged, this, [this](int p) {
-            fontPct_ = p;
-            salsa_save_font_scale(p);
-            applyThemeAndFont();
-        });
+        connect(fontBar_, &FontScaleBar::fontScaleChanged, this, [this](int p) { setFontPct(p); });
         topLay->addWidget(fontBar_);
         root->addWidget(topCard);
 
         dbgWidget_ = new SalsaLiveDebuggerWidget(initialTab, central);
         root->addWidget(dbgWidget_, 1);
 
-        // Keyboard shortcuts: Ctrl+1..5 tabs, F5 refresh, Ctrl++/-/0 zoom, Ctrl+Q quit
+        // Keyboard shortcuts: Ctrl+1..5 tabs, F5 refresh, Ctrl++/-/=/0 zoom, Ctrl+Q quit
         for (int t = 0; t < 5; ++t) {
             auto* sc = new QShortcut(QKeySequence(QStringLiteral("Ctrl+%1").arg(t + 1)), this);
             connect(sc, &QShortcut::activated, this, [this, t]() { dbgWidget_->selectTab(t); });
         }
         auto* scRef = new QShortcut(QKeySequence(Qt::Key_F5), this);
         connect(scRef, &QShortcut::activated, this, [this]() { dbgWidget_->refreshAll(); });
-        auto* scIn = new QShortcut(QKeySequence::ZoomIn, this);
-        connect(scIn, &QShortcut::activated, this, [this]() { stepFont(10); });
-        auto* scOut = new QShortcut(QKeySequence::ZoomOut, this);
-        connect(scOut, &QShortcut::activated, this, [this]() { stepFont(-10); });
+        for (const QKeySequence& seq : {QKeySequence(QKeySequence::ZoomIn), QKeySequence(Qt::CTRL | Qt::Key_Equal)}) {
+            auto* scIn = new QShortcut(seq, this);
+            connect(scIn, &QShortcut::activated, this, [this]() { setFontPct(fontPct_ + 10); });
+        }
+        for (const QKeySequence& seq : {QKeySequence(QKeySequence::ZoomOut), QKeySequence(Qt::CTRL | Qt::Key_Minus)}) {
+            auto* scOut = new QShortcut(seq, this);
+            connect(scOut, &QShortcut::activated, this, [this]() { setFontPct(fontPct_ - 10); });
+        }
         auto* scRst = new QShortcut(QKeySequence(QStringLiteral("Ctrl+0")), this);
-        connect(scRst, &QShortcut::activated, this, [this]() {
-            fontPct_ = 100;
-            salsa_save_font_scale(100);
-            applyThemeAndFont();
-        });
+        connect(scRst, &QShortcut::activated, this, [this]() { setFontPct(100); });
         auto* scQuit = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Q")), this);
         connect(scQuit, &QShortcut::activated, this, &QWidget::close);
 
@@ -125,9 +123,10 @@ protected:
     }
 
 private:
-    void stepFont(int delta) {
-        fontPct_ = normalizeFontScalePct(fontPct_ + delta);
+    void setFontPct(int pct) {
+        fontPct_ = normalizeFontScalePct(pct);
         salsa_save_font_scale(fontPct_);
+        lastMtimeNs_ = salsa_gui_settings_mtime_ns();
         applyThemeAndFont();
     }
 
@@ -147,11 +146,20 @@ private:
         if (mt != 0 && mt != lastMtimeNs_) {
             lastMtimeNs_ = mt;
             guiSettings_ = loadGuiSettings();
-            const int dp = normalizeFontScalePct(guiSettings_.value(QStringLiteral("font_scale_pct")).toInt(fontPct_));
+            const int dp = normalizeFontScalePct(salsa_load_font_scale());
+            const QString newT = guiSettings_.value(QStringLiteral("theme")).toString(themeName_);
+            bool changed = false;
             if (dp != fontPct_) {
                 fontPct_ = dp;
-                applyThemeAndFont();
+                changed = true;
             }
+            if (!newT.isEmpty() && newT != themeName_) {
+                themeName_ = newT;
+                theme_ = loadThemeForApp(false);
+                if (cmbTheme_) cmbTheme_->setCurrentText(themeName_);
+                changed = true;
+            }
+            if (changed) applyThemeAndFont();
         }
     }
 

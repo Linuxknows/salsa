@@ -101,6 +101,7 @@ private:
     void buildAdvancedWindow();
 
     void applyThemeAndFontAll(bool saveSettings = false);
+    void setFontScalePctAndSync(int pct);
     void syncFontScaleBars();
     void applyDynamicShortcuts();
     void populatePresetDropdown(const QString& selectTarget = QString());
@@ -623,12 +624,7 @@ void StudioController::buildMainWindow() {
     lblLatency_->setObjectName(QStringLiteral("LatencyLabel"));
     engTopRow->addWidget(lblLatency_, 1);
     fontBarMain_ = new FontScaleBar(fontPct_, false, topCard);
-    connect(fontBarMain_, &FontScaleBar::fontScaleChanged, this, [this](int p) {
-        fontPct_ = p;
-        salsa_save_font_scale(fontPct_);
-        syncFontScaleBars();
-        applyThemeAndFontAll(false);
-    });
+    connect(fontBarMain_, &FontScaleBar::fontScaleChanged, this, [this](int p) { setFontScalePctAndSync(p); });
     engTopRow->addWidget(fontBarMain_);
     engCol->addLayout(engTopRow);
 
@@ -1028,12 +1024,7 @@ void StudioController::buildTopologyWindow() {
     graphHdrRow->addWidget(lblAutoBadge);
 
     fontBarIntro_ = new FontScaleBar(fontPct_, true, graphCard);
-    connect(fontBarIntro_, &FontScaleBar::fontScaleChanged, this, [this](int p) {
-        fontPct_ = p;
-        salsa_save_font_scale(fontPct_);
-        syncFontScaleBars();
-        applyThemeAndFontAll(false);
-    });
+    connect(fontBarIntro_, &FontScaleBar::fontScaleChanged, this, [this](int p) { setFontScalePctAndSync(p); });
     graphHdrRow->addWidget(fontBarIntro_);
     graphBox->addLayout(graphHdrRow);
 
@@ -1155,12 +1146,7 @@ void StudioController::buildAdvancedWindow() {
     hcLay->addWidget(lblAh, 1);
 
     fontBarAdv_ = new FontScaleBar(fontPct_, false, hdrCard);
-    connect(fontBarAdv_, &FontScaleBar::fontScaleChanged, this, [this](int p) {
-        fontPct_ = p;
-        salsa_save_font_scale(fontPct_);
-        syncFontScaleBars();
-        applyThemeAndFontAll(false);
-    });
+    connect(fontBarAdv_, &FontScaleBar::fontScaleChanged, this, [this](int p) { setFontScalePctAndSync(p); });
     hcLay->addWidget(fontBarAdv_);
 
     auto* btnCloseAdv = new QPushButton(QStringLiteral("Close (Esc)"), hdrCard);
@@ -1593,19 +1579,34 @@ void StudioController::applyThemeAndFontAll(bool saveSettings) {
     for (QSlider* bs : bandSliders_) {
         if (bs) bs->setMinimumHeight(scaledPx(112, fontPct_));
     }
+    if (lblSpk_) lblSpk_->setMinimumWidth(scaledPx(140, fontPct_));
+    if (lblMic_) lblMic_->setMinimumWidth(scaledPx(140, fontPct_));
+    if (tblParamBands_) {
+        tblParamBands_->verticalHeader()->setDefaultSectionSize(scaledPx(26, fontPct_));
+    }
     if (tblSessions_) {
         tblSessions_->setColumnWidth(5, scaledPx(96, fontPct_));
         tblSessions_->setColumnWidth(7, scaledPx(126, fontPct_));
+        tblSessions_->verticalHeader()->setDefaultSectionSize(scaledPx(32, fontPct_));
     }
     selectManualChapter(currentManualKey_);
     if (advWin_ && advWin_->isVisible()) refreshAdvIntegration();
 
     if (saveSettings) {
+        salsa_save_font_scale(fontPct_);
         updateGuiSettingsPatch(QJsonObject{
             {QStringLiteral("theme"), currentThemeName_},
-            {QStringLiteral("font_scale_pct"), fontPct_},
         });
+        lastSettingsMtimeNs_ = salsa_gui_settings_mtime_ns();
     }
+}
+
+void StudioController::setFontScalePctAndSync(int pct) {
+    fontPct_ = normalizeFontScalePct(pct);
+    salsa_save_font_scale(fontPct_);
+    lastSettingsMtimeNs_ = salsa_gui_settings_mtime_ns();
+    syncFontScaleBars();
+    applyThemeAndFontAll(false);
 }
 
 void StudioController::syncFontScaleBars() {
@@ -1664,31 +1665,18 @@ void StudioController::applyDynamicShortcuts() {
     // Universal Zoom shortcuts across Studio windows
     for (QWidget* host : std::array<QWidget*, 3>{mainWin_, introWin_, advWin_}) {
         if (!host) continue;
-        auto* scPlus = new QShortcut(QKeySequence::ZoomIn, host);
-        connect(scPlus, &QShortcut::activated, this, [this]() {
-            fontPct_ = normalizeFontScalePct(fontPct_ + 10);
-            salsa_save_font_scale(fontPct_);
-            syncFontScaleBars();
-            applyThemeAndFontAll(false);
-        });
-        activeShortcuts_.push_back(scPlus);
-
-        auto* scMinus = new QShortcut(QKeySequence::ZoomOut, host);
-        connect(scMinus, &QShortcut::activated, this, [this]() {
-            fontPct_ = normalizeFontScalePct(fontPct_ - 10);
-            salsa_save_font_scale(fontPct_);
-            syncFontScaleBars();
-            applyThemeAndFontAll(false);
-        });
-        activeShortcuts_.push_back(scMinus);
-
+        for (const QKeySequence& seq : {QKeySequence(QKeySequence::ZoomIn), QKeySequence(Qt::CTRL | Qt::Key_Equal)}) {
+            auto* scPlus = new QShortcut(seq, host);
+            connect(scPlus, &QShortcut::activated, this, [this]() { setFontScalePctAndSync(fontPct_ + 10); });
+            activeShortcuts_.push_back(scPlus);
+        }
+        for (const QKeySequence& seq : {QKeySequence(QKeySequence::ZoomOut), QKeySequence(Qt::CTRL | Qt::Key_Minus)}) {
+            auto* scMinus = new QShortcut(seq, host);
+            connect(scMinus, &QShortcut::activated, this, [this]() { setFontScalePctAndSync(fontPct_ - 10); });
+            activeShortcuts_.push_back(scMinus);
+        }
         auto* scReset = new QShortcut(QKeySequence(QStringLiteral("Ctrl+0")), host);
-        connect(scReset, &QShortcut::activated, this, [this]() {
-            fontPct_ = 100;
-            salsa_save_font_scale(100);
-            syncFontScaleBars();
-            applyThemeAndFontAll(false);
-        });
+        connect(scReset, &QShortcut::activated, this, [this]() { setFontScalePctAndSync(100); });
         activeShortcuts_.push_back(scReset);
 
         if (host == introWin_) {
@@ -2290,7 +2278,7 @@ void StudioController::checkSettingsFileSync() {
     if (mtime != 0 && mtime != lastSettingsMtimeNs_) {
         lastSettingsMtimeNs_ = mtime;
         guiSettings_ = loadGuiSettings();
-        const int diskPct = normalizeFontScalePct(guiSettings_.value(QStringLiteral("font_scale_pct")).toInt(fontPct_));
+        const int diskPct = normalizeFontScalePct(salsa_load_font_scale());
         if (diskPct != fontPct_) {
             fontPct_ = diskPct;
             syncFontScaleBars();

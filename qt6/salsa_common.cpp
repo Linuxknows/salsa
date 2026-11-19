@@ -369,7 +369,7 @@ QString buildSalsaStylesheet(const SalsaThemeData& t, bool mini, int fontPct) {
                     compactPad,
                     QString::number(valFs),
                     QStringLiteral("%1px %2px").arg(sp(3)).arg(sp(7)),
-                    QString::number(sp(28)),
+                    QString::number(sp(34)),
                     c("bg_hover", "#2d343f"),
                     c("accent_secondary", "#38bdf8"),
                     c("combo_popup_bg", "#181b20"),

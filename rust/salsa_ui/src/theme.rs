@@ -43,7 +43,11 @@ pub fn load_ui_font_scale_pct() -> i32 {
 
 pub fn save_ui_font_scale_pct(pct: i32) -> i32 {
     let norm = normalize_font_scale_pct(pct);
-    let _ = update_gui_settings(&[("ui_font_scale_pct", JsonValue::Int(i64::from(norm)))]);
+    let val = JsonValue::Int(i64::from(norm));
+    let _ = update_gui_settings(&[
+        ("ui_font_scale_pct", val.clone()),
+        ("font_scale_pct", val),
+    ]);
     norm
 }
 
