@@ -138,7 +138,7 @@ fn main() -> ExitCode {
         }
         _ => {
             if current_ver.is_empty() {
-                "V1.19.2".to_string()
+                "V1.19.3".to_string()
             } else {
                 current_ver
             }

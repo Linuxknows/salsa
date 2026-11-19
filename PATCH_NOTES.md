@@ -4,7 +4,18 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.19.2 — Current (`2026-11-19`)
+## V1.19.3 — Current (`2026-11-19`)
+
+### 1. Clean Device Dropdowns & Quick Mixer Enclosure Layout Polish
+- Removed redundant ` [Bluetooth]` and ` [alsa-kernel]` driver suffixes from Studio's `cmbSink_` (`Output Sink`) and `cmbSource_` (`Mic Input`) dropdown labels in [`salsa_studio.cpp`](qt6/salsa_studio.cpp) (keeping device IDs in `Qt::UserRole` item data and adding `d.name` to `lastDevSig_` for live codec refreshes).
+- Removed the `setMaximumHeight(320)` cap on `appsScroll_` in [`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp) and aligned `appsScroll_` / `appsLay_` to `Qt::AlignTop`, keeping `ACTIVE APP STREAMS` and stream faders anchored flush at the top of the Applications enclosure; unified `TabUnderline` QSS font weight (`700`) and computed explicit `QFontMetrics` `minimumWidth` values for `btnTabDev_` / `btnTabApps_` so `Applications (N)` never clips its closing parenthesis.
+
+### 2. Perceptual Logarithmic Tray Peak Meter Scaling
+- Updated `PeakBarWidget::setPeaks` in [`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp) to convert raw linear `output_peak_l` / `output_peak_r` amplitudes onto a logarithmic `-56 dBFS` to `0 dBFS` meter scale with `8 ms` rise and `85 ms` fall time constants so quiet-to-normal playback animates responsively across the stereo bars and transitions cleanly into amber/red on hot transients.
+
+---
+
+## V1.19.2 (`2026-11-19`)
 
 ### 1. Preset & Custom Theme Studio Color Fix
 - Fixed `themeFromJsonObj` in [`salsa_common.cpp`](qt6/salsa_common.cpp) to unwrap the nested `"theme"` object returned by [`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs) (`theme_to_wire_json`) while remaining compatible with flat `custom_theme` JSON, and preserved `SalsaThemeData::name` across [`salsa_common.hpp`](qt6/salsa_common.hpp) and `themeToJsonObj` — fixing preset switching (`Catppuccin Mocha`, `Nordic Frost`, `Daylight Mastering`, etc.) and eliminating all-`#ffffff` swatches in `SalsaCustomThemeDialog`.

@@ -555,7 +555,7 @@ void StudioController::buildMainWindow() {
     lblTitle_ = new QLabel(QStringLiteral("SALSA — LINUX WASAPI STUDIO"), topCard);
     lblTitle_->setObjectName(QStringLiteral("TitleBanner"));
     titleRow->addWidget(lblTitle_);
-    lblVerPill_ = new QLabel(QStringLiteral("V1.19.2"), topCard);
+    lblVerPill_ = new QLabel(QStringLiteral("V1.19.3"), topCard);
     lblVerPill_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     titleRow->addWidget(lblVerPill_);
     titleRow->addStretch(1);
@@ -1027,7 +1027,7 @@ void StudioController::buildTopologyWindow() {
     graphHdrRow->addStretch(1);
 
     auto* lblAutoBadge = new QLabel(
-        QStringLiteral("✔ V1.19.2 LIVE | MASTER CLOCK | HW ANALOG DAC | DYNAMIC EQ | BT ABR"),
+        QStringLiteral("✔ V1.19.3 LIVE | MASTER CLOCK | HW ANALOG DAC | DYNAMIC EQ | BT ABR"),
         graphCard);
     lblAutoBadge->setObjectName(QStringLiteral("AutoBadgeLabel"));
     graphHdrRow->addWidget(lblAutoBadge);
@@ -2350,7 +2350,8 @@ void StudioController::pollEngine(bool initial) {
         devices_ = dl;
         QString sig;
         for (uint32_t i = 0; i < std::min<uint32_t>(dl.num_devices, SALSA_MAX_DEVICES); ++i) {
-            sig += cFixedStr(dl.devices[i].id, sizeof(dl.devices[i].id)) + QChar('|');
+            sig += cFixedStr(dl.devices[i].id, sizeof(dl.devices[i].id)) + QChar(',')
+                   + cFixedStr(dl.devices[i].name, sizeof(dl.devices[i].name)) + QChar('|');
         }
         if (sig != lastDevSig_) {
             lastDevSig_ = sig;
@@ -2363,9 +2364,9 @@ void StudioController::pollEngine(bool initial) {
                 const auto& d = dl.devices[i];
                 const QString did = cFixedStr(d.id, sizeof(d.id));
                 const QString dname = cFixedStr(d.name, sizeof(d.name));
-                const QString tag = d.is_bluetooth ? QStringLiteral(" [Bluetooth]") : QStringLiteral(" [%1]").arg(cFixedStr(d.driver, sizeof(d.driver)));
-                if (d.is_capture) cmbSource_->addItem(dname + tag, did);
-                else cmbSink_->addItem(dname + tag, did);
+                const QString disp = dname.isEmpty() ? did : dname;
+                if (d.is_capture) cmbSource_->addItem(disp, did);
+                else cmbSink_->addItem(disp, did);
             }
             updatingUi_ = false;
         }

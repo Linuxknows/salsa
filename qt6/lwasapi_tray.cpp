@@ -533,8 +533,14 @@ public:
     }
 
     void setPeaks(float pkL, float pkR, const QColor& acc) {
-        const float tgtL = std::clamp(pkL, 0.0f, 1.0f);
-        const float tgtR = std::clamp(pkR, 0.0f, 1.0f);
+        auto toMeterNorm = [](float lin) -> float {
+            const float clamped = std::clamp(lin, 0.0f, 1.0f);
+            if (clamped <= 0.001585f) return 0.0f;  // <= -56 dBFS floor
+            const float db = 20.0f * std::log10(clamped);
+            return std::clamp((db + 56.0f) / 56.0f, 0.0f, 1.0f);
+        };
+        const float tgtL = toMeterNorm(pkL);
+        const float tgtR = toMeterNorm(pkR);
         const auto nowTp = std::chrono::steady_clock::now();
         double dtSec = 0.016;
         if (lastTick_.time_since_epoch().count() != 0) {
@@ -543,8 +549,8 @@ public:
                 0.001, 0.25);
         }
         lastTick_ = nowTp;
-        const float aRise = 1.0f - std::exp(-static_cast<float>(dtSec / 0.010));
-        const float aFall = 1.0f - std::exp(-static_cast<float>(dtSec / 0.065));
+        const float aRise = 1.0f - std::exp(-static_cast<float>(dtSec / 0.008));
+        const float aFall = 1.0f - std::exp(-static_cast<float>(dtSec / 0.085));
         auto step = [aRise, aFall](float prev, float tgt) -> float {
             float nxt = prev + ((tgt > prev) ? aRise : aFall) * (tgt - prev);
             if (std::abs(nxt - tgt) < 0.002f) nxt = tgt;
@@ -1808,8 +1814,8 @@ void TrayController::buildPopup() {
     // --- Page 1: Active Applications ---
     auto* appsPage = new QWidget(pages_);
     auto* appsOuter = new QVBoxLayout(appsPage);
-    appsOuter->setContentsMargins(0, 2, 0, 2);
-    appsOuter->setSpacing(8);
+    appsOuter->setContentsMargins(0, 4, 0, 2);
+    appsOuter->setSpacing(6);
 
     auto* appsHdr = new QHBoxLayout();
     auto* lblApps = new QLabel(QStringLiteral("ACTIVE APP STREAMS"), appsPage);
@@ -1823,11 +1829,12 @@ void TrayController::buildPopup() {
 
     appsScroll_ = new QScrollArea(appsPage);
     appsScroll_->setWidgetResizable(true);
+    appsScroll_->setAlignment(Qt::AlignTop);
     appsScroll_->setFrameShape(QFrame::NoFrame);
     appsScroll_->setMinimumHeight(200);
-    appsScroll_->setMaximumHeight(320);
     auto* appsHost = new QWidget(appsScroll_);
     appsLay_ = new QVBoxLayout(appsHost);
+    appsLay_->setAlignment(Qt::AlignTop);
     appsLay_->setContentsMargins(0, 0, 2, 0);
     appsLay_->setSpacing(6);
     lblNoApps_ = new QLabel(QStringLiteral("No active audio streams right now"), appsHost);
@@ -2065,6 +2072,17 @@ void TrayController::applyThemeAndFont(bool /*saveFont*/) {
     if (btnSpkMute_) btnSpkMute_->setFixedWidth(sp(62));
     if (btnMicMute_) btnMicMute_->setFixedWidth(sp(62));
 
+    QFont tabFont(QStringLiteral("Inter"));
+    tabFont.setPixelSize(sp(12));
+    tabFont.setWeight(QFont::Bold);
+    const QFontMetrics tabFm(tabFont);
+    for (QPushButton* tb : {btnTabDev_, btnTabApps_}) {
+        if (!tb) continue;
+        tb->setFont(tabFont);
+        tb->setMinimumWidth(tabFm.horizontalAdvance(tb->text()) + sp(22));
+        tb->updateGeometry();
+    }
+
     if (popupWin_) {
         QString qss = buildSalsaStylesheet(theme_, false, fontPct_);
         const QString bgCard = theme_.color("bg_card", "#181b20");
@@ -2109,9 +2127,9 @@ void TrayController::applyThemeAndFont(bool /*saveFont*/) {
 
         qss += QStringLiteral(
                    " QPushButton#TabUnderline { background: transparent; color: %1; border: none;"
-                   " border-bottom: 2px solid transparent; padding: %2; font-size: %3px; font-weight: 600; }"
+                   " border-bottom: 2px solid transparent; padding: %2; font-size: %3px; font-weight: 700; }"
                    " QPushButton#TabUnderline:hover { color: %4; }"
-                   " QPushButton#TabUnderline:checked { color: %5; border-bottom: 2px solid %6; font-weight: 800; }"
+                   " QPushButton#TabUnderline:checked { color: %5; border-bottom: 2px solid %6; font-weight: 700; }"
                    " QPushButton#MuteBtn, QPushButton#SmallBtn, QPushButton#FooterBtn, QPushButton#TogglePill {"
                    " background-color: %7; color: %4; border: 1px solid %8; border-radius: %9px;"
                    " padding: %10; min-height: %11px; font-size: %12px; font-weight: 600; }"
@@ -2530,7 +2548,13 @@ void TrayController::populateQuickMixer() {
     // Active Application streams
     const uint32_t ns = std::min<uint32_t>(status_.num_sessions, SALSA_MAX_SESSIONS);
     lblAppCount_->setText(QStringLiteral("%1 active").arg(ns));
-    btnTabApps_->setText(ns > 0 ? QStringLiteral("Applications (%1)").arg(ns) : QStringLiteral("Applications"));
+    const QString tabText = ns > 0 ? QStringLiteral("Applications (%1)").arg(ns) : QStringLiteral("Applications");
+    if (btnTabApps_->text() != tabText) {
+        btnTabApps_->setText(tabText);
+        const QFontMetrics tabFm(btnTabApps_->font());
+        btnTabApps_->setMinimumWidth(tabFm.horizontalAdvance(tabText) + scaledPx(22, fontPct_));
+        btnTabApps_->updateGeometry();
+    }
     lblNoApps_->setVisible(ns == 0);
 
     bool rebuildApps = (appRows_.size() != ns);
