@@ -4,7 +4,19 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.19.0 — Current (`2026-11-19`)
+## V1.19.1 — Current (`2026-11-19`)
+
+### 1. Synchronized Global Font Scaling & Debugger Telemetry Layout Polish
+- Unified font scale persistence on `ui_font_scale_pct` (syncing `font_scale_pct` in [`theme.rs`](rust/salsa_ui/src/theme.rs)) and switched `checkSettingsSync` / `checkSettingsFileSync` across [`salsa_studio.cpp`](qt6/salsa_studio.cpp), [`salsa_debug.cpp`](qt6/salsa_debug.cpp), and [`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp) to read `salsa_load_font_scale()`, fixing `Aa-`/`Aa+` snap-back across open windows.
+- Added `Ctrl+=` / `Ctrl+-` bindings alongside `ZoomIn`/`ZoomOut`, dynamic table row height & mixer label width scaling, wider `FontStepBtn` minimums in [`salsa_common.cpp`](qt6/salsa_common.cpp), two-row Debugger action bars, responsive zero-clipping telemetry cards, `0.01%`-resolution `% RT CPU` progress bars, and `2:3` `tblPaClients_` / `tblPaStreams_` splitter sizing in [`salsa_debugger_widget.cpp`](qt6/salsa_debugger_widget.cpp).
+
+### 2. Pacman Hook Fix, `v7.0-beta` Tray Meter/Fader Parity & Smooth Studio Sliders
+- Fixed Pacman hook status/toggle detection in [`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs) (`99-salsa-autosync.hook`), switched [`salsa_installer.rs`](rust/salsa_tools/src/bin/salsa_installer.rs) from metadata-only `touch` to nanosecond timestamp writes + `PathModified=` watcher triggers (including `qt6-base`, `dbus`, `lib32-alsa-lib`, `pipewire-alsa`), and added parallel `-j<N>` rebuilds + `lwasapi-tray.service` restarts to [`lwasapi_autosync.rs`](rust/salsa_tools/src/bin/lwasapi_autosync.rs).
+- Restored exact `v7.0-beta` linear `8px` dual `PeakBarWidget` meters, capsule `SwipeFader` geometry with `#F8FAFC` circular thumb knobs, vector `SalsaOsdOverlay` speaker/mic glyphs, and `Shift`/horizontal tray Mic scroll, installed global `SalsaSliderProxyStyle` left-click seek-and-drag across all Qt6 sliders, raised Studio's 10-band EQ faders, fixed `tblSessions_` column clipping, and removed user-facing Mic APO controls cleanly.
+
+---
+
+## V1.19.0 (`2026-11-19`)
 
 ### 1. Native C++20 Qt6 GUIs (`salsa-studio`, `salsa-debug`, `lwasapi-tray`) & Global Font Scaling
 - Replaced legacy Python/PyQt6 scripts with native C++20 Qt6 frontends ([`qt6/`](qt6/)) linked directly to the Rust FFI bridge ([`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs) / [`salsa_bridge.h`](qt6/salsa_bridge.h)) with `Ctrl+=`/`Ctrl+-`/`Ctrl+0` & synchronized `Aa-`/`Aa+` global font scaling (`ui_font_scale_pct`) across Studio, Topology, Advanced Options, Live Debugger, Quick Mixer popup, context menu, and OSD, plus responsive telemetry card wrapping, `0.01%`-resolution RT CPU metering, and unclipped stream/session tables.

@@ -546,7 +546,7 @@ void StudioController::buildMainWindow() {
     lblTitle_ = new QLabel(QStringLiteral("SALSA — LINUX WASAPI STUDIO"), topCard);
     lblTitle_->setObjectName(QStringLiteral("TitleBanner"));
     titleRow->addWidget(lblTitle_);
-    lblVerPill_ = new QLabel(QStringLiteral("V1.19.0"), topCard);
+    lblVerPill_ = new QLabel(QStringLiteral("V1.19.1"), topCard);
     lblVerPill_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     titleRow->addWidget(lblVerPill_);
     titleRow->addStretch(1);
@@ -1018,7 +1018,7 @@ void StudioController::buildTopologyWindow() {
     graphHdrRow->addStretch(1);
 
     auto* lblAutoBadge = new QLabel(
-        QStringLiteral("✔ V1.19.0 LIVE | MASTER CLOCK | HW ANALOG DAC | DYNAMIC EQ | BT ABR"),
+        QStringLiteral("✔ V1.19.1 LIVE | MASTER CLOCK | HW ANALOG DAC | DYNAMIC EQ | BT ABR"),
         graphCard);
     lblAutoBadge->setObjectName(QStringLiteral("AutoBadgeLabel"));
     graphHdrRow->addWidget(lblAutoBadge);
