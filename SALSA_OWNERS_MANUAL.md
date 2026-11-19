@@ -1,4 +1,4 @@
-# Salsa — Linux WASAPI (LWASAPI) Owner's Manual & Automatic Signal Architecture
+# Salsa — Linux WASAPI Automatic Signal Architecture Breakdown
 
 ## 1. Philosophy: Why Salsa LWASAPI Needs Zero Manual Patching
 In traditional Linux pro-audio workflows, patchbay utilities like `qpwgraph` or `QjackCtl` require you to manually drag virtual cables between applications, PulseAudio/JACK bridges, resamplers, and hardware sinks. Whenever an application restarts, changes sample rate, or switches APIs, those manual routes frequently disconnect.
