@@ -4,7 +4,15 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.19.3 — Current (`2026-11-19`)
+## V1.19.4 — Current (`2026-11-19`)
+
+### 1. Fixed-Width Studio Output Peak Readout (`dynRow` Layout Stability)
+- Locked `lblPeaks_` (`Output Peak L/R: ... dBFS`) in [`salsa_studio.cpp`](qt6/salsa_studio.cpp) with `Qt::AlignRight | Qt::AlignVCenter`, `QSizePolicy::Fixed`, and a font-scale-aware monospace `setFixedWidth` computed from `"Output Peak L/R: -100.0 / -100.0 dBFS"` in `applyThemeAndFontAll`, alongside minimum widths on `lblPreamp_`, `lblThresh_`, and `lblRatio_`, preventing `120 Hz` peak updates across `-10 dBFS` / `-100 dBFS` thresholds from shifting the dynamics slider bar horizontally.
+- Replaced the discontinuous `1e-6` (`-120 dBFS` to `-60.0 dBFS`) jump in `pollEngine` with continuous clamping over `[-100.0, 6.0]` dBFS, fixed `6`-character field padding (`arg(..., 6, 'f', 1)`), and a dirty check before calling `setText`.
+
+---
+
+## V1.19.3 (`2026-11-19`)
 
 ### 1. Clean Device Dropdowns & Quick Mixer Enclosure Layout Polish
 - Removed redundant ` [Bluetooth]` and ` [alsa-kernel]` driver suffixes from Studio's `cmbSink_` (`Output Sink`) and `cmbSource_` (`Mic Input`) dropdown labels in [`salsa_studio.cpp`](qt6/salsa_studio.cpp) (keeping device IDs in `Qt::UserRole` item data and adding `d.name` to `lastDevSig_` for live codec refreshes).

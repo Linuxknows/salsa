@@ -555,7 +555,7 @@ void StudioController::buildMainWindow() {
     lblTitle_ = new QLabel(QStringLiteral("SALSA — LINUX WASAPI STUDIO"), topCard);
     lblTitle_->setObjectName(QStringLiteral("TitleBanner"));
     titleRow->addWidget(lblTitle_);
-    lblVerPill_ = new QLabel(QStringLiteral("V1.19.3"), topCard);
+    lblVerPill_ = new QLabel(QStringLiteral("V1.19.4"), topCard);
     lblVerPill_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     titleRow->addWidget(lblVerPill_);
     titleRow->addStretch(1);
@@ -775,8 +775,10 @@ void StudioController::buildMainWindow() {
     dynRow->addWidget(sldRatio_);
 
     dynRow->addSpacing(16);
-    lblPeaks_ = new QLabel(QStringLiteral("Output Peak L/R: -60.0 / -60.0 dBFS"), eqCard);
+    lblPeaks_ = new QLabel(QStringLiteral("Output Peak L/R: -100.0 / -100.0 dBFS"), eqCard);
     lblPeaks_->setObjectName(QStringLiteral("PeaksLabel"));
+    lblPeaks_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    lblPeaks_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     dynRow->addWidget(lblPeaks_);
     eqLay->addLayout(dynRow);
 
@@ -1027,7 +1029,7 @@ void StudioController::buildTopologyWindow() {
     graphHdrRow->addStretch(1);
 
     auto* lblAutoBadge = new QLabel(
-        QStringLiteral("✔ V1.19.3 LIVE | MASTER CLOCK | HW ANALOG DAC | DYNAMIC EQ | BT ABR"),
+        QStringLiteral("✔ V1.19.4 LIVE | MASTER CLOCK | HW ANALOG DAC | DYNAMIC EQ | BT ABR"),
         graphCard);
     lblAutoBadge->setObjectName(QStringLiteral("AutoBadgeLabel"));
     graphHdrRow->addWidget(lblAutoBadge);
@@ -1590,6 +1592,20 @@ void StudioController::applyThemeAndFontAll(bool saveSettings) {
     }
     if (lblSpk_) lblSpk_->setMinimumWidth(scaledPx(140, fontPct_));
     if (lblMic_) lblMic_->setMinimumWidth(scaledPx(140, fontPct_));
+    if (lblPreamp_ && lblThresh_ && lblRatio_) {
+        const QFontMetrics dfm(app ? app->font() : lblPreamp_->font());
+        lblPreamp_->setMinimumWidth(dfm.horizontalAdvance(QStringLiteral("Preamp: -18.0 dB")) + 4);
+        lblThresh_->setMinimumWidth(dfm.horizontalAdvance(QStringLiteral("Dyn Threshold: -48.0 dB")) + 4);
+        lblRatio_->setMinimumWidth(dfm.horizontalAdvance(QStringLiteral("Dyn Ratio: 8.0:1")) + 4);
+    }
+    if (lblPeaks_) {
+        QFont pfont(QStringLiteral("Monospace"));
+        pfont.setBold(true);
+        pfont.setPixelSize(scaledPx(12, fontPct_));
+        const QFontMetrics pfm(pfont);
+        lblPeaks_->setFixedWidth(
+            pfm.horizontalAdvance(QStringLiteral("Output Peak L/R: -100.0 / -100.0 dBFS")) + 10);
+    }
     if (tblParamBands_) {
         tblParamBands_->verticalHeader()->setDefaultSectionSize(scaledPx(26, fontPct_));
     }
@@ -2444,9 +2460,12 @@ void StudioController::pollEngine(bool initial) {
         const float d = st.eq_dyn_delta_db[i];
         bandDynLbls_[i]->setText(QStringLiteral("Δ%1%2").arg(d >= 0 ? QStringLiteral("+") : QString()).arg(d, 0, 'f', 1));
     }
-    const double pkL = st.output_peak_l > 1e-6f ? 20.0 * std::log10(st.output_peak_l) : -60.0;
-    const double pkR = st.output_peak_r > 1e-6f ? 20.0 * std::log10(st.output_peak_r) : -60.0;
-    lblPeaks_->setText(QStringLiteral("Output Peak L/R: %1 / %2 dBFS").arg(pkL, 0, 'f', 1).arg(pkR, 0, 'f', 1));
+    const double pkL = std::clamp(st.output_peak_l > 1e-5f ? 20.0 * std::log10(st.output_peak_l) : -100.0, -100.0, 6.0);
+    const double pkR = std::clamp(st.output_peak_r > 1e-5f ? 20.0 * std::log10(st.output_peak_r) : -100.0, -100.0, 6.0);
+    const QString peakText = QStringLiteral("Output Peak L/R: %1 / %2 dBFS")
+                                 .arg(pkL, 6, 'f', 1)
+                                 .arg(pkR, 6, 'f', 1);
+    if (peakText != lblPeaks_->text()) lblPeaks_->setText(peakText);
 
     if (tNow >= btHoldUntilMs_) {
         btCfg_ = st.bt_codec_cfg;
