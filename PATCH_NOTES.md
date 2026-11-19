@@ -4,7 +4,26 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.19.1 — Current (`2026-11-19`)
+## V1.19.2 — Current (`2026-11-19`)
+
+### 1. Preset & Custom Theme Studio Color Fix
+- Fixed `themeFromJsonObj` in [`salsa_common.cpp`](qt6/salsa_common.cpp) to unwrap the nested `"theme"` object returned by [`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs) (`theme_to_wire_json`) while remaining compatible with flat `custom_theme` JSON, and preserved `SalsaThemeData::name` across [`salsa_common.hpp`](qt6/salsa_common.hpp) and `themeToJsonObj` — fixing preset switching (`Catppuccin Mocha`, `Nordic Frost`, `Daylight Mastering`, etc.) and eliminating all-`#ffffff` swatches in `SalsaCustomThemeDialog`.
+- Updated [`salsa_widgets.cpp`](qt6/salsa_widgets.cpp), [`salsa_studio.cpp`](qt6/salsa_studio.cpp), and [`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp) so `ColorSwatchRow` preserves swatch colors on hover/press, `SalsaCustomThemeDialog` syncs `cmbClone_` and cleanly reverts mirroring on cancel, `StudioController` initializes from `currentTheme_.name` and reloads external theme updates, and `TrayOsdWindow` / tray badges derive their fills and accents from the active theme.
+
+### 2. Output-Matched Telemetry FPS (`Studio` + `Tray`) & Edge-to-Edge EQ Curve
+- Added display-refresh telemetry helpers (`salsaDetectedOutputHz`, `salsaTelemetryIntervalMs`) in [`salsa_common.cpp`](qt6/salsa_common.cpp) and switched polling in [`salsa_studio.cpp`](qt6/salsa_studio.cpp) and [`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp) to `Qt::PreciseTimer` at display-matched intervals (up to `120 Hz` / `8 ms` when visible) with delta-time-normalized meter/spectrum smoothing in `SalsaSpectrumCanvas::updateTelemetry` and `PeakBarWidget::setPeaks` plus dirty checks to cut idle repaints.
+- Updated `SalsaSpectrumCanvas::paintEvent` in [`salsa_widgets.cpp`](qt6/salsa_widgets.cpp) so the spectrum plot clip, gridlines, EQ response fill, and curve span cleanly edge-to-edge (`w - 3.0`) instead of stopping short of the right border.
+
+### 3. ScreenCast Live Video Feed (GBM/EGL DMA-BUF Detiling) & Output-Matched FPS
+- Added [`dmabuf_gl.rs`](rust/salsa_net/src/dmabuf_gl.rs) (`DmabufGlBlitter` via Mesa GBM/EGL/GLES2 `GL_TEXTURE_EXTERNAL_OES`) to detile GPU DMA-BUF ScreenCast buffers into preview SHM frames cleanly, and wired it into [`pw_broker.rs`](rust/salsa_net/src/pw_broker.rs) alongside fixing premature `preview_expiry_ns` timeouts.
+- Expanded PipeWire video format negotiation in [`pw_wire.rs`](rust/salsa_net/src/pw_wire.rs) (`IntersectedVfmt`, `build_negotiated_format_pod_iv`) and [`ipc.rs`](rust/salsa_tools/src/ipc.rs) (`is_valid_sc_fps`) up to `240/1` (`Source Hz` default `0`), added output-matched frame pacing and `lastShmSeq_` deduplication in [`salsa_debugger_widget.cpp`](qt6/salsa_debugger_widget.cpp), and added `--live-feed` to [`salsa_debug.cpp`](qt6/salsa_debug.cpp).
+
+### 4. Exhaustive Headless Text Debugger Export (`--export-text`)
+- Added `DiagnosticProbes::build_detailed_text_report` and `export_text_file` in [`debug_core.rs`](rust/salsa_tools/src/debug_core.rs) (also bundling `report.txt` into `--export` zip archives, ANSI-stripped `kscreen-doctor -o`, and `ss -xanH` socket scans), CLI flags `--export-text` / `--text` + `BrokenPipe` handling in [`debug_cli.rs`](rust/salsa_tools/src/debug_cli.rs) and [`salsa_debug.cpp`](qt6/salsa_debug.cpp), and regression coverage in [`salsa_regression.rs`](rust/salsa_tools/src/bin/salsa_regression.rs).
+
+---
+
+## V1.19.1 (`2026-11-19`)
 
 ### 1. Synchronized Global Font Scaling & Debugger Telemetry Layout Polish
 - Unified font scale persistence on `ui_font_scale_pct` (syncing `font_scale_pct` in [`theme.rs`](rust/salsa_ui/src/theme.rs)) and switched `checkSettingsSync` / `checkSettingsFileSync` across [`salsa_studio.cpp`](qt6/salsa_studio.cpp), [`salsa_debug.cpp`](qt6/salsa_debug.cpp), and [`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp) to read `salsa_load_font_scale()`, fixing `Aa-`/`Aa+` snap-back across open windows.

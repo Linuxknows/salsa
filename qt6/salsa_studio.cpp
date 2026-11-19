@@ -184,6 +184,8 @@ private:
     qint64 hwHoldUntilMs_ = 0;
     qint64 spkHoldUntilMs_ = 0;
     qint64 micHoldUntilMs_ = 0;
+    qint64 lastDevPollMs_ = 0;
+    qint64 lastSettingsPollMs_ = 0;
 
     // 3 Top-level windows + theme studio dialog
     QMainWindow* mainWin_ = nullptr;
@@ -361,7 +363,9 @@ StudioController::StudioController(bool forceStudio, QObject* parent)
     lastSettingsMtimeNs_ = salsa_gui_settings_mtime_ns();
 
     currentTheme_ = loadThemeForApp(false);
-    currentThemeName_ = guiSettings_.value(QStringLiteral("theme")).toString(QStringLiteral("Obsidian Glass"));
+    currentThemeName_ = !currentTheme_.name.isEmpty()
+        ? currentTheme_.name
+        : guiSettings_.value(QStringLiteral("theme")).toString(QStringLiteral("Salsa Midnight (Default)"));
     builtinEqPresets_ = parseJsonArr(SalsaStr(salsa_builtin_eq_presets_json()).toQString());
     savedAutoEq_ = parseJsonArr(SalsaStr(salsa_saved_autoeq_list_json()).toQString());
 
@@ -448,10 +452,15 @@ StudioController::StudioController(bool forceStudio, QObject* parent)
     });
 
     pollTimer_ = new QTimer(this);
-    pollTimer_->setInterval(500);
+    pollTimer_->setTimerType(Qt::PreciseTimer);
+    pollTimer_->setInterval(salsaTelemetryIntervalMs(mainWin_, 120));
     connect(pollTimer_, &QTimer::timeout, this, [this]() {
         pollEngine(false);
-        checkSettingsFileSync();
+        const qint64 now = nowMs();
+        if (now - lastSettingsPollMs_ >= 450) {
+            lastSettingsPollMs_ = now;
+            checkSettingsFileSync();
+        }
     });
 
     graphAnimTimer_ = new QTimer(this);
@@ -546,7 +555,7 @@ void StudioController::buildMainWindow() {
     lblTitle_ = new QLabel(QStringLiteral("SALSA — LINUX WASAPI STUDIO"), topCard);
     lblTitle_->setObjectName(QStringLiteral("TitleBanner"));
     titleRow->addWidget(lblTitle_);
-    lblVerPill_ = new QLabel(QStringLiteral("V1.19.1"), topCard);
+    lblVerPill_ = new QLabel(QStringLiteral("V1.19.2"), topCard);
     lblVerPill_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     titleRow->addWidget(lblVerPill_);
     titleRow->addStretch(1);
@@ -1018,7 +1027,7 @@ void StudioController::buildTopologyWindow() {
     graphHdrRow->addStretch(1);
 
     auto* lblAutoBadge = new QLabel(
-        QStringLiteral("✔ V1.19.1 LIVE | MASTER CLOCK | HW ANALOG DAC | DYNAMIC EQ | BT ABR"),
+        QStringLiteral("✔ V1.19.2 LIVE | MASTER CLOCK | HW ANALOG DAC | DYNAMIC EQ | BT ABR"),
         graphCard);
     lblAutoBadge->setObjectName(QStringLiteral("AutoBadgeLabel"));
     graphHdrRow->addWidget(lblAutoBadge);
@@ -1742,13 +1751,25 @@ void StudioController::openCustomThemeDialog() {
         });
         connect(themeDlg_, &SalsaCustomThemeDialog::themeApplied, this, [this](const SalsaThemeData& t) {
             currentTheme_ = t;
+            currentTheme_.name = QString::fromLatin1(CUSTOM_THEME_NAME);
             currentThemeName_ = QString::fromLatin1(CUSTOM_THEME_NAME);
-            if (cmbTheme_) cmbTheme_->setCurrentText(currentThemeName_);
+            if (cmbTheme_) {
+                cmbTheme_->blockSignals(true);
+                cmbTheme_->setCurrentText(currentThemeName_);
+                cmbTheme_->blockSignals(false);
+            }
             updateGuiSettingsPatch(QJsonObject{
                 {QStringLiteral("theme"), currentThemeName_},
                 {QStringLiteral("custom_theme"), themeToJsonObj(currentTheme_)},
             });
             applyThemeAndFontAll(true);
+        });
+        connect(themeDlg_, &QDialog::rejected, this, [this]() {
+            if (cmbTheme_) {
+                cmbTheme_->blockSignals(true);
+                cmbTheme_->setCurrentText(currentThemeName_);
+                cmbTheme_->blockSignals(false);
+            }
         });
     } else {
         themeDlg_->resetForOpen(currentTheme_, fontPct_);
@@ -2293,14 +2314,37 @@ void StudioController::checkSettingsFileSync() {
                 cmbVolStep_->blockSignals(false);
             }
         }
+        if (!themeDlg_ || !themeDlg_->isVisible()) {
+            const SalsaThemeData diskTheme = loadThemeForApp(false);
+            const QString diskThemeName = !diskTheme.name.isEmpty()
+                ? diskTheme.name
+                : guiSettings_.value(QStringLiteral("theme")).toString(currentThemeName_);
+            if (diskThemeName != currentThemeName_ ||
+                diskTheme.isLight != currentTheme_.isLight ||
+                diskTheme.colors != currentTheme_.colors) {
+                currentTheme_ = diskTheme;
+                currentThemeName_ = diskThemeName;
+                if (cmbTheme_) {
+                    cmbTheme_->blockSignals(true);
+                    cmbTheme_->setCurrentText(currentThemeName_);
+                    cmbTheme_->blockSignals(false);
+                }
+                applyThemeAndFontAll(false);
+            }
+        }
     }
 }
 
 void StudioController::pollEngine(bool initial) {
     SalsaEngineStatus st{};
     const bool gotSt = (salsa_get_engine_status(&st) == 0);
+    const qint64 tNow = nowMs();
     SalsaDeviceList dl{};
-    const bool gotDl = (salsa_list_devices(&dl) == 0);
+    bool gotDl = false;
+    if (initial || tNow - lastDevPollMs_ >= 600) {
+        lastDevPollMs_ = tNow;
+        gotDl = (salsa_list_devices(&dl) == 0);
+    }
 
     if (gotDl) {
         devices_ = dl;
@@ -2329,12 +2373,12 @@ void StudioController::pollEngine(bool initial) {
 
     if (!gotSt) {
         lblEndpoints_->setText(QStringLiteral("Audio engine offline — start lwasapi-audiodg.service to manage live streams"));
+        if (pollTimer_ && pollTimer_->interval() != 450) pollTimer_->setInterval(450);
         return;
     }
 
     hasStatus_ = true;
     status_ = st;
-    const qint64 tNow = nowMs();
 
     const QString hwDev = cFixedStr(st.hw_device, sizeof(st.hw_device));
     const QString hwCap = cFixedStr(st.hw_capture_device, sizeof(st.hw_capture_device));
@@ -2522,7 +2566,8 @@ void StudioController::pollEngine(bool initial) {
         for (uint32_t i = 0; i < ns; ++i) {
             const auto& s = st.sessions[i];
             auto& rw = sessRows_[i];
-            rw.fmtItem->setText(QStringLiteral("%1k/%2ch").arg(s.sample_rate / 1000.0, 0, 'g', 4).arg(s.channels));
+            const QString fmtS = QStringLiteral("%1k/%2ch").arg(s.sample_rate / 1000.0, 0, 'g', 4).arg(s.channels);
+            if (rw.fmtItem->text() != fmtS) rw.fmtItem->setText(fmtS);
             if (!rw.volSlider->isSliderDown() && tNow >= rw.holdUntilMs) {
                 rw.volSlider->blockSignals(true);
                 rw.volSlider->setValue(static_cast<int>(s.volume_milli / 10));
@@ -2606,6 +2651,16 @@ void StudioController::pollEngine(bool initial) {
             }
         }
         graphCanvas_->updateData(ag);
+    }
+
+    QWidget* visWin = (mainWin_ && mainWin_->isVisible() && !mainWin_->isMinimized())
+                          ? static_cast<QWidget*>(mainWin_)
+                          : ((advWin_ && advWin_->isVisible() && !advWin_->isMinimized())
+                                 ? static_cast<QWidget*>(advWin_)
+                                 : nullptr);
+    const int wantMs = visWin ? salsaTelemetryIntervalMs(visWin, 120) : 450;
+    if (pollTimer_ && pollTimer_->interval() != wantMs) {
+        pollTimer_->setInterval(wantMs);
     }
 }
 

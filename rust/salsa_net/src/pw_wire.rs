@@ -1178,6 +1178,7 @@ pub struct IntersectedVfmt {
     pub w: u32,
     pub h: u32,
     pub fps: Frac,
+    pub max_fps: Frac,
     pub mods: Vec<u64>,
 }
 
@@ -1289,11 +1290,23 @@ pub fn intersect_vfmt(
         hi_f = ar.max_frac;
     }
 
+    let hi_cap_mhz = hi_mhz.min(240_000);
+    let hi_cap_f = if hi_mhz > 240_000 {
+        Frac {
+            num: 240,
+            denom: 1,
+        }
+    } else {
+        hi_f
+    };
+
     let mut chosen_fps = Frac { num: 60, denom: 1 };
     if !ar.flex && frac_mhz(ar.pref_frac) >= 1000 {
         chosen_fps = ar.pref_frac;
     } else if !br.flex && frac_mhz(br.pref_frac) >= 1000 {
         chosen_fps = br.pref_frac;
+    } else if lim_fps == 0 && ar.flex && br.flex && hi_cap_mhz >= 1000 {
+        chosen_fps = hi_cap_f;
     } else if frac_mhz(ar.pref_frac) >= 1000 {
         chosen_fps = ar.pref_frac;
     }
@@ -1305,24 +1318,73 @@ pub fn intersect_vfmt(
         chosen_fps = hi_f;
     }
 
-    if ar.flex
-        && lim_fps > 0
-        && (lim_fps as u64) * 1000 < frac_mhz(chosen_fps)
-        && (lim_fps as u64) * 1000 >= ar.min_mhz
-    {
-        chosen_fps = Frac {
-            num: lim_fps,
-            denom: 1,
-        };
+    if ar.flex && lim_fps > 0 {
+        let lim_mhz = (lim_fps as u64) * 1000;
+        if lim_mhz >= lo_mhz && lim_mhz <= hi_cap_mhz {
+            chosen_fps = Frac {
+                num: lim_fps,
+                denom: 1,
+            };
+        } else if lim_mhz > hi_cap_mhz && hi_cap_mhz >= 1000 {
+            chosen_fps = hi_cap_f;
+        }
     }
+
+    let fps_out = sanitize_non_zero_fps(chosen_fps);
+    let max_fps_out = if lim_fps == 0 && (ar.flex || br.flex) && hi_cap_mhz > frac_mhz(fps_out) {
+        sanitize_non_zero_fps(hi_cap_f)
+    } else {
+        fps_out
+    };
 
     Some(IntersectedVfmt {
         fmt: chosen_fmt,
         w,
         h,
-        fps: sanitize_non_zero_fps(chosen_fps),
+        fps: fps_out,
+        max_fps: max_fps_out,
         mods,
     })
+}
+
+pub fn build_negotiated_format_pod_iv(
+    iv: &IntersectedVfmt,
+    has_mod: bool,
+    dont_fixate: bool,
+) -> Vec<u8> {
+    let f_out = sanitize_non_zero_fps(iv.fps);
+    let maxf = sanitize_non_zero_fps(iv.max_fps);
+    let mut b = PodBuilder::new(512);
+    b.push_object(OBJ_FORMAT, PARAM_FORMAT);
+    b.prop(1, 0);
+    b.id(MEDIA_VIDEO);
+    b.prop(2, 0);
+    b.id(SUB_RAW);
+    b.prop(0x20001, 0);
+    b.id(iv.fmt);
+    if has_mod && !iv.mods.is_empty() {
+        b.prop(0x20002, if dont_fixate { POD_PROP_FLAG_DONT_FIXATE } else { 0 });
+        if dont_fixate {
+            b.push_choice(CHOICE_ENUM, 0, 8, SPA_LONG);
+            b.write_u64_raw(iv.mods[0]);
+            for &m in &iv.mods {
+                b.write_u64_raw(m);
+            }
+            b.pop();
+        } else {
+            b.push_choice(CHOICE_NONE, 0, 8, SPA_LONG);
+            b.write_u64_raw(iv.mods[0]);
+            b.pop();
+        }
+    }
+    b.prop(0x20003, 0);
+    b.rect(iv.w, iv.h);
+    b.prop(0x20004, 0);
+    b.frac(f_out.num, f_out.denom);
+    b.prop(0x20005, 0);
+    b.frac(maxf.num, maxf.denom);
+    b.pop();
+    b.into_vec()
 }
 
 pub fn build_negotiated_format_pod(
@@ -1334,38 +1396,15 @@ pub fn build_negotiated_format_pod(
     dont_fixate: bool,
     mods: &[u64],
 ) -> Vec<u8> {
-    let maxf = sanitize_non_zero_fps(fps);
-    let mut b = PodBuilder::new(512);
-    b.push_object(OBJ_FORMAT, PARAM_FORMAT);
-    b.prop(1, 0);
-    b.id(MEDIA_VIDEO);
-    b.prop(2, 0);
-    b.id(SUB_RAW);
-    b.prop(0x20001, 0);
-    b.id(fmt);
-    if has_mod && !mods.is_empty() {
-        b.prop(0x20002, if dont_fixate { POD_PROP_FLAG_DONT_FIXATE } else { 0 });
-        if dont_fixate {
-            b.push_choice(CHOICE_ENUM, 0, 8, SPA_LONG);
-            b.write_u64_raw(mods[0]);
-            for &m in mods {
-                b.write_u64_raw(m);
-            }
-            b.pop();
-        } else {
-            b.push_choice(CHOICE_NONE, 0, 8, SPA_LONG);
-            b.write_u64_raw(mods[0]);
-            b.pop();
-        }
-    }
-    b.prop(0x20003, 0);
-    b.rect(w, h);
-    b.prop(0x20004, 0);
-    b.frac(fps.num, fps.denom);
-    b.prop(0x20005, 0);
-    b.frac(maxf.num, maxf.denom);
-    b.pop();
-    b.into_vec()
+    let iv = IntersectedVfmt {
+        fmt,
+        w,
+        h,
+        fps,
+        max_fps: fps,
+        mods: mods.to_vec(),
+    };
+    build_negotiated_format_pod_iv(&iv, has_mod, dont_fixate)
 }
 
 #[inline]
@@ -1506,5 +1545,49 @@ mod tests {
         assert_eq!(parsed.vfmt.w_def, 1920);
         assert_eq!(parsed.vfmt.h_def, 1080);
         assert_eq!(parsed.vfmt.formats[0], VF_BGRX);
+    }
+
+    #[test]
+    fn high_refresh_uncapped_negotiation_uses_output_ceiling() {
+        let mut formats = [0u32; 32];
+        formats[0] = VF_BGRA;
+        let prod = VfmtCaps {
+            valid: true,
+            n_formats: 1,
+            formats,
+            w_def: 2560,
+            w_min: 640,
+            w_max: 3840,
+            h_def: 1440,
+            h_min: 480,
+            h_max: 2160,
+            has_fps: true,
+            fps_def: Frac { num: 0, denom: 1 },
+            has_max_fps: true,
+            max_fps_def: Frac { num: 60, denom: 1 },
+            max_fps_min: Frac { num: 1, denom: 1 },
+            max_fps_max: Frac { num: 240, denom: 1 },
+            ..VfmtCaps::default()
+        };
+
+        let mut cons_flex = prod.clone();
+        cons_flex.fps_def = Frac { num: 60, denom: 1 };
+        cons_flex.fps_min = Frac { num: 1, denom: 1 };
+        cons_flex.fps_max = Frac { num: 240, denom: 1 };
+
+        let iv_uncapped = intersect_vfmt(&prod, &cons_flex, false, 0, 0, 0).expect("intersect uncapped");
+        assert_eq!(iv_uncapped.fps.num, 240);
+        assert_eq!(iv_uncapped.max_fps.num, 240);
+
+        let iv_120 = intersect_vfmt(&prod, &cons_flex, false, 2560, 1440, 120).expect("intersect 120");
+        assert_eq!(iv_120.fps.num, 120);
+        assert_eq!(iv_120.max_fps.num, 120);
+
+        let mut cons_fixed60 = prod.clone();
+        cons_fixed60.fps_def = Frac { num: 60, denom: 1 };
+        cons_fixed60.fps_min = Frac { num: 60, denom: 1 };
+        cons_fixed60.fps_max = Frac { num: 60, denom: 1 };
+        let iv_fixed = intersect_vfmt(&prod, &cons_fixed60, false, 0, 0, 0).expect("intersect fixed60");
+        assert_eq!(iv_fixed.fps.num, 60);
     }
 }

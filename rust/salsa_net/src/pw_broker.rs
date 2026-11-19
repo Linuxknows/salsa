@@ -9,9 +9,10 @@ use crate::c_abi::{
     LWASAPI_DEBUG_MAX_PW_LINKS, LWASAPI_DEBUG_MAX_PW_NODES, LWASAPI_PW_PREVIEW_MAGIC,
     LWASAPI_PW_PREVIEW_MAX_H, LWASAPI_PW_PREVIEW_MAX_W, LWASAPI_PW_PREVIEW_VERSION,
 };
+use crate::dmabuf_gl::{DmabufFrameDesc, DmabufGlBlitter};
 use crate::failsafe::{record_trip, FS_FD_QUOTA, FS_PW_BAD_PKT};
 use crate::pw_wire::{
-    build_negotiated_format_pod, convert_preview_row, fd_quota_check, frame_pw_msg,
+    build_negotiated_format_pod_iv, convert_preview_row, fd_quota_check, frame_pw_msg,
     intersect_vfmt, parse_param_pod, parse_pkt_hdr, parse_pkt_hdr_status, vfmt_name, vfmt_size,
     vfmt_stride, BufCaps, Dict, PktHdrStatus, PodBuilder, PodCursor, VfmtCaps, CMD_NODE,
     DATA_DMA_BUF, DATA_MEM_FD, DATA_MEM_ID, DRM_MOD_INVALID, EVT_NODE, IO_BUFFERS, IO_CLOCK,
@@ -177,7 +178,7 @@ fn pace_due(now: u64, next_due_ns: &mut u64, fps: u32) -> bool {
 fn update_fps_meter(now: u64, win_ns: &mut u64, win_cnt: &mut u32, out_x100: &mut u32) {
     if *win_ns == 0 {
         *win_ns = now;
-        *win_cnt = 1;
+        *win_cnt = 0;
         return;
     }
     *win_cnt = win_cnt.saturating_add(1);
@@ -796,6 +797,7 @@ struct PwState {
     relay_fps_win_cnt: u32,
     relay_actual_fps_x100: u32,
     relay_last_frame_ns: u64,
+    dmabuf_blitter: Option<DmabufGlBlitter>,
     shared: Arc<SharedAtomics>,
 }
 
@@ -840,6 +842,7 @@ impl PwState {
             relay_fps_win_cnt: 0,
             relay_actual_fps_x100: 0,
             relay_last_frame_ns: 0,
+            dmabuf_blitter: None,
             shared,
         }
     }
@@ -1880,15 +1883,7 @@ impl PwState {
             n.neg_is_dmabuf = has_mod;
         }
 
-        let pod = build_negotiated_format_pod(
-            iv.fmt,
-            iv.w,
-            iv.h,
-            iv.fps,
-            has_mod,
-            send_dont_fixate,
-            &iv.mods,
-        );
+        let pod = build_negotiated_format_pod_iv(&iv, has_mod, send_dont_fixate);
         if pod.len() < 8 {
             return false;
         }
@@ -2075,34 +2070,65 @@ impl PwState {
     }
 
     fn copy_frame_to_preview_shm(&mut self, nidx: usize, buf_id: u32, cons_count: u32) {
-        let Some(shm_map) = self.preview_shm_map.as_ref() else {
-            return;
+        let shm_base = match self.preview_shm_map.as_ref() {
+            Some(m) => m.as_ptr().cast::<LwasapiPwPreviewShm>().cast_mut(),
+            None => return,
         };
-        let shm_ptr = shm_map.as_ptr().cast::<LwasapiPwPreviewShm>().cast_mut();
-        let req = unsafe { atomic_u32_load(ptr::addr_of!((*shm_ptr).preview_requested), Ordering::Relaxed) };
+        let req = unsafe { atomic_u32_load(ptr::addr_of!((*shm_base).preview_requested), Ordering::Relaxed) };
         if req == 0 {
+            self.dmabuf_blitter = None;
             return;
         }
         let now = mono_ns();
         let exp_ns = self.shared.preview_expiry_ns.load(Ordering::Relaxed);
         let last_ping =
-            unsafe { atomic_u64_load(ptr::addr_of!((*shm_ptr).last_gui_ping_ns), Ordering::Relaxed) };
-        if (exp_ns > 0 && now > exp_ns)
-            || (exp_ns == 0 && last_ping > 0 && now.saturating_sub(last_ping) > 8_000_000_000)
-        {
+            unsafe { atomic_u64_load(ptr::addr_of!((*shm_base).last_gui_ping_ns), Ordering::Relaxed) };
+        let ping_fresh = last_ping > 0 && now.saturating_sub(last_ping) <= 8_000_000_000;
+        if exp_ns > 0 && now > exp_ns {
+            if ping_fresh {
+                // Continuous SHM keepalive pings from the debugger keep the stream alive past initial TTL.
+                self.shared.preview_expiry_ns.store(0, Ordering::Relaxed);
+            } else {
+                unsafe {
+                    atomic_u32_store(
+                        ptr::addr_of_mut!((*shm_base).preview_requested),
+                        0,
+                        Ordering::Relaxed,
+                    );
+                }
+                self.dmabuf_blitter = None;
+                return;
+            }
+        } else if exp_ns == 0 && last_ping > 0 && !ping_fresh {
             unsafe {
                 atomic_u32_store(
-                    ptr::addr_of_mut!((*shm_ptr).preview_requested),
+                    ptr::addr_of_mut!((*shm_base).preview_requested),
                     0,
                     Ordering::Relaxed,
                 );
             }
+            self.dmabuf_blitter = None;
             return;
         }
 
-        let tw = self.shared.preview_target_w.load(Ordering::Relaxed);
-        let th_lim = self.shared.preview_target_h.load(Ordering::Relaxed);
-        let tfps = self.shared.preview_target_fps.load(Ordering::Relaxed);
+        let (tw, th_lim, tfps) = if ping_fresh {
+            let sw_t = unsafe { atomic_u32_load(ptr::addr_of!((*shm_base).target_max_w), Ordering::Relaxed) };
+            let sh_t = unsafe { atomic_u32_load(ptr::addr_of!((*shm_base).target_max_h), Ordering::Relaxed) };
+            let sf_t = unsafe { atomic_u32_load(ptr::addr_of!((*shm_base).target_fps), Ordering::Relaxed) };
+            let cw = sw_t.min(LWASAPI_PW_PREVIEW_MAX_W);
+            let ch = sh_t.min(LWASAPI_PW_PREVIEW_MAX_H);
+            let cf = sf_t.min(240);
+            self.shared.preview_target_w.store(cw, Ordering::Relaxed);
+            self.shared.preview_target_h.store(ch, Ordering::Relaxed);
+            self.shared.preview_target_fps.store(cf, Ordering::Relaxed);
+            (cw, ch, cf)
+        } else {
+            (
+                self.shared.preview_target_w.load(Ordering::Relaxed),
+                self.shared.preview_target_h.load(Ordering::Relaxed),
+                self.shared.preview_target_fps.load(Ordering::Relaxed),
+            )
+        };
         if tfps != self.preview_applied_fps {
             self.preview_next_due_ns = 0;
             self.preview_fps_win_ns = 0;
@@ -2136,6 +2162,22 @@ impl PwState {
         let prod_gid = prod.global_id;
         let prod_name = prod.name.clone();
 
+        let (mut coff, mut cstride) = (0u32, 0i32);
+        if let Some(mmap) = prod.meta_map.as_ref() {
+            let off = bidx * PWB_META_STRIDE;
+            let sl = mmap.as_slice();
+            if off + PWB_META_TOTAL_SZ <= sl.len() {
+                let co = off + PWB_META_CHUNK_OFF;
+                coff = u32::from_le_bytes([sl[co], sl[co + 1], sl[co + 2], sl[co + 3]]);
+                cstride = i32::from_le_bytes([
+                    sl[co + 8],
+                    sl[co + 9],
+                    sl[co + 10],
+                    sl[co + 11],
+                ]);
+            }
+        }
+
         let pb = &mut prod.bufs[bidx];
         if pb.mapped.is_none()
             && pb.maxsize > 0
@@ -2160,15 +2202,15 @@ impl PwState {
             }
         }
         let is_dmabuf = pb.mem_type == DATA_DMA_BUF;
-        let mappable = pb.mapped.is_some();
+        let cpu_mappable = pb.mapped.is_some();
 
-        let seq = unsafe { atomic_u64_load(ptr::addr_of!((*shm_ptr).seqlock), Ordering::Relaxed) };
+        let seq = unsafe { atomic_u64_load(ptr::addr_of!((*shm_base).seqlock), Ordering::Relaxed) };
         unsafe {
-            atomic_u64_store(ptr::addr_of_mut!((*shm_ptr).seqlock), seq + 1, Ordering::Release);
-            let s = &mut *shm_ptr;
+            atomic_u64_store(ptr::addr_of_mut!((*shm_base).seqlock), seq + 1, Ordering::Release);
+            let s = &mut *shm_base;
             s.active_stream = 1;
             s.is_dmabuf = u32::from(is_dmabuf);
-            s.dmabuf_mappable = u32::from(is_dmabuf && mappable);
+            s.dmabuf_mappable = u32::from(is_dmabuf && cpu_mappable);
             s.src_width = sw;
             s.src_height = sh;
             s.src_stride = neg_stride;
@@ -2192,48 +2234,41 @@ impl PwState {
             s.cast_fps_cap = self.shared.cast_limit_fps.load(Ordering::Relaxed);
         }
 
+        let cap_w = if tw > 0 && tw <= LWASAPI_PW_PREVIEW_MAX_W {
+            tw
+        } else {
+            LWASAPI_PW_PREVIEW_MAX_W
+        };
+        let cap_h = if th_lim > 0 && th_lim <= LWASAPI_PW_PREVIEW_MAX_H {
+            th_lim
+        } else {
+            LWASAPI_PW_PREVIEW_MAX_H
+        };
+        let mut dw = sw;
+        let mut dh = sh;
+        if dw > cap_w {
+            dh = ((dh as u64 * cap_w as u64) / dw as u64) as u32;
+            dw = cap_w;
+        }
+        if dh > cap_h {
+            dw = ((dw as u64 * cap_h as u64) / dh as u64) as u32;
+            dh = cap_h;
+        }
+        dw = dw.max(1);
+        dh = dh.max(1);
+        let min_row = vfmt_stride(neg_fmt, sw) as usize;
+        let sstride = if cstride > 0 {
+            cstride as usize
+        } else if neg_stride != 0 {
+            neg_stride as usize
+        } else {
+            min_row
+        };
+
         if let Some(src_map) = pb.mapped.as_ref() {
             if is_dmabuf {
                 if let Some(f) = pb.fd.as_ref() {
                     dmabuf_sync(f.as_raw_fd(), true);
-                }
-            }
-            let cap_w = if tw > 0 && tw <= LWASAPI_PW_PREVIEW_MAX_W {
-                tw
-            } else {
-                LWASAPI_PW_PREVIEW_MAX_W
-            };
-            let cap_h = if th_lim > 0 && th_lim <= LWASAPI_PW_PREVIEW_MAX_H {
-                th_lim
-            } else {
-                LWASAPI_PW_PREVIEW_MAX_H
-            };
-            let mut dw = sw;
-            let mut dh = sh;
-            if dw > cap_w {
-                dh = ((dh as u64 * cap_w as u64) / dw as u64) as u32;
-                dw = cap_w;
-            }
-            if dh > cap_h {
-                dw = ((dw as u64 * cap_h as u64) / dh as u64) as u32;
-                dh = cap_h;
-            }
-            dw = dw.max(1);
-            dh = dh.max(1);
-
-            let (mut coff, mut cstride) = (0u32, 0i32);
-            if let Some(mmap) = prod.meta_map.as_ref() {
-                let off = bidx * PWB_META_STRIDE;
-                let sl = mmap.as_slice();
-                if off + PWB_META_TOTAL_SZ <= sl.len() {
-                    let co = off + PWB_META_CHUNK_OFF;
-                    coff = u32::from_le_bytes([sl[co], sl[co + 1], sl[co + 2], sl[co + 3]]);
-                    cstride = i32::from_le_bytes([
-                        sl[co + 8],
-                        sl[co + 9],
-                        sl[co + 10],
-                        sl[co + 11],
-                    ]);
                 }
             }
             let full = src_map.as_slice();
@@ -2243,14 +2278,6 @@ impl PwState {
                 0
             };
             let src = &full[coff_u..];
-            let min_row = vfmt_stride(neg_fmt, sw) as usize;
-            let sstride = if cstride > 0 {
-                cstride as usize
-            } else if neg_stride != 0 {
-                neg_stride as usize
-            } else {
-                min_row
-            };
             if sstride < min_row || min_row == 0 || src.len() < min_row || src.len() < sstride {
                 sh = 0;
             } else if (sh as usize).saturating_mul(sstride) > src.len() {
@@ -2258,7 +2285,7 @@ impl PwState {
             }
             let dst_stride = dw * 4;
             unsafe {
-                let s = &mut *shm_ptr;
+                let s = &mut *shm_base;
                 s.dst_width = dw;
                 s.dst_height = dh;
                 s.dst_stride = dst_stride;
@@ -2278,16 +2305,53 @@ impl PwState {
                     dmabuf_sync(f.as_raw_fd(), false);
                 }
             }
+        } else if is_dmabuf {
+            let dma_fd = pb.fd.as_ref().map_or(-1, AsRawFd::as_raw_fd);
+            let dma_off = pb.mapoffset.saturating_add(coff);
+            let blitter = self.dmabuf_blitter.get_or_insert_with(DmabufGlBlitter::new);
+            let dst_stride = dw * 4;
+            let dst_len = (dh as usize).saturating_mul(dst_stride as usize);
+            let desc = DmabufFrameDesc {
+                dmabuf_fd: dma_fd,
+                sw,
+                sh,
+                offset: dma_off,
+                stride: sstride as u32,
+                spa_fmt: neg_fmt,
+                modifier: neg_has_mod.then_some(neg_mod),
+                dw,
+                dh,
+            };
+            let gl_ok = unsafe {
+                let s = &mut *shm_base;
+                s.pixels
+                    .get_mut(..dst_len)
+                    .is_some_and(|dst| blitter.blit_to_bgrx(&desc, dst))
+            };
+            unsafe {
+                let s = &mut *shm_base;
+                if gl_ok {
+                    s.dmabuf_mappable = 1;
+                    s.dst_width = dw;
+                    s.dst_height = dh;
+                    s.dst_stride = dst_stride;
+                } else {
+                    s.dst_width = 0;
+                    s.dst_height = 0;
+                    s.dst_stride = 0;
+                }
+            }
         } else {
             unsafe {
-                let s = &mut *shm_ptr;
+                let s = &mut *shm_base;
                 s.dst_width = 0;
                 s.dst_height = 0;
+                s.dst_stride = 0;
             }
         }
 
         unsafe {
-            atomic_u64_store(ptr::addr_of_mut!((*shm_ptr).seqlock), seq + 2, Ordering::Release);
+            atomic_u64_store(ptr::addr_of_mut!((*shm_base).seqlock), seq + 2, Ordering::Release);
         }
     }
 
@@ -4084,6 +4148,9 @@ pub unsafe extern "C" fn lwasapi_pw_broker_set_preview_ex(
             .preview_expiry_ns
             .store(now.saturating_add(ttl_ns), Ordering::Relaxed);
         unsafe {
+            atomic_u32_store(ptr::addr_of_mut!((*shm_ptr).target_max_w), cw, Ordering::Relaxed);
+            atomic_u32_store(ptr::addr_of_mut!((*shm_ptr).target_max_h), ch, Ordering::Relaxed);
+            atomic_u32_store(ptr::addr_of_mut!((*shm_ptr).target_fps), cfps, Ordering::Relaxed);
             atomic_u64_store(
                 ptr::addr_of_mut!((*shm_ptr).last_gui_ping_ns),
                 now,

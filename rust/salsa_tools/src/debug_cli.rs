@@ -1,3 +1,4 @@
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -19,6 +20,8 @@ struct CliOpts {
     tone: bool,
     midi: bool,
     export: Option<Option<PathBuf>>,
+    export_text: Option<Option<PathBuf>>,
+    stdout_text: bool,
     sub_filter: String,
     lvl_filter: String,
     pid_filter: Option<i64>,
@@ -43,7 +46,9 @@ fn print_help() {
          --probe               Run IPC, dlopen, and socket health probes\n  \
          --tone                Play a short diagnostic test sine tone\n  \
          --midi                Inject a diagnostic MIDI NoteOn/NoteOff pair\n  \
-         --export [DIR]        Write diagnostic bundle zip archive\n  \
+         --export [DIR]        Write diagnostic bundle zip archive (includes report.txt)\n  \
+         --export-text [PATH]  Write detailed plain-text debug report to file/dir ('-' for stdout)\n  \
+         --text                Print full detailed plain-text debug report to stdout\n  \
          --journal             Tail Salsa systemd user journal\n  \
          --autosync            Tail autosync.log\n  \
          --dbus                Capture short session D-Bus signal sample\n\n\
@@ -326,6 +331,19 @@ pub fn run_debug_cli(raw_args: &[String]) -> u8 {
                     opts.export = Some(None);
                 }
             }
+            "--export-text" => {
+                if i + 1 < raw_args.len() && (raw_args[i + 1] == "-" || !raw_args[i + 1].starts_with('-')) {
+                    i += 1;
+                    if raw_args[i] == "-" {
+                        opts.stdout_text = true;
+                    } else {
+                        opts.export_text = Some(Some(PathBuf::from(&raw_args[i])));
+                    }
+                } else {
+                    opts.export_text = Some(None);
+                }
+            }
+            "--text" => opts.stdout_text = true,
             "--sub" => {
                 i += 1;
                 if let Some(v) = raw_args.get(i) {
@@ -387,6 +405,8 @@ pub fn run_debug_cli(raw_args: &[String]) -> u8 {
         || opts.tone
         || opts.midi
         || opts.export.is_some()
+        || opts.export_text.is_some()
+        || opts.stdout_text
         || opts.journal
         || opts.autosync
         || opts.dbus;
@@ -473,21 +493,61 @@ pub fn run_debug_cli(raw_args: &[String]) -> u8 {
         }
     }
 
-    if let Some(dir_opt) = &opts.export {
+    if opts.export.is_some() || opts.export_text.is_some() || opts.stdout_text {
         let snap = snapshot_once(None, Duration::from_millis(800)).ok();
         let audit = SystemAuditScanner::collect_full_audit();
         let probes = DiagnosticProbes::run_all_probes(&root);
-        match DiagnosticProbes::export_bundle(
-            dir_opt.as_deref(),
-            snap.as_ref(),
-            Some(&audit),
-            Some(&probes),
-            &[],
-        ) {
-            Ok(path) => println!("[OK] Exported debug bundle: {}", path.display()),
-            Err(e) => {
-                eprintln!("[ERR] Export failed: {e}");
-                return 1;
+        let mut recent_events = Vec::new();
+        let ev_client = SalsaDebugClient::new(None);
+        ev_client.start();
+        if ev_client.wait_connected(Duration::from_millis(250)) {
+            thread::sleep(Duration::from_millis(120));
+            recent_events = ev_client.drain_events(256);
+        }
+        ev_client.stop();
+
+        if let Some(dir_opt) = &opts.export {
+            match DiagnosticProbes::export_bundle(
+                dir_opt.as_deref(),
+                snap.as_ref(),
+                Some(&audit),
+                Some(&probes),
+                &recent_events,
+            ) {
+                Ok(path) => println!("[OK] Exported debug bundle: {}", path.display()),
+                Err(e) => {
+                    eprintln!("[ERR] Export failed: {e}");
+                    return 1;
+                }
+            }
+        }
+        if opts.export_text.is_some() || opts.stdout_text {
+            let report = DiagnosticProbes::build_detailed_text_report(
+                &root,
+                snap.as_ref(),
+                Some(&audit),
+                Some(&probes),
+                &recent_events,
+            );
+            if opts.stdout_text {
+                let mut out = std::io::stdout().lock();
+                if let Err(e) = out.write_all(report.as_bytes()) {
+                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                        return 0;
+                    }
+                    eprintln!("[ERR] Failed writing report to stdout: {e}");
+                    return 1;
+                }
+                let _ = out.flush();
+            }
+            if let Some(txt_opt) = &opts.export_text {
+                match DiagnosticProbes::export_text_file(txt_opt.as_deref(), &report) {
+                    Ok(path) => println!("[OK] Exported detailed text report: {}", path.display()),
+                    Err(e) => {
+                        eprintln!("[ERR] Text export failed: {e}");
+                        return 1;
+                    }
+                }
             }
         }
     }

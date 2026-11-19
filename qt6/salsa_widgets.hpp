@@ -23,6 +23,7 @@
 #include <QWidget>
 
 #include <array>
+#include <chrono>
 #include <vector>
 
 namespace salsa {
@@ -186,6 +187,7 @@ private:
     std::array<float, SALSA_EQ_BANDS> bandFreqHz_{};
     std::array<float, SALSA_EQ_BANDS> dynDeltas_{};
     std::array<float, SALSA_EQ_BANDS> smoothLevels_{};
+    std::chrono::steady_clock::time_point lastLevelTick_{};
     int draggingBand_ = -1;
     int hoverBand_ = -1;
 };
@@ -300,6 +302,7 @@ public:
 
     void setTheme(const SalsaThemeData& theme, int fontPct = 100);
     void selectTab(int idx);
+    void setScreenCastLive(bool enabled);
     void refreshAll();
     void shutdown();
 
@@ -345,6 +348,8 @@ private:
     void sendPwPreviewCmd(bool enabled);
     void sendPwCastLimitsCmd();
     void saveScreenCastPrefs();
+    void refreshScFpsChoices();
+    void updateScTimerInterval(int fps);
     void updateScProfileBadge(double measuredFps = 0.0, const QString& activeDims = QString());
 
     void* dbg_ = nullptr;
@@ -369,6 +374,9 @@ private:
     uint32_t lastScH_ = 0;
     uint64_t lastShmSeq_ = 0;
     QList<qint64> scFrameTimesMs_;
+    std::chrono::steady_clock::time_point scStartTp_{};
+    int64_t scNextDueNs_ = 0;
+    int scLastOutHz_ = 0;
     bool scLimitsDirty_ = false;
 
     QTimer* pollTimer_ = nullptr;

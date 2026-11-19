@@ -46,6 +46,7 @@
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -532,10 +533,31 @@ public:
     }
 
     void setPeaks(float pkL, float pkR, const QColor& acc) {
-        pkL_ = std::clamp(pkL, 0.0f, 1.0f);
-        pkR_ = std::clamp(pkR, 0.0f, 1.0f);
-        accent_ = acc;
-        update();
+        const float tgtL = std::clamp(pkL, 0.0f, 1.0f);
+        const float tgtR = std::clamp(pkR, 0.0f, 1.0f);
+        const auto nowTp = std::chrono::steady_clock::now();
+        double dtSec = 0.016;
+        if (lastTick_.time_since_epoch().count() != 0) {
+            dtSec = std::clamp(
+                std::chrono::duration<double>(nowTp - lastTick_).count(),
+                0.001, 0.25);
+        }
+        lastTick_ = nowTp;
+        const float aRise = 1.0f - std::exp(-static_cast<float>(dtSec / 0.010));
+        const float aFall = 1.0f - std::exp(-static_cast<float>(dtSec / 0.065));
+        auto step = [aRise, aFall](float prev, float tgt) -> float {
+            float nxt = prev + ((tgt > prev) ? aRise : aFall) * (tgt - prev);
+            if (std::abs(nxt - tgt) < 0.002f) nxt = tgt;
+            return std::clamp(nxt, 0.0f, 1.0f);
+        };
+        const float nxtL = step(pkL_, tgtL);
+        const float nxtR = step(pkR_, tgtR);
+        if (std::abs(nxtL - pkL_) > 0.001f || std::abs(nxtR - pkR_) > 0.001f || accent_ != acc) {
+            pkL_ = nxtL;
+            pkR_ = nxtR;
+            accent_ = acc;
+            update();
+        }
     }
 
 protected:
@@ -566,6 +588,7 @@ protected:
 private:
     float pkL_ = 0.0f;
     float pkR_ = 0.0f;
+    std::chrono::steady_clock::time_point lastTick_{};
     QColor accent_{"#22c55e"};
 };
 
@@ -962,9 +985,9 @@ protected:
                 lg.setColorAt(0.0, accent_.darker(120));
                 lg.setColorAt(1.0, accent_.lighter(115));
             } else {
-                lg.setColorAt(0.0, QColor(QStringLiteral("#0F8B6D")));
-                lg.setColorAt(0.65, QColor(QStringLiteral("#1DB97F")));
-                lg.setColorAt(1.0, pct_ <= 100 ? QColor(QStringLiteral("#34D399")) : QColor(QStringLiteral("#F59E0B")));
+                lg.setColorAt(0.0, accent_.darker(135));
+                lg.setColorAt(0.65, accent_);
+                lg.setColorAt(1.0, pct_ <= 100 ? accent_.lighter(118) : QColor(QStringLiteral("#F59E0B")));
             }
             p.setBrush(lg);
             p.drawRoundedRect(QRectF(bar.left(), bar.top(), fillW, bar.height()), 5.0, 5.0);
@@ -1087,6 +1110,14 @@ private:
     qint64 lastSpkSendMs_ = 0;
     qint64 micHoldUntilMs_ = 0;
     qint64 lastMicSendMs_ = 0;
+    qint64 lastDevPollMs_ = 0;
+    qint64 lastSettingsPollMs_ = 0;
+    QString lastHdrLeaf_;
+    int lastHdrIconSz_ = 0;
+    QString lastSniTitle_;
+    int lastSniOnline_ = -1;
+    int lastSniMuted_ = -1;
+    int lastSniGlow_ = -1;
     int anchorPanelLoc_ = 4;
     int anchorBottom_ = 0;
     QRect anchorAvail_;
@@ -1231,9 +1262,14 @@ TrayController::TrayController(bool withSni, QObject* parent)
     syncFromEngine(false);
 
     pollTimer_ = new QTimer(this);
+    pollTimer_->setTimerType(Qt::PreciseTimer);
     pollTimer_->setInterval(1200);
     connect(pollTimer_, &QTimer::timeout, this, [this]() {
-        checkSettingsSync();
+        const qint64 now = nowMs();
+        if (now - lastSettingsPollMs_ >= 450) {
+            lastSettingsPollMs_ = now;
+            checkSettingsSync();
+        }
         syncFromEngine(false);
     });
     pollTimer_->start();
@@ -2042,18 +2078,25 @@ void TrayController::applyThemeAndFont(bool /*saveFont*/) {
         const QString mut = theme_.color("text_muted", "#94a3b8");
         const QString acc = theme_.color("accent_primary", "#00e676");
         const QString warn = theme_.color("accent_warn", "#f59e0b");
+        const QColor accCol = theme_.qcolor("accent_primary", "#00e676");
+        const QColor secCol = theme_.qcolor("accent_secondary", "#38bdf8");
+        const QString btBg = QStringLiteral("rgba(%1,%2,%3,30)").arg(secCol.red()).arg(secCol.green()).arg(secCol.blue());
+        const QString btBd = QStringLiteral("rgba(%1,%2,%3,125)").arg(secCol.red()).arg(secCol.green()).arg(secCol.blue());
+        const QString hwBg = QStringLiteral("rgba(%1,%2,%3,34)").arg(accCol.red()).arg(accCol.green()).arg(accCol.blue());
+        const QString hwBd = QStringLiteral("rgba(%1,%2,%3,110)").arg(accCol.red()).arg(accCol.green()).arg(accCol.blue());
+        const QString stBg = QStringLiteral("rgba(%1,%2,%3,38)").arg(accCol.red()).arg(accCol.green()).arg(accCol.blue());
 
         qss += QStringLiteral(
                    " QFrame#MixerCard { background-color: %1; border: 1px solid %2; border-radius: %3px; }"
                    " QFrame#SubCard { background-color: %4; border: 1px solid %5; border-radius: %6px; }"
                    " QFrame#HLine { background-color: %5; border: none; min-height: 1px; max-height: 1px; }"
-                   " QFrame#BtPill { background-color: rgba(56,189,248,30); border: 1px solid rgba(56,189,248,125); border-radius: %7px; }"
+                   " QFrame#BtPill { background-color: %15; border: 1px solid %16; border-radius: %7px; }"
                    " QLabel#DimLabel { color: %8; font-size: %9px; font-weight: 600; }"
                    " QLabel#SectionTitle { color: %8; font-size: %9px; font-weight: 700; }"
                    " QLabel#SectionCap { color: %8; font-size: %10px; font-weight: 700; letter-spacing: 0.7px; }"
-                   " QLabel#HwBadge { background-color: rgba(20,184,102,34); border: 1px solid rgba(20,184,102,110);"
+                   " QLabel#HwBadge { background-color: %17; border: 1px solid %18;"
                    " border-radius: %11px; padding: %12; font-size: %9px; color: %13; font-weight: 700; }"
-                   " QLabel#StatusPill { background-color: rgba(20,184,102,38); color: %13; border: 1px solid %13;"
+                   " QLabel#StatusPill { background-color: %19; color: %13; border: 1px solid %13;"
                    " border-radius: %11px; padding: %14; font-size: %10px; font-weight: 700; }")
                    .arg(bgCard, bdrCtrl, QString::number(sp(11)), bgDeep, bdrCard,
                         QString::number(sp(10)), QString::number(sp(10)), mut,
@@ -2061,7 +2104,8 @@ void TrayController::applyThemeAndFont(bool /*saveFont*/) {
                         QString::number(sp(8)),
                         QStringLiteral("%1px %2px").arg(sp(3)).arg(sp(8)),
                         acc,
-                        QStringLiteral("%1px %2px").arg(sp(2)).arg(sp(7)));
+                        QStringLiteral("%1px %2px").arg(sp(2)).arg(sp(7)),
+                        btBg, btBd, hwBg, hwBd, stBg);
 
         qss += QStringLiteral(
                    " QPushButton#TabUnderline { background: transparent; color: %1; border: none;"
@@ -2172,6 +2216,7 @@ void TrayController::positionAndShowPopup(const QPoint& rawPt) {
     popupWin_->move(px, py);
     popupOpenAtMs_ = nowMs();
     popupWin_->show();
+    if (pollTimer_) pollTimer_->setInterval(33);
     salsa_apply_x11_popup_hints(static_cast<uint64_t>(popupWin_->winId()), true, true, 0, 0);
     popupWin_->raise();
     popupWin_->activateWindow();
@@ -2203,6 +2248,7 @@ void TrayController::popupToggle(const QPoint& rawPt) {
     if (!popupWin_) return;
     if (popupWin_->isVisible()) {
         popupWin_->hide();
+        if (pollTimer_) pollTimer_->setInterval(1200);
     } else {
         positionAndShowPopup(rawPt);
     }
@@ -2602,7 +2648,10 @@ void TrayController::syncFromEngine(bool showOsdIfExternal) {
 
     if (ok) {
         status_ = st;
-        salsa_list_devices(&devices_);
+        if (tnow - lastDevPollMs_ >= 800 || showOsdIfExternal) {
+            lastDevPollMs_ = tnow;
+            salsa_list_devices(&devices_);
+        }
 
         if (st.bt_active) {
             const QString alias = cFixedStr(st.bt_alias, sizeof(st.bt_alias));
@@ -2674,24 +2723,43 @@ void TrayController::syncFromEngine(bool showOsdIfExternal) {
     if (actRestartEng_) actRestartEng_->setEnabled(true);
 
     if (hdrIcon_ && !iconThemeDir_.isEmpty()) {
-        const char* leaf = !ok ? "salsa-tray-stopped.png"
-                               : (status_.desktop_muted ? "salsa-tray-muted.png"
-                                                        : (trayGlow_ ? "salsa-tray-active-glow.png" : "salsa-tray-active-plain.png"));
-        const QString iconPath = QDir(iconThemeDir_).filePath(QStringLiteral("hicolor/128x128/apps/%1").arg(QLatin1String(leaf)));
-        const QPixmap pm(iconPath);
-        if (!pm.isNull()) {
-            const int sz = scaledPx(24, fontPct_);
-            hdrIcon_->setFixedSize(sz, sz);
-            hdrIcon_->setPixmap(pm.scaled(sz, sz, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        const QString leaf = !ok ? QStringLiteral("salsa-tray-stopped.png")
+                                 : (status_.desktop_muted ? QStringLiteral("salsa-tray-muted.png")
+                                                          : (trayGlow_ ? QStringLiteral("salsa-tray-active-glow.png")
+                                                                       : QStringLiteral("salsa-tray-active-plain.png")));
+        const int sz = scaledPx(24, fontPct_);
+        if (leaf != lastHdrLeaf_ || sz != lastHdrIconSz_) {
+            const QString iconPath = QDir(iconThemeDir_).filePath(QStringLiteral("hicolor/128x128/apps/%1").arg(leaf));
+            const QPixmap pm(iconPath);
+            if (!pm.isNull()) {
+                lastHdrLeaf_ = leaf;
+                lastHdrIconSz_ = sz;
+                hdrIcon_->setFixedSize(sz, sz);
+                hdrIcon_->setPixmap(pm.scaled(sz, sz, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            }
         }
     }
 
     if (sniHandle_) {
-        const QString stStr = ok ? QStringLiteral("Active") : QStringLiteral("Passive");
-        salsa_sni_update(sniHandle_, ok, ok && status_.desktop_muted, trayGlow_,
-                         trayTitle.toUtf8().constData(), stStr.toUtf8().constData());
+        const int onInt = ok ? 1 : 0;
+        const int mutInt = (ok && status_.desktop_muted) ? 1 : 0;
+        const int glowInt = trayGlow_ ? 1 : 0;
+        if (trayTitle != lastSniTitle_ || onInt != lastSniOnline_ || mutInt != lastSniMuted_ || glowInt != lastSniGlow_) {
+            lastSniTitle_ = trayTitle;
+            lastSniOnline_ = onInt;
+            lastSniMuted_ = mutInt;
+            lastSniGlow_ = glowInt;
+            const QString stStr = ok ? QStringLiteral("Active") : QStringLiteral("Passive");
+            salsa_sni_update(sniHandle_, ok, mutInt != 0, trayGlow_,
+                             trayTitle.toUtf8().constData(), stStr.toUtf8().constData());
+        }
     }
-    if (popupWin_ && popupWin_->isVisible()) populateQuickMixer();
+    const bool popVis = (popupWin_ && popupWin_->isVisible());
+    if (popVis) populateQuickMixer();
+    if (pollTimer_) {
+        const int wantMs = popVis ? salsaTelemetryIntervalMs(popupWin_, 120) : 1200;
+        if (pollTimer_->interval() != wantMs) pollTimer_->setInterval(wantMs);
+    }
 }
 
 void TrayController::checkSettingsSync() {

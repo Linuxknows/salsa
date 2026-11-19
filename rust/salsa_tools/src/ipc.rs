@@ -466,14 +466,17 @@ impl Default for ScreenCastPrefs {
     fn default() -> Self {
         Self {
             res_key: "Source".to_string(),
-            fps_val: 60,
+            fps_val: 0,
             cap_real_cast: false,
         }
     }
 }
 
 const VALID_SC_RES: [&str; 6] = ["Source", "2160p", "1440p", "1080p", "720p", "480p"];
-const VALID_SC_FPS: [u32; 4] = [0, 15, 30, 60];
+
+fn is_valid_sc_fps(fps: u32) -> bool {
+    fps == 0 || (15..=240).contains(&fps)
+}
 
 pub fn load_screencast_prefs() -> ScreenCastPrefs {
     let mut out = ScreenCastPrefs::default();
@@ -486,7 +489,7 @@ pub fn load_screencast_prefs() -> ScreenCastPrefs {
         }
         if let Some(fv) = sc.get("fps_val").and_then(|v| v.as_u64()) {
             let fv32 = fv as u32;
-            if VALID_SC_FPS.contains(&fv32) {
+            if is_valid_sc_fps(fv32) {
                 out.fps_val = fv32;
             }
         }
@@ -503,10 +506,10 @@ pub fn save_screencast_prefs(prefs: &ScreenCastPrefs) -> Result<(), String> {
     } else {
         "Source"
     };
-    let fps_val = if VALID_SC_FPS.contains(&prefs.fps_val) {
+    let fps_val = if is_valid_sc_fps(prefs.fps_val) {
         prefs.fps_val
     } else {
-        60
+        0
     };
     let profile = JsonValue::obj(vec![
         ("res_key", JsonValue::Str(res_key.to_string())),

@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unistd.h>
 
 namespace salsa {
 
@@ -57,7 +58,8 @@ SalsaLiveDebuggerWidget::SalsaLiveDebuggerWidget(int initialTab, QWidget* parent
     pollTimer_->start();
 
     scTimer_ = new QTimer(this);
-    scTimer_->setInterval(33);
+    scTimer_->setTimerType(Qt::PreciseTimer);
+    scTimer_->setInterval(4);
     connect(scTimer_, &QTimer::timeout, this, &SalsaLiveDebuggerWidget::onScreenCastTick);
 
     refreshAll();
@@ -93,6 +95,12 @@ void SalsaLiveDebuggerWidget::shutdown() {
 void SalsaLiveDebuggerWidget::selectTab(int idx) {
     if (subtabs_ && idx >= 0 && idx < subtabs_->count()) {
         subtabs_->setCurrentIndex(idx);
+    }
+}
+
+void SalsaLiveDebuggerWidget::setScreenCastLive(bool enabled) {
+    if (btnScLive_ && btnScLive_->isChecked() != enabled) {
+        btnScLive_->setChecked(enabled);
     }
 }
 
@@ -594,7 +602,7 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
 
     const QJsonObject prefs = parseJsonObj(SalsaStr(salsa_dbg_load_sc_prefs_json()).toQString());
     const QString savedRes = prefs.value(QStringLiteral("res_key")).toString(QStringLiteral("Source"));
-    const int savedFps = prefs.value(QStringLiteral("fps_val")).toInt(60);
+    const int savedFps = prefs.value(QStringLiteral("fps_val")).toInt(0);
     const bool savedCap = prefs.value(QStringLiteral("cap_real_cast")).toBool(false);
 
     auto* ctrlCard = new QFrame(w);
@@ -647,15 +655,25 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
 
     r1->addWidget(new QLabel(QStringLiteral("FPS:"), ctrlCard));
     cmbScFps_ = new QComboBox(ctrlCard);
-    cmbScFps_->addItem(QStringLiteral("Source Hz"), 0);
-    cmbScFps_->addItem(QStringLiteral("60 FPS"), 60);
-    cmbScFps_->addItem(QStringLiteral("30 FPS"), 30);
-    cmbScFps_->addItem(QStringLiteral("15 FPS"), 15);
+    scLastOutHz_ = salsaDetectedOutputHz(this);
+    cmbScFps_->addItem(QStringLiteral("Source Hz (%1 Hz Out)").arg(scLastOutHz_), 0);
+    QList<int> fpsChoices = {240, 144, 120, 60, 30, 15};
+    if (scLastOutHz_ >= 24 && !fpsChoices.contains(scLastOutHz_)) {
+        fpsChoices.append(scLastOutHz_);
+        std::sort(fpsChoices.begin(), fpsChoices.end(), std::greater<int>());
+    }
+    if (savedFps > 0 && !fpsChoices.contains(savedFps)) {
+        fpsChoices.append(savedFps);
+        std::sort(fpsChoices.begin(), fpsChoices.end(), std::greater<int>());
+    }
+    for (int f : fpsChoices) {
+        cmbScFps_->addItem(QStringLiteral("%1 FPS").arg(f), f);
+    }
     if (int idx = cmbScFps_->findData(savedFps); idx >= 0) cmbScFps_->setCurrentIndex(idx);
     connect(cmbScFps_, &QComboBox::currentIndexChanged, this, [this]() {
         saveScreenCastPrefs();
         const int fps = cmbScFps_->currentData().toInt();
-        scTimer_->setInterval(fps > 0 ? std::max(16, static_cast<int>(std::lround(1000.0 / fps))) : 16);
+        updateScTimerInterval(fps);
         if (chkScCapBroker_ && chkScCapBroker_->isChecked()) sendPwCastLimitsCmd();
         if (btnScLive_ && btnScLive_->isChecked()) sendPwPreviewCmd(true);
         updateScProfileBadge();
@@ -687,8 +705,11 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
             btnScLive_->setText(QStringLiteral("Disable Live Feed (ON)"));
             lastShmSeq_ = 0;
             scFrameTimesMs_.clear();
+            refreshScFpsChoices();
             const int fps = cmbScFps_->currentData().toInt();
-            scTimer_->setInterval(fps > 0 ? std::max(16, static_cast<int>(std::lround(1000.0 / fps))) : 16);
+            scStartTp_ = std::chrono::steady_clock::now();
+            scNextDueNs_ = 0;
+            updateScTimerInterval(fps);
             sendPwPreviewCmd(true);
             scTimer_->start();
         } else {
@@ -1143,13 +1164,34 @@ void SalsaLiveDebuggerWidget::saveScreenCastPrefs() {
     salsa_dbg_save_sc_prefs(rk.toUtf8().constData(), fps, capReal);
 }
 
+void SalsaLiveDebuggerWidget::refreshScFpsChoices() {
+    if (!cmbScFps_) return;
+    const int outHz = salsaDetectedOutputHz(this);
+    if (outHz != scLastOutHz_) {
+        scLastOutHz_ = outHz;
+        cmbScFps_->setItemText(0, QStringLiteral("Source Hz (%1 Hz Out)").arg(outHz));
+    }
+}
+
+void SalsaLiveDebuggerWidget::updateScTimerInterval(int fps) {
+    if (!scTimer_) return;
+    const int outHz = salsaDetectedOutputHz(this);
+    const int tgtHz = fps > 0 ? fps : outHz;
+    scTimer_->setTimerType(Qt::PreciseTimer);
+    scNextDueNs_ = 0;
+    const int wakeMs = tgtHz >= 120 ? 1 : (tgtHz >= 60 ? 2 : 4);
+    if (scTimer_->interval() != wakeMs) scTimer_->setInterval(wakeMs);
+}
+
 void SalsaLiveDebuggerWidget::updateScProfileBadge(double measuredFps, const QString& activeDims) {
     if (!lblScProfileBadge_ || !cmbScRes_ || !cmbScFps_) return;
     const QJsonObject rObj = parseJsonObj(cmbScRes_->currentData().toString());
     const QString rk = rObj.value(QStringLiteral("key")).toString(QStringLiteral("Source"));
     const int fps = qvarInt(cmbScFps_->currentData(), 0);
     const bool cap = chkScCapBroker_ && chkScCapBroker_->isChecked();
-    const QString fpsStr = fps <= 0 ? QStringLiteral("Source Hz") : QStringLiteral("%1 FPS").arg(fps);
+    const QString fpsStr = fps <= 0
+                               ? QStringLiteral("Source Hz (%1 Hz)").arg(salsaDetectedOutputHz(this))
+                               : QStringLiteral("%1 FPS").arg(fps);
     const QString dimPart = activeDims.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(activeDims);
     const QString livePart = measuredFps > 0.1 ? QStringLiteral(" | Live: %1 FPS").arg(measuredFps, 0, 'f', 1) : QString();
     const QString capPart = cap ? QStringLiteral(" | Broker Cap: ON") : QString();
@@ -1159,11 +1201,21 @@ void SalsaLiveDebuggerWidget::updateScProfileBadge(double measuredFps, const QSt
 void SalsaLiveDebuggerWidget::onScreenCastTick() {
     if (!btnScLive_ || !btnScLive_->isChecked() || !shmCtx_) return;
 
+    refreshScFpsChoices();
     const QJsonObject rObj = parseJsonObj(cmbScRes_->currentData().toString());
     const uint32_t mw = static_cast<uint32_t>(rObj.value(QStringLiteral("w")).toInteger(0));
     const uint32_t mh = static_cast<uint32_t>(rObj.value(QStringLiteral("h")).toInteger(0));
     const uint32_t fps = static_cast<uint32_t>(qvarInt(cmbScFps_->currentData(), 0));
     const uint32_t capFps = (chkScCapBroker_ && chkScCapBroker_->isChecked()) ? fps : 0;
+    const int outHz = salsaDetectedOutputHz(this);
+    const int targetHz = fps > 0 ? static_cast<int>(fps) : outHz;
+    if (scStartTp_.time_since_epoch().count() == 0) {
+        scStartTp_ = std::chrono::steady_clock::now();
+    }
+    const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::steady_clock::now() - scStartTp_)
+                              .count();
+    const int64_t periodNs = 1'000'000'000LL / std::max(1, targetHz);
 
     static constexpr size_t kMaxRgbaBytes = 3840ULL * 2160ULL * 4ULL;
     if (scRgbaBuf_.size() < kMaxRgbaBytes) scRgbaBuf_.resize(kMaxRgbaBytes);
@@ -1173,10 +1225,14 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
     const bool forceDry = mode.contains(QLatin1String("Dry-Run"));
 
     const QJsonObject pw = latestSnapshot_.value(QStringLiteral("pw")).toObject();
-    const QByteArray shmName = pw.value(QStringLiteral("preview_shm_name")).toString().toUtf8();
+    QByteArray shmName = pw.value(QStringLiteral("preview_shm_name")).toString().toUtf8();
+    if (shmName.isEmpty()) {
+        shmName = QByteArrayLiteral("/run/user/") + QByteArray::number(static_cast<qint64>(::getuid())) + QByteArrayLiteral("/lwasapi/pw_preview");
+    }
 
     SalsaScFrameMeta meta{};
-    bool gotFrame = false;
+    bool realStreamActive = false;
+    bool gotNewFrame = false;
     bool usingDry = false;
     uint32_t fw = 0, fh = 0;
 
@@ -1184,16 +1240,30 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
         const int rc = salsa_dbg_shm_poll_frame(
             shmCtx_, shmName.constData(), mw, mh, fps, capFps,
             scRgbaBuf_.data(), scRgbaBuf_.size(), &meta);
-        if (rc > 0 && meta.active_stream && meta.width >= 2 && meta.height >= 2 && meta.bytes_written >= static_cast<size_t>(meta.width) * meta.height * 4) {
-            gotFrame = true;
-            fw = meta.width;
-            fh = meta.height;
+        if (rc > 0 && meta.active_stream) {
+            realStreamActive = true;
+            if (meta.width >= 2 && meta.height >= 2 && meta.bytes_written >= static_cast<size_t>(meta.width) * meta.height * 4) {
+                fw = meta.width;
+                fh = meta.height;
+                if (meta.seq != lastShmSeq_ || lastScImage_.isNull()) {
+                    lastShmSeq_ = meta.seq;
+                    gotNewFrame = true;
+                }
+            }
         }
     }
 
-    if (!gotFrame && (forceDry || mode.startsWith(QLatin1String("Auto")))) {
-        uint32_t sw = 1280, sh = 720;
-        if (QScreen* scr = QGuiApplication::primaryScreen()) {
+    if (!realStreamActive && (forceDry || mode.startsWith(QLatin1String("Auto")))) {
+        if (scNextDueNs_ > 0 && nowNs < scNextDueNs_) {
+            return;
+        }
+        if (scNextDueNs_ == 0 || (nowNs - scNextDueNs_) > periodNs * 2) {
+            scNextDueNs_ = nowNs + periodNs;
+        } else {
+            scNextDueNs_ += periodNs;
+        }
+        uint32_t sw = 2560, sh = 1440;
+        if (QScreen* scr = (window() && window()->screen()) ? window()->screen() : QGuiApplication::primaryScreen()) {
             const double dpr = scr->devicePixelRatio() > 0.5 ? scr->devicePixelRatio() : 1.0;
             sw = std::max<uint32_t>(320, static_cast<uint32_t>(std::lround(scr->size().width() * dpr)));
             sh = std::max<uint32_t>(240, static_cast<uint32_t>(std::lround(scr->size().height() * dpr)));
@@ -1207,7 +1277,7 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
         dh = std::max<uint32_t>(2, dh & ~1U);
         const size_t n = salsa_dbg_dryrun_frame(shmCtx_, dw, dh, scRgbaBuf_.data(), scRgbaBuf_.size());
         if (n >= static_cast<size_t>(dw) * dh * 4) {
-            gotFrame = true;
+            gotNewFrame = true;
             usingDry = true;
             fw = dw;
             fh = dh;
@@ -1215,13 +1285,13 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
     }
 
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-    if (gotFrame) {
+    while (scFrameTimesMs_.size() > 2 && (nowMs - scFrameTimesMs_.first()) > 1250) {
+        scFrameTimesMs_.removeFirst();
+    }
+    if (gotNewFrame) {
         scFrameTimesMs_.append(nowMs);
-        while (scFrameTimesMs_.size() > 2 && (nowMs - scFrameTimesMs_.first()) > 1250) scFrameTimesMs_.removeFirst();
-        double measFps = 0.0;
-        if (scFrameTimesMs_.size() >= 2) {
-            const double dt = (scFrameTimesMs_.last() - scFrameTimesMs_.first()) / 1000.0;
-            if (dt > 0.05) measFps = (scFrameTimesMs_.size() - 1) / dt;
+        while (scFrameTimesMs_.size() > 2 && (nowMs - scFrameTimesMs_.first()) > 1250) {
+            scFrameTimesMs_.removeFirst();
         }
         QImage rawImg(scRgbaBuf_.data(), static_cast<int>(fw), static_cast<int>(fh),
                       static_cast<int>(fw * 4), QImage::Format_RGBA8888);
@@ -1230,31 +1300,46 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
         lastScH_ = fh;
 
         const QSize targetSz = lblScPreview_->size().expandedTo(QSize(320, 180));
+        const Qt::TransformationMode scaleMode = (targetHz >= 90 || fw > 1920 || fh > 1080)
+                                                     ? Qt::FastTransformation
+                                                     : Qt::SmoothTransformation;
         lblScPreview_->setPixmap(QPixmap::fromImage(
-            lastScImage_.scaled(targetSz, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+            lastScImage_.scaled(targetSz, Qt::KeepAspectRatio, scaleMode)));
+    }
 
+    double measFps = 0.0;
+    if (scFrameTimesMs_.size() >= 2) {
+        const double dt = (scFrameTimesMs_.last() - scFrameTimesMs_.first()) / 1000.0;
+        if (dt > 0.05) measFps = (scFrameTimesMs_.size() - 1) / dt;
+    }
+
+    if (usingDry) {
         updateScProfileBadge(measFps, QStringLiteral("%1x%2").arg(fw).arg(fh));
-        if (usingDry) {
-            lblScDmabufBadge_->setText(QStringLiteral("DRY-RUN SIM"));
-            lblScStats_->setText(QStringLiteral("Dry-Run Portal Sim: %1x%2 @ %3 FPS (Zero-PipeWire Idle)")
-                                     .arg(fw).arg(fh).arg(measFps, 0, 'f', 1));
-        } else {
-            const QString kindTag = meta.is_dmabuf
-                                        ? (meta.dmabuf_mappable ? QStringLiteral("DMA-BUF Mappable") : QStringLiteral("DMA-BUF GPU-Opaque"))
-                                        : QStringLiteral("MemFd SHM");
-            lblScDmabufBadge_->setText(kindTag);
-            lblScStats_->setText(
-                QStringLiteral("Live Portal Cast: %1 (%2) | %3x%4 | Broker FPS=%5 | Seq=%6 | Cons=%7")
-                    .arg(cFixedStr(meta.prod_name, sizeof(meta.prod_name)),
-                         cFixedStr(meta.format_name, sizeof(meta.format_name)))
-                    .arg(fw).arg(fh)
-                    .arg(meta.actual_fps_x100 / 100.0, 0, 'f', 1)
-                    .arg(meta.seq)
-                    .arg(meta.cons_count));
-        }
-    } else if (allowShm && meta.active_stream && meta.is_dmabuf && !meta.dmabuf_mappable) {
+        lblScDmabufBadge_->setText(QStringLiteral("DRY-RUN SIM"));
+        lblScStats_->setText(QStringLiteral("Dry-Run Portal Sim: %1x%2 @ %3 FPS (Target %4 Hz Output | Zero-PipeWire Idle)")
+                                 .arg(fw).arg(fh).arg(measFps, 0, 'f', 1).arg(targetHz));
+    } else if (realStreamActive && meta.bytes_written >= static_cast<size_t>(meta.width) * meta.height * 4) {
+        const double brokerFps = meta.actual_fps_x100 / 100.0;
+        const double shownFps = brokerFps > 0.1 ? brokerFps : measFps;
+        updateScProfileBadge(measFps > 0.1 ? measFps : brokerFps, QStringLiteral("%1x%2").arg(meta.width).arg(meta.height));
+        const QString kindTag = meta.is_dmabuf
+                                    ? (meta.dmabuf_mappable ? QStringLiteral("DMA-BUF EGL/SHM") : QStringLiteral("DMA-BUF GPU-Opaque"))
+                                    : QStringLiteral("MemFd SHM");
+        lblScDmabufBadge_->setText(kindTag);
+        lblScStats_->setText(
+            QStringLiteral("Live Portal Cast: %1 (%2) | %3x%4 | Broker FPS=%5 | Feed FPS=%6 | Seq=%7 | Cons=%8")
+                .arg(cFixedStr(meta.prod_name, sizeof(meta.prod_name)),
+                     cFixedStr(meta.format_name, sizeof(meta.format_name)))
+                .arg(meta.width).arg(meta.height)
+                .arg(shownFps, 0, 'f', 1)
+                .arg(measFps, 0, 'f', 1)
+                .arg(meta.seq)
+                .arg(meta.cons_count));
+    } else if (allowShm && realStreamActive && meta.is_dmabuf && !meta.dmabuf_mappable) {
+        updateScProfileBadge(meta.actual_fps_x100 / 100.0, QStringLiteral("%1x%2").arg(meta.width).arg(meta.height));
         lblScDmabufBadge_->setText(QStringLiteral("DMA-BUF GPU-Opaque"));
-        lblScStats_->setText(QStringLiteral("Portal stream active (%1x%2) uses GPU-opaque DMA-BUF (switch Mode to Dry-Run for software preview).").arg(meta.width).arg(meta.height));
+        lblScStats_->setText(QStringLiteral("Portal stream active (%1x%2 | Broker FPS=%3) uses GPU-opaque DMA-BUF (EGL import unavailable).")
+                                 .arg(meta.width).arg(meta.height).arg(meta.actual_fps_x100 / 100.0, 0, 'f', 1));
     }
 }
 

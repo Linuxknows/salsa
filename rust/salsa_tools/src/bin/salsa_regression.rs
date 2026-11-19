@@ -400,6 +400,27 @@ fn test_tools_and_settings_security(base_dir: &Path) -> Result<String, String> {
         return Err("export zip failed unzip -t".to_string());
     }
 
+    let txt_report = tmp.path.join("debug_report.txt");
+    let txt_out = Command::new(base_dir.join("build/salsa-debug-cli"))
+        .args(["--export-text", &txt_report.to_string_lossy()])
+        .output()
+        .map_err(|e| format!("salsa-debug-cli --export-text: {e}"))?;
+    if !txt_out.status.success() {
+        return Err("salsa-debug-cli --export-text failed".to_string());
+    }
+    let txt_body = fs::read_to_string(&txt_report)
+        .map_err(|e| format!("read exported text report: {e}"))?;
+    for needle in [
+        "[1] HOST, ENVIRONMENT & BUILD FRESHNESS",
+        "[2] ENGINE, DSP, RT TIMING & FAILSAFE",
+        "[4] PIPEWIRE SCREENCAST BROKER, SHM & DISPLAY REFRESH",
+        "[6] HOST AUDIT: SOCKETS, SYSTEMD UNITS, PROCESSES & ALSA KERNEL",
+    ] {
+        if !txt_body.contains(needle) {
+            return Err(format!("exported text report missing section: {needle}"));
+        }
+    }
+
     let mut cap = DryRunDesktopCapturer::new(64, 48);
     let img = RgbaImage {
         width: 64,

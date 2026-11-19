@@ -115,6 +115,10 @@ public:
         applyThemeAndFont();
     }
 
+    void setScreenCastLive(bool enabled) {
+        if (dbgWidget_) dbgWidget_->setScreenCastLive(enabled);
+    }
+
 protected:
     void closeEvent(QCloseEvent* event) override {
         if (syncTimer_) syncTimer_->stop();
@@ -192,6 +196,8 @@ static bool isCliModeArg(int argc, char** argv) {
             || std::strcmp(a, "--tone") == 0
             || std::strcmp(a, "--midi") == 0
             || std::strcmp(a, "--export") == 0
+            || std::strcmp(a, "--export-text") == 0
+            || std::strcmp(a, "--text") == 0
             || std::strcmp(a, "--journal") == 0
             || std::strcmp(a, "--autosync") == 0
             || std::strcmp(a, "--dbus") == 0
@@ -209,9 +215,11 @@ int main(int argc, char** argv) {
     salsa_reset_sigpipe();
 
     bool selfTest = false;
+    bool liveFeed = false;
     int initialTab = 0;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--self-test") == 0) selfTest = true;
+        else if (std::strcmp(argv[i], "--live-feed") == 0 || std::strcmp(argv[i], "--live") == 0) liveFeed = true;
         else if (std::strcmp(argv[i], "--tab") == 0 && i + 1 < argc) {
             initialTab = std::clamp(std::atoi(argv[++i]), 0, 4);
         }
@@ -246,5 +254,8 @@ int main(int argc, char** argv) {
 
     salsa::SalsaDebugWindow win(initialTab);
     win.show();
+    if (liveFeed) {
+        QTimer::singleShot(150, &win, [&win]() { win.setScreenCastLive(true); });
+    }
     return app.exec();
 }

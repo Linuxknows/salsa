@@ -536,10 +536,22 @@ void SalsaSpectrumCanvas::updateTelemetry(
     bandFreqHz_ = bandFreqHz;
     dynDeltas_ = deltas;
 
+    const auto nowTp = std::chrono::steady_clock::now();
+    double dtSec = 0.016;
+    if (lastLevelTick_.time_since_epoch().count() != 0) {
+        dtSec = std::clamp(
+            std::chrono::duration<double>(nowTp - lastLevelTick_).count(),
+            0.001, 0.25);
+    }
+    lastLevelTick_ = nowTp;
+    const float aRise = 1.0f - std::exp(-static_cast<float>(dtSec / 0.014));
+    const float aFall = 1.0f - std::exp(-static_cast<float>(dtSec / 0.075));
+
     for (int i = 0; i < SALSA_EQ_BANDS; ++i) {
         const float target = std::clamp(levels[i], -60.0f, 6.0f);
         const float prev = smoothLevels_[i];
-        float nxt = 0.65f * prev + 0.35f * target;
+        const float alpha = (target > prev) ? aRise : aFall;
+        float nxt = prev + alpha * (target - prev);
         if (std::abs(nxt - target) < 0.02f) nxt = target;
         if (nxt != prev) changed = true;
         smoothLevels_[i] = nxt;
@@ -660,11 +672,19 @@ void SalsaSpectrumCanvas::paintEvent(QPaintEvent*) {
     QFont specF(QStringLiteral("Monospace"));
     specF.setPixelSize(std::clamp(scaledPx(10, fontPct_), 9, 14));
     p.setFont(specF);
+    const double gridLeft = 40.0;
+    const double gridRight = std::max(gridLeft + 40.0, w - 3.0);
+    QPainterPath innerClip;
+    innerClip.addRoundedRect(QRectF(2.0, 2.0, std::max(10.0, w - 4.0), std::max(10.0, h - 4.0)), 9.0, 9.0);
+
     for (int db : {18, 12, 6, 0, -6, -12, -18}) {
         const double y = gainToY(static_cast<double>(db), h);
+        p.save();
+        p.setClipPath(innerClip);
         p.setPen(QPen(theme_.qcolor(db == 0 ? "grid_zero" : "spectrum_grid", "#1e293b"),
                       db == 0 ? 1.2 : 1.0, Qt::DashLine));
-        p.drawLine(40, static_cast<int>(y), static_cast<int>(w) - 16, static_cast<int>(y));
+        p.drawLine(QPointF(gridLeft, y), QPointF(gridRight, y));
+        p.restore();
         p.setPen(theme_.qcolor("text_dim", "#64748b"));
         p.drawText(6, static_cast<int>(y + 4), QStringLiteral("%1%2dB").arg(db >= 0 ? QStringLiteral("+") : QString(), QString::number(db)));
     }
@@ -703,20 +723,24 @@ void SalsaSpectrumCanvas::paintEvent(QPaintEvent*) {
         effPts[i] = QPointF(bx, gainToY(staticGains_[i] + dynDeltas_[i], h));
     }
 
-    auto makeCubic = [](const std::array<QPointF, SALSA_EQ_BANDS>& pts) -> QPainterPath {
-        QPainterPath path(pts[0]);
+    auto makeExtendedCubic = [gridLeft, gridRight](const std::array<QPointF, SALSA_EQ_BANDS>& pts) -> QPainterPath {
+        QPainterPath path(QPointF(gridLeft, pts[0].y()));
+        const double lmx = calcMidPt(gridLeft, pts[0].x());
+        path.cubicTo(QPointF(lmx, pts[0].y()), QPointF(lmx, pts[0].y()), pts[0]);
         for (int i = 0; i < SALSA_EQ_BANDS - 1; ++i) {
             const double mx = calcMidPt(pts[i].x(), pts[i + 1].x());
             path.cubicTo(QPointF(mx, pts[i].y()), QPointF(mx, pts[i + 1].y()), pts[i + 1]);
         }
+        const double rmx = calcMidPt(pts.back().x(), gridRight);
+        path.cubicTo(QPointF(rmx, pts.back().y()), QPointF(rmx, pts.back().y()), QPointF(gridRight, pts.back().y()));
         return path;
     };
 
-    const QPainterPath dynPath = makeCubic(effPts);
+    const QPainterPath dynPath = makeExtendedCubic(effPts);
     QPainterPath fillPath(dynPath);
     const double zeroY = gainToY(0.0, h);
-    fillPath.lineTo(effPts.back().x(), zeroY);
-    fillPath.lineTo(effPts.front().x(), zeroY);
+    fillPath.lineTo(gridRight, zeroY);
+    fillPath.lineTo(gridLeft, zeroY);
     fillPath.closeSubpath();
 
     QColor cFillTop = theme_.qcolor("accent_primary", "#00e676");
@@ -726,6 +750,8 @@ void SalsaSpectrumCanvas::paintEvent(QPaintEvent*) {
     QLinearGradient fGrad(0.0, 0.0, 0.0, h);
     fGrad.setColorAt(0.0, cFillTop);
     fGrad.setColorAt(1.0, cFillBot);
+    p.save();
+    p.setClipPath(innerClip);
     p.setBrush(fGrad);
     p.setPen(Qt::NoPen);
     p.drawPath(fillPath);
@@ -734,11 +760,12 @@ void SalsaSpectrumCanvas::paintEvent(QPaintEvent*) {
     p.setPen(QPen(theme_.qcolor("accent_warn", "#f59e0b"), 1.6, Qt::DotLine));
     p.drawPath(dynPath);
 
-    const QPainterPath statPath = makeCubic(statPts);
+    const QPainterPath statPath = makeExtendedCubic(statPts);
     QColor curveCol = enabled_ ? theme_.qcolor("accent_primary", "#00e676")
                                : theme_.qcolor("text_dim", "#64748b");
     p.setPen(QPen(curveCol, 2.4));
     p.drawPath(statPath);
+    p.restore();
 
     // Band handles
     for (int i = 0; i < SALSA_EQ_BANDS; ++i) {
@@ -983,7 +1010,7 @@ MiniSalsaPreview::MiniSalsaPreview(const SalsaThemeData& theme, QWidget* parent)
     for (const MiniHdr& mh : {
              MiniHdr{"Rate:", "48,000 Hz", "192,000 Hz"},
              MiniHdr{"Quantum:", "256 frames", "512 frames"},
-             MiniHdr{"Theme:", "Custom", "Obsidian Glass"}}) {
+             MiniHdr{"Theme:", "Custom", "Catppuccin Mocha"}}) {
         auto* col = new QVBoxLayout();
         col->setSpacing(1);
         col->addWidget(new QLabel(QString::fromLatin1(mh.lbl), topCard));
@@ -1177,7 +1204,10 @@ void ColorSwatchRow::updateSwatchVisual() {
     const QColor c(hex_);
     const QString border = c.lightness() < 128 ? QStringLiteral("#ffffff") : QStringLiteral("#0f172a");
     btnSwatch_->setStyleSheet(
-        QStringLiteral("background-color: %1; border: 1px solid %2; border-radius: 4px; padding: 0px;")
+        QStringLiteral(
+            "QPushButton, QPushButton:hover, QPushButton:pressed {"
+            " background-color: %1; border: 1px solid %2; border-radius: 4px; padding: 0px;"
+            "}")
             .arg(hex_, border));
 }
 
@@ -1238,6 +1268,11 @@ void SalsaCustomThemeDialog::resetForOpen(const SalsaThemeData& initialTheme, in
     fontPct_ = normalizeFontScalePct(fontPct);
     workingTheme_ = normalizeThemeData(initialTheme);
     initialSnapshot_ = workingTheme_;
+    if (cmbClone_ && !workingTheme_.name.isEmpty()) {
+        if (int idx = cmbClone_->findText(workingTheme_.name); idx >= 0) {
+            cmbClone_->setCurrentIndex(idx);
+        }
+    }
     refreshAllControlsFromTheme();
     flushPreviewUpdate();
 }
@@ -1253,6 +1288,11 @@ void SalsaCustomThemeDialog::buildUi() {
     cmbClone_ = new QComboBox(this);
     for (const QString& n : presetNames_) {
         if (n != QLatin1String(CUSTOM_THEME_NAME)) cmbClone_->addItem(n);
+    }
+    if (!workingTheme_.name.isEmpty()) {
+        if (int idx = cmbClone_->findText(workingTheme_.name); idx >= 0) {
+            cmbClone_->setCurrentIndex(idx);
+        }
     }
     topRow->addWidget(cmbClone_);
 
@@ -1368,6 +1408,15 @@ void SalsaCustomThemeDialog::buildUi() {
     auto* btnCancel = new QPushButton(QStringLiteral("Cancel"), this);
     connect(btnCancel, &QPushButton::clicked, this, &QDialog::reject);
     actRow->addWidget(btnCancel);
+
+    connect(this, &QDialog::rejected, this, [this]() {
+        workingTheme_ = initialSnapshot_;
+        refreshAllControlsFromTheme();
+        flushPreviewUpdate();
+        if (chkMirrorMain_ && chkMirrorMain_->isChecked()) {
+            chkMirrorMain_->setChecked(false);
+        }
+    });
 
     auto* btnApply = new QPushButton(QStringLiteral("Apply"), this);
     connect(btnApply, &QPushButton::clicked, this, [this]() {

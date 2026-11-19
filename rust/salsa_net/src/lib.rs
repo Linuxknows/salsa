@@ -10,6 +10,7 @@ pub mod bluez_wire;
 pub mod c_abi;
 pub mod ctl_cli;
 pub mod debug_server;
+pub mod dmabuf_gl;
 pub mod dsp;
 pub mod failsafe;
 pub mod ffi;

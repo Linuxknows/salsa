@@ -91,6 +91,7 @@ private:
 };
 
 struct SalsaThemeData {
+    QString name;
     bool isLight = false;
     QMap<QString, QString> colors;
 
@@ -142,6 +143,8 @@ QString installRootPath();
 int normalizeVolStepPct(int step);
 int normalizeFontScalePct(int pct);
 int scaledPx(int basePx, int fontPct);
+int salsaDetectedOutputHz(const QWidget* w = nullptr);
+int salsaTelemetryIntervalMs(const QWidget* w = nullptr, int maxHz = 120);
 
 QPalette buildSalsaPalette(const SalsaThemeData& theme);
 QString buildSalsaStylesheet(const SalsaThemeData& theme, bool mini, int fontPct);

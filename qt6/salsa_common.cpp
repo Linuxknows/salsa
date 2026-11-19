@@ -11,10 +11,12 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QProxyStyle>
+#include <QScreen>
 #include <QStandardPaths>
 #include <QTextEdit>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+#include <QWindow>
 
 #include <algorithm>
 #include <cmath>
@@ -54,9 +56,15 @@ QString jsonCompact(const QJsonArray& arr) {
 
 SalsaThemeData themeFromJsonObj(const QJsonObject& obj) {
     SalsaThemeData out;
-    out.isLight = obj.value(QStringLiteral("is_light")).toBool(false);
-    for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
-        if (it.key() == QStringLiteral("is_light")) continue;
+    const QJsonValue inner = obj.value(QStringLiteral("theme"));
+    const QJsonObject src = inner.isObject() ? inner.toObject() : obj;
+    out.name = obj.value(QStringLiteral("name")).toString();
+    if (out.name.isEmpty()) {
+        out.name = src.value(QStringLiteral("name")).toString();
+    }
+    out.isLight = src.value(QStringLiteral("is_light")).toBool(false);
+    for (auto it = src.constBegin(); it != src.constEnd(); ++it) {
+        if (it.key() == QStringLiteral("is_light") || it.key() == QStringLiteral("name")) continue;
         if (it.value().isString()) {
             out.colors.insert(it.key(), it.value().toString());
         }
@@ -66,6 +74,7 @@ SalsaThemeData themeFromJsonObj(const QJsonObject& obj) {
 
 QJsonObject themeToJsonObj(const SalsaThemeData& theme) {
     QJsonObject obj;
+    if (!theme.name.isEmpty()) obj.insert(QStringLiteral("name"), theme.name);
     obj.insert(QStringLiteral("is_light"), theme.isLight);
     for (auto it = theme.colors.constBegin(); it != theme.colors.constEnd(); ++it) {
         obj.insert(it.key(), it.value());
@@ -605,6 +614,28 @@ void FontScaleBar::stepBy(int delta) {
     pct_ = next;
     if (btnPct_) btnPct_->setText(QStringLiteral("%1%").arg(pct_));
     emit fontScaleChanged(pct_);
+}
+
+int salsaDetectedOutputHz(const QWidget* w) {
+    QScreen* scr = nullptr;
+    if (w) {
+        if (QWidget* win = w->window()) {
+            scr = win->screen();
+        }
+        if (!scr) scr = w->screen();
+    }
+    if (!scr) scr = QGuiApplication::primaryScreen();
+    if (!scr) return 60;
+    const double rr = scr->refreshRate();
+    if (rr >= 24.0 && rr <= 500.0) {
+        return static_cast<int>(std::lround(rr));
+    }
+    return 60;
+}
+
+int salsaTelemetryIntervalMs(const QWidget* w, int maxHz) {
+    const int hz = std::clamp(salsaDetectedOutputHz(w), 30, std::max(30, maxHz));
+    return std::clamp(static_cast<int>(std::floor(1000.0 / hz)), 4, 33);
 }
 
 }  // namespace salsa

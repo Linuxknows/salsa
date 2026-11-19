@@ -4,10 +4,11 @@ use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::collections::VecDeque;
 use std::env;
 use std::ffi::CString;
+use std::fmt::Write as FmtWrite;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -1045,12 +1046,32 @@ pub fn scan_process_routing_audit() -> Vec<JsonValue> {
     out
 }
 
+fn strip_ansi_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                let _ = chars.next();
+                for ch in chars.by_ref() {
+                    if ch.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn scan_ss_unix_sockets() -> Vec<JsonValue> {
     let mut out = Vec::new();
     if which("ss").is_none() {
         return out;
     }
-    let Ok(res) = Command::new("ss").args(["-xnH"]).output() else {
+    let Ok(res) = Command::new("ss").args(["-xanH"]).output() else {
         return out;
     };
     let txt = String::from_utf8_lossy(&res.stdout);
@@ -1411,6 +1432,708 @@ impl DiagnosticProbes {
         ))
     }
 
+    pub fn build_detailed_text_report(
+        base_dir: &Path,
+        snapshot: Option<&JsonValue>,
+        audit: Option<&JsonValue>,
+        probes: Option<&JsonValue>,
+        events: &[JsonValue],
+    ) -> String {
+        let mut out = String::with_capacity(32 * 1024);
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let _ = writeln!(out, "================================================================================");
+        let _ = writeln!(out, "SALSA (LWASAPI) DETAILED TEXT DIAGNOSTIC REPORT");
+        let _ = writeln!(out, "Generated: {} (epoch_ms={now_ms})", format_ts_ms(now_ms));
+        let _ = writeln!(out, "================================================================================\n");
+
+        fn jstr<'a>(obj: &'a JsonValue, key: &str) -> &'a str {
+            obj.get(key).and_then(JsonValue::as_str).unwrap_or("")
+        }
+        let s_str = jstr;
+        let s_i64 = |obj: &JsonValue, key: &str| -> i64 {
+            obj.get(key).and_then(JsonValue::as_i64).unwrap_or(0)
+        };
+        let s_f64 = |obj: &JsonValue, key: &str| -> f64 {
+            obj.get(key).and_then(JsonValue::as_f64).unwrap_or(0.0)
+        };
+        let s_bool = |obj: &JsonValue, key: &str| -> bool {
+            obj.get(key).and_then(JsonValue::as_bool).unwrap_or(false)
+        };
+
+        // [1] HOST, BUILD & ENVIRONMENT
+        let _ = writeln!(out, "[1] HOST, ENVIRONMENT & BUILD FRESHNESS");
+        if let Some(a) = audit {
+            if let Some(h) = a.get("host") {
+                let _ = writeln!(
+                    out,
+                    "  Host      : {} | OS={} | Kernel={} | Arch={}",
+                    s_str(h, "hostname"),
+                    s_str(h, "os"),
+                    s_str(h, "kernel"),
+                    s_str(h, "arch")
+                );
+                let _ = writeln!(out, "  CPU       : {}", s_str(h, "cpu"));
+                let _ = writeln!(
+                    out,
+                    "  UID/Dirs  : uid={} root={} xdg_rt={} priv_rt={}",
+                    s_i64(h, "uid"),
+                    s_str(h, "base_dir"),
+                    s_str(h, "xdg_runtime_dir"),
+                    s_str(h, "private_runtime_dir")
+                );
+            }
+            if let Some(bf) = a.get("build_freshness") {
+                let _ = writeln!(
+                    out,
+                    "  Build     : stale={} checked={} summary={}",
+                    s_bool(bf, "stale"),
+                    s_i64(bf, "checked_count"),
+                    s_str(bf, "summary")
+                );
+                if let Some(arr) = bf.get("stale_artifacts").and_then(JsonValue::as_array) {
+                    for st in arr {
+                        let _ = writeln!(out, "    * stale: {}", st.to_json_compact());
+                    }
+                }
+            }
+            let _ = writeln!(out, "  PW Note   : {}", s_str(a, "pipewire_note"));
+        } else {
+            let _ = writeln!(out, "  Root      : {}", base_dir.display());
+        }
+        let mem_info = read_text_lossy(Path::new("/proc/meminfo"), 4096);
+        for line in mem_info.lines().take(5) {
+            let _ = writeln!(out, "  MemInfo   : {}", line.trim());
+        }
+        if let Ok(rd) = fs::read_dir("/sys/class/drm") {
+            let mut render_cards: Vec<String> = Vec::new();
+            for ent in rd.flatten() {
+                let name = ent.file_name().to_string_lossy().into_owned();
+                if name.starts_with("renderD") {
+                    let ue = read_text_lossy(&ent.path().join("device/uevent"), 2048);
+                    let driver = ue.lines().find(|l| l.starts_with("DRIVER=")).unwrap_or("");
+                    let pci_id = ue.lines().find(|l| l.starts_with("PCI_ID=")).unwrap_or("");
+                    let slot = ue.lines().find(|l| l.starts_with("PCI_SLOT_NAME=")).unwrap_or("");
+                    render_cards.push(format!("/dev/dri/{name} [{driver} {pci_id} {slot}]"));
+                }
+            }
+            render_cards.sort();
+            for rc in render_cards {
+                let _ = writeln!(out, "  GPU Node  : {rc}");
+            }
+        }
+        out.push('\n');
+
+        // [2] DAEMON ENGINE, RT TIMING & FAILSAFE
+        let _ = writeln!(out, "[2] ENGINE, DSP, RT TIMING & FAILSAFE");
+        if let Some(snap) = snapshot {
+            let ts = s_i64(snap, "ts_ms");
+            let _ = writeln!(
+                out,
+                "  Snapshot  : ts={} ({ts}) mono_ns={} dropped_events={}",
+                format_ts_ms(ts),
+                s_i64(snap, "ts_mono_ns"),
+                s_i64(snap, "dropped_events")
+            );
+            if let Some(eng) = snap.get("engine") {
+                let _ = writeln!(
+                    out,
+                    "  Playback  : {} (id={}) | {} Hz / {}ch / {}-bit | period={} buf={}",
+                    s_str(eng, "hw_device"),
+                    s_str(eng, "active_playback_id"),
+                    s_i64(eng, "sample_rate"),
+                    s_i64(eng, "channels"),
+                    s_i64(eng, "format_bits"),
+                    s_i64(eng, "period_frames"),
+                    s_i64(eng, "buffer_frames")
+                );
+                let _ = writeln!(
+                    out,
+                    "  CaptureHW : {} (id={}) | MIDI={}",
+                    s_str(eng, "hw_capture_device"),
+                    s_str(eng, "active_capture_id"),
+                    s_str(eng, "midi_device")
+                );
+                let _ = writeln!(
+                    out,
+                    "  Levels    : out_vol={}% muted={} peak_L={:.4} peak_R={:.4} | mic_vol={}% muted={}",
+                    s_i64(eng, "desktop_volume_pct"),
+                    s_i64(eng, "desktop_muted"),
+                    s_f64(eng, "output_peak_l"),
+                    s_f64(eng, "output_peak_r"),
+                    s_i64(eng, "desktop_mic_volume_pct"),
+                    s_i64(eng, "desktop_mic_muted")
+                );
+                let _ = writeln!(
+                    out,
+                    "  DSP/EQ    : preset='{}' enabled={} dyn_mode={} preamp={:.2}dB thresh={:.2}dB ratio={:.2} limiter={}",
+                    s_str(eng, "eq_preset"),
+                    s_i64(eng, "eq_enabled"),
+                    s_i64(eng, "eq_dynamic_mode"),
+                    s_f64(eng, "eq_preamp_db"),
+                    s_f64(eng, "eq_dyn_threshold_db"),
+                    s_f64(eng, "eq_dyn_ratio"),
+                    s_i64(eng, "eq_limiter_enabled")
+                );
+                let _ = writeln!(
+                    out,
+                    "  Scheduling: rt_prio={} total_cycles={} hw_xruns={} excl_owner={} midi_routed={} pa_up={} pa_clients={}",
+                    s_i64(eng, "realtime_priority"),
+                    s_i64(eng, "total_cycles"),
+                    s_i64(eng, "hw_xruns"),
+                    s_i64(eng, "exclusive_owner_id"),
+                    s_i64(eng, "midi_events_routed"),
+                    s_i64(eng, "pa_server_running"),
+                    s_i64(eng, "pa_clients")
+                );
+            }
+            if let Some(rt) = snap.get("rt") {
+                let _ = writeln!(
+                    out,
+                    "  RT Timing : cycles={} cpu_load={:.2}% budget={:.1}us | last={:.1}us avg={:.1}us min={:.1}us max={:.1}us",
+                    s_i64(rt, "cycle_count"),
+                    s_f64(rt, "cpu_load_pct"),
+                    s_f64(rt, "budget_us"),
+                    s_f64(rt, "last_cycle_us"),
+                    s_f64(rt, "avg_cycle_us"),
+                    s_f64(rt, "min_cycle_us"),
+                    s_f64(rt, "max_cycle_us")
+                );
+                let _ = writeln!(
+                    out,
+                    "  RT Stages : eq={:.1}us pa_mix={:.1}us hw_write={:.1}us | jitter_last={:.1}us jitter_max={:.1}us",
+                    s_f64(rt, "eq_us"),
+                    s_f64(rt, "pa_mix_us"),
+                    s_f64(rt, "hw_write_us"),
+                    s_f64(rt, "last_jitter_us"),
+                    s_f64(rt, "max_jitter_us")
+                );
+            }
+            if let Some(wire) = snap.get("wire") {
+                let _ = writeln!(
+                    out,
+                    "  Wire/Safe : backend={} is_rust={} armed={} trips={} pa_q={} pw_q={} bt_fb={} fd_blk={} resets={} last='{}'",
+                    s_str(wire, "backend"),
+                    s_i64(wire, "is_rust"),
+                    s_i64(wire, "armed"),
+                    s_i64(wire, "trips_total"),
+                    s_i64(wire, "pa_quarantined"),
+                    s_i64(wire, "pw_quarantined"),
+                    s_i64(wire, "bt_fallbacks"),
+                    s_i64(wire, "fd_leaks_blocked"),
+                    s_i64(wire, "manual_resets"),
+                    s_str(wire, "last_reason")
+                );
+            }
+        } else {
+            let _ = writeln!(out, "  (No live snapshot available — audiodg offline or unreachable)");
+        }
+        let ctl_path = base_dir.join("build/lwasapi-ctl");
+        if ctl_path.is_file() {
+            if let Ok(ctl_out) = Command::new(&ctl_path).arg("status").output() {
+                let txt = String::from_utf8_lossy(&ctl_out.stdout);
+                if !txt.trim().is_empty() {
+                    let _ = writeln!(out, "  [lwasapi-ctl status]");
+                    for line in txt.lines() {
+                        let _ = writeln!(out, "    {line}");
+                    }
+                }
+            }
+        }
+        out.push('\n');
+
+        // [3] BLUEZ A2DP / HFP, CAPTURE DUPLEX & MIDI HUB
+        let _ = writeln!(out, "[3] BLUEZ A2DP/HFP, DUPLEX CAPTURE & MIDI HUB");
+        if let Some(snap) = snapshot {
+            if let Some(bt) = snap.get("bluez") {
+                let _ = writeln!(
+                    out,
+                    "  BlueZ     : active={} init={} endpoints={} direct_sock={} has_tr={} tx_paused={}",
+                    s_i64(bt, "active"),
+                    s_i64(bt, "initialized"),
+                    s_i64(bt, "endpoints_registered"),
+                    s_i64(bt, "direct_socket"),
+                    s_i64(bt, "has_transport"),
+                    s_i64(bt, "tx_paused")
+                );
+                let _ = writeln!(
+                    out,
+                    "  BT Stream : alias='{}' codec={} rate={}Hz ch={} delay={}ms avrcp_vol={} mtu_r={} mtu_w={}",
+                    s_str(bt, "alias"),
+                    s_str(bt, "codec"),
+                    s_i64(bt, "sample_rate"),
+                    s_i64(bt, "channels"),
+                    s_i64(bt, "delay_ms"),
+                    s_i64(bt, "avrcp_vol"),
+                    s_i64(bt, "mtu_r"),
+                    s_i64(bt, "mtu_w")
+                );
+                let _ = writeln!(
+                    out,
+                    "  BT TXRing : fill={}/{} pkts={} underruns={} errors={} dev={} tr={} ep={}",
+                    s_i64(bt, "tx_ring_fill"),
+                    s_i64(bt, "tx_ring_cap"),
+                    s_i64(bt, "tx_packets"),
+                    s_i64(bt, "tx_underruns"),
+                    s_i64(bt, "tx_errors"),
+                    s_str(bt, "device_path"),
+                    s_str(bt, "transport_path"),
+                    s_str(bt, "endpoint_path")
+                );
+            }
+            if let Some(cap) = snap.get("capture") {
+                let _ = writeln!(
+                    out,
+                    "  Capture   : active={} alias='{}' id='{}' pcm='{}' usb={} duplex_locked={}",
+                    s_i64(cap, "active"),
+                    s_str(cap, "alias"),
+                    s_str(cap, "device_id"),
+                    s_str(cap, "pcm_path"),
+                    s_i64(cap, "is_usb"),
+                    s_i64(cap, "duplex_locked")
+                );
+                let _ = writeln!(
+                    out,
+                    "  CapClock  : hw_rate={} pref_rate={} measured_rate={} ch={} fmt={} ring_fill={} kicks={}",
+                    s_i64(cap, "hw_rate"),
+                    s_i64(cap, "pref_rate"),
+                    s_i64(cap, "measured_rate"),
+                    s_i64(cap, "hw_channels"),
+                    s_i64(cap, "hw_format"),
+                    s_i64(cap, "ring_fill"),
+                    s_i64(cap, "kick_count")
+                );
+            }
+            if let Some(midi) = snap.get("midi") {
+                let _ = writeln!(
+                    out,
+                    "  MIDI Hub  : init={} rawmidi={} seq={}:{} routed={} ctrl='{}' dev='{}'",
+                    s_i64(midi, "initialized"),
+                    s_i64(midi, "rawmidi_open"),
+                    s_i64(midi, "seq_client"),
+                    s_i64(midi, "seq_in_port"),
+                    s_i64(midi, "events_routed"),
+                    s_str(midi, "controller"),
+                    s_str(midi, "dev_path")
+                );
+            }
+        }
+        out.push('\n');
+
+        // [4] ZERO-PIPEWIRE SCREENCAST BROKER, SHM PREVIEW & DISPLAY OUTPUTS
+        let _ = writeln!(out, "[4] PIPEWIRE SCREENCAST BROKER, SHM & DISPLAY REFRESH");
+        if let Some(snap) = snapshot {
+            if let Some(pw) = snap.get("pw") {
+                let act_fps = s_i64(pw, "actual_fps_x100") as f64 / 100.0;
+                let _ = writeln!(
+                    out,
+                    "  PW Broker : running={} zero_pw={} preview_req={} casting={} fps={:.2} relayed={} dropped={}",
+                    s_i64(pw, "broker_running"),
+                    s_i64(pw, "zero_pw_mode"),
+                    s_i64(pw, "preview_requested"),
+                    s_i64(pw, "active_casting"),
+                    act_fps,
+                    s_i64(pw, "frames_relayed_total"),
+                    s_i64(pw, "frames_dropped")
+                );
+                let _ = writeln!(
+                    out,
+                    "  PW Targets: dmabuf_streams={} memfd_streams={} audio_rejects={} prev={}x{}@{}fps cap_lim={}x{}@{}fps",
+                    s_i64(pw, "dmabuf_streams"),
+                    s_i64(pw, "memfd_streams"),
+                    s_i64(pw, "audio_rejects"),
+                    s_i64(pw, "preview_target_w"),
+                    s_i64(pw, "preview_target_h"),
+                    s_i64(pw, "preview_target_fps"),
+                    s_i64(pw, "cast_limit_w"),
+                    s_i64(pw, "cast_limit_h"),
+                    s_i64(pw, "cast_limit_fps")
+                );
+                let _ = writeln!(
+                    out,
+                    "  PW Paths  : sock={} mgr={} shm={}",
+                    s_str(pw, "socket_path"),
+                    s_str(pw, "manager_socket_path"),
+                    s_str(pw, "preview_shm_name")
+                );
+                let shm_path = s_str(pw, "preview_shm_name");
+                if !shm_path.is_empty() {
+                    if let Ok(rd) = ScreenCastShmReader::open(shm_path) {
+                        if let Some(fr) = rd.read_frame() {
+                            let _ = writeln!(
+                                out,
+                                "  PW SHMHdr : active={} dmabuf={} mappable={} size={}x{} seq={} fps={:.2} cons={} prod='{}' fmt='{}'",
+                                fr.active_stream,
+                                fr.is_dmabuf,
+                                fr.dmabuf_mappable,
+                                fr.width,
+                                fr.height,
+                                fr.seq,
+                                fr.actual_fps_x100 as f64 / 100.0,
+                                fr.cons_count,
+                                fr.prod_name,
+                                fr.format_name
+                            );
+                        }
+                    }
+                }
+                if let Some(clients) = pw.get("clients").and_then(JsonValue::as_array) {
+                    let _ = writeln!(out, "  PW Clients ({}):", clients.len());
+                    for c in clients {
+                        let _ = writeln!(
+                            out,
+                            "    - id={} pid={} portal={} nodes={} app='{}' portal_id='{}' bin='{}'",
+                            s_i64(c, "id"),
+                            s_i64(c, "pid"),
+                            s_i64(c, "is_portal"),
+                            s_i64(c, "num_nodes"),
+                            s_str(c, "app_name"),
+                            s_str(c, "portal_app_id"),
+                            s_str(c, "binary")
+                        );
+                    }
+                }
+                if let Some(nodes) = pw.get("nodes").and_then(JsonValue::as_array) {
+                    let _ = writeln!(out, "  PW Nodes ({}):", nodes.len());
+                    for n in nodes {
+                        let _ = writeln!(
+                            out,
+                            "    - id={} cid={} pid={} dir={} state={} {}x{}@{}/{} {} {} mod={} bufs={} frames={} name='{}' class='{}'",
+                            s_i64(n, "id"),
+                            s_i64(n, "client_id"),
+                            s_i64(n, "client_pid"),
+                            s_i64(n, "direction"),
+                            s_i64(n, "state"),
+                            s_i64(n, "width"),
+                            s_i64(n, "height"),
+                            s_i64(n, "fps_num"),
+                            s_i64(n, "fps_denom"),
+                            s_str(n, "format_name"),
+                            s_str(n, "mem_type"),
+                            s_str(n, "drm_modifier"),
+                            s_i64(n, "n_buffers"),
+                            s_i64(n, "frames"),
+                            s_str(n, "name"),
+                            s_str(n, "media_class")
+                        );
+                    }
+                }
+                if let Some(links) = pw.get("links").and_then(JsonValue::as_array) {
+                    let _ = writeln!(out, "  PW Links ({}):", links.len());
+                    for l in links {
+                        let _ = writeln!(
+                            out,
+                            "    - id={} {} -> {} state={} dmabuf={} relayed={} [{}]",
+                            s_i64(l, "id"),
+                            s_i64(l, "out_node_id"),
+                            s_i64(l, "in_node_id"),
+                            s_i64(l, "state"),
+                            s_i64(l, "is_dmabuf"),
+                            s_i64(l, "frames_relayed"),
+                            s_str(l, "format_summary")
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(kdoc) = which("kscreen-doctor") {
+            if let Ok(ko) = Command::new(kdoc).arg("-o").output() {
+                let raw = String::from_utf8_lossy(&ko.stdout);
+                let txt = strip_ansi_escapes(&raw);
+                if !txt.trim().is_empty() {
+                    let _ = writeln!(out, "  [Display Outputs (kscreen-doctor -o)]");
+                    for line in txt.lines().filter(|l| {
+                        let t = l.trim();
+                        t.starts_with("Output:")
+                            || t.starts_with("Modes:")
+                            || t.starts_with("Geometry:")
+                            || t.starts_with("Scale:")
+                            || t.starts_with("Vrr:")
+                            || t.starts_with("HDR:")
+                    }) {
+                        let _ = writeln!(out, "    {}", line.trim_end());
+                    }
+                }
+            }
+        }
+        out.push('\n');
+
+        // [5] ACTIVE AUDIO CLIENTS & STREAMS
+        let _ = writeln!(out, "[5] ACTIVE WASAPI SESSIONS, PULSEAUDIO CLIENTS & STREAMS");
+        if let Some(snap) = snapshot {
+            if let Some(ws) = snap.get("wasapi_sessions").and_then(JsonValue::as_array) {
+                let _ = writeln!(out, "  WASAPI Sessions ({}):", ws.len());
+                for s in ws {
+                    let _ = writeln!(
+                        out,
+                        "    - sid={} pid={} name='{}' mode={} cap={} {}Hz/{}ch active={} muted={} vol={}% buf={} per={} buffered={} xruns={}",
+                        s_i64(s, "session_id"),
+                        s_i64(s, "pid"),
+                        s_str(s, "name"),
+                        s_i64(s, "share_mode"),
+                        s_i64(s, "is_capture"),
+                        s_i64(s, "rate"),
+                        s_i64(s, "channels"),
+                        s_i64(s, "active"),
+                        s_i64(s, "muted"),
+                        s_i64(s, "volume_milli") / 10,
+                        s_i64(s, "buffer_frames"),
+                        s_i64(s, "period_frames"),
+                        s_i64(s, "buffered_frames"),
+                        s_i64(s, "xruns")
+                    );
+                }
+            }
+            if let Some(pc) = snap.get("pa_clients").and_then(JsonValue::as_array) {
+                let _ = writeln!(out, "  PulseAudio Clients ({}):", pc.len());
+                for c in pc {
+                    let _ = writeln!(
+                        out,
+                        "    - idx={} pid={} name='{}' bin='{}' ver={} authed={} subs=0x{:x} outs={}",
+                        s_i64(c, "index"),
+                        s_i64(c, "pid"),
+                        s_str(c, "name"),
+                        s_str(c, "binary"),
+                        s_i64(c, "version"),
+                        s_i64(c, "authed"),
+                        s_i64(c, "sub_mask"),
+                        s_i64(c, "out_count")
+                    );
+                }
+            }
+            if let Some(ps) = snap.get("pa_streams").and_then(JsonValue::as_array) {
+                let _ = writeln!(out, "  PulseAudio Streams ({}):", ps.len());
+                for st in ps {
+                    let _ = writeln!(
+                        out,
+                        "    - idx={} cid={} pid={} name='{}' dev='{}' pb={} mon={} peak={} {}Hz/{}ch fmt={} act={} cork={} mut={} vol={}% buf={}/{} peak={:.3}/{:.3} wr={} rd={}",
+                        s_i64(st, "index"),
+                        s_i64(st, "client_index"),
+                        s_i64(st, "pid"),
+                        s_str(st, "name"),
+                        s_str(st, "device_id"),
+                        s_i64(st, "is_playback"),
+                        s_i64(st, "is_monitor"),
+                        s_i64(st, "peak_detect"),
+                        s_i64(st, "rate"),
+                        s_i64(st, "channels"),
+                        s_i64(st, "format"),
+                        s_i64(st, "active"),
+                        s_i64(st, "corked"),
+                        s_i64(st, "muted"),
+                        s_i64(st, "volume_milli") / 10,
+                        s_i64(st, "buffered_frames"),
+                        s_i64(st, "ring_cap_frames"),
+                        s_f64(st, "mix_peak_l"),
+                        s_f64(st, "mix_peak_r"),
+                        s_i64(st, "write_index"),
+                        s_i64(st, "read_index")
+                    );
+                }
+            }
+        }
+        out.push('\n');
+
+        // [6] HOST AUDIT: SOCKETS, SYSTEMD UNITS, AUDIO PROCESSES & ALSA PROC
+        let _ = writeln!(out, "[6] HOST AUDIT: SOCKETS, SYSTEMD UNITS, PROCESSES & ALSA KERNEL");
+        if let Some(a) = audit {
+            if let Some(socks) = a.get("sockets").and_then(JsonValue::as_array) {
+                let _ = writeln!(out, "  IPC Sockets ({}):", socks.len());
+                for sk in socks {
+                    let _ = writeln!(
+                        out,
+                        "    - {:<18} conn={:<5} mode={} pid={} comm='{}' path={} err={}",
+                        s_str(sk, "name"),
+                        s_bool(sk, "connectable"),
+                        s_str(sk, "mode_oct"),
+                        sk.get("peer_pid").and_then(JsonValue::as_i64).unwrap_or(0),
+                        s_str(sk, "peer_comm"),
+                        s_str(sk, "path"),
+                        s_str(sk, "error")
+                    );
+                }
+            }
+            if let Some(units) = a.get("systemd_units").and_then(JsonValue::as_array) {
+                let _ = writeln!(out, "  Systemd User Units:");
+                for u in units {
+                    let _ = writeln!(
+                        out,
+                        "    - {:<32} active={:<10} ({}) enabled={:<10} pid={}",
+                        s_str(u, "unit"),
+                        s_str(u, "active"),
+                        s_str(u, "sub_state"),
+                        s_str(u, "enabled"),
+                        s_i64(u, "main_pid")
+                    );
+                }
+            }
+            if let Some(uss) = a.get("unix_sockets").and_then(JsonValue::as_array) {
+                let _ = writeln!(out, "  Listening Unix Sockets (ss -xnH, {}):", uss.len());
+                for s in uss {
+                    if let Some(line) = s.as_str() {
+                        let _ = writeln!(out, "    {line}");
+                    }
+                }
+            }
+            if let Some(procs) = a.get("processes").and_then(JsonValue::as_array) {
+                let _ = writeln!(out, "  Audited Audio/Portal Processes ({}):", procs.len());
+                for p in procs {
+                    let flat_cmd = s_str(p, "cmdline").replace(['\n', '\r'], " ");
+                    let _ = writeln!(
+                        out,
+                        "    * pid={} comm='{}' class='{}' cmd='{}' alsa_fds=[{}] shm=[{}] libs=[{}]",
+                        s_i64(p, "pid"),
+                        s_str(p, "comm"),
+                        s_str(p, "classification"),
+                        flat_cmd,
+                        s_str(p, "alsa_fds"),
+                        s_str(p, "sockets_shm"),
+                        s_str(p, "mapped_libs")
+                    );
+                }
+            }
+            if let Some(alsa) = a.get("alsa") {
+                let cards = s_str(alsa, "cards");
+                if !cards.trim().is_empty() {
+                    let _ = writeln!(out, "  ALSA /proc/asound/cards:");
+                    for l in cards.lines() {
+                        let _ = writeln!(out, "    {l}");
+                    }
+                }
+                let pcm = s_str(alsa, "pcm");
+                if !pcm.trim().is_empty() {
+                    let _ = writeln!(out, "  ALSA /proc/asound/pcm:");
+                    for l in pcm.lines() {
+                        let _ = writeln!(out, "    {l}");
+                    }
+                }
+                if let Some(ast) = alsa.get("active_streams").and_then(JsonValue::as_array) {
+                    if !ast.is_empty() {
+                        let _ = writeln!(out, "  Active Kernel /proc/asound Substreams ({}):", ast.len());
+                        for s in ast {
+                            let _ = writeln!(
+                                out,
+                                "    * {} -> {} | {}",
+                                s_str(s, "stream"),
+                                s_str(s, "status").replace('\n', " "),
+                                s_str(s, "hw_params").replace('\n', " ")
+                            );
+                        }
+                    }
+                }
+            }
+            if let Some(cfg) = a.get("configs") {
+                let _ = writeln!(
+                    out,
+                    "  Config/Shims: plugin_matches_sys={} repo_sha={} sys_sha={}",
+                    s_bool(cfg, "plugin_matches_system"),
+                    s_str(cfg, "plugin_repo_sha256"),
+                    s_str(cfg, "plugin_sys_sha256")
+                );
+            }
+        }
+        out.push('\n');
+
+        // [7] DIAGNOSTIC PROBES & CONFIGURATION FILES
+        let _ = writeln!(out, "[7] DIAGNOSTIC PROBES & RUNTIME CONFIGS");
+        if let Some(p) = probes {
+            if let Some(obj) = p.as_object() {
+                for (k, v) in obj {
+                    let _ = writeln!(out, "  {k:<26}: {}", v.to_json_compact());
+                }
+            }
+        }
+        let st_dir = state_dir();
+        for fname in [
+            "gui_settings.json",
+            "pipewire_zero_mode",
+            "module_versions.state",
+            "flatpak_overrides.list",
+        ] {
+            let p = st_dir.join(fname);
+            if p.is_file() {
+                let txt = read_text_lossy(&p, 16384);
+                let _ = writeln!(out, "  [Config: {}]", p.display());
+                for line in txt.lines() {
+                    let _ = writeln!(out, "    {line}");
+                }
+            }
+        }
+        out.push('\n');
+
+        // [8] RECENT EVENTS & SYSTEM LOG TAILS
+        let _ = writeln!(out, "[8] STRUCTURED EVENTS & SERVICE LOGS");
+        if !events.is_empty() {
+            let _ = writeln!(out, "  Structured Debug Events ({}):", events.len());
+            for ev in events {
+                let _ = writeln!(
+                    out,
+                    "    [{}] [{}/{}] pid={} {} {}: {}",
+                    format_ts_ms(s_i64(ev, "ts_ms")),
+                    s_str(ev, "sub"),
+                    s_str(ev, "lvl"),
+                    s_i64(ev, "pid"),
+                    s_str(ev, "op"),
+                    s_str(ev, "target"),
+                    s_str(ev, "detail")
+                );
+            }
+        }
+        let j_lines = ExternalLogManager::tail_journal(150);
+        if !j_lines.is_empty() {
+            let _ = writeln!(out, "  Journal Tail (last {} lines):", j_lines.len());
+            for line in &j_lines {
+                let _ = writeln!(out, "    {line}");
+            }
+        }
+        let a_lines = ExternalLogManager::tail_autosync_log(120);
+        if !a_lines.is_empty() {
+            let _ = writeln!(out, "  Autosync Log Tail (last {} lines):", a_lines.len());
+            for line in &a_lines {
+                let _ = writeln!(out, "    {line}");
+            }
+        }
+        out
+    }
+
+    pub fn export_text_file(out_path: Option<&Path>, report_text: &str) -> Result<PathBuf, String> {
+        let dest = match out_path {
+            None => {
+                let dir = private_runtime_dir().join("exports");
+                ensure_dir_0700(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+                dir.join(format!("salsa-debug-{}.txt", format_now_stamp()))
+            }
+            Some(p) => {
+                let looks_like_dir = p.is_dir()
+                    || p.to_string_lossy().ends_with('/')
+                    || p.extension().is_none();
+                if looks_like_dir {
+                    fs::create_dir_all(p).map_err(|e| format!("mkdir {}: {e}", p.display()))?;
+                    p.join(format!("salsa-debug-{}.txt", format_now_stamp()))
+                } else {
+                    if let Some(parent) = p.parent() {
+                        if !parent.as_os_str().is_empty() {
+                            fs::create_dir_all(parent)
+                                .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+                        }
+                    }
+                    p.to_path_buf()
+                }
+            }
+        };
+        if let Ok(meta) = fs::symlink_metadata(&dest) {
+            if meta.file_type().is_symlink() {
+                return Err(format!("refusing to overwrite symlink {}", dest.display()));
+            }
+        }
+        fs::write(&dest, report_text.as_bytes())
+            .map_err(|e| format!("write {}: {e}", dest.display()))?;
+        let _ = fs::set_permissions(&dest, fs::Permissions::from_mode(0o600));
+        Ok(dest)
+    }
+
     pub fn export_bundle(
         out_dir: Option<&Path>,
         snapshot: Option<&JsonValue>,
@@ -1432,6 +2155,8 @@ impl DiagnosticProbes {
         let zip_path = target_dir.join(format!("salsa-debug-{}.zip", format_now_stamp()));
 
         let mut zw = ZipWriter::new();
+        let report_txt = Self::build_detailed_text_report(&install_root(), snapshot, audit, probes, events);
+        zw.add_file("report.txt", report_txt.as_bytes(), 0o644)?;
         if let Some(s) = snapshot {
             let txt = s.to_json_pretty(2);
             zw.add_file("snapshot.json", txt.as_bytes(), 0o644)?;
@@ -1628,6 +2353,8 @@ impl ScreenCastShmReader {
             let (
                 w,
                 h,
+                src_w,
+                src_h,
                 stride,
                 seq,
                 pts_ns,
@@ -1647,6 +2374,8 @@ impl ScreenCastShmReader {
                 (
                     core::ptr::read_volatile(&shm.dst_width),
                     core::ptr::read_volatile(&shm.dst_height),
+                    core::ptr::read_volatile(&shm.src_width),
+                    core::ptr::read_volatile(&shm.src_height),
                     core::ptr::read_volatile(&shm.dst_stride),
                     core::ptr::read_volatile(&shm.frame_seq),
                     core::ptr::read_volatile(&shm.pts_ns),
@@ -1694,6 +2423,8 @@ impl ScreenCastShmReader {
                 Vec::new()
             };
             let out_stride = if rgba.is_empty() { 0 } else { w.saturating_mul(4) };
+            let disp_w = if w > 0 { w } else { src_w };
+            let disp_h = if h > 0 { h } else { src_h };
             let prod_name = cstr_to_string(&prod_raw);
             let format_name = cstr_to_string(&fmt_raw);
 
@@ -1701,8 +2432,8 @@ impl ScreenCastShmReader {
             let s2 = unsafe { (*seqlock_ptr).load(Ordering::Acquire) };
             if s1 == s2 {
                 return Some(PreviewFrameData {
-                    width: w,
-                    height: h,
+                    width: disp_w,
+                    height: disp_h,
                     stride: out_stride,
                     seq,
                     pts_ns,
@@ -1730,30 +2461,57 @@ pub struct DryRunDesktopCapturer {
     pub width: u32,
     pub height: u32,
     frame_idx: u32,
+    base_rgba: Vec<u8>,
 }
 
 impl DryRunDesktopCapturer {
     pub fn new(width: u32, height: u32) -> Self {
+        let cw = width.clamp(16, LWASAPI_PW_PREVIEW_MAX_W);
+        let ch = height.clamp(16, LWASAPI_PW_PREVIEW_MAX_H);
+        let w = cw as usize;
+        let h = ch as usize;
+        let mut base_rgba = vec![0u8; w * h * 4];
+        for y in 0..h {
+            let g_val = ((y * 255) / h) as u8;
+            let row = &mut base_rgba[y * w * 4..(y + 1) * w * 4];
+            let (chunks, _) = row.as_chunks_mut::<4>();
+            for (x, px) in chunks.iter_mut().enumerate() {
+                px[0] = ((x * 255) / w) as u8;
+                px[1] = g_val;
+                px[2] = 140;
+                px[3] = 255;
+            }
+        }
         Self {
-            width: width.clamp(16, LWASAPI_PW_PREVIEW_MAX_W),
-            height: height.clamp(16, LWASAPI_PW_PREVIEW_MAX_H),
+            width: cw,
+            height: ch,
             frame_idx: 0,
+            base_rgba,
         }
     }
 
     pub fn next_frame(&mut self) -> Vec<u8> {
+        fn fill_bar(slice: &mut [u8], g_val: u8) {
+            let (chunks, _) = slice.as_chunks_mut::<4>();
+            for px in chunks {
+                *px = [240, g_val, 64, 255];
+            }
+        }
+
         let w = self.width as usize;
         let h = self.height as usize;
-        let mut rgba = vec![0u8; w * h * 4];
-        let phase = (self.frame_idx.wrapping_mul(7)) % self.width.max(1);
+        let mut rgba = self.base_rgba.clone();
+        let bar_w = (w / 8).max(1);
+        let phase = ((self.frame_idx.wrapping_mul(7)) as usize) % w.max(1);
+        let bar_start = (w - phase) % w;
         for y in 0..h {
-            for x in 0..w {
-                let idx = (y * w + x) * 4;
-                let bar = ((x as u32 + phase) % self.width) < (self.width / 8);
-                rgba[idx] = if bar { 240 } else { ((x * 255) / w) as u8 };
-                rgba[idx + 1] = ((y * 255) / h) as u8;
-                rgba[idx + 2] = if bar { 64 } else { 140 };
-                rgba[idx + 3] = 255;
+            let g_val = ((y * 255) / h) as u8;
+            let row = &mut rgba[y * w * 4..(y + 1) * w * 4];
+            let first_len = bar_w.min(w - bar_start);
+            fill_bar(&mut row[bar_start * 4..(bar_start + first_len) * 4], g_val);
+            if first_len < bar_w {
+                let rem = bar_w - first_len;
+                fill_bar(&mut row[..rem * 4], g_val);
             }
         }
         self.frame_idx = self.frame_idx.wrapping_add(1);
