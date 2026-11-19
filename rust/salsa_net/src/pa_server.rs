@@ -3269,14 +3269,18 @@ impl PaState {
                                 self.close_client(ci, rt);
                                 return;
                             };
+                            if !self.clients[ci].authed && hdr.body_len > 64 * 1024 {
+                                failsafe::record_trip(
+                                    failsafe::FS_PA_BAD_PKT,
+                                    b"PA unauthenticated client oversized frame quarantined",
+                                );
+                                self.close_client(ci, rt);
+                                return;
+                            }
                             self.clients[ci].rx_body_len = hdr.body_len as usize;
                             self.clients[ci].rx_channel = hdr.channel;
                             self.clients[ci].rx_body_got = 0;
                             self.clients[ci].rx_body.clear();
-                            let body_len = self.clients[ci].rx_body_len;
-                            if body_len > 0 {
-                                self.clients[ci].rx_body.resize(body_len, 0);
-                            }
                         }
                         Err(e) => {
                             let raw = e.raw_os_error().unwrap_or(0);
@@ -3292,23 +3296,24 @@ impl PaState {
                     }
                 }
                 let blen = self.clients[ci].rx_body_len;
-                let bgot = self.clients[ci].rx_body_got;
-                if bgot < blen {
-                    let res = nb_recv(fd, &mut self.clients[ci].rx_body[bgot..blen]);
-                    match res {
+                let mut need_more_poll = false;
+                while self.clients[ci].rx_body_got < blen {
+                    let bgot = self.clients[ci].rx_body_got;
+                    let mut tmp = [0u8; 8192];
+                    let want = (blen - bgot).min(tmp.len());
+                    match nb_recv(fd, &mut tmp[..want]) {
                         Ok(0) => {
                             self.close_client(ci, rt);
                             return;
                         }
                         Ok(n) => {
+                            self.clients[ci].rx_body.extend_from_slice(&tmp[..n]);
                             self.clients[ci].rx_body_got += n;
-                            if self.clients[ci].rx_body_got < blen {
-                                break;
-                            }
                         }
                         Err(e) => {
                             let raw = e.raw_os_error().unwrap_or(0);
                             if raw == 11 {
+                                need_more_poll = true;
                                 break;
                             }
                             if raw == 4 {
@@ -3318,6 +3323,9 @@ impl PaState {
                             return;
                         }
                     }
+                }
+                if need_more_poll || self.clients[ci].rx_body_got < blen {
+                    break;
                 }
                 let channel = self.clients[ci].rx_channel;
                 let body = core::mem::take(&mut self.clients[ci].rx_body);
@@ -3640,11 +3648,11 @@ fn ensure_pulse_cookie(out_cookie: &mut [u8; PA_NATIVE_COOKIE_LEN], out_valid: &
     let dir = format!("{home}/.config/pulse");
     let _ = ensure_owned_dir_0700(&dir, current_uid());
     let cpath = format!("{dir}/cookie");
-    if let Ok(meta) = fs::metadata(&cpath) {
-        if meta.len() == PA_NATIVE_COOKIE_LEN as u64 {
+    if let Ok(meta) = fs::symlink_metadata(&cpath) {
+        if meta.file_type().is_file() && meta.len() == PA_NATIVE_COOKIE_LEN as u64 {
             if let Ok(mut f) = OpenOptions::new()
                 .read(true)
-                .custom_flags(unix_sys::O_CLOEXEC)
+                .custom_flags(unix_sys::O_NOFOLLOW | unix_sys::O_CLOEXEC)
                 .open(&cpath)
             {
                 let mut tmp = [0u8; PA_NATIVE_COOKIE_LEN];
@@ -3664,7 +3672,7 @@ fn ensure_pulse_cookie(out_cookie: &mut [u8; PA_NATIVE_COOKIE_LEN], out_valid: &
                 .create(true)
                 .truncate(true)
                 .mode(0o600)
-                .custom_flags(unix_sys::O_CLOEXEC)
+                .custom_flags(unix_sys::O_NOFOLLOW | unix_sys::O_CLOEXEC)
                 .open(&cpath)
             {
                 if f.write_all(&cookie).is_ok() {
@@ -4416,7 +4424,7 @@ fn emit_fade_out(
 }
 
 // ----------------------------------------------------------------------------
-// C ABI Exports matching include/lwasapi_pa_server.h
+// C ABI Exports matching salsa_net::c_abi
 // ----------------------------------------------------------------------------
 
 #[no_mangle]
@@ -4445,6 +4453,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_start(
         .create(true)
         .truncate(true)
         .mode(0o600)
+        .custom_flags(unix_sys::O_NOFOLLOW | unix_sys::O_CLOEXEC)
         .open(&pid_path)
     {
         let _ = writeln!(pf, "{}", current_pid());

@@ -1,0 +1,8 @@
+{
+    global:
+        IAudio*;
+        ISimpleAudioVolume_*;
+        LWASAPI_*;
+    local:
+        *;
+};

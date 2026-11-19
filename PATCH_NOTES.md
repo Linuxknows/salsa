@@ -4,7 +4,24 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## v7.0-beta — Current (`2026-11-18`)
+## V1.19.0 — Current (`2026-11-19`)
+
+### 1. Native C++20 Qt6 GUIs (`salsa-studio`, `salsa-debug`, `lwasapi-tray`) & Global Font Scaling
+- Replaced legacy Python/PyQt6 scripts with native C++20 Qt6 frontends ([`qt6/`](qt6/)) linked directly to the Rust FFI bridge ([`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs) / [`salsa_bridge.h`](qt6/salsa_bridge.h)) with `Ctrl+=`/`Ctrl+-`/`Ctrl+0` & persisted `Aa-`/`Aa+` global font scaling across Studio, Topology, Advanced Options, Live Debugger, Quick Mixer popup, context menu, and OSD.
+- Restored the `v6.9` Signal Topology & Owner's Manual window (`--topology` / `--graph`) with live signal flow animation, translucent tinted node cards, pixel-exact typography, and 12 interactive manual chapters ([`salsa_widgets.cpp`](qt6/salsa_widgets.cpp), [`salsa_studio.cpp`](qt6/salsa_studio.cpp)).
+- Fixed imported AutoEQ `.txt` profile persistence & reload ([`studio_helpers.rs`](rust/salsa_ui/src/studio_helpers.rs)) and per-device EQ switching so custom imported AutoEQ curves are remembered rather than overwritten.
+
+### 2. Full Quick Mixer Tray Parity, Wayland DPR Anchoring & Clean Process Scoping
+- Restored all original [`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp) Quick Mixer controls (`Playback Devices` / `Recording Devices` selectors, Master/Mic `SwipeFader`s with 100–150% boost band, `PeakBarWidget`, `EQ Preset` + `[AutoEQ]` + `Bypass`, `Rate` + ALSA `stream0` `(N/A)` validation, `Per-Dev EQ`, `Limiter`, `MIDI` test, `Mic APO`, `Crossfeed`, `BT Codec`, `BT ABR`, `Mic Rate`, `Mic Profile`, `Theme`, `Pin`, `Applications` tab with `/proc` + `.desktop` app icons via `AppIconResolver`, `QtDBus` BlueZ/UPower battery %, and full context menu).
+- Fixed Wayland-to-Qt DPR popup/OSD placement and C++ argument evaluation ordering for the active header icon, and updated [`salsa_common.cpp`](qt6/salsa_common.cpp) to detach child Wayland apps into transient `systemd-run --user --scope` units cleanly outside `lwasapi-tray.service`.
+
+### 3. 100% Pure Rust Client Shims, Tools, Regression & Audit Hardening
+- Completed migration of `liblwasapi.so`, `libasound_module_pcm_lwasapi.so`, `libsalsa_pa_reconnect.so` + 200-stub `pa_reconnect/libpulse.so.0`, hollow ALSA/Pulse/JACK shims, `fuzz_wire`, `salsa-installer`, `salsa-dist`, `salsa-debug-cli`, and `salsa-regression` into the offline Cargo workspace ([`rust/`](rust/Cargo.toml)) with zero C runtime sources remaining outside shim stub assembly.
+- Updated [`debug_core.rs`](rust/salsa_tools/src/debug_core.rs), [`host.rs`](rust/salsa_tools/src/host.rs), and [`salsa_debug.cpp`](qt6/salsa_debug.cpp) with per-binary Qt6 dependency tracking, `SOCK_DGRAM` `debug-in.sock` audit verification, and complete CLI flag forwarding (`--probe`, `--audit`, `--snapshot`, `--stream`, etc.).
+
+---
+
+## v7.0-beta (`2026-11-18`)
 
 ### 1. Local Video Playback (VLC / `mpv` / Haruna) — PulseAudio `pa_format_info` Negotiation
 - Added full protocol v21+ `pa_format_info` parsing/serialization (`PaFormatInfo`, `read_format_info`, `put_pcm_format_spec`) in [`pa_wire.rs`](rust/salsa_net/src/pa_wire.rs) and wired it into playback/record stream creation and sink-input/source-output replies in [`pa_server.rs`](rust/salsa_net/src/pa_server.rs), fixing `pa_stream_new_extended` clients that previously received `PA_SAMPLE_INVALID` / `0 Hz` and aborted (`SRC ratio outside [1/256, 256] range`, crashes in `pa_cvolume_set()` / `pa_bytes_to_usec()`).

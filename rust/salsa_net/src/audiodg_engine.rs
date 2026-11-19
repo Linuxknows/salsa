@@ -64,15 +64,15 @@ use crate::pw_broker::{
     lwasapi_pw_broker_stop, lwasapi_pw_broker_sync_mode, PwBrokerHandle,
 };
 use crate::state_conf::{
-    default_runtime_state, salsa_dsp_clamp_mic_apo_cfg, salsa_dsp_clamp_param_eq_ext,
-    salsa_state_init_defaults, salsa_state_load, salsa_state_save,
+    clamp_eq_cfg, default_runtime_state, salsa_dsp_clamp_mic_apo_cfg,
+    salsa_dsp_clamp_param_eq_ext, salsa_state_init_defaults, salsa_state_load, salsa_state_save,
 };
 use crate::unix_sys::{
     bind_unix_listener_0600, close_raw_fd, create_memfd, current_pid, current_uid, dbg_emit,
     dbg_emit_vals, do_poll, install_term_signals, ioctl_raw, mono_ns, nb_recv, new_eventfd,
-    open_raw_flags, resolve_sock_path_common, send_all_nosignal, sendmsg_all_with_fds,
-    sleep_abs_mono_ns, socket_peercred, term_signal_requested, try_realtime_fifo, MappedMem,
-    PollFd, O_CLOEXEC, O_RDWR, POLLERR, POLLHUP, POLLIN,
+    open_chrdev_rw_cloexec, resolve_sock_path_common, seal_memfd_size, send_all_nosignal,
+    sendmsg_all_with_fds, sleep_abs_mono_ns, socket_peercred, term_signal_requested,
+    try_realtime_fifo, MappedMem, PollFd, POLLERR, POLLHUP, POLLIN,
 };
 
 // Linux errno constants (x86_64/generic)
@@ -456,7 +456,7 @@ impl AudiodgEngine {
         self.state_dirty.store(false, Ordering::Release);
         let mut st = default_runtime_state();
         {
-            let hws = self.hw_lock.lock().unwrap();
+            let hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
             st.sample_rate = if hws.pref_sample_rate != 0 {
                 hws.pref_sample_rate
             } else {
@@ -486,7 +486,7 @@ impl AudiodgEngine {
             );
         }
         {
-            let ss = self.sessions_lock.lock().unwrap();
+            let ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
             st.eq_cfg = ss.eq_cfg;
             st.param_eq = ss.param_eq;
             st.mic_apo = ss.mic_apo;
@@ -494,7 +494,7 @@ impl AudiodgEngine {
         }
         let bt_snap = snapshot_bt(self.bt());
         {
-            let mut sb = self.saved_bt.lock().unwrap();
+            let mut sb = self.saved_bt.lock().unwrap_or_else(|e| e.into_inner());
             if bt_snap.initialized {
                 unsafe { lwasapi_bluez_get_codec_config(self.bt(), &mut st.bt_cfg) };
                 sb.saved_bt_cfg = st.bt_cfg;
@@ -523,7 +523,7 @@ impl AudiodgEngine {
             return;
         }
         let (pb_card, cap_card) = {
-            let hws = self.hw_lock.lock().unwrap();
+            let hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
             let pb = if !hws.hw.is_virtual && !hws.hw.is_bluetooth {
                 let mut c = parse_card_idx_from_id(&c_str_to_string(&hws.active_playback_id));
                 if c < 0 {
@@ -537,7 +537,7 @@ impl AudiodgEngine {
             (pb, cap)
         };
         let cfg = {
-            let ss = self.sessions_lock.lock().unwrap();
+            let ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
             ss.hw_analog_cfg
         };
         let bt_snap = snapshot_bt(self.bt());
@@ -981,7 +981,7 @@ impl AudiodgEngine {
             },
         );
         {
-            let mm = self.midi_meta.lock().unwrap();
+            let mm = self.midi_meta.lock().unwrap_or_else(|e| e.into_inner());
             let mc = c_str_to_string(&mm.controller_name);
             copy_str_to_c(
                 &mut st.midi_device,
@@ -1005,7 +1005,7 @@ impl AudiodgEngine {
             .saturating_add(self.midi_injected_events.load(Ordering::Relaxed));
 
         {
-            let ss = self.sessions_lock.lock().unwrap();
+            let ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
             st.realtime_priority = self.rt_priority.load(Ordering::Relaxed);
             st.exclusive_owner_id = ss.exclusive_session_id;
             st.eq_cfg = ss.eq_cfg;
@@ -1080,7 +1080,7 @@ impl AudiodgEngine {
         if bt_snap.initialized {
             unsafe { lwasapi_bluez_get_codec_config(self.bt(), &mut st.bt_codec_cfg) };
         } else {
-            let sb = self.saved_bt.lock().unwrap();
+            let sb = self.saved_bt.lock().unwrap_or_else(|e| e.into_inner());
             st.bt_codec_cfg = sb.saved_bt_cfg;
         }
 
@@ -1092,7 +1092,7 @@ impl AudiodgEngine {
 
     fn enumerate_devices_safe(&self, out_list: &mut LwasapiDeviceList) {
         let (pb_id, cap_id) = {
-            let hws = self.hw_lock.lock().unwrap();
+            let hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
             (
                 c_str_to_string(&hws.active_playback_id),
                 c_str_to_string(&hws.active_capture_id),
@@ -1111,9 +1111,9 @@ impl AudiodgEngine {
         cap_id: Option<&str>,
         notify_pa: bool,
     ) -> i32 {
-        let _reconf = self.reconf_lock.lock().unwrap();
+        let _reconf = self.reconf_lock.lock().unwrap_or_else(|e| e.into_inner());
         let (rate, period, bits, mut hw_rate, pref_cap, target_pb, target_cap) = {
-            let mut hws = self.hw_lock.lock().unwrap();
+            let mut hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
             let rate = if hws.pref_sample_rate != 0 {
                 hws.pref_sample_rate
             } else if hws.hw.sample_rate != 0 {
@@ -1189,6 +1189,7 @@ impl AudiodgEngine {
 
         self.hw_analog_probe_and_sync(true);
         self.save_state();
+        drop(_reconf);
 
         let pa = self.pa();
         if notify_pa && !pa.is_null() {
@@ -1204,9 +1205,9 @@ impl AudiodgEngine {
         mut new_bits: u32,
         update_pref: bool,
     ) -> Result<(LwasapiIpcResp, u32), i32> {
-        let _reconf = self.reconf_lock.lock().unwrap();
+        let _reconf = self.reconf_lock.lock().unwrap_or_else(|e| e.into_inner());
         let (rate_changed, period_changed, bits_changed, is_hw_kernel, was_virtual, target_pb, target_cap, pref_cap) = {
-            let mut hws = self.hw_lock.lock().unwrap();
+            let mut hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
             let cur_rate = hws.hw.sample_rate;
             let cur_period = hws.hw.period_frames;
             let cur_bits = hws.hw.format_bits;
@@ -1287,7 +1288,7 @@ impl AudiodgEngine {
         }
 
         {
-            let ss = self.sessions_lock.lock().unwrap();
+            let ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
             for slot in &ss.sessions {
                 let r = slot.ring_ptr();
                 if slot.in_use && !r.is_null() {
@@ -1300,6 +1301,7 @@ impl AudiodgEngine {
             self.hw_analog_probe_and_sync(true);
         }
         self.save_state();
+        drop(_reconf);
 
         let pa = self.pa();
         if !pa.is_null() {
@@ -1312,9 +1314,9 @@ impl AudiodgEngine {
         if new_cap_rate != 0 && !(44_100..=192_000).contains(&new_cap_rate) {
             return None;
         }
-        let _reconf = self.reconf_lock.lock().unwrap();
+        let _reconf = self.reconf_lock.lock().unwrap_or_else(|e| e.into_inner());
         let (eng_rate, cur_period, cur_buf, target_cap) = {
-            let mut hws = self.hw_lock.lock().unwrap();
+            let mut hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
             hws.pref_cap_sample_rate = new_cap_rate;
             (
                 if hws.hw.sample_rate != 0 {
@@ -1363,6 +1365,7 @@ impl AudiodgEngine {
 
         self.hw_analog_probe_and_sync(true);
         self.save_state();
+        drop(_reconf);
 
         let pa = self.pa();
         if !pa.is_null() {
@@ -1665,6 +1668,7 @@ impl AudiodgEngine {
         }
 
         let sock_raw = client_sock.as_raw_fd();
+        seal_memfd_size(shm_fd.as_raw_fd());
         let fds_to_send = [shm_fd.as_raw_fd(), ev_fd.as_raw_fd()];
 
         ss.sessions[slot_idx] = EngineSession {
@@ -2116,17 +2120,13 @@ impl AudiodgEngine {
             LWASAPI_CMD_SET_EQ => {
                 let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
                 let eq_copy = {
-                    let mut ss = self.sessions_lock.lock().unwrap();
+                    let mut ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
                     ss.eq_cfg = req.eq_cfg;
-                    for q in &mut ss.eq_cfg.band_q {
-                        if !(0.2..=10.0).contains(q) {
-                            *q = 1.414;
-                        }
-                    }
+                    clamp_eq_cfg(&mut ss.eq_cfg);
                     ss.eq_cfg
                 };
                 {
-                    let _reconf = self.reconf_lock.lock().unwrap();
+                    let _reconf = self.reconf_lock.lock().unwrap_or_else(|e| e.into_inner());
                     self.save_state();
                 }
                 let pname = c_str_to_string(&eq_copy.preset_name);
@@ -2158,19 +2158,15 @@ impl AudiodgEngine {
                     let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
                     return;
                 }
-                for q in &mut pay.eq.band_q {
-                    if !(0.2..=10.0).contains(q) {
-                        *q = 1.414;
-                    }
-                }
+                clamp_eq_cfg(&mut pay.eq);
                 unsafe { salsa_dsp_clamp_param_eq_ext(&mut pay.ext) };
                 {
-                    let mut ss = self.sessions_lock.lock().unwrap();
+                    let mut ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
                     ss.eq_cfg = pay.eq;
                     ss.param_eq = pay.ext;
                 }
                 {
-                    let _reconf = self.reconf_lock.lock().unwrap();
+                    let _reconf = self.reconf_lock.lock().unwrap_or_else(|e| e.into_inner());
                     self.save_state();
                 }
                 let pname = c_str_to_string(&pay.eq.preset_name);
@@ -2393,7 +2389,7 @@ impl AudiodgEngine {
 
         while self.is_running() {
             let (mut period, mut ch, rate) = {
-                let hws = self.hw_lock.lock().unwrap();
+                let hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
                 (
                     hws.hw.period_frames,
                     if hws.hw.channels != 0 { hws.hw.channels } else { 2 },
@@ -2456,7 +2452,7 @@ impl AudiodgEngine {
                 }
             }
             let mic_cfg = {
-                let ss = self.sessions_lock.lock().unwrap();
+                let ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
                 ss.mic_apo
             };
             unsafe {
@@ -2470,7 +2466,7 @@ impl AudiodgEngine {
 
             // 2. MIDI hub poll
             let num_midi = {
-                let mut mh = self.midi_hub.lock().unwrap();
+                let mut mh = self.midi_hub.lock().unwrap_or_else(|e| e.into_inner());
                 let n = unsafe {
                     lwasapi_midi_poll_events(
                         &mut *mh.0,
@@ -2490,7 +2486,7 @@ impl AudiodgEngine {
             let eq_ns;
             let monitor_is_pa_stereo;
             {
-                let mut ss = self.sessions_lock.lock().unwrap();
+                let mut ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
                 if num_midi > 0 {
                     for slot in &ss.sessions {
                         let r = slot.ring_ptr();
@@ -2704,9 +2700,9 @@ impl AudiodgEngine {
             let mut need_timer_pace = true;
             let t_hw0 = mono_ns();
             {
-                let _io_guard = self.hw_io_lock.lock().unwrap();
+                let _io_guard = self.hw_io_lock.lock().unwrap_or_else(|e| e.into_inner());
                 let hw_snap = {
-                    let hws = self.hw_lock.lock().unwrap();
+                    let hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
                     hws.hw
                 };
                 if hw_snap.period_frames == period
@@ -2835,7 +2831,7 @@ impl AudiodgEngine {
                                     "[LWASAPI-audiodg] Kernel playback device {} removed (errno={}), dropping to virtual clock until failover.",
                                     dp, dead_err
                                 );
-                                let mut hws = self.hw_lock.lock().unwrap();
+                                let mut hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
                                 if hws.hw.fd == hw_snap.fd && hws.hw.fd >= 0 {
                                     close_raw_fd(hws.hw.fd);
                                     hws.hw.fd = -1;
@@ -3021,7 +3017,7 @@ unsafe extern "C" fn dbg_fill_snapshot_cb(ctx: *mut c_void, snap: *mut LwasapiDb
     eng.fill_engine_status_impl(&mut snap_ref.engine_st, true);
 
     let (pref_cap, pref_pb_rate, pb_is_hw, active_pb_copy) = {
-        let hws = eng.hw_lock.lock().unwrap();
+        let hws = eng.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
         snap_ref.target_playback_id.copy_from_slice(&hws.target_playback_id);
         snap_ref.target_capture_id.copy_from_slice(&hws.target_capture_id);
         (
@@ -3080,7 +3076,7 @@ unsafe extern "C" fn dbg_fill_snapshot_cb(ctx: *mut c_void, snap: *mut LwasapiDb
     );
 
     {
-        let mm = eng.midi_meta.lock().unwrap();
+        let mm = eng.midi_meta.lock().unwrap_or_else(|e| e.into_inner());
         snap_ref.midi_initialized = u8::from(mm.initialized);
         snap_ref.midi_rawmidi_open = u8::from(mm.rawmidi_open);
         snap_ref.midi_controller.copy_from_slice(&mm.controller_name);
@@ -3094,7 +3090,7 @@ unsafe extern "C" fn dbg_fill_snapshot_cb(ctx: *mut c_void, snap: *mut LwasapiDb
         .saturating_add(eng.midi_injected_events.load(Ordering::Relaxed));
 
     {
-        let ss = eng.sessions_lock.lock().unwrap();
+        let ss = eng.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut wcnt = 0usize;
         for slot in &ss.sessions {
             let r = slot.ring_ptr();
@@ -3345,11 +3341,23 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                 i += 2;
             }
             "--rate" if i + 1 < args.len() => {
-                rate_arg = args[i + 1].trim().parse::<u32>().unwrap_or(0);
+                match args[i + 1].trim().parse::<u32>() {
+                    Ok(r) if (44_100..=192_000).contains(&r) => rate_arg = r,
+                    _ => eprintln!(
+                        "[LWASAPI-audiodg] Ignoring invalid --rate '{}', keeping {} Hz",
+                        args[i + 1], rate_arg
+                    ),
+                }
                 i += 2;
             }
             "--period" if i + 1 < args.len() => {
-                period_arg = args[i + 1].trim().parse::<u32>().unwrap_or(0);
+                match args[i + 1].trim().parse::<u32>() {
+                    Ok(p) if (64..=(LWASAPI_MAX_PERIOD as u32)).contains(&p) => period_arg = p,
+                    _ => eprintln!(
+                        "[LWASAPI-audiodg] Ignoring invalid --period '{}', keeping {} frames",
+                        args[i + 1], period_arg
+                    ),
+                }
                 i += 2;
             }
             "--virtual" => {
@@ -3366,6 +3374,17 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
             }
             _ => i += 1,
         }
+    }
+
+    if !(44_100..=192_000).contains(&rate_arg) {
+        rate_arg = 48_000;
+    }
+    if !(64..=(LWASAPI_MAX_PERIOD as u32)).contains(&period_arg) {
+        period_arg = if period_arg == 0 {
+            512
+        } else {
+            period_arg.clamp(64, LWASAPI_MAX_PERIOD as u32)
+        };
     }
 
     install_term_signals();
@@ -3399,6 +3418,11 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         mm.seq_in_port = mh.0.seq_in_port;
     }
 
+    let Some(listener) = bind_unix_listener_0600(&sock_path) else {
+        eprintln!("bind failed for {sock_path}");
+        return 1;
+    };
+
     let ctx_ptr = Arc::as_ptr(&engine) as *mut c_void;
     let pa_cbs = LwasapiPaCallbacks {
         user_ctx: ctx_ptr,
@@ -3420,11 +3444,6 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         engine.pw_brk.store(pw_ptr, Ordering::Release);
         eprintln!("[LWASAPI-audiodg] Built-in Video-Only PipeWire ScreenCast broker initialized.");
     }
-
-    let Some(listener) = bind_unix_listener_0600(&sock_path) else {
-        eprintln!("bind failed for {sock_path}");
-        return 1;
-    };
 
     let dbg_cbs = LwasapiDbgCallbacks {
         user_ctx: ctx_ptr,
@@ -3564,6 +3583,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                         continue;
                     }
                     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
                     let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
                     let mut stream = stream;
                     if stream.read_exact(as_bytes_mut(&mut req)).is_ok() {
@@ -3926,13 +3946,37 @@ pub(crate) fn hw_param_set_minmax(params: &mut SndPcmHwParams, param: usize, min
     params.cmask |= 1u32 << (param as u32);
 }
 
+fn is_valid_alsa_pcm_path(p: &str) -> bool {
+    let Some(rest) = p.strip_prefix("/dev/snd/pcmC") else {
+        return false;
+    };
+    let mut chars = rest.chars().peekable();
+    let mut card_digits = 0usize;
+    while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+        chars.next();
+        card_digits += 1;
+    }
+    if card_digits == 0 || chars.next() != Some('D') {
+        return false;
+    }
+    let mut dev_digits = 0usize;
+    while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+        chars.next();
+        dev_digits += 1;
+    }
+    dev_digits > 0 && matches!(chars.next(), Some('p' | 'c')) && chars.next().is_none()
+}
+
 fn open_kernel_pcm_device(
     dev_path: &str,
     req_rate: u32,
     req_period: u32,
     req_bits: u32,
 ) -> Option<KernelWaveRtHw> {
-    let fd = open_raw_flags(dev_path, O_RDWR | O_CLOEXEC);
+    if !is_valid_alsa_pcm_path(dev_path) {
+        return None;
+    }
+    let fd = open_chrdev_rw_cloexec(dev_path);
     if fd < 0 {
         return None;
     }
@@ -4016,17 +4060,20 @@ fn open_kernel_pcm_device(
                     hw_param_set_mask(&mut params, SNDRV_PCM_HW_PARAM_FORMAT, fmt as u32);
                     hw_param_set_minmax(&mut params, SNDRV_PCM_HW_PARAM_CHANNELS, ch, ch);
                     hw_param_set_minmax(&mut params, SNDRV_PCM_HW_PARAM_RATE, cand_r, cand_r);
+                    let max_p = LWASAPI_MAX_PERIOD as u32;
+                    let min_per = req_period.clamp(64, max_p);
+                    let max_per = req_period.saturating_mul(2).clamp(min_per, max_p);
                     hw_param_set_minmax(
                         &mut params,
                         SNDRV_PCM_HW_PARAM_PERIOD_SIZE,
-                        req_period,
-                        req_period.saturating_mul(2),
+                        min_per,
+                        max_per,
                     );
                     hw_param_set_minmax(
                         &mut params,
                         SNDRV_PCM_HW_PARAM_BUFFER_SIZE,
-                        req_period.saturating_mul(bm),
-                        req_period.saturating_mul(8),
+                        min_per.saturating_mul(bm),
+                        min_per.saturating_mul(8),
                     );
                     if unsafe {
                         ioctl_raw(

@@ -31,12 +31,22 @@ pub const SOCK_CLOEXEC: c_int = 0x80000;
 pub const SHUT_RDWR: c_int = 2;
 
 pub const MSG_DONTWAIT: c_int = 0x40;
+pub const MSG_WAITALL: c_int = 0x100;
 pub const MSG_NOSIGNAL: c_int = 0x4000;
+pub const MSG_CMSG_CLOEXEC: c_int = 0x4000_0000;
+pub const AF_UNIX: c_int = 1;
+pub const SOCK_STREAM: c_int = 1;
+pub const SOCK_DGRAM: c_int = 2;
 
 pub const MFD_CLOEXEC: c_uint = 0x1;
+pub const MFD_ALLOW_SEALING: c_uint = 0x2;
 pub const EFD_NONBLOCK: c_int = 0x800;
 pub const EFD_CLOEXEC: c_int = 0x80000;
 pub const F_DUPFD_CLOEXEC: c_int = 1030;
+pub const F_ADD_SEALS: c_int = 1033;
+pub const F_SEAL_SEAL: c_int = 0x0001;
+pub const F_SEAL_SHRINK: c_int = 0x0002;
+pub const F_SEAL_GROW: c_int = 0x0004;
 
 pub const O_RDONLY: c_int = 0x0;
 pub const O_RDWR: c_int = 0x2;
@@ -285,6 +295,17 @@ pub fn install_term_signals() {
     }
 }
 
+pub fn reset_sigpipe_default() {
+    extern "C" {
+        fn signal(sig: c_int, handler: usize) -> usize;
+    }
+    const SIGPIPE: c_int = 13;
+    const SIG_DFL: usize = 0;
+    unsafe {
+        let _ = signal(SIGPIPE, SIG_DFL);
+    }
+}
+
 pub fn term_signal_requested() -> bool {
     TERM_SIGNAL_STOP.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -326,7 +347,7 @@ pub fn eventfd_drain(fd: RawFd) {
 
 pub fn create_memfd(name: &str, size: usize) -> Option<OwnedFd> {
     let cname = CString::new(name).ok()?;
-    let fd = unsafe { memfd_create(cname.as_ptr(), MFD_CLOEXEC) };
+    let fd = unsafe { memfd_create(cname.as_ptr(), MFD_CLOEXEC | MFD_ALLOW_SEALING) };
     if fd < 0 {
         return None;
     }
@@ -335,6 +356,14 @@ pub fn create_memfd(name: &str, size: usize) -> Option<OwnedFd> {
         return None;
     }
     Some(owned)
+}
+
+pub fn seal_memfd_size(fd: RawFd) {
+    if fd >= 0 {
+        unsafe {
+            let _ = fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL);
+        }
+    }
 }
 
 pub fn dup_fd_cloexec(fd: RawFd) -> Option<OwnedFd> {
@@ -438,7 +467,7 @@ pub fn open_private_shm(name: &str, size: usize) -> Option<(OwnedFd, bool)> {
     let cname = CString::new(name).ok()?;
     if name.starts_with('/') && !name[1..].contains('/') {
         unsafe { shm_unlink(cname.as_ptr()) };
-        let fd = unsafe { shm_open(cname.as_ptr(), O_CREAT | O_EXCL | O_RDWR, 0o600) };
+        let fd = unsafe { shm_open(cname.as_ptr(), O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0o600) };
         if fd < 0 {
             return None;
         }
@@ -559,10 +588,28 @@ pub fn ensure_owned_dir_0700(path: &str, uid: u32) -> bool {
 }
 
 pub fn bind_unix_listener_0600(path: &str) -> Option<UnixListener> {
+    if path.is_empty() || path.len() >= 108 {
+        return None;
+    }
     let _ = fs::remove_file(path);
-    let listener = UnixListener::bind(path).ok()?;
-    listener.set_nonblocking(true).ok()?;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    let tmp = format!("{path}.t{}", std::process::id());
+    let listener = if tmp.len() < 108 {
+        let _ = fs::remove_file(&tmp);
+        let l = UnixListener::bind(&tmp).ok()?;
+        let _ = l.set_nonblocking(true);
+        if fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)).is_err()
+            || fs::rename(&tmp, path).is_err()
+        {
+            let _ = fs::remove_file(&tmp);
+            return None;
+        }
+        l
+    } else {
+        let l = UnixListener::bind(path).ok()?;
+        let _ = l.set_nonblocking(true);
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        l
+    };
     Some(listener)
 }
 
@@ -598,6 +645,177 @@ pub fn resolve_sock_path_common(env_var: &str, sock_name: &str, fallback: &str) 
         }
     }
     fallback.to_string()
+}
+
+pub fn audiodg_sock_path() -> String {
+    resolve_sock_path_common("LWASAPI_SOCKET", "audiodg.sock", "/tmp/lwasapi-audiodg.sock")
+}
+
+pub fn debug_in_sock_path() -> String {
+    resolve_sock_path_common(
+        "LWASAPI_DEBUG_IN_SOCK",
+        "debug-in.sock",
+        "/tmp/lwasapi-debug-in.sock",
+    )
+}
+
+#[repr(C)]
+struct SockAddrUn {
+    sun_family: u16,
+    sun_path: [u8; 108],
+}
+
+pub fn connect_unix_stream_blocking(path: &str) -> Option<OwnedFd> {
+    if path.is_empty() || path.len() >= 108 {
+        return None;
+    }
+    let fd = unsafe { socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return None;
+    }
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    let mut addr = SockAddrUn {
+        sun_family: AF_UNIX as u16,
+        sun_path: [0u8; 108],
+    };
+    let bytes = path.as_bytes();
+    addr.sun_path[..bytes.len()].copy_from_slice(bytes);
+    if unsafe {
+        connect(
+            owned.as_raw_fd(),
+            (&addr as *const SockAddrUn).cast::<c_void>(),
+            mem::size_of::<SockAddrUn>() as u32,
+        )
+    } < 0
+    {
+        return None;
+    }
+    Some(owned)
+}
+
+pub fn sendto_unix_dgram_nonblock(fd: RawFd, path: &str, buf: &[u8]) -> isize {
+    extern "C" {
+        fn sendto(
+            sockfd: c_int,
+            buf: *const c_void,
+            len: usize,
+            flags: c_int,
+            dest_addr: *const c_void,
+            addrlen: u32,
+        ) -> isize;
+    }
+    if fd < 0 || path.is_empty() || path.len() >= 108 {
+        return -1;
+    }
+    let mut addr = SockAddrUn {
+        sun_family: AF_UNIX as u16,
+        sun_path: [0u8; 108],
+    };
+    let bytes = path.as_bytes();
+    addr.sun_path[..bytes.len()].copy_from_slice(bytes);
+    unsafe {
+        sendto(
+            fd,
+            buf.as_ptr().cast::<c_void>(),
+            buf.len(),
+            MSG_DONTWAIT | MSG_NOSIGNAL,
+            (&addr as *const SockAddrUn).cast::<c_void>(),
+            mem::size_of::<SockAddrUn>() as u32,
+        )
+    }
+}
+
+pub fn recv_blocking_exact_with_2fds(fd: RawFd, buf: &mut [u8]) -> Option<(Option<OwnedFd>, Option<OwnedFd>)> {
+    #[repr(C, align(8))]
+    struct Ctl2 {
+        bytes: [u8; 32],
+    }
+    let mut ctl = MaybeUninit::<Ctl2>::zeroed();
+    let mut iov = IoVec {
+        iov_base: buf.as_mut_ptr().cast::<c_void>(),
+        iov_len: buf.len(),
+    };
+    let mut msg = MsgHdr {
+        msg_name: ptr::null_mut(),
+        msg_namelen: 0,
+        _pad0: 0,
+        msg_iov: &mut iov,
+        msg_iovlen: 1,
+        msg_control: ctl.as_mut_ptr().cast::<c_void>(),
+        msg_controllen: mem::size_of::<Ctl2>(),
+        msg_flags: 0,
+        _pad1: 0,
+    };
+
+    let n = unsafe { recvmsg(fd, &mut msg, MSG_CMSG_CLOEXEC) };
+    let mut f0: Option<OwnedFd> = None;
+    let mut f1: Option<OwnedFd> = None;
+    let ctl_ref = unsafe { ctl.assume_init() };
+    let used = msg.msg_controllen.min(ctl_ref.bytes.len());
+    let mut off = 0usize;
+    while off + mem::size_of::<CMsgHdr>() <= used {
+        let hdr = unsafe { ptr::read(ctl_ref.bytes.as_ptr().add(off).cast::<CMsgHdr>()) };
+        if hdr.cmsg_len < mem::size_of::<CMsgHdr>() || off + hdr.cmsg_len > used {
+            break;
+        }
+        if hdr.cmsg_level == SOL_SOCKET && hdr.cmsg_type == SCM_RIGHTS {
+            let data_bytes = hdr.cmsg_len - mem::size_of::<CMsgHdr>();
+            let nfds = data_bytes / mem::size_of::<c_int>();
+            let data_ptr = unsafe { ctl_ref.bytes.as_ptr().add(off + mem::size_of::<CMsgHdr>()) };
+            for i in 0..nfds {
+                let raw_fd = unsafe { ptr::read_unaligned(data_ptr.cast::<c_int>().add(i)) };
+                if raw_fd >= 0 {
+                    let owned = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+                    if f0.is_none() {
+                        f0 = Some(owned);
+                    } else if f1.is_none() {
+                        f1 = Some(owned);
+                    }
+                    // Any excess OwnedFds drop immediately and close cleanly.
+                }
+            }
+        }
+        let step = (hdr.cmsg_len + 7) & !7;
+        if step == 0 {
+            break;
+        }
+        off += step;
+    }
+    if n != buf.len() as isize {
+        drop(f0);
+        drop(f1);
+        return None;
+    }
+    Some((f0, f1))
+}
+
+pub fn recv_waitall(fd: RawFd, buf: &mut [u8]) -> bool {
+    if fd < 0 || buf.is_empty() {
+        return false;
+    }
+    let mut got = 0usize;
+    while got < buf.len() {
+        let n = unsafe {
+            recv(
+                fd,
+                buf.as_mut_ptr().add(got).cast::<c_void>(),
+                buf.len() - got,
+                MSG_WAITALL,
+            )
+        };
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return false;
+        }
+        if n == 0 {
+            return false;
+        }
+        got += n as usize;
+    }
+    true
 }
 
 pub fn bind_unix_dgram_passcred_0600(path: &str) -> Option<UnixDatagram> {
@@ -649,7 +867,7 @@ pub fn recv_dgram_with_ucred(fd: RawFd, buf: &mut [u8]) -> RecvDgramCred {
         _pad1: 0,
     };
 
-    let n = unsafe { recvmsg(fd, &mut msg, MSG_DONTWAIT) };
+    let n = unsafe { recvmsg(fd, &mut msg, MSG_DONTWAIT | MSG_CMSG_CLOEXEC) };
     if n < 0 {
         let raw = io::Error::last_os_error().raw_os_error().unwrap_or(0);
         if raw == 11 || raw == 4 {
@@ -667,14 +885,23 @@ pub fn recv_dgram_with_ucred(fd: RawFd, buf: &mut [u8]) -> RecvDgramCred {
         if hdr.cmsg_len < mem::size_of::<CMsgHdr>() || off + hdr.cmsg_len > used {
             break;
         }
-        if hdr.cmsg_level == SOL_SOCKET
+        if hdr.cmsg_level == SOL_SOCKET && hdr.cmsg_type == SCM_RIGHTS {
+            let data_bytes = hdr.cmsg_len - mem::size_of::<CMsgHdr>();
+            let nfds = data_bytes / mem::size_of::<c_int>();
+            let data_ptr = unsafe { ctl_ref.bytes.as_ptr().add(off + mem::size_of::<CMsgHdr>()) };
+            for i in 0..nfds {
+                let raw_fd = unsafe { ptr::read_unaligned(data_ptr.cast::<c_int>().add(i)) };
+                if raw_fd >= 0 {
+                    let _ = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+                }
+            }
+        } else if hdr.cmsg_level == SOL_SOCKET
             && hdr.cmsg_type == SCM_CREDENTIALS
             && hdr.cmsg_len >= mem::size_of::<CMsgHdr>() + mem::size_of::<UCred>()
         {
             let data_ptr = unsafe { ctl_ref.bytes.as_ptr().add(off + mem::size_of::<CMsgHdr>()) };
             let uc = unsafe { ptr::read_unaligned(data_ptr.cast::<UCred>()) };
             out_cred = Some(uc);
-            break;
         }
         let step = (hdr.cmsg_len + 7) & !7;
         if step == 0 {
@@ -741,7 +968,7 @@ pub fn send_all_nosignal(fd: RawFd, mut buf: &[u8]) -> io::Result<()> {
 
 #[allow(clippy::result_unit_err)]
 pub fn sendmsg_all_with_fds(fd: RawFd, payload: &[u8], fds: &[RawFd]) -> Result<(), ()> {
-    if fds.len() > 32 {
+    if fds.len() > 32 || (payload.is_empty() && !fds.is_empty()) {
         return Err(());
     }
     #[repr(C, align(8))]
@@ -812,6 +1039,9 @@ pub fn sendmsg_all_with_fds(fd: RawFd, payload: &[u8], fds: &[RawFd]) -> Result<
             }
             return Err(());
         }
+        if n == 0 {
+            return Err(());
+        }
         sent += n as usize;
     }
     Ok(())
@@ -846,7 +1076,7 @@ pub fn recvmsg_with_fds(fd: RawFd, buf: &mut [u8]) -> Result<RecvFdsResult, ()> 
         _pad1: 0,
     };
 
-    let n = unsafe { recvmsg(fd, &mut msg, MSG_DONTWAIT) };
+    let n = unsafe { recvmsg(fd, &mut msg, MSG_DONTWAIT | MSG_CMSG_CLOEXEC) };
     if n == 0 {
         return Ok(RecvFdsResult::Eof);
     }
@@ -1103,6 +1333,35 @@ pub fn open_raw_flags(path: &str, flags: c_int) -> RawFd {
         return -1;
     };
     unsafe { open(cpath.as_ptr(), flags, 0 as c_uint) }
+}
+
+/// Opens a device node with `O_RDWR | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW`,
+/// verifies it is a character device via `fstat`, and clears `O_NONBLOCK`
+/// so ALSA PCM kernel ioctls behave in blocking mode safely.
+pub fn open_chrdev_rw_cloexec(path: &str) -> RawFd {
+    use std::os::fd::{FromRawFd, IntoRawFd};
+    use std::os::unix::fs::FileTypeExt;
+    const F_GETFL: c_int = 3;
+    const F_SETFL: c_int = 4;
+
+    let fd = open_raw_flags(path, O_RDWR | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW);
+    if fd < 0 {
+        return -1;
+    }
+    let file = unsafe { fs::File::from_raw_fd(fd) };
+    let is_chr = file
+        .metadata()
+        .map(|m| m.file_type().is_char_device())
+        .unwrap_or(false);
+    if !is_chr {
+        drop(file);
+        return -1;
+    }
+    let fl = unsafe { fcntl(fd, F_GETFL, 0) };
+    if fl >= 0 && (fl & O_NONBLOCK) != 0 {
+        let _ = unsafe { fcntl(fd, F_SETFL, fl & !O_NONBLOCK) };
+    }
+    file.into_raw_fd()
 }
 
 pub fn nb_read_raw(fd: RawFd, buf: &mut [u8]) -> isize {

@@ -115,6 +115,44 @@ pub fn default_runtime_state() -> SalsaRuntimeState {
     }
 }
 
+pub fn clamp_eq_cfg(eq: &mut LwasapiEqConfig) {
+    eq.enabled = u32::from(eq.enabled != 0);
+    if eq.dynamic_mode > 2 {
+        eq.dynamic_mode = 1;
+    }
+    eq.limiter_enabled = u32::from(eq.limiter_enabled != 0);
+    eq.preamp_db = if eq.preamp_db.is_finite() {
+        eq.preamp_db.clamp(-24.0, 24.0)
+    } else {
+        0.0
+    };
+    eq.dyn_threshold_db = if eq.dyn_threshold_db.is_finite() {
+        eq.dyn_threshold_db.clamp(-60.0, 0.0)
+    } else {
+        -16.0
+    };
+    eq.dyn_ratio = if eq.dyn_ratio.is_finite() {
+        eq.dyn_ratio.clamp(1.0, 20.0)
+    } else {
+        2.2
+    };
+    for g in &mut eq.band_gains_db {
+        *g = if g.is_finite() {
+            g.clamp(-24.0, 24.0)
+        } else {
+            0.0
+        };
+    }
+    for q in &mut eq.band_q {
+        if !(0.2..=10.0).contains(q) {
+            *q = 1.414;
+        }
+    }
+    if let Some(last) = eq.preset_name.last_mut() {
+        *last = 0;
+    }
+}
+
 pub fn clamp_param_eq_ext(ext: &mut LwasapiParamEqExt) {
     for i in 0..LWASAPI_EQ_BANDS {
         let f = ext.band_freq_hz[i];
@@ -228,6 +266,7 @@ pub fn decode_persisted_state_bytes(bytes: &[u8], out: &mut SalsaRuntimeState) -
     }
     st.eq_cfg.preset_name.copy_from_slice(&bytes[120..152]);
     st.eq_cfg.preset_name[31] = 0;
+    clamp_eq_cfg(&mut st.eq_cfg);
 
     if valid_v5 || valid_v4 || valid_v3 || valid_v2 {
         // Offset 152..216: target_playback_id[64], Offset 216..280: target_capture_id[64]
@@ -487,6 +526,13 @@ pub fn save_state_to_path(dir: &Path, path: &Path, st: &SalsaRuntimeState) -> bo
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn salsa_dsp_clamp_eq_cfg(eq: *mut LwasapiEqConfig) {
+    if !eq.is_null() {
+        clamp_eq_cfg(unsafe { &mut *eq });
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn salsa_dsp_clamp_param_eq_ext(ext: *mut LwasapiParamEqExt) {
     if !ext.is_null() {
         clamp_param_eq_ext(unsafe { &mut *ext });
@@ -685,6 +731,14 @@ mod tests {
         assert!((mic.comp_ratio - 2.2).abs() < 1e-6);
         assert!((mic.clarity_db - 1.5).abs() < 1e-6);
         assert_eq!(mic.sidetone_pct, 100);
+
+        let mut eq = default_runtime_state().eq_cfg;
+        eq.dynamic_mode = 2;
+        clamp_eq_cfg(&mut eq);
+        assert_eq!(eq.dynamic_mode, 2);
+        eq.dynamic_mode = 99;
+        clamp_eq_cfg(&mut eq);
+        assert_eq!(eq.dynamic_mode, 1);
     }
 
     #[test]

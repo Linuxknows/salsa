@@ -12,18 +12,17 @@ use crate::c_abi::{
 use crate::failsafe::{record_trip, FS_FD_QUOTA, FS_PW_BAD_PKT};
 use crate::pw_wire::{
     build_negotiated_format_pod, convert_preview_row, fd_quota_check, frame_pw_msg,
-    intersect_vfmt, parse_param_pod, parse_pkt_hdr, vfmt_name, vfmt_size, vfmt_stride, BufCaps,
-    Dict, PodBuilder, PodCursor, VfmtCaps, CMD_NODE, DATA_DMA_BUF, DATA_MEM_FD, DATA_MEM_ID,
-    DRM_MOD_INVALID, EVT_NODE, IO_BUFFERS, IO_CLOCK, IO_POSITION, META_BUSY, META_HEADER,
-    META_VIDEO_CROP,
-    PARAM_ENUM_FORMAT, PARAM_FORMAT, PWB_MAX_PACKET_SZ, SPA_ASYNC_BIT, SPA_ID_INVALID, SPA_OBJECT,
-    SPA_STRUCT,
+    intersect_vfmt, parse_param_pod, parse_pkt_hdr, parse_pkt_hdr_status, vfmt_name, vfmt_size,
+    vfmt_stride, BufCaps, Dict, PktHdrStatus, PodBuilder, PodCursor, VfmtCaps, CMD_NODE,
+    DATA_DMA_BUF, DATA_MEM_FD, DATA_MEM_ID, DRM_MOD_INVALID, EVT_NODE, IO_BUFFERS, IO_CLOCK,
+    IO_POSITION, META_BUSY, META_HEADER, META_VIDEO_CROP, PARAM_ENUM_FORMAT, PARAM_FORMAT,
+    PWB_MAX_PACKET_SZ, SPA_ASYNC_BIT, SPA_ID_INVALID, SPA_OBJECT, SPA_STRUCT,
 };
 use crate::unix_sys::{
     bind_unix_listener_0600, create_memfd, current_hostname, current_pid, current_uid,
     current_username, dbg_emit, dmabuf_sync, do_poll, dup_fd_cloexec, ensure_private_dir,
     eventfd_drain, eventfd_signal, memfd_size_valid, mono_ns, new_eventfd, open_private_shm,
-    recvmsg_with_fds, sendmsg_all_with_fds, set_thread_nice, socket_peercred,
+    recvmsg_with_fds, seal_memfd_size, sendmsg_all_with_fds, set_thread_nice, socket_peercred,
     unix_socket_actively_served, unlink_shm_path, MappedMem, PollFd, RecvFdsResult, POLLERR,
     POLLHUP, POLLIN,
 };
@@ -1551,6 +1550,7 @@ impl PwState {
             return;
         };
         let cmeta_map = MappedMem::map_fd(cmeta_fd.as_raw_fd(), msz, true, 0);
+        seal_memfd_size(cmeta_fd.as_raw_fd());
         let Some(cmeta_mid) =
             self.clients[cc_idx].add_mem(DATA_MEM_FD, cmeta_fd.as_raw_fd(), 3)
         else {
@@ -1609,6 +1609,7 @@ impl PwState {
         if self.nodes[prod_idx].io_mem_fd.is_none() {
             if let Some(pfd) = create_memfd("salsa-pw-pio", PWB_IO_BUFFERS_SIZE) {
                 let pmap = MappedMem::map_fd(pfd.as_raw_fd(), PWB_IO_BUFFERS_SIZE, true, 0);
+                seal_memfd_size(pfd.as_raw_fd());
                 let mid = self.clients[pc_idx]
                     .add_mem(DATA_MEM_FD, pfd.as_raw_fd(), 3)
                     .unwrap_or(SPA_ID_INVALID);
@@ -1621,6 +1622,7 @@ impl PwState {
         if self.nodes[cons_idx].io_mem_fd.is_none() {
             if let Some(cfd) = create_memfd("salsa-pw-cio", PWB_IO_BUFFERS_SIZE) {
                 let cmap = MappedMem::map_fd(cfd.as_raw_fd(), PWB_IO_BUFFERS_SIZE, true, 0);
+                seal_memfd_size(cfd.as_raw_fd());
                 let mid = self.clients[cc_idx]
                     .add_mem(DATA_MEM_FD, cfd.as_raw_fd(), 3)
                     .unwrap_or(SPA_ID_INVALID);
@@ -1857,7 +1859,13 @@ impl PwState {
         } else {
             vfmt_stride(iv.fmt, iv.w)
         };
+        if iv.w == 0 || iv.h == 0 || iv.w > 7680 || iv.h > 4320 {
+            return false;
+        }
         let sz = vfmt_size(iv.fmt, iv.w, iv.h).max(4096);
+        if sz > 128 * 1024 * 1024 {
+            return false;
+        }
 
         for idx in [prod_idx, cons_idx] {
             let n = &mut self.nodes[idx];
@@ -1930,6 +1938,7 @@ impl PwState {
             return false;
         };
         let pmeta_map = MappedMem::map_fd(pmeta_fd.as_raw_fd(), msz, true, 0);
+        seal_memfd_size(pmeta_fd.as_raw_fd());
         let Some(pmeta_mid) =
             self.clients[pc_idx].add_mem(DATA_MEM_FD, pmeta_fd.as_raw_fd(), 3)
         else {
@@ -1966,6 +1975,7 @@ impl PwState {
                 return false;
             };
             let mp = MappedMem::map_fd(bfd.as_raw_fd(), sz as usize, true, 0);
+            seal_memfd_size(bfd.as_raw_fd());
             let Some(pmid) = self.clients[pc_idx].add_mem(DATA_MEM_FD, bfd.as_raw_fd(), 3) else {
                 return false;
             };
@@ -2129,7 +2139,7 @@ impl PwState {
         let pb = &mut prod.bufs[bidx];
         if pb.mapped.is_none()
             && pb.maxsize > 0
-            && pb.maxsize <= 256 * 1024 * 1024
+            && pb.maxsize <= 128 * 1024 * 1024
             && (pb.mem_type == DATA_MEM_FD
                 || (pb.mem_type == DATA_DMA_BUF && (!neg_has_mod || neg_mod == 0)))
         {
@@ -2769,6 +2779,7 @@ impl PwState {
                         return;
                     };
                     let mut act_map = MappedMem::map_fd(act_fd.as_raw_fd(), PWB_ACT_SIZE, true, 0);
+                    seal_memfd_size(act_fd.as_raw_fd());
                     if let Some(m) = act_map.as_mut() {
                         let sl = m.as_mut_slice();
                         sl[0..4].copy_from_slice(&3u32.to_le_bytes());
@@ -2780,6 +2791,9 @@ impl PwState {
                     let act_write = new_eventfd();
                     let done_efd = new_eventfd();
                     let done_act_fd = create_memfd("salsa-pw-dact", PWB_ACT_SIZE);
+                    if let Some(df) = done_act_fd.as_ref() {
+                        seal_memfd_size(df.as_raw_fd());
+                    }
                     let mut done_act_map = done_act_fd
                         .as_ref()
                         .and_then(|f| MappedMem::map_fd(f.as_raw_fd(), PWB_ACT_SIZE, true, 0));
@@ -3501,7 +3515,7 @@ impl PwState {
                         ) else {
                             break;
                         };
-                        if j == 0 && fd_idx >= 0 {
+                        if j == 0 && fd_idx >= 0 && dms > 0 && dms <= 128 * 1024 * 1024 {
                             if let Some(src_fd) = msg_fds.get(fd_idx as usize) {
                                 if let Some(dup) = dup_fd_cloexec(src_fd.as_raw_fd()) {
                                     self.nodes[nidx].bufs.push(NodeBuf {
@@ -3670,12 +3684,16 @@ impl PwState {
             if rem.len() < 16 {
                 break;
             }
-            let Some(hdr) = parse_pkt_hdr(rem) else {
-                record_trip(
-                    FS_PW_BAD_PKT,
-                    b"PW client sent oversized or malformed packet header",
-                );
-                return -1;
+            let hdr = match parse_pkt_hdr_status(rem) {
+                PktHdrStatus::Ready(h) => h,
+                PktHdrStatus::Incomplete => break,
+                PktHdrStatus::Malformed => {
+                    record_trip(
+                        FS_PW_BAD_PKT,
+                        b"PW client sent oversized or malformed packet header",
+                    );
+                    return -1;
+                }
             };
             if rem.len() < hdr.pkt_len {
                 break;
@@ -3719,7 +3737,13 @@ impl PwState {
         self.next_global_id += 1;
         self.next_serial += 1;
 
-        let uc = socket_peercred(stream.as_raw_fd()).unwrap_or_default();
+        let Some(uc) = socket_peercred(stream.as_raw_fd()) else {
+            return;
+        };
+        let my_uid = current_uid();
+        if uc.uid != my_uid && uc.uid != 0 {
+            return;
+        }
         let pid = uc.pid.max(0) as u32;
         let (app, bin) = detect_proc_info(pid);
         let mut props = Dict::default();

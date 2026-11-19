@@ -73,7 +73,7 @@ In traditional Linux pro-audio workflows, patchbay utilities like `qpwgraph` or 
 
 ---
 
-## 5. Automatic Audio Module Update Watcher & Cross-PC Adaptation (`lwasapi-autosync.sh`)
+## 5. Automatic Audio Module Update Watcher & Cross-PC Adaptation (`build/lwasapi-autosync`)
 - **Systemd Path Watcher (`lwasapi-module-watcher.path`):** Continuously monitors your distribution's package database (`/var/lib/pacman/local`, `/var/lib/dpkg/status`, or `/var/lib/rpm`) alongside `libasound.so.2`, `libpulse.so.0`, `libjack.so.0`, and `libfdk-aac.so.2`.
-- **Dynamic ELF Symbol Version Sync (`readelf -V`):** Whenever any system package updates, `lwasapi-autosync.sh` extracts all `ALSA_*` and `PULSE_*` ELF symbol version nodes from the host libraries, updates `src/alsa.version` and `src/pulse.version`, recompiles all binaries and shims (`make -B`), re-verifies PipeWire-Pulse masking / WirePlumber `video-only` config, and hot-restarts `lwasapi-audiodg.service`.
+- **Dynamic ELF Symbol Version Sync (`readelf -V`):** Whenever any system package updates, `lwasapi-autosync` extracts all `ALSA_*` and `PULSE_*` ELF symbol version nodes from the host libraries, updates `src/alsa.version` and `src/pulse.version`, recompiles all binaries and shims (`make -B`), re-verifies PipeWire-Pulse masking / WirePlumber `video-only` config, and hot-restarts `lwasapi-audiodg.service`.
 - **Cross-PC Discovery:** Every binary and script resolves paths dynamically (`readlink("/proc/self/exe")`, `ldconfig -p`), directly probing `org.bluez` and `/dev/snd/{pcmC*D*,midiC*D*}` with zero `wpctl` or hardcoded hardware assumptions.

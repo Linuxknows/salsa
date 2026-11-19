@@ -8,7 +8,7 @@ use core::slice;
 use std::env;
 use std::ffi::{CStr, CString};
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
@@ -36,7 +36,7 @@ use crate::hw_analog::{
     LWASAPI_HW_AMP_AUTO, LWASAPI_HW_AMP_HIGH, LWASAPI_HW_AMP_LOW, LWASAPI_HW_AMP_MED,
     LWASAPI_HW_ROUTE_AUTO, LWASAPI_HW_ROUTE_HP, LWASAPI_HW_ROUTE_SPK,
 };
-use crate::unix_sys::{resolve_sock_path_common, O_CLOEXEC, O_NOFOLLOW};
+use crate::unix_sys::{current_uid, resolve_sock_path_common, O_CLOEXEC, O_NOFOLLOW};
 
 use crate::c_abi::{lwasapi_bluez_enumerate_devices, lwasapi_bluez_reset_device};
 
@@ -231,7 +231,7 @@ fn cmd_status() -> i32 {
     };
 
     println!("================================================================================");
-    println!(" Salsa v7.0-beta — Linux WASAPI Studio Engine (Fixed/Split Clock + HW Analog)");
+    println!(" Salsa V1.19.0 — Linux WASAPI Studio Engine (Fixed/Split Clock + HW Analog)");
     println!("================================================================================");
     println!(" Render / Sink Endpoint : {hw_device} [{act_pb}]");
     println!(" Capture / Mic Endpoint : {hw_cap} [{act_cap}]");
@@ -1598,9 +1598,49 @@ pub fn build_filtered_ld_path(prepend_dir: Option<&str>, cur_ld: Option<&str>) -
     }
     let mut out = parts.join(":");
     if out.len() >= 2048 {
-        out.truncate(2047);
+        out.truncate(out.floor_char_boundary(2047));
     }
     out
+}
+
+fn cmd_pw_self_test() -> i32 {
+    let dsock = get_debug_socket_path();
+    let Ok(stream) = UnixStream::connect(&dsock) else {
+        eprintln!("Failed to connect to Salsa debug socket: {dsock}");
+        return 1;
+    };
+    let to = Some(Duration::from_millis(5000));
+    let _ = stream.set_read_timeout(to);
+    let _ = stream.set_write_timeout(to);
+    let Ok(mut wr) = stream.try_clone() else {
+        return 1;
+    };
+    if wr.write_all(b"PW_SELF_TEST\n").is_err() {
+        eprintln!("Failed to send PW_SELF_TEST to {dsock}");
+        return 1;
+    }
+    let _ = wr.flush();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    for _ in 0..4096 {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.contains("\"type\":\"cmd_reply\"") && trimmed.contains("\"PW_SELF_TEST\"") {
+                    println!("{trimmed}");
+                    return if trimmed.contains("\"ok\":true") || trimmed.contains("\"rc\":0") {
+                        0
+                    } else {
+                        1
+                    };
+                }
+            }
+        }
+    }
+    eprintln!("Timed out waiting for PW_SELF_TEST reply from {dsock}");
+    1
 }
 
 fn write_nofollow_file(path: &str, mode: u32, content: &[u8]) -> bool {
@@ -1983,7 +2023,7 @@ LD_LIBRARY_PATH={ld_val}\n"
             let rt = env::var("XDG_RUNTIME_DIR")
                 .ok()
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "/run/user/1000".to_string());
+                .unwrap_or_else(|| format!("/run/user/{}", current_uid()));
             let pw_sock = format!("{rt}/pipewire-0");
             thread::sleep(Duration::from_millis(150));
             for _ in 0..40 {
@@ -2092,11 +2132,27 @@ fn cmd_disable_auto() -> i32 {
         );
     }
 
-    let src2 = format!("{bak_dir}/51-bluetooth-autoswitch.conf");
-    let dst2 = format!("{wp_dir}/51-bluetooth-autoswitch.conf");
-    if Path::new(&src2).exists() {
-        let _ = fs::create_dir_all(&wp_dir);
-        let _ = fs::rename(src2, dst2);
+    for (src, dst, parent_dir) in [
+        (
+            format!("{bak_dir}/10-bose-persistent-bridge.conf"),
+            format!("{pw_dir}/10-bose-persistent-bridge.conf"),
+            &pw_dir,
+        ),
+        (
+            format!("{bak_dir}/51-bluetooth-autoswitch.conf"),
+            format!("{wp_dir}/51-bluetooth-autoswitch.conf"),
+            &wp_dir,
+        ),
+        (
+            format!("{bak_dir}/52-bose-keepalive.conf"),
+            format!("{wp_dir}/52-bose-keepalive.conf"),
+            &wp_dir,
+        ),
+    ] {
+        if Path::new(&src).exists() {
+            let _ = fs::create_dir_all(parent_dir);
+            let _ = fs::rename(src, dst);
+        }
     }
 
     let _ = trigger_broker_sync_mode();
@@ -2178,7 +2234,7 @@ fn cmd_disable_auto() -> i32 {
 fn print_usage(prog: &str) {
     eprint!(
         "Usage: {prog} <command>\n\
-  status                                    Show Salsa v7.0-beta engine, BlueZ, PA socket & HW analog status\n\
+  status                                    Show Salsa V1.19.0 engine, BlueZ, PA socket & HW analog status\n\
   bench                                     Run live latency benchmark vs. Native PA / ALSA\n\
   sync-modules                              Sync ELF symbol versions, rebuild shims & self-heal configs\n\
   devices                                   List active WaveRT ALSA, BlueZ A2DP & MIDI endpoints\n\
@@ -2216,6 +2272,7 @@ fn print_usage(prog: &str) {
   mic-volume <0-150>                        Set Salsa microphone input gain percentage\n\
   mic-mute <0|1|toggle>                     Set or toggle Salsa microphone mute\n\
   midi-send <note> [velocity]               Inject a MIDI Note-On into the LWASAPI DAW MIDI Hub\n\
+  pw-self-test                              Run PipeWire ScreenCast broker live self-test via debug socket\n\
   enable-auto                               Enable Zero-PipeWire Salsa mode (Video Broker, Steam/ALSA/PA direct)\n\
   disable-auto                              Restore upstream PipeWire, PipeWire-Pulse & WirePlumber cleanly\n"
     );
@@ -2377,8 +2434,9 @@ pub fn run_ctl(args: &[String]) -> i32 {
             };
             return cmd_eq_mode(&args[2], thresh, ratio);
         }
+        "pw-self-test" => return cmd_pw_self_test(),
         "enable-auto" => return cmd_enable_auto(),
-        "disable-auto" => return cmd_disable_auto(),
+        "disable" | "disable-auto" => return cmd_disable_auto(),
         "bench" | "benchmark" => {
             let bpath = format!("{}/build/lwasapi-bench", get_install_root());
             let err = Command::new(&bpath).arg0("lwasapi-bench").exec();
@@ -2386,12 +2444,12 @@ pub fn run_ctl(args: &[String]) -> i32 {
             return 1;
         }
         "sync-modules" | "sync" => {
-            let spath = format!("{}/lwasapi-autosync.sh", get_install_root());
+            let spath = format!("{}/build/lwasapi-autosync", get_install_root());
             let err = Command::new(&spath)
-                .arg0("lwasapi-autosync.sh")
+                .arg0("lwasapi-autosync")
                 .arg("--force")
                 .exec();
-            eprintln!("execl lwasapi-autosync.sh: {err}");
+            eprintln!("execl lwasapi-autosync: {err}");
             return 1;
         }
         _ => {}

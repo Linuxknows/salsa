@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "salsa_net",
+    "lwasapi_client",
+    "alsa_plugin_lwasapi",
+    "shim_alsa",
+    "shim_pulse",
+    "shim_jack",
+    "salsa_pa_reconnect",
+    "salsa_pa_reconnect_proxy",
+    "salsa_tools",
+    "salsa_ui",
+]
+
+[profile.release]
+opt-level = 3
+lto = false
+panic = "abort"
+overflow-checks = true
+strip = "debuginfo"

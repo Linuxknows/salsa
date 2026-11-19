@@ -8,18 +8,18 @@ High-Resolution (Up to **192,000 Hz / 32-Bit Float**) Windows WASAPI / WaveRT Ze
 
 ## Quick 1-Command Install on Any Linux PC
 
-Unzip the archive (for example `v7.0-beta` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
+Unzip the archive (for example `V1.19.0` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
 
 ```bash
-unzip "salsa-lwasapi-installer (v7.0-beta).zip"
+unzip "salsa-lwasapi-installer (V1.19.0).zip"
 cd salsa-lwasapi
 ./install-salsa.sh
 ```
 
 ### What `./install-salsa.sh` Does Automatically:
 1. **Detects Host PC Hardware & Distro**: Identifies your CPU (`/proc/cpuinfo`), Linux distribution (`CachyOS`/Arch `pacman`, Ubuntu/Debian `apt`/`dpkg`, Fedora/RHEL/openSUSE `dnf`/`zypper`/`rpm`), kernel ALSA soundcards (`/proc/asound/cards`), Bluetooth A2DP headphones (`org.bluez`), USB/analog capture inputs, and hardware MIDI controllers (`/dev/snd/midiC*D*`).
-2. **Installs Any Missing Build/GUI Prerequisites**: Checks for `gcc`, `make`, `pkg-config`, `readelf`, `alsa`/`dbus-1`/`sbc` headers, `dbus`, `sbc`, optional `libldac`/`libfreeaptx`/`libfdk-aac`, and `PyQt6`, installing them automatically if missing.
-3. **Syncs Host ELF Symbol Versions & Compiles Natively (`lwasapi-autosync.sh`)**: Extracts the target PC's exact `ALSA_*` and `PULSE_*` ELF symbol versions from `libasound.so.2` and `libpulse.so.0` and builds `lwasapi-audiodg`, `liblwasapi.so`, `libasound_module_pcm_lwasapi.so`, `build/pa_reconnect/libpulse.so.0` (plus `build/pa_reconnect32/libpulse.so.0` when 32-bit multilib is present), `lwasapi-ctl`, `lwasapi-test`, `lwasapi-bench`, and all hollow ABI shims (`build/shims/`).
+2. **Installs Any Missing Build/GUI Prerequisites**: Checks for `cargo`, `gcc`, `g++`, `make`, `pkg-config`, `readelf`, `libz`/`alsa`/`libpulse` runtime libraries, and `Qt6` (`libQt6Widgets.so.6`, `libQt6DBus.so.6` from `qt6-base`) for the native C++20 Qt6 + pure-Rust GUIs (`build/salsa-studio`, `build/salsa-debug`, `build/lwasapi-tray`), installing system prerequisites cleanly when needed.
+3. **Syncs Host ELF Symbol Versions & Compiles Natively (`build/lwasapi-autosync`)**: Extracts the target PC's exact `ALSA_*` and `PULSE_*` ELF symbol versions from `libasound.so.2` and `libpulse.so.0` and builds `lwasapi-audiodg`, `liblwasapi.so`, `libasound_module_pcm_lwasapi.so`, `build/pa_reconnect/libpulse.so.0` (plus `build/pa_reconnect32/libpulse.so.0` when 32-bit multilib is present), `lwasapi-ctl`, `lwasapi-test`, `lwasapi-bench`, and all hollow ABI shims (`build/shims/`).
 4. **Cuts Over Audio Directly to Salsa (`lwasapi-ctl enable-auto`)**:
    - Configures Pure Zero-PipeWire isolation with built-in ScreenCast `$XDG_RUNTIME_DIR/pipewire-0` video broker, `~/.asoundrc`, `~/.config/OpenAL/alsoft.conf`, `~/.config/environment.d/99-salsa-direct.conf`, native `$XDG_RUNTIME_DIR/pulse/native` PA v35 UNIX socket server, persistent `0600` `~/.config/lwasapi/app_volumes.conf`, and direct BlueZ `MediaEndpoint1` (**LDAC / aptX HD / aptX / AAC / SBC**) + kernel `/dev/snd/pcmC*D*`.
    - Applies scoped Flatpak `--user` overrides (`--socket=pulseaudio`, `--filesystem=xdg-run/pipewire-0:ro`) for installed gaming/media Flatpaks and tracks them for clean `--uninstall` rollback.

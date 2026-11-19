@@ -3,8 +3,9 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::mem;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::ffi::{CStr, CString};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -208,6 +209,7 @@ struct BtMutable {
     read_mtu: u16,
     write_mtu: u16,
     bt_fd: c_int,
+    bt_fd_owner: Option<Arc<OwnedFd>>,
 
     rtp_seq: u16,
     rtp_timestamp: u32,
@@ -258,6 +260,7 @@ impl Default for BtMutable {
             read_mtu: 0,
             write_mtu: 0,
             bt_fd: -1,
+            bt_fd_owner: None,
             rtp_seq: 0,
             rtp_timestamp: 0,
             pref_codec: LWASAPI_BT_PREF_AUTO,
@@ -290,9 +293,44 @@ struct HfpBatteryDev {
     supports_msbc: bool,
     _negotiated_sco_codec: u8,
     fd: c_int,
+    fd_owner: Option<Arc<OwnedFd>>,
     pct: i32,
     dev_path: String,
     batt_path: String,
+}
+
+impl BtMutable {
+    fn replace_bt_fd(&mut self, fd: c_int) {
+        self.close_bt_fd();
+        if fd >= 0 {
+            self.bt_fd = fd;
+            self.bt_fd_owner = Some(Arc::new(unsafe { OwnedFd::from_raw_fd(fd) }));
+        }
+    }
+
+    fn close_bt_fd(&mut self) {
+        if self.bt_fd >= 0 {
+            shutdown_rdwr(self.bt_fd);
+            self.bt_fd_owner = None;
+            self.bt_fd = -1;
+        }
+    }
+}
+
+struct DbusConnPtr(*mut DBusConnection);
+unsafe impl Send for DbusConnPtr {}
+
+struct HeldDbusConn {
+    conn: *mut DBusConnection,
+    unref: unsafe extern "C" fn(*mut DBusConnection),
+}
+
+impl Drop for HeldDbusConn {
+    fn drop(&mut self) {
+        if !self.conn.is_null() {
+            unsafe { (self.unref)(self.conn) };
+        }
+    }
 }
 
 pub struct BluezRuntime {
@@ -330,7 +368,7 @@ pub struct BluezRuntime {
     pub last_recover_ns: AtomicU64,
     pub hfp_battery_dirty: AtomicBool,
 
-    dbus_conn: AtomicPtr<DBusConnection>,
+    dbus_conn: Mutex<DbusConnPtr>,
     state: Mutex<BtMutable>,
     cap: Arc<CapState>,
     hfp_devs: Mutex<[HfpBatteryDev; MAX_HFP_DEVS]>,
@@ -372,7 +410,7 @@ impl BluezRuntime {
             recovery_active: AtomicBool::new(false),
             last_recover_ns: AtomicU64::new(0),
             hfp_battery_dirty: AtomicBool::new(false),
-            dbus_conn: AtomicPtr::new(ptr::null_mut()),
+            dbus_conn: Mutex::new(DbusConnPtr(ptr::null_mut())),
             state: Mutex::new(BtMutable::default()),
             cap: Arc::new(CapState::new()),
             hfp_devs: Mutex::new(std::array::from_fn(|_| HfpBatteryDev::default())),
@@ -811,11 +849,16 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
             let mut popped = 0usize;
             let mut rem_avail = 0u32;
             let tx_fd;
+            let tx_fd_owner;
             let mut dev_alias = String::new();
 
             {
-                let mut st = rt.state.lock().unwrap();
+                let mut st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
                 if st.bt_fd < 0 || !st.tx_stream_active {
+                    continue;
+                }
+                tx_fd_owner = st.bt_fd_owner.clone();
+                if tx_fd_owner.is_none() {
                     continue;
                 }
                 tx_fd = st.bt_fd;
@@ -1240,10 +1283,9 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                             ),
                         );
                         {
-                            let mut st = rt.state.lock().unwrap();
+                            let mut st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
                             if st.bt_fd == tx_fd {
-                                close_raw_fd(st.bt_fd);
-                                st.bt_fd = -1;
+                                st.close_bt_fd();
                                 st.direct_socket_mode = false;
                                 st.tx_stream_active = false;
                                 st.has_bluez_transport = false;
@@ -1666,11 +1708,8 @@ fn acquire_bluez_transport(db: &DBusApi, conn: *mut DBusConnection, rt: &BluezRu
             }
             if fd >= 0 {
                 let (cname, alias, srate) = {
-                    let mut st = rt.state.lock().unwrap();
-                    if st.bt_fd >= 0 {
-                        close_raw_fd(st.bt_fd);
-                    }
-                    st.bt_fd = fd;
+                    let mut st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
+                    st.replace_bt_fd(fd);
                     st.read_mtu = rmtu;
                     st.write_mtu = wmtu;
                     st.direct_socket_mode = true;
@@ -1956,15 +1995,12 @@ unsafe extern "C" fn endpoint_message_handler(
             None
         };
         {
-            let mut st = rt.state.lock().unwrap();
+            let mut st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
             if member == "Release"
                 || tp.as_deref().is_none()
                 || tp.as_deref() == Some(st.transport_path.as_str())
             {
-                if st.bt_fd >= 0 {
-                    close_raw_fd(st.bt_fd);
-                    st.bt_fd = -1;
-                }
+                st.close_bt_fd();
                 st.direct_socket_mode = false;
                 st.has_bluez_transport = false;
                 st.tx_stream_active = false;
@@ -2097,11 +2133,8 @@ unsafe extern "C" fn bluez_signal_filter(
             };
             if name == "org.bluez" {
                 {
-                    let mut st = rt.state.lock().unwrap();
-                    if st.bt_fd >= 0 {
-                        close_raw_fd(st.bt_fd);
-                        st.bt_fd = -1;
-                    }
+                    let mut st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
+                    st.close_bt_fd();
                     st.direct_socket_mode = false;
                     st.has_bluez_transport = false;
                     st.tx_stream_active = false;
@@ -2180,12 +2213,9 @@ unsafe extern "C" fn bluez_signal_filter(
             let obj = unsafe { iter_get_str(db, &mut it) }.unwrap_or_default();
             let mut removed = false;
             {
-                let mut st = rt.state.lock().unwrap();
+                let mut st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
                 if !obj.is_empty() && (obj == st.transport_path || obj == st.device_path) {
-                    if st.bt_fd >= 0 {
-                        close_raw_fd(st.bt_fd);
-                        st.bt_fd = -1;
-                    }
+                    st.close_bt_fd();
                     st.direct_socket_mode = false;
                     st.has_bluez_transport = false;
                     st.tx_stream_active = false;
@@ -2264,12 +2294,18 @@ fn hfp_set_battery_pct(rt: &BluezRuntime, dev_path: &str, raw_pct: i32) {
     eprintln!("[LWASAPI-HFP] Battery update for {dev_path}: {pct}%");
 }
 
-fn hfp_mark_disconnected(rt: &BluezRuntime, dev_path: &str) {
-    let mut devs = rt.hfp_devs.lock().unwrap();
+fn hfp_mark_disconnected(rt: &BluezRuntime, dev_path: &str, expected_fd: Option<c_int>) {
+    let mut devs = rt.hfp_devs.lock().unwrap_or_else(|e| e.into_inner());
     for d in devs.iter_mut() {
         if d.in_use && d.dev_path == dev_path {
+            if let Some(efd) = expected_fd {
+                if d.fd != efd {
+                    continue;
+                }
+            }
             if d.fd >= 0 {
-                close_raw_fd(d.fd);
+                shutdown_rdwr(d.fd);
+                d.fd_owner = None;
                 d.fd = -1;
             }
             d.rfcomm_active = false;
@@ -2684,7 +2720,7 @@ unsafe extern "C" fn hfp_profile_message_handler(
         let mut it = DBusMessageIter::default();
         if unsafe { (db.message_iter_init)(msg, &mut it) } != 0 {
             if let Some(dp) = unsafe { iter_get_str(db, &mut it) } {
-                hfp_mark_disconnected(rt, &dp);
+                hfp_mark_disconnected(rt, &dp, None);
             }
         }
         unsafe {
@@ -2707,70 +2743,82 @@ unsafe extern "C" fn hfp_profile_message_handler(
                 -1
             };
             if !dev_path.is_empty() && fd >= 0 {
-                hfp_mark_disconnected(rt, &dev_path);
+                hfp_mark_disconnected(rt, &dev_path, None);
+                let fd_owner = Arc::new(unsafe { OwnedFd::from_raw_fd(fd) });
+                let mut allocated = false;
                 {
-                    let mut devs = rt.hfp_devs.lock().unwrap();
+                    let mut devs = rt.hfp_devs.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(d) = hfp_find_or_alloc_locked(&mut devs, &dev_path) {
                         d.fd = fd;
+                        d.fd_owner = Some(Arc::clone(&fd_owner));
                         d.rfcomm_active = true;
+                        allocated = true;
                     }
                 }
-                let rt_arc = Arc::clone(global_bt_arc());
-                let dp = dev_path;
-                thread::spawn(move || {
-                    eprintln!("[LWASAPI-HFP] RFCOMM connected for {dp} (fd={fd})");
-                    let mut line = Vec::<u8>::with_capacity(512);
-                    let mut buf = [0u8; 256];
-                    loop {
-                        let mut pfd = [PollFd {
-                            fd,
-                            events: POLLIN,
-                            revents: 0,
-                        }];
-                        let pr = do_poll(&mut pfd, 1000);
-                        if pr < 0 {
-                            if last_errno() == ERRNO_EINTR {
-                                continue;
-                            }
-                            break;
-                        }
-                        if pr == 0 {
-                            continue;
-                        }
-                        if (pfd[0].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0
-                            && (pfd[0].revents & POLLIN) == 0
-                        {
-                            break;
-                        }
-                        let n = crate::unix_sys::read_raw(fd, &mut buf);
-                        if n < 0 {
-                            let e = last_errno();
-                            if e == ERRNO_EAGAIN || e == ERRNO_EINTR {
-                                continue;
-                            }
-                            eprintln!(
-                                "[LWASAPI-HFP] RFCOMM read error on {dp}: {}",
-                                std::io::Error::from_raw_os_error(e)
-                            );
-                            break;
-                        }
-                        if n == 0 {
-                            break;
-                        }
-                        for &b in &buf[..n as usize] {
-                            if b == b'\r' || b == b'\n' {
-                                if !line.is_empty() {
-                                    hfp_handle_at_line(&rt_arc, fd, &dp, &line);
-                                    line.clear();
+                if !allocated {
+                    drop(fd_owner);
+                } else {
+                    let rt_arc = Arc::clone(global_bt_arc());
+                    let dp = dev_path;
+                    thread::spawn(move || {
+                        let _fd_keepalive = fd_owner;
+                        let fd = _fd_keepalive.as_raw_fd();
+                        eprintln!("[LWASAPI-HFP] RFCOMM connected for {dp} (fd={fd})");
+                        let mut line = Vec::<u8>::with_capacity(512);
+                        let mut buf = [0u8; 256];
+                        loop {
+                            let mut pfd = [PollFd {
+                                fd,
+                                events: POLLIN,
+                                revents: 0,
+                            }];
+                            let pr = do_poll(&mut pfd, 1000);
+                            if pr < 0 {
+                                if last_errno() == ERRNO_EINTR {
+                                    continue;
                                 }
-                            } else if line.len() + 1 < 512 {
-                                line.push(b);
+                                break;
+                            }
+                            if pr == 0 {
+                                continue;
+                            }
+                            if (pfd[0].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0
+                                && (pfd[0].revents & POLLIN) == 0
+                            {
+                                break;
+                            }
+                            let n = crate::unix_sys::read_raw(fd, &mut buf);
+                            if n < 0 {
+                                let e = last_errno();
+                                if e == ERRNO_EAGAIN || e == ERRNO_EINTR {
+                                    continue;
+                                }
+                                eprintln!(
+                                    "[LWASAPI-HFP] RFCOMM read error on {dp}: {}",
+                                    std::io::Error::from_raw_os_error(e)
+                                );
+                                break;
+                            }
+                            if n == 0 {
+                                break;
+                            }
+                            for &b in &buf[..n as usize] {
+                                if b == b'\r' || b == b'\n' {
+                                    if !line.is_empty() {
+                                        hfp_handle_at_line(&rt_arc, fd, &dp, &line);
+                                        line.clear();
+                                    }
+                                } else if line.len() + 1 < 512 {
+                                    line.push(b);
+                                }
                             }
                         }
-                    }
-                    eprintln!("[LWASAPI-HFP] RFCOMM disconnected for {dp}");
-                    hfp_mark_disconnected(&rt_arc, &dp);
-                });
+                        eprintln!("[LWASAPI-HFP] RFCOMM disconnected for {dp}");
+                        hfp_mark_disconnected(&rt_arc, &dp, Some(fd));
+                    });
+                }
+            } else if fd >= 0 {
+                close_raw_fd(fd);
             }
         }
         unsafe {
@@ -3252,7 +3300,7 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
             return;
         }
         unsafe { (db.connection_set_exit_on_disconnect)(conn, 0) };
-        rt.dbus_conn.store(conn, Ordering::Release);
+        *rt.dbus_conn.lock().unwrap_or_else(|e| e.into_inner()) = DbusConnPtr(conn);
 
         unsafe {
             (db.bus_add_match)(
@@ -3429,11 +3477,8 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                         );
                         set_tx_enabled_impl(&rt, false);
                         {
-                            let mut st = rt.state.lock().unwrap();
-                            if st.bt_fd >= 0 {
-                                close_raw_fd(st.bt_fd);
-                                st.bt_fd = -1;
-                            }
+                            let mut st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
+                            st.close_bt_fd();
                             st.direct_socket_mode = false;
                             st.has_bluez_transport = false;
                             st.tx_stream_active = false;
@@ -3747,12 +3792,15 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                     let _ = (db.connection_unregister_object_path)(conn, p.as_ptr());
                 }
             }
+            {
+                let mut g = rt.dbus_conn.lock().unwrap_or_else(|e| e.into_inner());
+                g.0 = ptr::null_mut();
+            }
             (db.connection_close)(conn);
             (db.connection_unref)(conn);
         }
-        rt.dbus_conn.store(ptr::null_mut(), Ordering::Release);
     });
-    *rt.dbus_thread.lock().unwrap() = Some(jh);
+    *rt.dbus_thread.lock().unwrap_or_else(|e| e.into_inner()) = Some(jh);
 }
 
 // ============================================================================
@@ -3775,24 +3823,44 @@ fn stop_sco_capture(rt: &BluezRuntime) {
 }
 
 fn open_sco_capture(rt: &BluezRuntime, mac_or_empty: &str) -> i32 {
-    let conn = rt.dbus_conn.load(Ordering::Acquire);
     let Some(db) = load_dbus_library() else {
         return -1;
     };
+    let _held_conn = {
+        let g = rt.dbus_conn.lock().unwrap_or_else(|e| e.into_inner());
+        if g.0.is_null() {
+            return -1;
+        }
+        HeldDbusConn {
+            conn: unsafe { (db.connection_ref)(g.0) },
+            unref: db.connection_unref,
+        }
+    };
+    let conn = _held_conn.conn;
     if conn.is_null() {
         return -1;
     }
     let target_mac = if let Some(m) = extract_mac_str(mac_or_empty) {
         m
     } else {
-        let cur_mac = rt.state.lock().unwrap().mac_address.clone();
+        let cur_mac = rt
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mac_address
+            .clone();
         if cur_mac.is_empty() {
             return -1;
         }
         cur_mac
     };
 
-    let adapter_path = rt.state.lock().unwrap().adapter_path.clone();
+    let adapter_path = rt
+        .state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .adapter_path
+        .clone();
     let adapter_mac = if !adapter_path.is_empty() {
         unsafe { dbus_get_str_prop(db, conn, &adapter_path, "org.bluez.Adapter1", "Address") }
             .unwrap_or_default()
@@ -3805,17 +3873,19 @@ fn open_sco_capture(rt: &BluezRuntime, mac_or_empty: &str) -> i32 {
     };
     let remote_ba = BdAddr { b: remote_bytes };
 
-    let (want_msbc, rfcomm_fd) = {
-        let devs = rt.hfp_devs.lock().unwrap();
+    let (want_msbc, rfcomm_owner) = {
+        let devs = rt.hfp_devs.lock().unwrap_or_else(|e| e.into_inner());
         devs.iter()
             .find(|d| d.in_use && d.rfcomm_active)
-            .map(|d| (d.supports_msbc, d.fd))
-            .unwrap_or((false, -1))
+            .map(|d| (d.supports_msbc, d.fd_owner.clone()))
+            .unwrap_or((false, None))
     };
 
-    if rfcomm_fd >= 0 && want_msbc {
-        hfp_write_bytes(rfcomm_fd, b"\r\n+BCS: 2\r\n");
-        thread::sleep(Duration::from_millis(120));
+    if let Some(rfcomm) = rfcomm_owner {
+        if want_msbc {
+            hfp_write_bytes(rfcomm.as_raw_fd(), b"\r\n+BCS: 2\r\n");
+            thread::sleep(Duration::from_millis(120));
+        }
     }
 
     let sfd = socket_raw(
@@ -4884,20 +4954,30 @@ pub unsafe fn bluez_close_impl(bt: *mut c_void) {
     stop_sco_capture(rt);
 
     rt.tx_thread_running.store(false, Ordering::Release);
-    if let Some(jh) = rt.tx_thread.lock().unwrap().take() {
+    if let Some(jh) = rt.tx_thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
         let _ = jh.join();
     }
     rt.dbus_thread_running.store(false, Ordering::Release);
-    if let Some(jh) = rt.dbus_thread.lock().unwrap().take() {
+    if let Some(jh) = rt.dbus_thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
         let _ = jh.join();
     }
 
     {
-        let mut st = rt.state.lock().unwrap();
-        if st.bt_fd >= 0 {
-            close_raw_fd(st.bt_fd);
-            st.bt_fd = -1;
+        let mut devs = rt.hfp_devs.lock().unwrap_or_else(|e| e.into_inner());
+        for d in devs.iter_mut() {
+            if d.fd >= 0 {
+                shutdown_rdwr(d.fd);
+                d.fd_owner = None;
+                d.fd = -1;
+            }
+            d.rfcomm_active = false;
+            d.in_use = false;
         }
+    }
+
+    {
+        let mut st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.close_bt_fd();
         st.enc.close_all();
         st.direct_socket_mode = false;
         st.has_bluez_transport = false;

@@ -1,0 +1,8 @@
+{
+    global:
+        dlopen;
+        pa_*;
+        salsa_real_dlopen_passthrough;
+    local:
+        *;
+};

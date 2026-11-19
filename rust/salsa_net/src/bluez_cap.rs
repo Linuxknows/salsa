@@ -1011,10 +1011,10 @@ pub fn spawn_capture_thread(cap: Arc<CapState>) {
                 break;
             }
 
-            let got = (xf.frames as u32).min(CHUNK);
-            if got == 0 {
+            if xf.result <= 0 {
                 continue;
             }
+            let got = (xf.result as u32).min(CHUNK);
 
             let nominal_rate = match cap.cap_hw_rate.load(Ordering::Relaxed) {
                 0 => 48_000,

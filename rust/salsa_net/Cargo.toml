@@ -17,9 +17,10 @@ path = "src/bin/lwasapi_audiodg.rs"
 name = "lwasapi-ctl"
 path = "src/bin/lwasapi_ctl.rs"
 
-[profile.release]
-opt-level = 3
-lto = false
-panic = "abort"
-overflow-checks = true
-strip = "debuginfo"
+[[bin]]
+name = "salsa-gen-pa-proxy"
+path = "src/bin/salsa_gen_pa_proxy.rs"
+
+[[bin]]
+name = "fuzz_wire"
+path = "src/bin/fuzz_wire.rs"

@@ -20,6 +20,7 @@ pub const LWASAPI_DEBUG_MAX_PW_LINKS: usize = 32;
 pub const LWASAPI_DBG_ENGINE: u8 = 0;
 pub const LWASAPI_DBG_PA: u8 = 2;
 pub const LWASAPI_DBG_MIDI: u8 = 4;
+pub const LWASAPI_DBG_SHIM: u8 = 5;
 pub const LWASAPI_DBG_PW_VIDEO: u8 = 7;
 
 pub const LWASAPI_DBG_TRACE: u8 = 0;
@@ -27,8 +28,12 @@ pub const LWASAPI_DBG_INFO: u8 = 1;
 pub const LWASAPI_DBG_WARN: u8 = 2;
 pub const LWASAPI_DBG_ERR: u8 = 3;
 
+pub const LWASAPI_DEBUG_DGRAM_MAGIC: u32 = 0x4C44_4247;
+pub const LWASAPI_DEBUG_IN_SOCK_DEFAULT: &str = "/tmp/lwasapi-debug-in.sock";
+
 pub const S_OK: i32 = 0;
 pub const E_FAIL: i32 = 0x8000_4005u32 as i32;
+pub const AUDCLNT_SHAREMODE_SHARED: u32 = 0;
 pub const AUDCLNT_SHAREMODE_EXCLUSIVE: u32 = 1;
 pub const LWASAPI_CFG_FLAG_CAPTURE_RATE: u32 = 0x4341_5052;
 
@@ -708,10 +713,23 @@ pub struct SalsaRuntimeState {
 
 pub const E_INVALIDARG: i32 = 0x8007_0057u32 as i32;
 pub const E_OUTOFMEMORY: i32 = 0x8007_000Eu32 as i32;
+pub const AUDCLNT_E_NOT_INITIALIZED: i32 = 0x8889_0001u32 as i32;
+pub const AUDCLNT_E_ALREADY_INITIALIZED: i32 = 0x8889_0002u32 as i32;
+pub const AUDCLNT_E_BUFFER_TOO_LARGE: i32 = 0x8889_0006u32 as i32;
+pub const AUDCLNT_E_UNSUPPORTED_FORMAT: i32 = 0x8889_0008u32 as i32;
 pub const AUDCLNT_E_DEVICE_IN_USE: i32 = 0x8889_000Au32 as i32;
+pub const AUDCLNT_STREAMFLAGS_CROSSPROCESS: u32 = 0x0001_0000;
 pub const AUDCLNT_STREAMFLAGS_LOOPBACK: u32 = 0x0002_0000;
+pub const AUDCLNT_STREAMFLAGS_EVENTCALLBACK: u32 = 0x0004_0000;
+pub const AUDCLNT_STREAMFLAGS_NOPERSIST: u32 = 0x0008_0000;
+pub const AUDCLNT_STREAMFLAGS_RATEADJUST: u32 = 0x0010_0000;
+pub const AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM: u32 = 0x8000_0000;
 pub const AUDCLNT_STREAMFLAGS_CAPTURE: u32 = 0x0800_0000;
+pub const AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY: u32 = 0x01;
+pub const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 0x02;
 pub const LWASAPI_FMT_FLOAT32: u32 = 1;
+pub const LWASAPI_FMT_S16_LE: u32 = 2;
+pub const LWASAPI_FMT_S32_LE: u32 = 3;
 pub const LWASAPI_RING_MAGIC: u32 = 0x4C57_4153;
 pub const LWASAPI_CMD_CREATE_SESSION: u32 = 1;
 pub const LWASAPI_CMD_DESTROY_SESSION: u32 = 2;
@@ -720,6 +738,18 @@ pub const LWASAPI_DBG_BLUEZ: u8 = 3;
 pub const LWASAPI_DBG_ALSA: u8 = 6;
 pub const LWASAPI_BT_RING_FRAMES: u32 = 16_384;
 pub const LWASAPI_SOCKET_DEFAULT: &str = "/tmp/lwasapi-audiodg.sock";
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WaveFormatEx {
+    pub w_format_tag: u16,
+    pub n_channels: u16,
+    pub n_samples_per_sec: u32,
+    pub n_avg_bytes_per_sec: u32,
+    pub n_block_align: u16,
+    pub w_bits_per_sample: u16,
+    pub cb_size: u16,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1371,5 +1401,6 @@ mod tests {
         assert_eq!(offset_of!(LwasapiEngineStatus, hw_analog_cfg), 6_864);
         assert_eq!(size_of::<SalsaBtSnapshot>(), 768);
         assert_eq!(size_of::<SalsaBtOps>(), 160);
+        assert_eq!(size_of::<WaveFormatEx>(), 20);
     }
 }

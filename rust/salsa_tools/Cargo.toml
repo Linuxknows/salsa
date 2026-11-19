@@ -1,0 +1,37 @@
+[package]
+name = "salsa_tools"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "salsa_tools"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lwasapi-run"
+path = "src/bin/lwasapi_run.rs"
+
+[[bin]]
+name = "lwasapi-autosync"
+path = "src/bin/lwasapi_autosync.rs"
+
+[[bin]]
+name = "salsa-installer"
+path = "src/bin/salsa_installer.rs"
+
+[[bin]]
+name = "salsa-dist"
+path = "src/bin/salsa_dist.rs"
+
+[[bin]]
+name = "salsa-debug-cli"
+path = "src/bin/salsa_debug_cli.rs"
+
+[[bin]]
+name = "salsa-regression"
+path = "src/bin/salsa_regression.rs"
+
+[dependencies]
+salsa_net = { path = "../salsa_net" }
+lwasapi_client = { path = "../lwasapi_client" }

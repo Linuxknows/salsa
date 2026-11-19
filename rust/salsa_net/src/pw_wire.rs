@@ -211,24 +211,41 @@ pub fn fd_quota_check(current_nfds: u32, incoming_cnt: u32) -> (bool, u32) {
     }
 }
 
-pub fn parse_pkt_hdr(buf: &[u8]) -> Option<PktHdr> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PktHdrStatus {
+    Ready(PktHdr),
+    Incomplete,
+    Malformed,
+}
+
+pub fn parse_pkt_hdr_status(buf: &[u8]) -> PktHdrStatus {
     if buf.len() < 16 {
-        return None;
+        return PktHdrStatus::Incomplete;
     }
-    let oid = le32(buf, 0)?;
-    let w1 = le32(buf, 4)?;
-    let seq = le32(buf, 8)?;
-    let nfds = le32(buf, 12)?;
+    let Some(oid) = le32(buf, 0) else {
+        return PktHdrStatus::Incomplete;
+    };
+    let Some(w1) = le32(buf, 4) else {
+        return PktHdrStatus::Incomplete;
+    };
+    let Some(seq) = le32(buf, 8) else {
+        return PktHdrStatus::Incomplete;
+    };
+    let Some(nfds) = le32(buf, 12) else {
+        return PktHdrStatus::Incomplete;
+    };
     let op = ((w1 >> 24) & 0xff) as u8;
     let psz = w1 & 0x00ffffff;
     if nfds > PWB_MAX_CLIENT_FDS || psz > PWB_MAX_PACKET_SZ {
-        return None;
+        return PktHdrStatus::Malformed;
     }
-    let pkt_len = 16usize.checked_add(pad8(psz as usize))?;
+    let Some(pkt_len) = 16usize.checked_add(pad8(psz as usize)) else {
+        return PktHdrStatus::Malformed;
+    };
     if buf.len() < pkt_len {
-        return None;
+        return PktHdrStatus::Incomplete;
     }
-    Some(PktHdr {
+    PktHdrStatus::Ready(PktHdr {
         oid,
         op,
         psz,
@@ -236,6 +253,13 @@ pub fn parse_pkt_hdr(buf: &[u8]) -> Option<PktHdr> {
         nfds,
         pkt_len,
     })
+}
+
+pub fn parse_pkt_hdr(buf: &[u8]) -> Option<PktHdr> {
+    match parse_pkt_hdr_status(buf) {
+        PktHdrStatus::Ready(h) => Some(h),
+        PktHdrStatus::Incomplete | PktHdrStatus::Malformed => None,
+    }
 }
 
 pub fn dict_set(d: &mut Dict, key: &[u8], val: &[u8]) {
@@ -643,10 +667,10 @@ pub fn parse_param_pod(pod: &[u8]) -> ParamParsed {
         let mut c = VfmtCaps {
             w_def: 1920,
             w_min: 1,
-            w_max: 16384,
+            w_max: 7680,
             h_def: 1080,
             h_min: 1,
-            h_max: 16384,
+            h_max: 4320,
             fps_def: Frac { num: 0, denom: 1 },
             fps_min: Frac { num: 0, denom: 1 },
             fps_max: Frac { num: 0, denom: 1 },
@@ -1190,9 +1214,9 @@ pub fn intersect_vfmt(
     }
 
     let minw = a.w_min.max(b.w_min);
-    let maxw = a.w_max.min(b.w_max);
+    let maxw = a.w_max.min(b.w_max).min(7680);
     let minh = a.h_min.max(b.h_min);
-    let maxh = a.h_max.min(b.h_max);
+    let maxh = a.h_max.min(b.h_max).min(4320);
     if minw > maxw || minh > maxh {
         return None;
     }

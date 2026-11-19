@@ -1,0 +1,7 @@
+{
+    global:
+        _snd_pcm_lwasapi_open;
+        __snd_pcm_lwasapi_open_dlsym_pcm_001;
+    local:
+        *;
+};

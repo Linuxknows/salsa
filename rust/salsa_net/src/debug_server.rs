@@ -960,7 +960,7 @@ impl ServerLoopState {
     }
 
     fn history_push(&mut self, id: u64, lvl: u8, line: String) {
-        let q = if lvl <= DBG_LVL_INFO {
+        let q = if lvl >= DBG_LVL_INFO {
             &mut self.imp_hist
         } else {
             &mut self.trace_hist
@@ -975,7 +975,6 @@ impl ServerLoopState {
         for c in &mut self.clients {
             c.queue_line(line);
         }
-        self.clients.retain(|c| !c.closed);
     }
 
     fn build_snapshot_line(&mut self) -> Option<String> {
@@ -1014,7 +1013,7 @@ impl ServerLoopState {
         }
         if cmd == b"SNAPSHOT" {
             self.send_snapshot(Some(idx));
-        } else if cmd == b"RESET_STATS" {
+        } else if cmd == b"RESET_STATS" || cmd == b"RESET_RT_STATS" {
             reset_rt_stats();
             emit_str(
                 0,
@@ -1130,7 +1129,6 @@ impl ServerLoopState {
         if let Some(cl) = self.clients.get_mut(idx) {
             cl.flush();
         }
-        self.clients.retain(|cl| !cl.closed);
     }
 
     fn drain_dgram_socket(&mut self) {

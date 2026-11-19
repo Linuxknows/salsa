@@ -1,0 +1,1795 @@
+use core::ffi::{c_char, c_int, c_long, c_void};
+use core::mem::{self, offset_of};
+use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::collections::VecDeque;
+use std::env;
+use std::ffi::CString;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::io::{AsRawFd, OwnedFd};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use salsa_wire::c_abi::{
+    LwasapiMidiEvent, LwasapiPwPreviewShm, WaveFormatEx, AUDCLNT_SHAREMODE_SHARED,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, LWASAPI_FMT_FLOAT32, LWASAPI_PW_PREVIEW_MAGIC,
+    LWASAPI_PW_PREVIEW_MAX_BYTES, LWASAPI_PW_PREVIEW_MAX_H, LWASAPI_PW_PREVIEW_MAX_W,
+    LWASAPI_PW_PREVIEW_VERSION,
+};
+use salsa_wire::unix_sys::{
+    audiodg_sock_path, current_hostname, debug_in_sock_path, mono_ns,
+    resolve_sock_path_common, MappedMem, O_CLOEXEC, O_NOFOLLOW,
+};
+
+use crate::host::{
+    ensure_dir_0700, getuid, host_arch, host_cpu_name, host_os_pretty_name, install_root,
+    peercred_for_unix_socket, private_runtime_dir, read_text_lossy, sha256_file, state_dir,
+    uname_srm, which, xdg_runtime_dir,
+};
+use crate::json::JsonValue;
+use crate::zlib_png::ZipWriter;
+
+pub const SUBSYSTEMS: &[&str] = &[
+    "ALL", "ENGINE", "WASAPI", "PA", "BLUEZ", "MIDI", "SHIM", "ALSA", "PW_VIDEO", "JOURNAL",
+    "AUTOSYNC", "DBUS",
+];
+pub const LOG_LEVELS: &[&str] = &["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
+pub const MAX_EVENT_RING: usize = 8192;
+
+pub fn level_rank(lvl: &str) -> usize {
+    let upper = lvl.trim().to_ascii_uppercase();
+    match upper.as_str() {
+        "TRACE" => 0,
+        "DEBUG" => 1,
+        "INFO" => 2,
+        "WARN" | "WARNING" => 3,
+        "ERROR" | "ERR" | "FATAL" => 4,
+        _ => 2,
+    }
+}
+
+pub fn resolve_debug_sock_path() -> String {
+    resolve_sock_path_common("LWASAPI_DEBUG_SOCK", "debug.sock", "/tmp/lwasapi-debug.sock")
+}
+
+pub fn resolve_audiodg_sock_path() -> String {
+    audiodg_sock_path()
+}
+
+pub fn resolve_debug_in_sock_path() -> String {
+    debug_in_sock_path()
+}
+
+pub fn cstr_to_string(buf: &[u8]) -> String {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..end]).into_owned()
+}
+
+#[repr(C)]
+struct LibcTm {
+    tm_sec: c_int,
+    tm_min: c_int,
+    tm_hour: c_int,
+    tm_mday: c_int,
+    tm_mon: c_int,
+    tm_year: c_int,
+    tm_wday: c_int,
+    tm_yday: c_int,
+    tm_isdst: c_int,
+    tm_gmtoff: c_long,
+    tm_zone: *const c_char,
+}
+
+const RTLD_LAZY: c_int = 1;
+const RTLD_LOCAL: c_int = 0;
+
+extern "C" {
+    fn localtime_r(timep: *const c_long, result: *mut LibcTm) -> *mut LibcTm;
+    fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
+    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    fn dlclose(handle: *mut c_void) -> c_int;
+    fn dlerror() -> *const c_char;
+}
+
+pub fn format_ts_ms(ts_ms: i64) -> String {
+    if ts_ms <= 0 {
+        return "--:--:--.---".to_string();
+    }
+    let secs = (ts_ms / 1000) as c_long;
+    let ms = ts_ms.rem_euclid(1000);
+    let mut tm: LibcTm = unsafe { mem::zeroed() };
+    let res = unsafe { localtime_r(&secs, &mut tm) };
+    if res.is_null() {
+        return format!("{:02}:{:02}:{:02}.{ms:03}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60);
+    }
+    format!(
+        "{:02}:{:02}:{:02}.{ms:03}",
+        tm.tm_hour, tm.tm_min, tm.tm_sec
+    )
+}
+
+fn format_now_stamp() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as c_long)
+        .unwrap_or(0);
+    let mut tm: LibcTm = unsafe { mem::zeroed() };
+    let res = unsafe { localtime_r(&secs, &mut tm) };
+    if res.is_null() {
+        return format!("{secs}");
+    }
+    format!(
+        "{:04}{:02}{:02}-{:02}{:02}{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugClientStats {
+    pub sock_path: String,
+    pub connected: bool,
+    pub last_error: String,
+    pub total_events_rx: u64,
+    pub dropped_events: u64,
+    pub buffered_events: usize,
+    pub has_snapshot: bool,
+}
+
+struct DebugClientState {
+    sock_path: String,
+    connected: bool,
+    last_error: String,
+    hello: Option<JsonValue>,
+    latest_snapshot: Option<JsonValue>,
+    snapshot_seq: u64,
+    events: VecDeque<JsonValue>,
+    total_events_rx: u64,
+    dropped_events: u64,
+    pongs: VecDeque<JsonValue>,
+    cmd_replies: VecDeque<JsonValue>,
+    writer: Option<UnixStream>,
+}
+
+struct DebugClientInner {
+    state: Mutex<DebugClientState>,
+    cv: Condvar,
+    stop: AtomicBool,
+}
+
+pub struct SalsaDebugClient {
+    inner: Arc<DebugClientInner>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl SalsaDebugClient {
+    pub fn new(sock_path: Option<String>) -> Self {
+        let path = sock_path.unwrap_or_else(resolve_debug_sock_path);
+        let state = DebugClientState {
+            sock_path: path,
+            connected: false,
+            last_error: String::new(),
+            hello: None,
+            latest_snapshot: None,
+            snapshot_seq: 0,
+            events: VecDeque::with_capacity(1024),
+            total_events_rx: 0,
+            dropped_events: 0,
+            pongs: VecDeque::with_capacity(16),
+            cmd_replies: VecDeque::with_capacity(16),
+            writer: None,
+        };
+        Self {
+            inner: Arc::new(DebugClientInner {
+                state: Mutex::new(state),
+                cv: Condvar::new(),
+                stop: AtomicBool::new(false),
+            }),
+            worker: Mutex::new(None),
+        }
+    }
+
+    pub fn start(&self) {
+        let mut guard = self.worker.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.is_some() {
+            return;
+        }
+        self.inner.stop.store(false, Ordering::Release);
+        let inner = Arc::clone(&self.inner);
+        let handle = thread::Builder::new()
+            .name("salsa-dbg-rx".into())
+            .spawn(move || Self::io_loop(inner))
+            .ok();
+        *guard = handle;
+    }
+
+    pub fn stop(&self) {
+        self.inner.stop.store(true, Ordering::Release);
+        {
+            let mut st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(w) = st.writer.take() {
+                let _ = w.shutdown(std::net::Shutdown::Both);
+            }
+            self.inner.cv.notify_all();
+        }
+        let handle = self
+            .worker
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(h) = handle {
+            let _ = h.join();
+        }
+    }
+
+    fn io_loop(inner: Arc<DebugClientInner>) {
+        while !inner.stop.load(Ordering::Acquire) {
+            let path = {
+                let st = inner.state.lock().unwrap_or_else(|p| p.into_inner());
+                st.sock_path.clone()
+            };
+            match UnixStream::connect(&path) {
+                Ok(stream) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+                    let writer = stream.try_clone().ok();
+                    {
+                        let mut st = inner.state.lock().unwrap_or_else(|p| p.into_inner());
+                        st.connected = true;
+                        st.last_error.clear();
+                        st.writer = writer;
+                        inner.cv.notify_all();
+                    }
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    while !inner.stop.load(Ordering::Acquire) {
+                        line.clear();
+                        match reader.read_line(&mut line) {
+                            Ok(0) => break,
+                            Ok(_) => {
+                                let trimmed = line.trim();
+                                if trimmed.is_empty() {
+                                    continue;
+                                }
+                                if let Ok(val) = JsonValue::parse(trimmed) {
+                                    Self::handle_msg(&inner, val);
+                                }
+                            }
+                            Err(e)
+                                if e.kind() == std::io::ErrorKind::WouldBlock
+                                    || e.kind() == std::io::ErrorKind::TimedOut =>
+                            {
+                                continue;
+                            }
+                            Err(e) => {
+                                let mut st =
+                                    inner.state.lock().unwrap_or_else(|p| p.into_inner());
+                                st.last_error = e.to_string();
+                                break;
+                            }
+                        }
+                    }
+                    let mut st = inner.state.lock().unwrap_or_else(|p| p.into_inner());
+                    st.connected = false;
+                    st.writer = None;
+                    inner.cv.notify_all();
+                }
+                Err(e) => {
+                    {
+                        let mut st = inner.state.lock().unwrap_or_else(|p| p.into_inner());
+                        st.connected = false;
+                        st.writer = None;
+                        st.last_error = format!("connect {path}: {e}");
+                    }
+                    thread::sleep(Duration::from_millis(350));
+                }
+            }
+        }
+    }
+
+    fn handle_msg(inner: &Arc<DebugClientInner>, val: JsonValue) {
+        let msg_type = val.get("type").and_then(JsonValue::as_str).unwrap_or("");
+        let mut st = inner.state.lock().unwrap_or_else(|p| p.into_inner());
+        match msg_type {
+            "hello" => {
+                st.hello = Some(val);
+            }
+            "telemetry" => {
+                if let Some(d) = val.get("dropped_events").and_then(JsonValue::as_u64) {
+                    st.dropped_events = d;
+                }
+                st.latest_snapshot = Some(val);
+                st.snapshot_seq += 1;
+                inner.cv.notify_all();
+            }
+            "event" => {
+                st.total_events_rx += 1;
+                if st.events.len() >= MAX_EVENT_RING {
+                    st.events.pop_front();
+                }
+                st.events.push_back(val);
+                inner.cv.notify_all();
+            }
+            "pong" => {
+                if st.pongs.len() >= 32 {
+                    st.pongs.pop_front();
+                }
+                st.pongs.push_back(val);
+                inner.cv.notify_all();
+            }
+            "cmd_reply" => {
+                if st.cmd_replies.len() >= 32 {
+                    st.cmd_replies.pop_front();
+                }
+                st.cmd_replies.push_back(val);
+                inner.cv.notify_all();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn wait_connected(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+        while !st.connected {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (guard, res) = self
+                .inner
+                .cv
+                .wait_timeout(st, deadline - now)
+                .unwrap_or_else(|p| p.into_inner());
+            st = guard;
+            if res.timed_out() && !st.connected {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn send_command(&self, cmd: &str) -> Result<(), String> {
+        let mut writer = {
+            let st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+            st.writer
+                .as_ref()
+                .and_then(|s| s.try_clone().ok())
+                .ok_or_else(|| "not connected to debug socket".to_string())?
+        };
+        let mut line = cmd.trim_end_matches(['\r', '\n']).to_string();
+        line.push('\n');
+        writer
+            .write_all(line.as_bytes())
+            .map_err(|e| format!("send '{cmd}': {e}"))
+    }
+
+    pub fn request_snapshot(&self) -> Result<(), String> {
+        self.send_command("SNAPSHOT")
+    }
+
+    pub fn wait_snapshot(&self, timeout: Duration) -> Option<JsonValue> {
+        let deadline = Instant::now() + timeout;
+        let mut st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(ref snap) = st.latest_snapshot {
+            return Some(snap.clone());
+        }
+        let seq_start = st.snapshot_seq;
+        while st.snapshot_seq == seq_start && st.latest_snapshot.is_none() {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let (guard, _) = self
+                .inner
+                .cv
+                .wait_timeout(st, deadline - now)
+                .unwrap_or_else(|p| p.into_inner());
+            st = guard;
+        }
+        st.latest_snapshot.clone()
+    }
+
+    pub fn ping(&self, tag: &str, timeout: Duration) -> Option<JsonValue> {
+        {
+            let mut st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+            st.pongs.clear();
+        }
+        let cmd = if tag.is_empty() {
+            "PING".to_string()
+        } else {
+            format!("PING {tag}")
+        };
+        self.send_command(&cmd).ok()?;
+        let deadline = Instant::now() + timeout;
+        let mut st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+        loop {
+            while let Some(pong) = st.pongs.pop_front() {
+                if tag.is_empty() || pong.get("tag").and_then(JsonValue::as_str) == Some(tag) {
+                    return Some(pong);
+                }
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            let (guard, _) = self
+                .inner
+                .cv
+                .wait_timeout(st, deadline - now)
+                .unwrap_or_else(|p| p.into_inner());
+            st = guard;
+        }
+    }
+
+    pub fn reset_stats(&self) -> Option<JsonValue> {
+        let prev_seq = {
+            let st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+            st.snapshot_seq
+        };
+        self.send_command("RESET_STATS").ok()?;
+        let deadline = Instant::now() + Duration::from_millis(1200);
+        let mut st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+        while st.snapshot_seq == prev_seq {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let (guard, _) = self
+                .inner
+                .cv
+                .wait_timeout(st, deadline - now)
+                .unwrap_or_else(|p| p.into_inner());
+            st = guard;
+        }
+        st.latest_snapshot.clone()
+    }
+
+    pub fn reset_pa_clients(&self) -> Option<JsonValue> {
+        self.send_cmd_and_wait_reply("RESET_PA_CLIENTS")
+    }
+
+    pub fn reset_net_clients(&self) -> Option<JsonValue> {
+        self.send_cmd_and_wait_reply("RESET_NET_CLIENTS")
+    }
+
+    fn send_cmd_and_wait_reply(&self, cmd: &str) -> Option<JsonValue> {
+        {
+            let mut st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+            st.cmd_replies.clear();
+        }
+        self.send_command(cmd).ok()?;
+        let deadline = Instant::now() + Duration::from_millis(1200);
+        let mut st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+        while st.cmd_replies.is_empty() {
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            let (guard, _) = self
+                .inner
+                .cv
+                .wait_timeout(st, deadline - now)
+                .unwrap_or_else(|p| p.into_inner());
+            st = guard;
+        }
+        st.cmd_replies.pop_front()
+    }
+
+    pub fn drain_events(&self, max_items: usize) -> Vec<JsonValue> {
+        let mut st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+        let n = st.events.len().min(max_items);
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            if let Some(ev) = st.events.pop_front() {
+                out.push(ev);
+            }
+        }
+        out
+    }
+
+    pub fn recent_events(&self, max_items: usize) -> Vec<JsonValue> {
+        let st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+        let skip = st.events.len().saturating_sub(max_items);
+        st.events.iter().skip(skip).cloned().collect()
+    }
+
+    pub fn latest_snapshot(&self) -> Option<JsonValue> {
+        let st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+        st.latest_snapshot.clone()
+    }
+
+    pub fn stats(&self) -> DebugClientStats {
+        let st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+        DebugClientStats {
+            sock_path: st.sock_path.clone(),
+            connected: st.connected,
+            last_error: st.last_error.clone(),
+            total_events_rx: st.total_events_rx,
+            dropped_events: st.dropped_events,
+            buffered_events: st.events.len(),
+            has_snapshot: st.latest_snapshot.is_some(),
+        }
+    }
+}
+
+impl Drop for SalsaDebugClient {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+pub fn snapshot_once(sock_path: Option<&str>, timeout: Duration) -> Result<JsonValue, String> {
+    let path = sock_path
+        .map(str::to_string)
+        .unwrap_or_else(resolve_debug_sock_path);
+    let mut stream =
+        UnixStream::connect(&path).map_err(|e| format!("connect {path}: {e}"))?;
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    let _ = stream.write_all(b"SNAPSHOT\n");
+    let deadline = Instant::now() + timeout;
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if let Ok(val) = JsonValue::parse(line.trim()) {
+                    if val.get("type").and_then(JsonValue::as_str) == Some("telemetry") {
+                        return Ok(val);
+                    }
+                }
+            }
+            Err(e) => return Err(format!("read {path}: {e}")),
+        }
+    }
+    Err(format!("timed out waiting for SNAPSHOT telemetry from {path}"))
+}
+
+pub struct SystemAuditScanner;
+
+impl SystemAuditScanner {
+    pub fn check_build_freshness(base_dir: &Path) -> JsonValue {
+        let mut stale = Vec::new();
+        let net_deps = [
+            "rust/Cargo.toml",
+            "rust/salsa_net/Cargo.toml",
+            "rust/salsa_net/src",
+        ];
+        let client_deps = [
+            "rust/Cargo.toml",
+            "rust/salsa_net/Cargo.toml",
+            "rust/salsa_net/src",
+            "rust/lwasapi_client/Cargo.toml",
+            "rust/lwasapi_client/src",
+        ];
+        let tools_deps = [
+            "rust/Cargo.toml",
+            "rust/salsa_net/Cargo.toml",
+            "rust/salsa_net/src",
+            "rust/lwasapi_client/Cargo.toml",
+            "rust/lwasapi_client/src",
+            "rust/salsa_tools/Cargo.toml",
+            "rust/salsa_tools/src",
+        ];
+        let ui_shared_deps = [
+            "Makefile",
+            "qt6/salsa_bridge.h",
+            "qt6/salsa_common.hpp",
+            "qt6/salsa_common.cpp",
+            "rust/Cargo.toml",
+            "rust/Cargo.lock",
+            "rust/salsa_net/Cargo.toml",
+            "rust/salsa_net/src",
+            "rust/lwasapi_client/Cargo.toml",
+            "rust/lwasapi_client/src",
+            "rust/salsa_tools/Cargo.toml",
+            "rust/salsa_tools/src",
+            "rust/salsa_ui/Cargo.toml",
+            "rust/salsa_ui/src",
+        ];
+        let mut tray_deps = ui_shared_deps.to_vec();
+        tray_deps.push("qt6/lwasapi_tray.cpp");
+        let mut debug_deps = ui_shared_deps.to_vec();
+        debug_deps.extend([
+            "qt6/salsa_widgets.hpp",
+            "qt6/salsa_widgets.cpp",
+            "qt6/salsa_debugger_widget.cpp",
+            "qt6/salsa_debug.cpp",
+        ]);
+        let mut studio_deps = ui_shared_deps.to_vec();
+        studio_deps.extend([
+            "qt6/salsa_widgets.hpp",
+            "qt6/salsa_widgets.cpp",
+            "qt6/salsa_debugger_widget.cpp",
+            "qt6/salsa_studio.cpp",
+        ]);
+
+        let is_dev_repo = base_dir.join("rust/Cargo.toml").is_file();
+        let mut lwasapi_deps = client_deps.to_vec();
+        lwasapi_deps.push("src/lwasapi.version");
+
+        let mut checks: Vec<(&str, Vec<&str>)> = vec![
+            ("build/lwasapi-audiodg", net_deps.to_vec()),
+            ("build/lwasapi-ctl", net_deps.to_vec()),
+            ("build/liblwasapi.so", lwasapi_deps),
+            ("build/lwasapi-test", client_deps.to_vec()),
+            ("build/lwasapi-bench", client_deps.to_vec()),
+            ("build/lwasapi-run", tools_deps.to_vec()),
+            ("build/lwasapi-autosync", tools_deps.to_vec()),
+            ("build/salsa-installer", tools_deps.to_vec()),
+            ("build/salsa-debug-cli", tools_deps.to_vec()),
+            ("build/lwasapi-tray", tray_deps),
+            ("build/salsa-debug", debug_deps),
+            ("build/salsa-studio", studio_deps),
+        ];
+
+        for (rel, deps) in [
+            ("build/salsa-gen-pa-proxy", net_deps.to_vec()),
+            ("build/salsa-dist", tools_deps.to_vec()),
+            ("build/salsa-regression", tools_deps.to_vec()),
+        ] {
+            if is_dev_repo || base_dir.join(rel).exists() {
+                checks.push((rel, deps));
+            }
+        }
+
+        let mut alsa_plugin_deps = client_deps.to_vec();
+        alsa_plugin_deps.extend([
+            "rust/alsa_plugin_lwasapi/Cargo.toml",
+            "rust/alsa_plugin_lwasapi/src",
+            "src/alsa_plugin.version",
+        ]);
+        checks.push(("build/libasound_module_pcm_lwasapi.so", alsa_plugin_deps));
+
+        checks.push((
+            "build/libsalsa_pa_reconnect.so",
+            vec![
+                "rust/Cargo.toml",
+                "rust/salsa_pa_reconnect/Cargo.toml",
+                "rust/salsa_pa_reconnect/src",
+                "src/pa_reconnect.version",
+            ],
+        ));
+        checks.push((
+            "build/pa_reconnect/libpulse.so.0",
+            vec![
+                "rust/Cargo.toml",
+                "rust/salsa_pa_reconnect_proxy/Cargo.toml",
+                "rust/salsa_pa_reconnect_proxy/src",
+                "src/pulse.version",
+            ],
+        ));
+
+        let mut shim_alsa_deps = client_deps.to_vec();
+        shim_alsa_deps.extend([
+            "rust/shim_alsa/Cargo.toml",
+            "rust/shim_alsa/src",
+            "src/alsa.version",
+        ]);
+        checks.push(("build/shims/libasound.so.2", shim_alsa_deps));
+
+        let mut shim_pulse_deps = client_deps.to_vec();
+        shim_pulse_deps.extend([
+            "rust/shim_pulse/Cargo.toml",
+            "rust/shim_pulse/src",
+            "src/pulse.version",
+        ]);
+        checks.push(("build/shims/libpulse.so.0", shim_pulse_deps.clone()));
+        checks.push(("build/shims/libpulse-simple.so.0", shim_pulse_deps.clone()));
+        checks.push(("build/shims/libpulse-mainloop-glib.so.0", shim_pulse_deps));
+
+        let mut shim_jack_deps = client_deps.to_vec();
+        shim_jack_deps.extend([
+            "rust/shim_jack/Cargo.toml",
+            "rust/shim_jack/src",
+            "src/jack.version",
+        ]);
+        checks.push(("build/shims/libjack.so.0", shim_jack_deps));
+
+        let checked_count = checks.len();
+        for (art_rel, deps) in checks {
+            let art_path = base_dir.join(art_rel);
+            let Ok(art_meta) = fs::metadata(&art_path) else {
+                stale.push(JsonValue::obj(vec![
+                    ("artifact", JsonValue::Str(art_rel.to_string())),
+                    ("reason", JsonValue::Str("missing".to_string())),
+                ]));
+                continue;
+            };
+            let Ok(art_mtime) = art_meta.modified() else {
+                continue;
+            };
+            let mut newest: Option<(String, SystemTime)> = None;
+            for dep in deps {
+                let dep_path = base_dir.join(dep);
+                collect_newest_mtime(&dep_path, &mut newest);
+            }
+            if let Some((src_rel, src_mtime)) = newest {
+                if src_mtime > art_mtime {
+                    stale.push(JsonValue::obj(vec![
+                        ("artifact", JsonValue::Str(art_rel.to_string())),
+                        ("reason", JsonValue::Str(format!("older than {src_rel}"))),
+                    ]));
+                }
+            }
+        }
+
+        let is_stale = !stale.is_empty();
+        let summary = if is_stale {
+            format!("{} of {checked_count} artifacts stale or missing", stale.len())
+        } else {
+            format!("all {checked_count} build artifacts up to date")
+        };
+        JsonValue::obj(vec![
+            ("stale", JsonValue::Bool(is_stale)),
+            ("checked_count", JsonValue::Int(checked_count as i64)),
+            ("stale_artifacts", JsonValue::Array(stale)),
+            ("summary", JsonValue::Str(summary)),
+        ])
+    }
+
+    pub fn collect_full_audit() -> JsonValue {
+        let base_dir = install_root();
+        let xdg_rt = xdg_runtime_dir();
+        let priv_rt = private_runtime_dir();
+
+        let host_obj = JsonValue::obj(vec![
+            ("os", JsonValue::Str(host_os_pretty_name())),
+            ("kernel", JsonValue::Str(uname_srm())),
+            ("arch", JsonValue::Str(host_arch())),
+            ("cpu", JsonValue::Str(host_cpu_name())),
+            ("hostname", JsonValue::Str(current_hostname())),
+            ("uid", JsonValue::Int(i64::from(getuid()))),
+            ("base_dir", JsonValue::Str(base_dir.to_string_lossy().into_owned())),
+            ("xdg_runtime_dir", JsonValue::Str(xdg_rt.to_string_lossy().into_owned())),
+            ("private_runtime_dir", JsonValue::Str(priv_rt.to_string_lossy().into_owned())),
+        ]);
+
+        let sock_specs = [
+            ("audiodg", PathBuf::from(resolve_audiodg_sock_path())),
+            ("debug", PathBuf::from(resolve_debug_sock_path())),
+            ("debug_in", PathBuf::from(resolve_debug_in_sock_path())),
+            ("pulse_native", xdg_rt.join("pulse").join("native")),
+            ("pipewire_0", xdg_rt.join("pipewire-0")),
+            ("pipewire_0_manager", xdg_rt.join("pipewire-0-manager")),
+        ];
+        let mut sockets_arr = Vec::with_capacity(sock_specs.len());
+        let mut pw_is_salsa = false;
+        for (name, path) in &sock_specs {
+            let info = peercred_for_unix_socket(path);
+            if *name == "pipewire_0" && info.peer_comm == "lwasapi-audiodg" {
+                pw_is_salsa = true;
+            }
+            sockets_arr.push(JsonValue::obj(vec![
+                ("name", JsonValue::Str((*name).to_string())),
+                ("path", JsonValue::Str(info.path)),
+                ("exists", JsonValue::Bool(info.exists)),
+                ("is_socket", JsonValue::Bool(info.is_socket)),
+                (
+                    "mode_oct",
+                    info.mode_oct.map(JsonValue::Str).unwrap_or(JsonValue::Null),
+                ),
+                ("connectable", JsonValue::Bool(info.connectable)),
+                (
+                    "peer_pid",
+                    info.peer_pid.map(|p| JsonValue::Int(i64::from(p))).unwrap_or(JsonValue::Null),
+                ),
+                (
+                    "peer_uid",
+                    info.peer_uid.map(|u| JsonValue::Int(i64::from(u))).unwrap_or(JsonValue::Null),
+                ),
+                (
+                    "peer_gid",
+                    info.peer_gid.map(|g| JsonValue::Int(i64::from(g))).unwrap_or(JsonValue::Null),
+                ),
+                ("peer_comm", JsonValue::Str(info.peer_comm)),
+                ("error", JsonValue::Str(info.error)),
+            ]));
+        }
+
+        let unit_names = [
+            "lwasapi-audiodg.service",
+            "lwasapi-tray.service",
+            "lwasapi-module-watcher.path",
+            "lwasapi-module-watcher.service",
+            "lwasapi-module-watcher.timer",
+            "pipewire.service",
+            "pipewire.socket",
+            "pipewire-pulse.service",
+            "pipewire-pulse.socket",
+            "wireplumber.service",
+            "pulseaudio.service",
+            "pulseaudio.socket",
+        ];
+        let mut units_arr = Vec::with_capacity(unit_names.len());
+        for unit in unit_names {
+            units_arr.push(query_systemd_unit(unit));
+        }
+
+        let procs_arr = scan_audio_processes();
+        let unix_socks = scan_ss_unix_sockets();
+        let alsa_obj = scan_alsa_proc();
+        let configs_obj = scan_configs(&base_dir);
+        let freshness_obj = Self::check_build_freshness(&base_dir);
+
+        let pw_note = if pw_is_salsa {
+            "pipewire-0 is actively served by Salsa Video-Only ScreenCast broker (lwasapi-audiodg)"
+        } else if xdg_rt.join("pipewire-0").exists() {
+            "pipewire-0 is served by an external PipeWire instance"
+        } else {
+            "pipewire-0 is not active"
+        };
+
+        JsonValue::obj(vec![
+            ("host", host_obj),
+            ("sockets", JsonValue::Array(sockets_arr)),
+            ("systemd_units", JsonValue::Array(units_arr)),
+            ("processes", JsonValue::Array(procs_arr)),
+            ("unix_sockets", JsonValue::Array(unix_socks)),
+            ("alsa", alsa_obj),
+            ("configs", configs_obj),
+            ("build_freshness", freshness_obj),
+            ("pipewire_note", JsonValue::Str(pw_note.to_string())),
+        ])
+    }
+}
+
+fn collect_newest_mtime(path: &Path, newest: &mut Option<(String, SystemTime)>) {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if meta.is_dir() {
+        let Ok(rd) = fs::read_dir(path) else {
+            return;
+        };
+        for ent in rd.flatten() {
+            let name = ent.file_name();
+            let s = name.to_string_lossy();
+            if s == "__pycache__" || s == "target" || s == ".git" {
+                continue;
+            }
+            collect_newest_mtime(&ent.path(), newest);
+        }
+    } else if meta.is_file() {
+        if let Ok(mt) = meta.modified() {
+            let replace = newest.as_ref().map(|(_, cur)| mt > *cur).unwrap_or(true);
+            if replace {
+                *newest = Some((path.to_string_lossy().into_owned(), mt));
+            }
+        }
+    }
+}
+
+fn query_systemd_unit(unit: &str) -> JsonValue {
+    let mut active = "unknown".to_string();
+    let mut sub_state = "unknown".to_string();
+    let mut enabled = "unknown".to_string();
+    let mut main_pid: i64 = 0;
+
+    if let Ok(out) = Command::new("systemctl")
+        .args([
+            "--user",
+            "show",
+            unit,
+            "--property=ActiveState,SubState,UnitFileState,MainPID",
+        ])
+        .output()
+    {
+        let txt = String::from_utf8_lossy(&out.stdout);
+        for line in txt.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                match k {
+                    "ActiveState" => active = v.trim().to_string(),
+                    "SubState" => sub_state = v.trim().to_string(),
+                    "UnitFileState" => enabled = v.trim().to_string(),
+                    "MainPID" => main_pid = v.trim().parse().unwrap_or(0),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    JsonValue::obj(vec![
+        ("unit", JsonValue::Str(unit.to_string())),
+        ("active", JsonValue::Str(active)),
+        ("sub_state", JsonValue::Str(sub_state)),
+        ("enabled", JsonValue::Str(enabled)),
+        ("main_pid", JsonValue::Int(main_pid)),
+    ])
+}
+
+fn scan_audio_processes() -> Vec<JsonValue> {
+    scan_process_routing_audit()
+}
+
+pub fn scan_process_routing_audit() -> Vec<JsonValue> {
+    let needles = [
+        "lwasapi",
+        "salsa",
+        "pipewire",
+        "wireplumber",
+        "pulseaudio",
+        "pulse",
+        "alsa",
+        "jack",
+        "xdg-desktop-portal",
+    ];
+    let lib_markers = [
+        "liblwasapi",
+        "shims/lib",
+        "pa_reconnect",
+        "libasound",
+        "libpulse",
+        "libjack",
+        "libpipewire",
+    ];
+    let mut out = Vec::new();
+    let Ok(rd) = fs::read_dir("/proc") else {
+        return out;
+    };
+    for ent in rd.flatten() {
+        let fname = ent.file_name();
+        let pid_str = fname.to_string_lossy();
+        let Ok(pid) = pid_str.parse::<i64>() else {
+            continue;
+        };
+        let p = ent.path();
+        let comm = read_text_lossy(&p.join("comm"), 128).trim().to_string();
+        if comm.is_empty() {
+            continue;
+        }
+        let cmdline_raw = fs::read(p.join("cmdline")).unwrap_or_default();
+        let cmdline = cmdline_raw
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let mut sockets_shm = Vec::new();
+        let mut alsa_fds = Vec::new();
+        let mut saw_salsa_fd = false;
+        if let Ok(fd_rd) = fs::read_dir(p.join("fd")) {
+            for f_ent in fd_rd.flatten().take(256) {
+                if let Ok(tgt) = fs::read_link(f_ent.path()) {
+                    let s = tgt.to_string_lossy();
+                    if s.contains("/dev/snd/") {
+                        alsa_fds.push(s.into_owned());
+                    } else if s.contains("memfd:") || s.contains("lwasapi") || s.contains("salsa") {
+                        if s.contains("lwasapi") || s.contains("salsa") {
+                            saw_salsa_fd = true;
+                        }
+                        if sockets_shm.len() < 16 {
+                            sockets_shm.push(s.into_owned());
+                        }
+                    } else if s.contains("socket:[") && sockets_shm.len() < 12 {
+                        sockets_shm.push(s.into_owned());
+                    }
+                }
+            }
+        }
+
+        let mut mapped_libs = Vec::new();
+        let maps_txt = read_text_lossy(&p.join("maps"), 512 * 1024);
+        for line in maps_txt.lines() {
+            if let Some(path_part) = line.split_whitespace().last() {
+                if path_part.starts_with('/')
+                    && lib_markers.iter().any(|m| path_part.contains(m))
+                    && !mapped_libs.iter().any(|x| x == path_part)
+                {
+                    mapped_libs.push(path_part.to_string());
+                    if mapped_libs.len() >= 16 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let lc_comm = comm.to_ascii_lowercase();
+        let lc_cmd = cmdline.to_ascii_lowercase();
+        let relevant = !alsa_fds.is_empty()
+            || !mapped_libs.is_empty()
+            || needles
+                .iter()
+                .any(|n| lc_comm.contains(n) || lc_cmd.contains(n));
+        if !relevant {
+            continue;
+        }
+
+        let is_daemon = lc_comm.contains("lwasapi-audiodg") || lc_cmd.contains("lwasapi-audiodg");
+        let has_salsa_map = mapped_libs
+            .iter()
+            .any(|l| l.contains("liblwasapi") || l.contains("shims/") || l.contains("pa_reconnect"));
+        let has_salsa_name = lc_comm.contains("lwasapi") || lc_comm.contains("salsa") || saw_salsa_fd;
+        let classification = if is_daemon {
+            "Salsa Daemon"
+        } else if has_salsa_map || has_salsa_name {
+            "Salsa Routed"
+        } else if !alsa_fds.is_empty() {
+            "Direct ALSA Leak"
+        } else {
+            "Audio Client"
+        };
+
+        let detail = format!(
+            "PID {pid} ({comm})\nClassification: {classification}\nCmdline: {cmdline}\nALSA /dev/snd FDs: {}\nSockets/SHMs: {}\nMapped Audio Libraries:\n  {}",
+            if alsa_fds.is_empty() { "(none)".to_string() } else { alsa_fds.join(", ") },
+            if sockets_shm.is_empty() { "(none)".to_string() } else { sockets_shm.join(", ") },
+            if mapped_libs.is_empty() { "(none)".to_string() } else { mapped_libs.join("\n  ") },
+        );
+
+        out.push(JsonValue::obj(vec![
+            ("pid", JsonValue::Int(pid)),
+            ("comm", JsonValue::Str(comm)),
+            ("classification", JsonValue::Str(classification.to_string())),
+            ("sockets_shm", JsonValue::Str(sockets_shm.join(", "))),
+            ("alsa_fds", JsonValue::Str(alsa_fds.join(", "))),
+            ("mapped_libs", JsonValue::Str(mapped_libs.join(", "))),
+            ("cmdline", JsonValue::Str(cmdline)),
+            ("detail", JsonValue::Str(detail)),
+        ]));
+    }
+    out
+}
+
+fn scan_ss_unix_sockets() -> Vec<JsonValue> {
+    let mut out = Vec::new();
+    if which("ss").is_none() {
+        return out;
+    }
+    let Ok(res) = Command::new("ss").args(["-xnH"]).output() else {
+        return out;
+    };
+    let txt = String::from_utf8_lossy(&res.stdout);
+    for line in txt.lines() {
+        let lc = line.to_ascii_lowercase();
+        if lc.contains("lwasapi")
+            || lc.contains("salsa")
+            || lc.contains("pulse")
+            || lc.contains("pipewire")
+        {
+            out.push(JsonValue::Str(line.trim().to_string()));
+        }
+    }
+    out
+}
+
+fn scan_alsa_proc() -> JsonValue {
+    let cards = read_text_lossy(Path::new("/proc/asound/cards"), 16384);
+    let pcm = read_text_lossy(Path::new("/proc/asound/pcm"), 16384);
+    let mut active_streams = Vec::new();
+    if let Ok(rd) = fs::read_dir("/proc/asound") {
+        for card_ent in rd.flatten() {
+            let cname = card_ent.file_name();
+            let cstr = cname.to_string_lossy();
+            if !cstr.starts_with("card") || !card_ent.path().is_dir() {
+                continue;
+            }
+            let Ok(pcms) = fs::read_dir(card_ent.path()) else {
+                continue;
+            };
+            for pcm_ent in pcms.flatten() {
+                let pname = pcm_ent.file_name();
+                let pstr = pname.to_string_lossy();
+                if !pstr.starts_with("pcm") || !pcm_ent.path().is_dir() {
+                    continue;
+                }
+                let Ok(subs) = fs::read_dir(pcm_ent.path()) else {
+                    continue;
+                };
+                for sub_ent in subs.flatten() {
+                    let sname = sub_ent.file_name();
+                    if !sname.to_string_lossy().starts_with("sub") {
+                        continue;
+                    }
+                    let sp = sub_ent.path();
+                    let status = read_text_lossy(&sp.join("status"), 2048);
+                    let trimmed = status.trim();
+                    if trimmed.is_empty() || trimmed == "closed" {
+                        continue;
+                    }
+                    let hw_params = read_text_lossy(&sp.join("hw_params"), 2048);
+                    active_streams.push(JsonValue::obj(vec![
+                        (
+                            "stream",
+                            JsonValue::Str(format!("{cstr}/{pstr}/{}", sname.to_string_lossy())),
+                        ),
+                        ("status", JsonValue::Str(trimmed.to_string())),
+                        ("hw_params", JsonValue::Str(hw_params.trim().to_string())),
+                    ]));
+                }
+            }
+        }
+    }
+    JsonValue::obj(vec![
+        ("cards", JsonValue::Str(cards)),
+        ("pcm", JsonValue::Str(pcm)),
+        ("active_streams", JsonValue::Array(active_streams)),
+    ])
+}
+
+fn scan_configs(base_dir: &Path) -> JsonValue {
+    let home = crate::host::home_dir();
+    let st_dir = state_dir();
+    let cfg_home = env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|s| s.starts_with('/'))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+
+    let repo_plugin = base_dir.join("build/libasound_module_pcm_lwasapi.so");
+    let sys_plugin = PathBuf::from("/usr/lib/alsa-lib/libasound_module_pcm_lwasapi.so");
+    let repo_sha = sha256_file(&repo_plugin);
+    let sys_sha = sha256_file(&sys_plugin);
+    let plugin_matches = repo_sha.is_some() && repo_sha == sys_sha;
+
+    let mut state_files = Vec::new();
+    for fname in [
+        "gui_settings.json",
+        "pipewire_zero_mode",
+        "module_versions.state",
+        "autosync.log",
+        "plasmaparc_osd.state",
+        "flatpak_overrides.list",
+    ] {
+        let p = st_dir.join(fname);
+        state_files.push(JsonValue::obj(vec![
+            ("name", JsonValue::Str(fname.to_string())),
+            ("path", JsonValue::Str(p.to_string_lossy().into_owned())),
+            ("exists", JsonValue::Bool(p.exists())),
+        ]));
+    }
+
+    JsonValue::obj(vec![
+        (
+            "asoundrc_exists",
+            JsonValue::Bool(home.join(".asoundrc").exists()),
+        ),
+        (
+            "user_asound_conf_exists",
+            JsonValue::Bool(cfg_home.join("asound.conf").exists()),
+        ),
+        (
+            "etc_asound_conf_exists",
+            JsonValue::Bool(Path::new("/etc/asound.conf").exists()),
+        ),
+        (
+            "plugin_repo_sha256",
+            repo_sha.map(JsonValue::Str).unwrap_or(JsonValue::Null),
+        ),
+        (
+            "plugin_sys_sha256",
+            sys_sha.map(JsonValue::Str).unwrap_or(JsonValue::Null),
+        ),
+        ("plugin_matches_system", JsonValue::Bool(plugin_matches)),
+        ("state_files", JsonValue::Array(state_files)),
+    ])
+}
+
+pub struct ExternalLogManager;
+
+impl ExternalLogManager {
+    pub fn tail_journal(lines: usize) -> Vec<String> {
+        let n = lines.clamp(1, 2000).to_string();
+        let Ok(out) = Command::new("journalctl")
+            .args([
+                "--user",
+                "-u",
+                "lwasapi-audiodg.service",
+                "-u",
+                "lwasapi-tray.service",
+                "-u",
+                "lwasapi-module-watcher.service",
+                "-n",
+                &n,
+                "--no-pager",
+            ])
+            .output()
+        else {
+            return Vec::new();
+        };
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    pub fn tail_autosync_log(lines: usize) -> Vec<String> {
+        let path = state_dir().join("autosync.log");
+        let txt = read_text_lossy(&path, 512 * 1024);
+        let all: Vec<&str> = txt.lines().collect();
+        let skip = all.len().saturating_sub(lines);
+        all.into_iter().skip(skip).map(str::to_string).collect()
+    }
+
+    pub fn capture_dbus_sample(timeout_ms: u64) -> Vec<String> {
+        if which("timeout").is_none() || which("dbus-monitor").is_none() {
+            return Vec::new();
+        }
+        let secs = ((timeout_ms.max(200) as f64) / 1000.0).min(10.0);
+        let Ok(out) = Command::new("timeout")
+            .args([
+                &format!("{secs:.2}s"),
+                "dbus-monitor",
+                "--session",
+                "type='signal'",
+            ])
+            .output()
+        else {
+            return Vec::new();
+        };
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .take(80)
+            .map(str::to_string)
+            .collect()
+    }
+}
+
+pub struct DiagnosticProbes;
+
+impl DiagnosticProbes {
+    pub fn run_all_probes(base_dir: &Path) -> JsonValue {
+        let ctl_path = base_dir.join("build/lwasapi-ctl");
+        let ctl_ok = if ctl_path.is_file() {
+            Command::new(&ctl_path)
+                .arg("status")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        let dbg_sock = resolve_debug_sock_path();
+        let t0 = Instant::now();
+        let ping_rtt_ms = probe_debug_ping(&dbg_sock).map(|_| t0.elapsed().as_secs_f64() * 1000.0);
+        let snap_res = snapshot_once(Some(&dbg_sock), Duration::from_millis(900));
+
+        let alsa_plugin = base_dir.join("build/libasound_module_pcm_lwasapi.so");
+        let alsa_plugin_ok = dlopen_symbol_check(&alsa_plugin, "_snd_pcm_lwasapi_open");
+
+        let liblwasapi = base_dir.join("build/liblwasapi.so");
+        let liblwasapi_ok = dlopen_symbol_check(&liblwasapi, "LWASAPI_GetEngineStatus");
+
+        let shim_alsa_ok = base_dir.join("build/shims/libasound.so.2").is_file();
+        let shim_pulse_ok = base_dir.join("build/shims/libpulse.so.0").is_file();
+        let shim_jack_ok = base_dir.join("build/shims/libjack.so.0").is_file();
+
+        let xdg_rt = xdg_runtime_dir();
+        let pa_sock = peercred_for_unix_socket(&xdg_rt.join("pulse/native"));
+        let pw_sock = peercred_for_unix_socket(&xdg_rt.join("pipewire-0"));
+
+        JsonValue::obj(vec![
+            ("ctl_status_ok", JsonValue::Bool(ctl_ok)),
+            ("debug_snapshot_ok", JsonValue::Bool(snap_res.is_ok())),
+            (
+                "debug_ping_rtt_ms",
+                ping_rtt_ms.map(JsonValue::Float).unwrap_or(JsonValue::Null),
+            ),
+            ("alsa_plugin_dlopen_ok", JsonValue::Bool(alsa_plugin_ok)),
+            ("liblwasapi_dlopen_ok", JsonValue::Bool(liblwasapi_ok)),
+            ("shim_alsa_present", JsonValue::Bool(shim_alsa_ok)),
+            ("shim_pulse_present", JsonValue::Bool(shim_pulse_ok)),
+            ("shim_jack_present", JsonValue::Bool(shim_jack_ok)),
+            ("pa_socket_connectable", JsonValue::Bool(pa_sock.connectable)),
+            ("pa_socket_comm", JsonValue::Str(pa_sock.peer_comm)),
+            ("pw_socket_connectable", JsonValue::Bool(pw_sock.connectable)),
+            ("pw_socket_comm", JsonValue::Str(pw_sock.peer_comm)),
+        ])
+    }
+
+    pub fn play_test_tone(freq_hz: f64, duration_ms: u32, amp: f32) -> Result<String, String> {
+        let mut client: *mut lwasapi::IAudioClient = core::ptr::null_mut();
+        let hr = unsafe {
+            lwasapi::LWASAPI_ActivateAudioClient(c"salsa-debug-tone".as_ptr(), &mut client)
+        };
+        if hr < 0 || client.is_null() {
+            return Err(format!("LWASAPI_ActivateAudioClient failed (0x{hr:08x})"));
+        }
+
+        let res = (|| {
+            let mut wfx = WaveFormatEx::default();
+            let hr_fmt = unsafe { lwasapi::IAudioClient_GetMixFormat(client, &mut wfx) };
+            if hr_fmt < 0 {
+                return Err(format!("GetMixFormat failed (0x{hr_fmt:08x})"));
+            }
+            let rate = wfx.n_samples_per_sec.max(44100);
+            let ch = wfx.n_channels.clamp(1, 2) as usize;
+            let period_frames = (rate / 100).max(64);
+            let buf_frames = period_frames * 4;
+
+            let hr_init = unsafe {
+                lwasapi::IAudioClient_Initialize(
+                    client,
+                    AUDCLNT_SHAREMODE_SHARED,
+                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                    buf_frames,
+                    period_frames,
+                    &wfx,
+                )
+            };
+            if hr_init < 0 {
+                return Err(format!("Initialize failed (0x{hr_init:08x})"));
+            }
+            let _ = unsafe { lwasapi::ISimpleAudioVolume_SetMasterVolume(client, 1.0) };
+            let hr_start = unsafe { lwasapi::IAudioClient_Start(client) };
+            if hr_start < 0 {
+                return Err(format!("Start failed (0x{hr_start:08x})"));
+            }
+
+            let total_frames = ((u64::from(rate) * u64::from(duration_ms.max(50))) / 1000) as usize;
+            let fade_frames = (rate as usize / 100).max(16);
+            let mut rendered = 0usize;
+            let mut chunk = vec![0.0f32; period_frames as usize * ch];
+            let safe_amp = amp.clamp(0.0, 0.9);
+            while rendered < total_frames {
+                let n = (total_frames - rendered).min(period_frames as usize);
+                for i in 0..n {
+                    let g = rendered + i;
+                    let env = if g < fade_frames {
+                        g as f32 / fade_frames as f32
+                    } else if total_frames - g < fade_frames {
+                        (total_frames - g) as f32 / fade_frames as f32
+                    } else {
+                        1.0
+                    };
+                    let phase = 2.0 * core::f64::consts::PI * freq_hz * (g as f64) / f64::from(rate);
+                    let s = (phase.sin() as f32) * safe_amp * env;
+                    for c in 0..ch {
+                        chunk[i * ch + c] = s;
+                    }
+                }
+                let hr_w = unsafe {
+                    lwasapi::IAudioRenderClient_WriteFrames(
+                        client,
+                        chunk.as_ptr().cast::<c_void>(),
+                        n as u32,
+                        LWASAPI_FMT_FLOAT32,
+                    )
+                };
+                if hr_w < 0 {
+                    let _ = unsafe { lwasapi::IAudioClient_Stop(client) };
+                    return Err(format!("WriteFrames failed (0x{hr_w:08x})"));
+                }
+                rendered += n;
+                thread::sleep(Duration::from_millis((u64::from(n as u32) * 1000 / u64::from(rate)).max(2)));
+            }
+            thread::sleep(Duration::from_millis(60));
+            let _ = unsafe { lwasapi::IAudioClient_Stop(client) };
+            Ok(format!(
+                "Rendered {rendered} frames ({:.1} Hz sine @ {rate} Hz, {ch}ch)",
+                freq_hz
+            ))
+        })();
+
+        unsafe {
+            lwasapi::IAudioClient_Release(client);
+        }
+        res
+    }
+
+    pub fn send_test_midi_note(note: u8, velocity: u8, duration_ms: u32) -> Result<String, String> {
+        let on = LwasapiMidiEvent {
+            frame_offset: 0,
+            size: 3,
+            port: 0,
+            data: [0x90, note & 0x7F, velocity.clamp(1, 127), 0],
+            timestamp_ns: mono_ns(),
+        };
+        let hr_on = unsafe { lwasapi::IAudioClient_WriteMidiEvent(core::ptr::null_mut(), &on) };
+        if hr_on < 0 {
+            return Err(format!("WriteMidiEvent NoteOn failed (0x{hr_on:08x})"));
+        }
+        thread::sleep(Duration::from_millis(u64::from(duration_ms.clamp(20, 2000))));
+        let off = LwasapiMidiEvent {
+            frame_offset: 0,
+            size: 3,
+            port: 0,
+            data: [0x80, note & 0x7F, 0, 0],
+            timestamp_ns: mono_ns(),
+        };
+        let _ = unsafe { lwasapi::IAudioClient_WriteMidiEvent(core::ptr::null_mut(), &off) };
+        Ok(format!(
+            "Injected MIDI NoteOn/Off note={} vel={} ({} ms)",
+            note & 0x7F,
+            velocity.clamp(1, 127),
+            duration_ms
+        ))
+    }
+
+    pub fn export_bundle(
+        out_dir: Option<&Path>,
+        snapshot: Option<&JsonValue>,
+        audit: Option<&JsonValue>,
+        probes: Option<&JsonValue>,
+        events: &[JsonValue],
+    ) -> Result<PathBuf, String> {
+        let (target_dir, is_custom) = match out_dir {
+            Some(d) => (d.to_path_buf(), true),
+            None => (private_runtime_dir().join("exports"), false),
+        };
+        if is_custom {
+            fs::create_dir_all(&target_dir)
+                .map_err(|e| format!("mkdir {}: {e}", target_dir.display()))?;
+        } else {
+            ensure_dir_0700(&target_dir)
+                .map_err(|e| format!("mkdir {}: {e}", target_dir.display()))?;
+        }
+        let zip_path = target_dir.join(format!("salsa-debug-{}.zip", format_now_stamp()));
+
+        let mut zw = ZipWriter::new();
+        if let Some(s) = snapshot {
+            let txt = s.to_json_pretty(2);
+            zw.add_file("snapshot.json", txt.as_bytes(), 0o644)?;
+        }
+        if let Some(a) = audit {
+            let txt = a.to_json_pretty(2);
+            zw.add_file("audit.json", txt.as_bytes(), 0o644)?;
+        }
+        if let Some(p) = probes {
+            let txt = p.to_json_pretty(2);
+            zw.add_file("probes.json", txt.as_bytes(), 0o644)?;
+        }
+        if !events.is_empty() {
+            let mut nd = String::new();
+            for ev in events {
+                nd.push_str(&ev.to_json_compact());
+                nd.push('\n');
+            }
+            zw.add_file("events.ndjson", nd.as_bytes(), 0o644)?;
+        }
+        let j_lines = ExternalLogManager::tail_journal(300).join("\n");
+        if !j_lines.is_empty() {
+            zw.add_file("journal.log", j_lines.as_bytes(), 0o644)?;
+        }
+        let a_lines = ExternalLogManager::tail_autosync_log(200).join("\n");
+        if !a_lines.is_empty() {
+            zw.add_file("autosync.log", a_lines.as_bytes(), 0o644)?;
+        }
+
+        zw.write_to_path_mode(&zip_path, 0o600)?;
+        Ok(zip_path)
+    }
+}
+
+fn probe_debug_ping(sock_path: &str) -> Option<JsonValue> {
+    let mut stream = UnixStream::connect(sock_path).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(800)));
+    stream.write_all(b"PING probe\n").ok()?;
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    let deadline = Instant::now() + Duration::from_millis(900);
+    while Instant::now() < deadline {
+        line.clear();
+        if reader.read_line(&mut line).ok()? == 0 {
+            break;
+        }
+        if let Ok(val) = JsonValue::parse(line.trim()) {
+            if val.get("type").and_then(JsonValue::as_str) == Some("pong") {
+                return Some(val);
+            }
+        }
+    }
+    None
+}
+
+fn dlopen_symbol_check(path: &Path, symbol: &str) -> bool {
+    let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let Ok(c_sym) = CString::new(symbol) else {
+        return false;
+    };
+    unsafe {
+        let _ = dlerror();
+        let h = dlopen(c_path.as_ptr(), RTLD_LAZY | RTLD_LOCAL);
+        if h.is_null() {
+            return false;
+        }
+        let sym = dlsym(h, c_sym.as_ptr());
+        let ok = !sym.is_null();
+        let _ = dlclose(h);
+        ok
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PreviewFrameData {
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub seq: u64,
+    pub pts_ns: u64,
+    pub prod_node_id: u32,
+    pub cons_count: u32,
+    pub active_stream: bool,
+    pub is_dmabuf: bool,
+    pub dmabuf_mappable: bool,
+    pub actual_fps_x100: u32,
+    pub target_max_w: u32,
+    pub target_max_h: u32,
+    pub target_fps: u32,
+    pub cast_fps_cap: u32,
+    pub prod_name: String,
+    pub format_name: String,
+    pub rgba: Vec<u8>,
+}
+
+pub struct ScreenCastShmReader {
+    _fd: OwnedFd,
+    map: MappedMem,
+}
+
+impl ScreenCastShmReader {
+    pub fn open(shm_name: &str) -> Result<Self, String> {
+        let map_size = mem::size_of::<LwasapiPwPreviewShm>();
+        let trimmed = shm_name.trim_start_matches('/');
+        if trimmed.is_empty() {
+            return Err("empty preview shm name".to_string());
+        }
+        let path = if shm_name.starts_with('/') && Path::new(shm_name).exists() {
+            PathBuf::from(shm_name)
+        } else {
+            PathBuf::from(format!("/dev/shm/{trimmed}"))
+        };
+        let f: File = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(O_CLOEXEC | O_NOFOLLOW)
+            .open(&path)
+            .map_err(|e| format!("open {}: {e}", path.display()))?;
+        let meta = f
+            .metadata()
+            .map_err(|e| format!("stat {}: {e}", path.display()))?;
+        if !meta.file_type().is_file() || (meta.len() as usize) < map_size {
+            return Err(format!(
+                "invalid preview shm {}: size={}",
+                path.display(),
+                meta.len()
+            ));
+        }
+        let fd: OwnedFd = f.into();
+        let map = MappedMem::map_fd(fd.as_raw_fd(), map_size, true, 0)
+            .ok_or_else(|| format!("mmap {} failed", path.display()))?;
+        let shm = unsafe { &*(map.as_ptr() as *const LwasapiPwPreviewShm) };
+        let magic = unsafe { core::ptr::read_volatile(&shm.magic) };
+        let version = unsafe { core::ptr::read_volatile(&shm.version) };
+        if magic != LWASAPI_PW_PREVIEW_MAGIC || version != LWASAPI_PW_PREVIEW_VERSION {
+            return Err(format!(
+                "invalid preview shm header in {} (magic=0x{magic:08x}, version={version})",
+                path.display()
+            ));
+        }
+        Ok(Self { _fd: fd, map })
+    }
+
+    pub fn send_preview_ping(
+        &self,
+        enabled: bool,
+        max_w: u32,
+        max_h: u32,
+        target_fps: u32,
+        cast_fps_cap: u32,
+    ) {
+        let base = self.map.as_ptr();
+        if base.is_null() {
+            return;
+        }
+        unsafe {
+            let ping_ptr = base.add(offset_of!(LwasapiPwPreviewShm, last_gui_ping_ns)) as *const AtomicU64;
+            let req_ptr = base.add(offset_of!(LwasapiPwPreviewShm, preview_requested)) as *const AtomicU32;
+            let tw_ptr = base.add(offset_of!(LwasapiPwPreviewShm, target_max_w)) as *const AtomicU32;
+            let th_ptr = base.add(offset_of!(LwasapiPwPreviewShm, target_max_h)) as *const AtomicU32;
+            let tf_ptr = base.add(offset_of!(LwasapiPwPreviewShm, target_fps)) as *const AtomicU32;
+            let cap_ptr = base.add(offset_of!(LwasapiPwPreviewShm, cast_fps_cap)) as *const AtomicU32;
+            (*tw_ptr).store(max_w.min(LWASAPI_PW_PREVIEW_MAX_W), Ordering::Relaxed);
+            (*th_ptr).store(max_h.min(LWASAPI_PW_PREVIEW_MAX_H), Ordering::Relaxed);
+            (*tf_ptr).store(target_fps, Ordering::Relaxed);
+            (*cap_ptr).store(cast_fps_cap, Ordering::Relaxed);
+            (*req_ptr).store(u32::from(enabled), Ordering::Release);
+            (*ping_ptr).store(mono_ns(), Ordering::Release);
+        }
+    }
+
+    pub fn read_frame(&self) -> Option<PreviewFrameData> {
+        let base = self.map.as_ptr();
+        if base.is_null() {
+            return None;
+        }
+        let shm = unsafe { &*(base as *const LwasapiPwPreviewShm) };
+        let magic = unsafe { core::ptr::read_volatile(&shm.magic) };
+        let version = unsafe { core::ptr::read_volatile(&shm.version) };
+        if magic != LWASAPI_PW_PREVIEW_MAGIC || version != LWASAPI_PW_PREVIEW_VERSION {
+            return None;
+        }
+        let seqlock_ptr =
+            unsafe { base.add(offset_of!(LwasapiPwPreviewShm, seqlock)) as *const AtomicU64 };
+        for _ in 0..8 {
+            let s1 = unsafe { (*seqlock_ptr).load(Ordering::Acquire) };
+            if (s1 & 1) != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let (
+                w,
+                h,
+                stride,
+                seq,
+                pts_ns,
+                prod_node_id,
+                cons_count,
+                active_stream,
+                is_dmabuf,
+                dmabuf_mappable,
+                actual_fps_x100,
+                target_max_w,
+                target_max_h,
+                target_fps,
+                cast_fps_cap,
+                prod_raw,
+                fmt_raw,
+            ) = unsafe {
+                (
+                    core::ptr::read_volatile(&shm.dst_width),
+                    core::ptr::read_volatile(&shm.dst_height),
+                    core::ptr::read_volatile(&shm.dst_stride),
+                    core::ptr::read_volatile(&shm.frame_seq),
+                    core::ptr::read_volatile(&shm.pts_ns),
+                    core::ptr::read_volatile(&shm.prod_node_id),
+                    core::ptr::read_volatile(&shm.cons_count),
+                    core::ptr::read_volatile(&shm.active_stream) != 0,
+                    core::ptr::read_volatile(&shm.is_dmabuf) != 0,
+                    core::ptr::read_volatile(&shm.dmabuf_mappable) != 0,
+                    core::ptr::read_volatile(&shm.actual_fps_x100),
+                    core::ptr::read_volatile(&shm.target_max_w),
+                    core::ptr::read_volatile(&shm.target_max_h),
+                    core::ptr::read_volatile(&shm.target_fps),
+                    core::ptr::read_volatile(&shm.cast_fps_cap),
+                    core::ptr::read_volatile(&shm.prod_name),
+                    core::ptr::read_volatile(&shm.format_name),
+                )
+            };
+            let row_bytes = (w as usize).saturating_mul(4);
+            let byte_len = (stride as usize).saturating_mul(h as usize);
+            let rgba = if w > 0
+                && h > 0
+                && w <= LWASAPI_PW_PREVIEW_MAX_W
+                && h <= LWASAPI_PW_PREVIEW_MAX_H
+                && (stride as usize) >= row_bytes
+                && byte_len <= LWASAPI_PW_PREVIEW_MAX_BYTES
+            {
+                let mut out = Vec::with_capacity(row_bytes.saturating_mul(h as usize));
+                let src = &shm.pixels[..byte_len];
+                let st = stride as usize;
+                let wu = w as usize;
+                for y in 0..(h as usize) {
+                    let row = &src[y * st..y * st + row_bytes];
+                    let (chunks, _) = row.as_chunks::<4>();
+                    for &[b, g, r, _] in chunks.iter().take(wu) {
+                        // PipeWire preview pixels arrive in BGRx/BGRA byte order;
+                        // force opaque alpha so BGRx frames render visibly and export cleanly.
+                        out.push(r);
+                        out.push(g);
+                        out.push(b);
+                        out.push(255);
+                    }
+                }
+                out
+            } else {
+                Vec::new()
+            };
+            let out_stride = if rgba.is_empty() { 0 } else { w.saturating_mul(4) };
+            let prod_name = cstr_to_string(&prod_raw);
+            let format_name = cstr_to_string(&fmt_raw);
+
+            fence(Ordering::Acquire);
+            let s2 = unsafe { (*seqlock_ptr).load(Ordering::Acquire) };
+            if s1 == s2 {
+                return Some(PreviewFrameData {
+                    width: w,
+                    height: h,
+                    stride: out_stride,
+                    seq,
+                    pts_ns,
+                    prod_node_id,
+                    cons_count,
+                    active_stream,
+                    is_dmabuf,
+                    dmabuf_mappable,
+                    actual_fps_x100,
+                    target_max_w,
+                    target_max_h,
+                    target_fps,
+                    cast_fps_cap,
+                    prod_name,
+                    format_name,
+                    rgba,
+                });
+            }
+        }
+        None
+    }
+}
+
+pub struct DryRunDesktopCapturer {
+    pub width: u32,
+    pub height: u32,
+    frame_idx: u32,
+}
+
+impl DryRunDesktopCapturer {
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            width: width.clamp(16, LWASAPI_PW_PREVIEW_MAX_W),
+            height: height.clamp(16, LWASAPI_PW_PREVIEW_MAX_H),
+            frame_idx: 0,
+        }
+    }
+
+    pub fn next_frame(&mut self) -> Vec<u8> {
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let mut rgba = vec![0u8; w * h * 4];
+        let phase = (self.frame_idx.wrapping_mul(7)) % self.width.max(1);
+        for y in 0..h {
+            for x in 0..w {
+                let idx = (y * w + x) * 4;
+                let bar = ((x as u32 + phase) % self.width) < (self.width / 8);
+                rgba[idx] = if bar { 240 } else { ((x * 255) / w) as u8 };
+                rgba[idx + 1] = ((y * 255) / h) as u8;
+                rgba[idx + 2] = if bar { 64 } else { 140 };
+                rgba[idx + 3] = 255;
+            }
+        }
+        self.frame_idx = self.frame_idx.wrapping_add(1);
+        rgba
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pw_preview_shm_pixel_offset_matches_c() {
+        assert_eq!(offset_of!(LwasapiPwPreviewShm, pixels), 520);
+        assert_eq!(
+            mem::size_of::<LwasapiPwPreviewShm>(),
+            520 + LWASAPI_PW_PREVIEW_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn helpers_and_dry_run_capturer_work() {
+        assert_eq!(level_rank("trace"), 0);
+        assert_eq!(level_rank("WARN"), 3);
+        assert_eq!(level_rank("error"), 4);
+        assert_eq!(format_ts_ms(0), "--:--:--.---");
+        let s = format_ts_ms(1_700_000_000_123);
+        assert!(s.ends_with(".123"));
+
+        let mut cap = DryRunDesktopCapturer::new(64, 32);
+        let f0 = cap.next_frame();
+        let f1 = cap.next_frame();
+        assert_eq!(f0.len(), 64 * 32 * 4);
+        assert_ne!(f0, f1);
+
+        let freshness = SystemAuditScanner::check_build_freshness(&install_root());
+        assert!(freshness.get("checked_count").and_then(JsonValue::as_i64).unwrap_or(0) >= 18);
+    }
+}

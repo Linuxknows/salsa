@@ -69,15 +69,27 @@ impl BiquadFilter {
         *self = Self::new();
     }
 
-    fn compute_parametric(&mut self, ftype: u32, mut freq: f64, rate: f64, q_in: f32, gain_db: f32) {
-        if freq < 10.0 {
+    fn compute_parametric(&mut self, ftype: u32, mut freq: f64, mut rate: f64, q_in: f32, gain_db: f32) {
+        if !rate.is_finite() || rate < 1.0 {
+            rate = 48_000.0;
+        }
+        if !freq.is_finite() || freq < 10.0 {
             freq = 10.0;
         }
         if freq >= rate * 0.48 {
             freq = rate * 0.48;
         }
-        let q = if q_in < 0.2 { 0.2 } else { q_in as f64 };
-        let a = 10.0f64.powf((gain_db as f64) / 40.0);
+        let q = if !q_in.is_finite() || q_in < 0.2 {
+            0.2
+        } else {
+            (q_in as f64).min(20.0)
+        };
+        let gdb = if gain_db.is_finite() {
+            (gain_db as f64).clamp(-36.0, 36.0)
+        } else {
+            0.0
+        };
+        let a = 10.0f64.powf(gdb / 40.0);
         let w0 = 2.0 * PI * freq / rate;
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
@@ -120,10 +132,25 @@ impl BiquadFilter {
         self.b2 = b2 * inv_a0;
         self.a1 = a1 * inv_a0;
         self.a2 = a2 * inv_a0;
+        if !self.b0.is_finite()
+            || !self.b1.is_finite()
+            || !self.b2.is_finite()
+            || !self.a1.is_finite()
+            || !self.a2.is_finite()
+        {
+            self.b0 = 1.0;
+            self.b1 = 0.0;
+            self.b2 = 0.0;
+            self.a1 = 0.0;
+            self.a2 = 0.0;
+        }
     }
 
-    fn compute_hpf(&mut self, mut freq: f64, rate: f64) {
-        if freq < 20.0 {
+    fn compute_hpf(&mut self, mut freq: f64, mut rate: f64) {
+        if !rate.is_finite() || rate < 1.0 {
+            rate = 48_000.0;
+        }
+        if !freq.is_finite() || freq < 20.0 {
             freq = 20.0;
         }
         if freq >= rate * 0.45 {
@@ -145,16 +172,35 @@ impl BiquadFilter {
         self.b2 = b2 * inv_a0;
         self.a1 = a1 * inv_a0;
         self.a2 = a2 * inv_a0;
+        if !self.b0.is_finite()
+            || !self.b1.is_finite()
+            || !self.b2.is_finite()
+            || !self.a1.is_finite()
+            || !self.a2.is_finite()
+        {
+            self.b0 = 1.0;
+            self.b1 = 0.0;
+            self.b2 = 0.0;
+            self.a1 = 0.0;
+            self.a2 = 0.0;
+        }
     }
 
-    fn compute_bandpass(&mut self, mut freq: f64, rate: f64, q_in: f32) {
-        if freq < 10.0 {
+    fn compute_bandpass(&mut self, mut freq: f64, mut rate: f64, q_in: f32) {
+        if !rate.is_finite() || rate < 1.0 {
+            rate = 48_000.0;
+        }
+        if !freq.is_finite() || freq < 10.0 {
             freq = 10.0;
         }
         if freq >= rate * 0.48 {
             freq = rate * 0.48;
         }
-        let q = if q_in < 0.2 { 0.2 } else { q_in as f64 };
+        let q = if !q_in.is_finite() || q_in < 0.2 {
+            0.2
+        } else {
+            (q_in as f64).min(20.0)
+        };
         let w0 = 2.0 * PI * freq / rate;
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
@@ -419,7 +465,7 @@ impl MicRnnoiseCtx {
 
         if rate == 48_000 {
             for f in 0..frames {
-                if self.out_wr > self.out_rd {
+                if self.out_wr.wrapping_sub(self.out_rd) > 0 {
                     let slot = (self.out_rd as usize) & MIC_RN_MASK;
                     let y = self.out_ring[slot];
                     let d = self.dry_ring[slot];
@@ -647,12 +693,17 @@ fn process_dynamic_eq_inner(
     }
     st.spec_last_rate = rate;
 
+    let preamp_db = if eq_cfg.preamp_db.is_finite() {
+        eq_cfg.preamp_db.clamp(-24.0, 24.0)
+    } else {
+        0.0
+    };
     let preamp_lin = if eq_cfg.enabled != 0 {
-        10.0f32.powf(eq_cfg.preamp_db / 20.0)
+        10.0f32.powf(preamp_db / 20.0)
     } else {
         1.0
     };
-    if eq_cfg.enabled != 0 && eq_cfg.preamp_db.abs() > 0.01 {
+    if eq_cfg.enabled != 0 && preamp_db.abs() > 0.01 {
         for s in &mut buf[..frames * ch] {
             *s *= preamp_lin;
         }
@@ -660,8 +711,8 @@ fn process_dynamic_eq_inner(
 
     for b in 0..LWASAPI_EQ_BANDS {
         let sf = &mut st.spec_filters[b];
-        let mut z1 = sf.z1[0];
-        let mut z2 = sf.z2[0];
+        let mut z1 = if sf.z1[0].is_finite() { sf.z1[0] } else { 0.0 };
+        let mut z2 = if sf.z2[0].is_finite() { sf.z2[0] } else { 0.0 };
         let mut sum_sq = 0.0f64;
 
         for f in 0..frames {
@@ -671,24 +722,32 @@ fn process_dynamic_eq_inner(
             } else {
                 buf[base] as f64
             };
-            let y = sf.b0 * mono + z1;
-            z1 = sf.b1 * mono - sf.a1 * y + z2;
-            z2 = sf.b2 * mono - sf.a2 * y;
+            let x = if mono.is_finite() { mono } else { 0.0 };
+            let y = sf.b0 * x + z1;
+            z1 = sf.b1 * x - sf.a1 * y + z2;
+            z2 = sf.b2 * x - sf.a2 * y;
             sum_sq += y * y;
         }
-        if z1.abs() < 1e-18 {
+        if !z1.is_finite() || z1.abs() < 1e-18 {
             z1 = 0.0;
         }
-        if z2.abs() < 1e-18 {
+        if !z2.is_finite() || z2.abs() < 1e-18 {
             z2 = 0.0;
         }
         sf.z1[0] = z1;
         sf.z2[0] = z2;
 
-        let band_rms = ((sum_sq / (frames as f64)) as f32).sqrt() * core::f32::consts::SQRT_2;
+        let band_rms = if sum_sq.is_finite() {
+            ((sum_sq / (frames as f64)) as f32).sqrt() * core::f32::consts::SQRT_2
+        } else {
+            0.0
+        };
+        if !st.band_env[b].is_finite() {
+            st.band_env[b] = 0.0;
+        }
         let coeff = if band_rms > st.band_env[b] { 0.18 } else { 0.05 };
         st.band_env[b] += coeff * (band_rms - st.band_env[b]);
-        if st.band_env[b] < 1e-10 {
+        if !st.band_env[b].is_finite() || st.band_env[b] < 1e-10 {
             st.band_env[b] = 0.0;
         }
         let db = (20.0 * (st.band_env[b] + 1e-5).log10()).clamp(-60.0, 6.0);
@@ -696,9 +755,13 @@ fn process_dynamic_eq_inner(
 
         let mut target_delta = 0.0f32;
         if eq_cfg.enabled != 0 && eq_cfg.dynamic_mode != 0 {
-            let thresh = eq_cfg.dyn_threshold_db;
-            let ratio = if eq_cfg.dyn_ratio >= 1.0 {
-                eq_cfg.dyn_ratio
+            let thresh = if eq_cfg.dyn_threshold_db.is_finite() {
+                eq_cfg.dyn_threshold_db.clamp(-60.0, 0.0)
+            } else {
+                -16.0
+            };
+            let ratio = if eq_cfg.dyn_ratio.is_finite() && eq_cfg.dyn_ratio >= 1.0 {
+                eq_cfg.dyn_ratio.min(20.0)
             } else {
                 2.0
             };
@@ -711,6 +774,9 @@ fn process_dynamic_eq_inner(
                 }
             }
         }
+        if !st.eq_dyn_delta_db[b].is_finite() {
+            st.eq_dyn_delta_db[b] = 0.0;
+        }
         st.eq_dyn_delta_db[b] = 0.80 * st.eq_dyn_delta_db[b] + 0.20 * target_delta;
         telem.band_levels_db[b].store(st.eq_band_levels_db[b].to_bits(), Ordering::Relaxed);
         telem.dyn_delta_db[b].store(st.eq_dyn_delta_db[b].to_bits(), Ordering::Relaxed);
@@ -719,7 +785,12 @@ fn process_dynamic_eq_inner(
     for b in 0..LWASAPI_EQ_BANDS {
         let ef = &mut st.eq_filters[b];
         if eq_cfg.enabled != 0 {
-            let eff_gain = (eq_cfg.band_gains_db[b] + st.eq_dyn_delta_db[b]).clamp(-24.0, 24.0);
+            let raw_gain = if eq_cfg.band_gains_db[b].is_finite() {
+                eq_cfg.band_gains_db[b]
+            } else {
+                0.0
+            };
+            let eff_gain = (raw_gain + st.eq_dyn_delta_db[b]).clamp(-24.0, 24.0);
             if eff_gain.abs() > 0.05 {
                 let q = if (0.2..=10.0).contains(&eq_cfg.band_q[b]) {
                     eq_cfg.band_q[b]
@@ -745,20 +816,20 @@ fn process_dynamic_eq_inner(
                 }
                 let max_c = ch.min(LWASAPI_MAX_CHANNELS);
                 for c in 0..max_c {
-                    let mut ez1 = ef.z1[c];
-                    let mut ez2 = ef.z2[c];
+                    let mut ez1 = if ef.z1[c].is_finite() { ef.z1[c] } else { 0.0 };
+                    let mut ez2 = if ef.z2[c].is_finite() { ef.z2[c] } else { 0.0 };
                     for f in 0..frames {
                         let idx = f * ch + c;
-                        let x = buf[idx] as f64;
+                        let x = if buf[idx].is_finite() { buf[idx] as f64 } else { 0.0 };
                         let y = ef.b0 * x + ez1;
                         ez1 = ef.b1 * x - ef.a1 * y + ez2;
                         ez2 = ef.b2 * x - ef.a2 * y;
-                        buf[idx] = y as f32;
+                        buf[idx] = if y.is_finite() { y as f32 } else { 0.0 };
                     }
-                    if ez1.abs() < 1e-18 {
+                    if !ez1.is_finite() || ez1.abs() < 1e-18 {
                         ez1 = 0.0;
                     }
-                    if ez2.abs() < 1e-18 {
+                    if !ez2.is_finite() || ez2.abs() < 1e-18 {
                         ez2 = 0.0;
                     }
                     ef.z1[c] = ez1;
@@ -901,10 +972,11 @@ fn process_capture_mic_apo_inner(
         } else {
             0.5 * (l + r)
         };
-        let x = raw as f64;
+        let x = if raw.is_finite() { raw as f64 } else { 0.0 };
         let mut y = x - st.dc_x1 + dc_r * st.dc_y1;
         st.dc_x1 = x;
-        if y.abs() < 1e-18 {
+        if !y.is_finite() || y.abs() < 1e-18 {
+            st.dc_x1 = 0.0;
             y = 0.0;
         }
         st.dc_y1 = y;
@@ -926,19 +998,19 @@ fn process_capture_mic_apo_inner(
             st.hpf_flt.last_freq_hz = hpf_hz;
             st.hpf_flt.coeffs_valid = true;
         }
-        let mut z1 = st.hpf_flt.z1[0];
-        let mut z2 = st.hpf_flt.z2[0];
+        let mut z1 = if st.hpf_flt.z1[0].is_finite() { st.hpf_flt.z1[0] } else { 0.0 };
+        let mut z2 = if st.hpf_flt.z2[0].is_finite() { st.hpf_flt.z2[0] } else { 0.0 };
         for s in &mut st.mono[..frames] {
-            let x = *s as f64;
+            let x = if s.is_finite() { *s as f64 } else { 0.0 };
             let y = st.hpf_flt.b0 * x + z1;
             z1 = st.hpf_flt.b1 * x - st.hpf_flt.a1 * y + z2;
             z2 = st.hpf_flt.b2 * x - st.hpf_flt.a2 * y;
-            *s = y as f32;
+            *s = if y.is_finite() { y as f32 } else { 0.0 };
         }
-        if z1.abs() < 1e-18 {
+        if !z1.is_finite() || z1.abs() < 1e-18 {
             z1 = 0.0;
         }
-        if z2.abs() < 1e-18 {
+        if !z2.is_finite() || z2.abs() < 1e-18 {
             z2 = 0.0;
         }
         st.hpf_flt.z1[0] = z1;
@@ -1045,79 +1117,84 @@ fn process_capture_mic_apo_inner(
             st.demud_flt.last_rate = rate;
             st.demud_flt.coeffs_valid = true;
         }
-        let mut dz1 = st.demud_flt.z1[0];
-        let mut dz2 = st.demud_flt.z2[0];
+        let mut dz1 = if st.demud_flt.z1[0].is_finite() { st.demud_flt.z1[0] } else { 0.0 };
+        let mut dz2 = if st.demud_flt.z2[0].is_finite() { st.demud_flt.z2[0] } else { 0.0 };
         for s in &mut st.mono[..frames] {
-            let x = *s as f64;
+            let x = if s.is_finite() { *s as f64 } else { 0.0 };
             let y = st.demud_flt.b0 * x + dz1;
             dz1 = st.demud_flt.b1 * x - st.demud_flt.a1 * y + dz2;
             dz2 = st.demud_flt.b2 * x - st.demud_flt.a2 * y;
-            *s = y as f32;
+            *s = if y.is_finite() { y as f32 } else { 0.0 };
         }
-        if dz1.abs() < 1e-18 {
+        if !dz1.is_finite() || dz1.abs() < 1e-18 {
             dz1 = 0.0;
         }
-        if dz2.abs() < 1e-18 {
+        if !dz2.is_finite() || dz2.abs() < 1e-18 {
             dz2 = 0.0;
         }
         st.demud_flt.z1[0] = dz1;
         st.demud_flt.z2[0] = dz2;
 
-        if cfg.clarity_db.abs() > 0.1 {
+        let clarity_db = if cfg.clarity_db.is_finite() {
+            cfg.clarity_db.clamp(-6.0, 12.0)
+        } else {
+            0.0
+        };
+        if clarity_db.abs() > 0.1 {
             if !st.pres_flt.coeffs_valid
                 || st.pres_flt.last_rate != rate
-                || (st.pres_flt.last_gain_db - cfg.clarity_db).abs() > 0.05
+                || (st.pres_flt.last_gain_db - clarity_db).abs() > 0.05
             {
                 st.pres_flt.compute_parametric(
                     crate::c_abi::LWASAPI_FILTER_PEAK,
                     3400.0,
                     rate as f64,
                     0.80,
-                    cfg.clarity_db * 0.40,
+                    clarity_db * 0.40,
                 );
                 st.pres_flt.last_rate = rate;
-                st.pres_flt.last_gain_db = cfg.clarity_db;
+                st.pres_flt.last_gain_db = clarity_db;
                 st.pres_flt.coeffs_valid = true;
             }
             if !st.clarity_flt.coeffs_valid
                 || st.clarity_flt.last_rate != rate
-                || (st.clarity_flt.last_gain_db - cfg.clarity_db).abs() > 0.05
+                || (st.clarity_flt.last_gain_db - clarity_db).abs() > 0.05
             {
                 st.clarity_flt.compute_parametric(
                     LWASAPI_FILTER_HIGH_SHELF,
                     6800.0,
                     rate as f64,
                     0.707,
-                    cfg.clarity_db * 0.60,
+                    clarity_db * 0.60,
                 );
                 st.clarity_flt.last_rate = rate;
-                st.clarity_flt.last_gain_db = cfg.clarity_db;
+                st.clarity_flt.last_gain_db = clarity_db;
                 st.clarity_flt.coeffs_valid = true;
             }
-            let mut pz1 = st.pres_flt.z1[0];
-            let mut pz2 = st.pres_flt.z2[0];
-            let mut sz1 = st.clarity_flt.z1[0];
-            let mut sz2 = st.clarity_flt.z2[0];
+            let mut pz1 = if st.pres_flt.z1[0].is_finite() { st.pres_flt.z1[0] } else { 0.0 };
+            let mut pz2 = if st.pres_flt.z2[0].is_finite() { st.pres_flt.z2[0] } else { 0.0 };
+            let mut sz1 = if st.clarity_flt.z1[0].is_finite() { st.clarity_flt.z1[0] } else { 0.0 };
+            let mut sz2 = if st.clarity_flt.z2[0].is_finite() { st.clarity_flt.z2[0] } else { 0.0 };
             for s in &mut st.mono[..frames] {
-                let x = *s as f64;
+                let x = if s.is_finite() { *s as f64 } else { 0.0 };
                 let p_y = st.pres_flt.b0 * x + pz1;
                 pz1 = st.pres_flt.b1 * x - st.pres_flt.a1 * p_y + pz2;
                 pz2 = st.pres_flt.b2 * x - st.pres_flt.a2 * p_y;
                 let s_y = st.clarity_flt.b0 * p_y + sz1;
                 sz1 = st.clarity_flt.b1 * p_y - st.clarity_flt.a1 * s_y + sz2;
                 sz2 = st.clarity_flt.b2 * p_y - st.clarity_flt.a2 * s_y;
-                *s = s_y as f32;
+                *s = if s_y.is_finite() { s_y as f32 } else { 0.0 };
             }
-            if pz1.abs() < 1e-18 {
+            if !pz1.is_finite() || pz1.abs() < 1e-18 {
                 pz1 = 0.0;
             }
-            if pz2.abs() < 1e-18 {
+            if !pz2.is_finite() || pz2.abs() < 1e-18 {
                 pz2 = 0.0;
             }
-            if sz1.abs() < 1e-18 {
+            if !sz1.is_finite() || sz1.abs() < 1e-18 {
                 sz1 = 0.0;
             }
-            if sz2.abs() < 1e-18 {
+            if !sz2.is_finite() || sz2.abs() < 1e-18 {
                 sz2 = 0.0;
             }
             st.pres_flt.z1[0] = pz1;
@@ -1126,8 +1203,12 @@ fn process_capture_mic_apo_inner(
             st.clarity_flt.z2[0] = sz2;
         }
 
-        let cthresh = cfg.comp_thresh_db;
-        let ratio = if cfg.comp_ratio >= 1.0 {
+        let cthresh = if cfg.comp_thresh_db.is_finite() {
+            cfg.comp_thresh_db.clamp(-45.0, -1.0)
+        } else {
+            -15.0
+        };
+        let ratio = if cfg.comp_ratio.is_finite() && (1.0..=12.0).contains(&cfg.comp_ratio) {
             cfg.comp_ratio
         } else {
             2.2

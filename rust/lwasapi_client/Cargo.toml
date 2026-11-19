@@ -1,0 +1,21 @@
+[package]
+name = "lwasapi_client"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "lwasapi"
+crate-type = ["staticlib", "rlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "lwasapi-test"
+path = "src/bin/lwasapi_test.rs"
+
+[[bin]]
+name = "lwasapi-bench"
+path = "src/bin/lwasapi_bench.rs"
+
+[dependencies]
+salsa_net = { path = "../salsa_net" }
