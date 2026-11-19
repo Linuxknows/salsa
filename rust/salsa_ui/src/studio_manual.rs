@@ -460,7 +460,7 @@ pub fn render_manual_chapter_pango(key: &str, t: &SalsaTheme, host: &HostProfile
                 "accent_warn",
                 "🎛️ Chapter 12: HW Analog Boost & BlueZ HFP SCO",
                 "Discrete Sound Card DAC/Amp • Two-Way Bluetooth HFP Headset Mic",
-                "Salsa V1.19.4 unifies discrete sound card analog stages and wireless headset controls:".into(),
+                "Salsa V1.19.5 unifies discrete sound card analog stages and wireless headset controls:".into(),
                 vec![
                     "<b>Hardware Analog Architecture:</b> Utilizes ALSA DAC unity volume, discrete headphone amp gain tiers (32Ω / 150Ω / 600Ω TPA6120), Analog Soft-Knee Drive, and USB HID volume dials (e.g. ASUS Strix Raid DLX / Focusrite Scarlett).".into(),
                     format!("<b>Two-Way Bluetooth HFP {}:</b> Optional two-way Bluetooth HFP mSBC/CVSD headset mic support alongside lossless output codecs.", c("BTPROTO_SCO")),

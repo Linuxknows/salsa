@@ -184,6 +184,7 @@ void SalsaLiveDebuggerWidget::buildUi(int initialTab) {
 
     btnPause_ = new QPushButton(QStringLiteral("Pause Stream"), topCard);
     btnPause_->setCheckable(true);
+    btnPause_->setToolTip(QStringLiteral("Pause Stream — Freezes the live event table display while background daemon capture continues."));
     connect(btnPause_, &QPushButton::toggled, this, [this](bool on) {
         paused_ = on;
         btnPause_->setText(on ? QStringLiteral("Resume Stream") : QStringLiteral("Pause Stream"));
@@ -191,10 +192,12 @@ void SalsaLiveDebuggerWidget::buildUi(int initialTab) {
     row2->addWidget(btnPause_);
 
     auto* btnClear = new QPushButton(QStringLiteral("Clear Events"), topCard);
+    btnClear->setToolTip(QStringLiteral("Clear Events — Clears currently displayed event log rows from this table without affecting the daemon."));
     connect(btnClear, &QPushButton::clicked, this, &SalsaLiveDebuggerWidget::onClearEvents);
     row2->addWidget(btnClear);
 
     auto* btnResetRt = new QPushButton(QStringLiteral("Reset RT Stats"), topCard);
+    btnResetRt->setToolTip(QStringLiteral("Reset RT Stats — Sends RESET_STATS over the debug socket to zero min/max latency, jitter, and xrun counters."));
     connect(btnResetRt, &QPushButton::clicked, this, [this]() {
         if (dbg_) {
             salsa_dbg_send_command(dbg_, "RESET_STATS");
@@ -204,12 +207,14 @@ void SalsaLiveDebuggerWidget::buildUi(int initialTab) {
     row2->addWidget(btnResetRt);
 
     auto* btnSnap = new QPushButton(QStringLiteral("Snapshot Now"), topCard);
+    btnSnap->setToolTip(QStringLiteral("Snapshot Now — Requests an immediate telemetry snapshot covering RT timing, streams, BlueZ, ALSA, and PipeWire."));
     connect(btnSnap, &QPushButton::clicked, this, [this]() {
         if (dbg_) salsa_dbg_request_snapshot(dbg_);
     });
     row2->addWidget(btnSnap);
 
     auto* btnExport = new QPushButton(QStringLiteral("Export Bundle"), topCard);
+    btnExport->setToolTip(QStringLiteral("Export Diagnostic Bundle — Saves a timestamped ZIP of JSON snapshots, text report, configs, and logs for bug reports."));
     connect(btnExport, &QPushButton::clicked, this, [this]() {
         const SalsaStr msg(salsa_dbg_export_bundle(dbg_));
         if (txtProbeOut_) txtProbeOut_->setPlainText(msg.toQString());
@@ -218,7 +223,7 @@ void SalsaLiveDebuggerWidget::buildUi(int initialTab) {
     row2->addWidget(btnExport);
 
     btnResetNet_ = new QPushButton(QStringLiteral("Reset PW / Video Clients"), topCard);
-    btnResetNet_->setToolTip(QStringLiteral("Safely disconnects stale PipeWire ScreenCast portal clients"));
+    btnResetNet_->setToolTip(QStringLiteral("Reset PipeWire Video Clients — Safely disconnects stale ScreenCast portal/broker clients without interrupting audio."));
     connect(btnResetNet_, &QPushButton::clicked, this, [this]() {
         if (dbg_) {
             const SalsaStr res(salsa_dbg_reset_net_clients_json(dbg_));
@@ -236,6 +241,11 @@ void SalsaLiveDebuggerWidget::buildUi(int initialTab) {
     subtabs_->addTab(buildTelemetryTab(), QStringLiteral("Streams, Rings && RT Timing"));
     subtabs_->addTab(buildBoundaryTab(), QStringLiteral("Boundary, Configs && Probes"));
     subtabs_->addTab(buildScreenCastTab(), QStringLiteral("ScreenCast Broker && Live Feed"));
+    subtabs_->setTabToolTip(0, QStringLiteral("Live Event Stream — Real-time IPC, BlueZ, ALSA, PA, and Failsafe events with subsystem/level filters."));
+    subtabs_->setTabToolTip(1, QStringLiteral("Process Routing Audit — Scans /proc to detect Salsa-routed apps vs direct ALSA hardware leaks."));
+    subtabs_->setTabToolTip(2, QStringLiteral("Streams, Rings & RT Timing — Live SCHED_FIFO cycle budgets, BlueZ TX ring, capture clock, and PA sessions."));
+    subtabs_->setTabToolTip(3, QStringLiteral("Boundary, Configs & Probes — Inspect systemd units, sockets, host configs, and run hardware/IPC probes."));
+    subtabs_->setTabToolTip(4, QStringLiteral("ScreenCast Broker — Monitor and preview Salsa's zero-PipeWire-audio DMA-BUF/SHM Wayland video broker."));
     subtabs_->setCurrentIndex(std::clamp(initialTab, 0, subtabs_->count() - 1));
     root->addWidget(subtabs_, 1);
 }
@@ -252,6 +262,7 @@ QWidget* SalsaLiveDebuggerWidget::buildEventsTab() {
     cmbSub_->addItem(QStringLiteral("ALL"));
     const QJsonArray subs = parseJsonArr(SalsaStr(salsa_dbg_subsystems_json()).toQString());
     for (const QJsonValue& v : subs) cmbSub_->addItem(v.toString());
+    cmbSub_->setToolTip(QStringLiteral("Subsystem Filter — Narrows event log rows to a specific engine module (ENGINE, BLUEZ, PA, ALSA, etc.)."));
     connect(cmbSub_, &QComboBox::currentTextChanged, this, [this]() { rebuildEventTable(); });
     fbar->addWidget(cmbSub_);
 
@@ -260,27 +271,33 @@ QWidget* SalsaLiveDebuggerWidget::buildEventsTab() {
     const QJsonArray lvls = parseJsonArr(SalsaStr(salsa_dbg_log_levels_json()).toQString());
     for (const QJsonValue& v : lvls) cmbLvl_->addItem(v.toString());
     cmbLvl_->setCurrentText(QStringLiteral("TRACE"));
+    cmbLvl_->setToolTip(QStringLiteral("Minimum Log Level — Filters out verbose TRACE/DEBUG/INFO rows to focus on warnings or errors."));
     connect(cmbLvl_, &QComboBox::currentTextChanged, this, [this]() { rebuildEventTable(); });
     fbar->addWidget(cmbLvl_);
 
     txtSearch_ = new QLineEdit(w);
     txtSearch_->setPlaceholderText(QStringLiteral("Filter by PID, op, target, or detail..."));
+    txtSearch_->setToolTip(QStringLiteral("Event Search Box — Case-insensitive substring filter across PID, event operation, target, and detail fields."));
     connect(txtSearch_, &QLineEdit::textChanged, this, [this]() { rebuildEventTable(); });
     fbar->addWidget(txtSearch_, 1);
 
     chkAutoscroll_ = new QCheckBox(QStringLiteral("Auto-Scroll"), w);
     chkAutoscroll_->setChecked(true);
+    chkAutoscroll_->setToolTip(QStringLiteral("Auto-Scroll — Automatically jumps to the newest event row as telemetry streams in."));
     fbar->addWidget(chkAutoscroll_);
 
     chkJournal_ = new QCheckBox(QStringLiteral("+ journalctl"), w);
+    chkJournal_->setToolTip(QStringLiteral("Include journalctl — Tails `lwasapi-audiodg` and `lwasapi-tray` systemd journal lines alongside ring events."));
     connect(chkJournal_, &QCheckBox::toggled, this, [this]() { onPollTick(); });
     fbar->addWidget(chkJournal_);
 
     chkAutosync_ = new QCheckBox(QStringLiteral("+ autosync.log"), w);
+    chkAutosync_->setToolTip(QStringLiteral("Include autosync.log — Displays shim ABI rebuild and config healing entries from `~/.config/lwasapi/autosync.log`."));
     connect(chkAutosync_, &QCheckBox::toggled, this, [this]() { onPollTick(); });
     fbar->addWidget(chkAutosync_);
 
     chkDbus_ = new QCheckBox(QStringLiteral("+ BlueZ D-Bus"), w);
+    chkDbus_->setToolTip(QStringLiteral("Include BlueZ D-Bus — Polls `bluetoothd` D-Bus object states and A2DP SEP negotiation details."));
     connect(chkDbus_, &QCheckBox::toggled, this, [this]() { onPollTick(); });
     fbar->addWidget(chkDbus_);
     lay->addLayout(fbar);
@@ -329,16 +346,19 @@ QWidget* SalsaLiveDebuggerWidget::buildProcTab() {
         QStringLiteral("All Audio Processes"),
         QStringLiteral("Leaks / Direct ALSA Only"),
         QStringLiteral("Salsa Routed Only")});
+    cmbProcFilter_->setToolTip(QStringLiteral("Process Routing Filter — Filter /proc scan results to highlight apps bypassing Salsa shims or already routed cleanly."));
     connect(cmbProcFilter_, &QComboBox::currentTextChanged, this, [this]() { renderProcTable(); });
     bar->addWidget(cmbProcFilter_);
 
     txtProcSearch_ = new QLineEdit(w);
     txtProcSearch_->setPlaceholderText(QStringLiteral("Search process name, PID, or .so path..."));
+    txtProcSearch_->setToolTip(QStringLiteral("Process Search — Filters scanned processes by executable name, PID, socket, or loaded `.so` library path."));
     connect(txtProcSearch_, &QLineEdit::textChanged, this, [this]() { renderProcTable(); });
     bar->addWidget(txtProcSearch_, 1);
 
     auto* btnRef = new QPushButton(QStringLiteral("Refresh Process Audit"), w);
     btnRef->setObjectName(QStringLiteral("PrimaryBtn"));
+    btnRef->setToolTip(QStringLiteral("Refresh Process Audit — Re-scans open ALSA FDs and shared audio sockets across active user processes."));
     connect(btnRef, &QPushButton::clicked, this, [this]() {
         latestProcs_ = parseJsonArr(SalsaStr(salsa_dbg_scan_procs_json()).toQString());
         renderProcTable();
@@ -490,6 +510,7 @@ QWidget* SalsaLiveDebuggerWidget::buildBoundaryTab() {
     prow->addStretch(1);
 
     auto* bPing = new QPushButton(QStringLiteral("IPC + Debug Ping RTT"), probeCard);
+    bPing->setToolTip(QStringLiteral("Debug Ping RTT — Measures round-trip latency across the UNIX debug socket to verify `lwasapi-audiodg` responsiveness."));
     connect(bPing, &QPushButton::clicked, this, [this]() {
         const QJsonObject pong = parseJsonObj(SalsaStr(salsa_dbg_ping_json(dbg_, "ui")).toQString());
         if (pong.value(QStringLiteral("ok")).toBool()) {
@@ -504,18 +525,21 @@ QWidget* SalsaLiveDebuggerWidget::buildBoundaryTab() {
     prow->addWidget(bPing);
 
     auto* bTone = new QPushButton(QStringLiteral("Play 440Hz WASAPI Probe Tone"), probeCard);
+    bTone->setToolTip(QStringLiteral("440Hz Manual Audio Probe — Plays a short 440 Hz test tone via native WASAPI to verify physical audio output end-to-end."));
     connect(bTone, &QPushButton::clicked, this, [this]() {
         txtProbeOut_->setPlainText(SalsaStr(salsa_dbg_play_tone()).toQString());
     });
     prow->addWidget(bTone);
 
     auto* bMidi = new QPushButton(QStringLiteral("Send MIDI Note Ping (C4)"), probeCard);
+    bMidi->setToolTip(QStringLiteral("MIDI C4 Probe — Injects a Note-On packet into the LWASAPI MIDI ring to confirm DAW MIDI Hub delivery."));
     connect(bMidi, &QPushButton::clicked, this, [this]() {
         txtProbeOut_->setPlainText(SalsaStr(salsa_dbg_send_midi()).toQString());
     });
     prow->addWidget(bMidi);
 
     auto* bAllProbes = new QPushButton(QStringLiteral("Run All Socket && PA/PW Probes"), probeCard);
+    bAllProbes->setToolTip(QStringLiteral("Socket & Broker Probes — Verifies permissions, peer credentials, PA v35 socket handshake, and ScreenCast broker readiness."));
     connect(bAllProbes, &QPushButton::clicked, this, [this]() {
         txtProbeOut_->setPlainText(SalsaStr(salsa_dbg_run_probes_json()).toQString());
     });
@@ -523,6 +547,7 @@ QWidget* SalsaLiveDebuggerWidget::buildBoundaryTab() {
 
     auto* bRef = new QPushButton(QStringLiteral("Refresh Boundary Audit"), probeCard);
     bRef->setObjectName(QStringLiteral("PrimaryBtn"));
+    bRef->setToolTip(QStringLiteral("Refresh Boundary Audit — Re-reads systemd unit status, UNIX socket peercreds, build freshness, and config files."));
     connect(bRef, &QPushButton::clicked, this, &SalsaLiveDebuggerWidget::refreshBoundaryAudit);
     prow->addWidget(bRef);
     pCol->addLayout(prow);
@@ -579,6 +604,7 @@ QWidget* SalsaLiveDebuggerWidget::buildBoundaryTab() {
         QStringLiteral("src/pulse.version"),
         QStringLiteral("ALSA /proc/asound + Build Freshness"),
     });
+    cmbCfg_->setToolTip(QStringLiteral("Config File Inspector — Reads Salsa's generated host configs, ELF version scripts, and ALSA `/proc/asound` state."));
     connect(cmbCfg_, &QComboBox::currentTextChanged, this, [this]() { renderConfigViewer(); });
     cfgBar->addWidget(cmbCfg_, 1);
     rightLay->addLayout(cfgBar);
@@ -624,10 +650,12 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
         QStringLiteral("SHM Preview (Zero-Overhead Live)"),
         QStringLiteral("Dry-Run Portal Sim (Isolated)"),
     });
+    cmbScMode_->setToolTip(QStringLiteral("ScreenCast Preview Mode — Auto displays real Wayland SHM frames while casting and dry-run test frames when idle."));
     r1->addWidget(cmbScMode_);
 
     r1->addWidget(new QLabel(QStringLiteral("Res:"), ctrlCard));
     cmbScRes_ = new QComboBox(ctrlCard);
+    cmbScRes_->setToolTip(QStringLiteral("ScreenCast Target Resolution — Negotiates Wayland portal resolution and scales preview/cast output (or leaves Source Native)."));
     struct ResSpec { const char* key; const char* lbl; uint32_t w; uint32_t h; };
     const ResSpec resSpecs[] = {
         {"Source", "Source (Native)", 0, 0},
@@ -655,6 +683,7 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
 
     r1->addWidget(new QLabel(QStringLiteral("FPS:"), ctrlCard));
     cmbScFps_ = new QComboBox(ctrlCard);
+    cmbScFps_->setToolTip(QStringLiteral("ScreenCast Frame Rate — Negotiates Wayland PipeWire video frame pacing up to your display's native refresh rate."));
     scLastOutHz_ = salsaDetectedOutputHz(this);
     cmbScFps_->addItem(QStringLiteral("Source Hz (%1 Hz Out)").arg(scLastOutHz_), 0);
     QList<int> fpsChoices = {240, 144, 120, 60, 30, 15};
@@ -684,6 +713,7 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
     auto* r2 = new QHBoxLayout();
     chkScCapBroker_ = new QCheckBox(QStringLiteral("Cap Real Discord/OBS Cast"), ctrlCard);
     chkScCapBroker_->setChecked(savedCap);
+    chkScCapBroker_->setToolTip(QStringLiteral("Apply Cap to Live Casts — Enforces the selected Resolution & FPS limits on real Discord/OBS broker streams."));
     connect(chkScCapBroker_, &QCheckBox::toggled, this, [this]() {
         saveScreenCastPrefs();
         sendPwCastLimitsCmd();
@@ -700,6 +730,7 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
     btnScLive_ = new QPushButton(QStringLiteral("Enable Live Feed (OFF)"), ctrlCard);
     btnScLive_->setCheckable(true);
     btnScLive_->setObjectName(QStringLiteral("PrimaryBtn"));
+    btnScLive_->setToolTip(QStringLiteral("Toggle ScreenCast Live Feed — Maps `lwasapi-audiodg` SHM/DMA-BUF preview frames directly into this viewer at your target FPS."));
     connect(btnScLive_, &QPushButton::toggled, this, [this](bool on) {
         if (on) {
             btnScLive_->setText(QStringLiteral("Disable Live Feed (ON)"));
@@ -722,6 +753,7 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
     r2->addWidget(btnScLive_);
 
     btnScSaveFrame_ = new QPushButton(QStringLiteral("Save Frame PNG"), ctrlCard);
+    btnScSaveFrame_->setToolTip(QStringLiteral("Save Frame PNG — Encodes the latest captured RGBA preview frame to disk via Salsa's built-in PNG writer."));
     connect(btnScSaveFrame_, &QPushButton::clicked, this, [this]() {
         if (lastScImage_.isNull() || scRgbaBuf_.empty() || lastScW_ == 0 || lastScH_ == 0) {
             lblScStats_->setText(QStringLiteral("No live frame captured yet to save."));
@@ -733,6 +765,7 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
     r2->addWidget(btnScSaveFrame_);
 
     auto* btnPwTest = new QPushButton(QStringLiteral("Run PW Self-Test"), ctrlCard);
+    btnPwTest->setToolTip(QStringLiteral("PipeWire Video Self-Test — Verifies video-only PipeWire socket handshake, audio rejection policy, and broker frame relay."));
     connect(btnPwTest, &QPushButton::clicked, this, [this]() {
         lblScStats_->setText(SalsaStr(salsa_dbg_pw_self_test()).toQString());
     });

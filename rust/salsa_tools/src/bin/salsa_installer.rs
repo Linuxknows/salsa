@@ -890,6 +890,16 @@ fn do_check(root: &Path) -> ExitCode {
         );
     }
 
+    let bt_pwr = SystemAuditScanner::inspect_bt_usb_power();
+    if bt_pwr.autosuspend_risk {
+        println!(
+            "  [WARN] Bluetooth USB autosuspend enabled ({}) — can cause A2DP dropouts; set power/control=on or btusb.enable_autosuspend=0",
+            bt_pwr.summary
+        );
+    } else if !bt_pwr.adapters.is_empty() {
+        println!("  [OK] Bluetooth USB power control: {}", bt_pwr.summary);
+    }
+
     if failures == 0 {
         println!("==> Check PASSED (0 failures)");
         ExitCode::SUCCESS

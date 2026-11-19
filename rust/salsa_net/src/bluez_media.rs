@@ -4,8 +4,23 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 pub const BT_TX_RING_FRAMES: usize = 16_384;
 pub const BT_TX_RING_MASK: usize = BT_TX_RING_FRAMES - 1;
+pub const BT_TX_TARGET_MARGIN_MS: u64 = 45;
 pub const CAP_RING_FRAMES: usize = 32_768;
 pub const CAP_RING_MASK: usize = CAP_RING_FRAMES - 1;
+
+/// Returns the target TX ring jitter headroom in engine input frames.
+#[inline]
+pub fn bt_tx_margin_frames(in_rate_raw: u32, packet_in_frames: u64) -> u64 {
+    let rate = if in_rate_raw == 0 {
+        48_000
+    } else {
+        in_rate_raw
+    };
+    let time_margin = (u64::from(rate) * BT_TX_TARGET_MARGIN_MS) / 1000;
+    time_margin
+        .max(packet_in_frames.saturating_mul(2))
+        .min((BT_TX_RING_FRAMES as u64) / 2)
+}
 
 #[inline]
 pub fn float_to_s16_clamped(x: f32) -> i16 {
@@ -94,7 +109,7 @@ pub fn pop_bt_resampled_s16(
 
     if avail > (BT_TX_RING_FRAMES as u64) - 64 {
         let need_est = (*io_frac + (needed_frames as f64) * step).ceil().max(0.0) as u64;
-        let margin_in = ((in_rate as u64) * 20) / 1000;
+        let margin_in = bt_tx_margin_frames(in_rate, need_est);
         let keep = need_est
             .saturating_add(margin_in)
             .min((BT_TX_RING_FRAMES as u64) - 128);
@@ -310,5 +325,63 @@ mod tests {
         sco_push_pcm_to_cap_ring(&mut cap, &wr, &dec, 16_000, 48_000, &mut pos, &mut prev);
         assert_eq!(wr.load(Ordering::Acquire), 360);
         assert!((cap[10] - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn bt_tx_margin_scales_for_codec_and_engine_rate() {
+        // 48kHz AAC packet (1024 frames = 21.3ms) gets 45ms (2160 frames), >= 2x packet.
+        assert_eq!(bt_tx_margin_frames(48_000, 1024), 2160);
+        // 96kHz LDAC packet (128 input frames) keeps 45ms (4320 frames).
+        assert_eq!(bt_tx_margin_frames(96_000, 128), 4320);
+        // 192kHz engine pushing 4096 input frames per AAC packet caps safely at half-ring.
+        assert_eq!(bt_tx_margin_frames(192_000, 4096), 8192);
+    }
+
+    #[test]
+    fn tx_ring_overflow_trim_preserves_target_margin() {
+        let ring = vec![0.25f32; BT_TX_RING_FRAMES * 2];
+        let wr = AtomicU64::new((BT_TX_RING_FRAMES - 16) as u64);
+        let rd = AtomicU64::new(0);
+        let mut out_s16 = vec![0i16; 1024 * 2];
+        let target = bt_tx_margin_frames(48_000, 1024);
+
+        let mut frac_zero = 0.0;
+        let (popped0, rem0) = pop_bt_resampled_s16(
+            &ring,
+            &wr,
+            &rd,
+            48_000,
+            48_000,
+            false,
+            100,
+            true,
+            &mut out_s16,
+            1024,
+            2,
+            &mut frac_zero,
+            1.0,
+        );
+        assert_eq!(popped0, 1024);
+        assert_eq!(rem0 as u64, target);
+
+        let rd_half = AtomicU64::new(0);
+        let mut frac_half = 0.5;
+        let (popped1, rem1) = pop_bt_resampled_s16(
+            &ring,
+            &wr,
+            &rd_half,
+            48_000,
+            48_000,
+            false,
+            100,
+            true,
+            &mut out_s16,
+            1024,
+            2,
+            &mut frac_half,
+            1.0,
+        );
+        assert_eq!(popped1, 1024);
+        assert!(rem1 as u64 >= target && rem1 as u64 <= target + 1);
     }
 }

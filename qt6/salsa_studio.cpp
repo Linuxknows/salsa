@@ -555,7 +555,7 @@ void StudioController::buildMainWindow() {
     lblTitle_ = new QLabel(QStringLiteral("SALSA — LINUX WASAPI STUDIO"), topCard);
     lblTitle_->setObjectName(QStringLiteral("TitleBanner"));
     titleRow->addWidget(lblTitle_);
-    lblVerPill_ = new QLabel(QStringLiteral("V1.19.4"), topCard);
+    lblVerPill_ = new QLabel(QStringLiteral("V1.19.5"), topCard);
     lblVerPill_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     titleRow->addWidget(lblVerPill_);
     titleRow->addStretch(1);
@@ -580,6 +580,7 @@ void StudioController::buildMainWindow() {
         cmbRate_->addItem(QStringLiteral("%1 Hz%2").arg(QLocale().toString(r), tag), r);
     }
     cmbRate_->setCurrentIndex(1);
+    cmbRate_->setToolTip(QStringLiteral("Master Sample Rate — Fixes the engine's internal WaveRT mixing and DAC clock rate; apps at other rates are resampled cleanly into it."));
     connect(cmbRate_, &QComboBox::currentIndexChanged, this, [this]() { onClockChanged(); });
     rateCol->addWidget(cmbRate_);
     lblClockSrc_ = new QLabel(QStringLiteral("Clock: 48kHz / 32-bit"), topCard);
@@ -593,6 +594,7 @@ void StudioController::buildMainWindow() {
     cmbPeriod_ = new QComboBox(topCard);
     for (int p : {64, 128, 256, 512, 1024, 2048}) cmbPeriod_->addItem(QStringLiteral("%1 frames").arg(p), p);
     cmbPeriod_->setCurrentIndex(2);
+    cmbPeriod_->setToolTip(QStringLiteral("Engine Quantum (Period Frames) — Audio frames per SCHED_FIFO mixing tick; smaller frames cut latency, larger frames increase stability."));
     connect(cmbPeriod_, &QComboBox::currentIndexChanged, this, [this]() { onClockChanged(); });
     periodCol->addWidget(cmbPeriod_);
     cmbCapRate_ = new QComboBox(topCard);
@@ -600,6 +602,7 @@ void StudioController::buildMainWindow() {
     for (int r : {44100, 48000, 88200, 96000, 176400, 192000}) {
         cmbCapRate_->addItem(QStringLiteral("Mic: %1 Hz").arg(QLocale().toString(r)), r);
     }
+    cmbCapRate_->setToolTip(QStringLiteral("Independent Mic Rate — Pins the ALSA capture clock separately from Master playback (useful for fixed 48 kHz interfaces while running 96/192 kHz DACs)."));
     connect(cmbCapRate_, &QComboBox::currentIndexChanged, this, [this]() { onCapRateChanged(); });
     periodCol->addWidget(cmbCapRate_);
     periodCol->addStretch(1);
@@ -611,6 +614,7 @@ void StudioController::buildMainWindow() {
     cmbBits_->addItem(QStringLiteral("32-Bit Float"), 32);
     cmbBits_->addItem(QStringLiteral("24-Bit PCM"), 24);
     cmbBits_->addItem(QStringLiteral("16-Bit PCM"), 16);
+    cmbBits_->setToolTip(QStringLiteral("Output Bit Depth — Selects hardware PCM packing depth (or 32-bit float when supported) while DSP always runs in 32-bit float."));
     connect(cmbBits_, &QComboBox::currentIndexChanged, this, [this]() { onClockChanged(); });
     bitsCol->addWidget(cmbBits_);
     bitsCol->addStretch(1);
@@ -621,6 +625,7 @@ void StudioController::buildMainWindow() {
     cmbTheme_ = new QComboBox(topCard);
     for (const QString& tn : allThemeNames(false)) cmbTheme_->addItem(tn);
     cmbTheme_->setCurrentText(currentThemeName_);
+    cmbTheme_->setToolTip(QStringLiteral("UI Color Theme — Applies built-in palettes or your saved Custom Theme across all Salsa Studio windows and persists it."));
     connect(cmbTheme_, &QComboBox::activated, this, [this](int idx) { onThemeActivated(idx); });
     themeCol->addWidget(cmbTheme_);
     themeCol->addStretch(1);
@@ -640,10 +645,12 @@ void StudioController::buildMainWindow() {
     auto* hdrBtns = new QHBoxLayout();
     hdrBtns->setSpacing(6);
     auto* btnTopo = new QPushButton(QStringLiteral("Topology (F1)"), topCard);
+    btnTopo->setToolTip(QStringLiteral("Topology Graph & Manual (F1) — Opens the live interactive signal-flow map and Owner's Manual chapters."));
     connect(btnTopo, &QPushButton::clicked, this, [this]() { openTopologyWindow(); });
     hdrBtns->addWidget(btnTopo);
     auto* btnAdv = new QPushButton(QStringLiteral("Advanced Options (Ctrl+,)"), topCard);
     btnAdv->setObjectName(QStringLiteral("PrimaryBtn"));
+    btnAdv->setToolTip(QStringLiteral("Advanced Options (Ctrl+,) — Opens parametric EQ table, crossfeed, discrete analog stages, shortcuts, and diagnostics."));
     connect(btnAdv, &QPushButton::clicked, this, [this]() { openAdvancedWindow(); });
     hdrBtns->addWidget(btnAdv);
     engCol->addLayout(hdrBtns);
@@ -672,6 +679,7 @@ void StudioController::buildMainWindow() {
     chkEqEnable_ = new QCheckBox(QStringLiteral("Enable Salsa 10-Band Dynamic EQ APO"), eqCard);
     chkEqEnable_->setChecked(true);
     chkEqEnable_->setObjectName(QStringLiteral("EqEnableCheck"));
+    chkEqEnable_->setToolTip(QStringLiteral("Master EQ APO Enable — Toggles real-time 10-band biquad Parametric & Dynamic EQ processing on the engine output mix."));
     connect(chkEqEnable_, &QCheckBox::toggled, this, [this]() { if (!updatingUi_) pushEqToEngine(); });
     eqBar->addWidget(chkEqEnable_);
 
@@ -685,6 +693,7 @@ void StudioController::buildMainWindow() {
     cmbDynMode_->addItem(QStringLiteral("Static Parametric EQ"), 0);
     cmbDynMode_->addItem(QStringLiteral("Dynamic Compress (Tame Peaks)"), 1);
     cmbDynMode_->addItem(QStringLiteral("Dynamic Expand (Upward Punch)"), 2);
+    cmbDynMode_->setToolTip(QStringLiteral("Dynamic EQ Mode — Chooses Static fixed curves, Dynamic Compress (tames loud band peaks), or Dynamic Expand (adds punch above threshold)."));
     connect(cmbDynMode_, &QComboBox::currentIndexChanged, this, [this]() {
         if (!updatingUi_) {
             eqCfg_.dynamic_mode = static_cast<uint32_t>(qvarInt(cmbDynMode_->currentData(), 1));
@@ -696,6 +705,7 @@ void StudioController::buildMainWindow() {
 
     auto* btnFlat = new QPushButton(QStringLiteral("Reset Flat"), eqCard);
     btnFlat->setObjectName(QStringLiteral("CompactBtn"));
+    btnFlat->setToolTip(QStringLiteral("Reset EQ Flat — Resets all 10 band gains to 0 dB, resets preamp to 0 dB, and restores standard band frequencies and Q."));
     connect(btnFlat, &QPushButton::clicked, this, [this]() { onResetFlatClicked(); });
     eqBar->addWidget(btnFlat);
     eqLay->addLayout(eqBar);
@@ -709,6 +719,7 @@ void StudioController::buildMainWindow() {
 
     cmbPreset_ = new QComboBox(eqCard);
     cmbPreset_->setMinimumWidth(210);
+    cmbPreset_->setToolTip(QStringLiteral("EQ Preset & AutoEQ Profile — Loads built-in target curves or imported AutoEQ files and recomputes DSP biquads immediately."));
     connect(cmbPreset_, &QComboBox::activated, this, [this](int idx) { onPresetActivated(idx); });
     eqPresetRow->addWidget(cmbPreset_);
 
@@ -753,6 +764,7 @@ void StudioController::buildMainWindow() {
     dynRow->addWidget(lblPreamp_);
     sldPreamp_ = new QSlider(Qt::Horizontal, eqCard);
     sldPreamp_->setRange(-180, 120);
+    sldPreamp_->setToolTip(QStringLiteral("EQ Preamp Gain — Attenuates or boosts overall signal (-18 to +12 dB) before filtering to keep boosted EQ curves below 0 dBFS clipping."));
     connect(sldPreamp_, &QSlider::valueChanged, this, [this]() { onDynamicsSliderChanged(); });
     dynRow->addWidget(sldPreamp_);
 
@@ -762,6 +774,7 @@ void StudioController::buildMainWindow() {
     sldThresh_ = new QSlider(Qt::Horizontal, eqCard);
     sldThresh_->setRange(-480, 0);
     sldThresh_->setValue(-180);
+    sldThresh_->setToolTip(QStringLiteral("Dynamic EQ Threshold — Level (-48 to 0 dB) above which per-band dynamic compression or expansion starts tracking audio energy."));
     connect(sldThresh_, &QSlider::valueChanged, this, [this]() { onDynamicsSliderChanged(); });
     dynRow->addWidget(sldThresh_);
 
@@ -771,6 +784,7 @@ void StudioController::buildMainWindow() {
     sldRatio_ = new QSlider(Qt::Horizontal, eqCard);
     sldRatio_->setRange(10, 80);
     sldRatio_->setValue(25);
+    sldRatio_->setToolTip(QStringLiteral("Dynamic EQ Ratio — Intensity (1.0:1 to 8.0:1) controlling how aggressively dynamic band gain scales past Threshold."));
     connect(sldRatio_, &QSlider::valueChanged, this, [this]() { onDynamicsSliderChanged(); });
     dynRow->addWidget(sldRatio_);
 
@@ -798,6 +812,9 @@ void StudioController::buildMainWindow() {
         sld->setPageStep(10);
         sld->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
         sld->setMinimumHeight(scaledPx(112, fontPct_));
+        sld->setToolTip(QStringLiteral("EQ Band %1 (%2) Gain — Cuts or boosts this band (-18 to +18 dB) via real-time biquad filtering; drag here or on the canvas handle above.")
+                            .arg(i + 1)
+                            .arg(QString::fromLatin1(BAND_FREQS[i])));
         connect(sld, &QSlider::valueChanged, this, [this, i](int v) { onBandSliderChanged(i, v); });
         colBox->addWidget(sld, 1, Qt::AlignHCenter);
 
@@ -839,6 +856,7 @@ void StudioController::buildMainWindow() {
     cmbVolStep_ = new QComboBox(hwCard);
     for (int st : SUPPORTED_VOL_STEPS) cmbVolStep_->addItem(QStringLiteral("%1%").arg(st), st);
     if (int si = cmbVolStep_->findData(volStepPct_); si >= 0) cmbVolStep_->setCurrentIndex(si);
+    cmbVolStep_->setToolTip(QStringLiteral("Wheel / Key Volume Step — Controls how many percentage points each mouse-wheel notch or arrow key moves volume sliders (synced with tray)."));
     connect(cmbVolStep_, &QComboBox::currentIndexChanged, this, [this]() { onVolStepChanged(); });
     hwHdrRow->addWidget(cmbVolStep_);
     hwCol->addLayout(hwHdrRow);
@@ -854,9 +872,11 @@ void StudioController::buildMainWindow() {
     cmbSink_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     cmbSink_->setMinimumContentsLength(14);
     cmbSink_->addItem(QStringLiteral("Auto-Priority (BT A2DP > USB > Analog > HDMI)"), QStringLiteral("auto"));
+    cmbSink_->setToolTip(QStringLiteral("Playback Output Sink — Switches active audio output between Auto-Priority, kernel ALSA WaveRT cards, or native BlueZ A2DP Bluetooth."));
     connect(cmbSink_, &QComboBox::activated, this, [this](int i) { onSinkActivated(i); });
     devRow->addWidget(cmbSink_, 1);
     btnBtReset_ = new QPushButton(QStringLiteral("Reset BT"), hwCard);
+    btnBtReset_->setToolTip(QStringLiteral("Reset Bluetooth Link — Releases and re-acquires the BlueZ A2DP L2CAP socket to recover stalled or glitched wireless headsets."));
     connect(btnBtReset_, &QPushButton::clicked, this, [this]() { onBtResetClicked(); });
     devRow->addWidget(btnBtReset_);
     devRow->addWidget(new QLabel(QStringLiteral("Mic Input:"), hwCard));
@@ -864,6 +884,7 @@ void StudioController::buildMainWindow() {
     cmbSource_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     cmbSource_->setMinimumContentsLength(14);
     cmbSource_->addItem(QStringLiteral("Auto-Priority (USB Mic > HDA > Virtual)"), QStringLiteral("auto"));
+    cmbSource_->setToolTip(QStringLiteral("Microphone Capture Source — Selects Auto-Priority or pins a dedicated ALSA capture device for recording clients."));
     connect(cmbSource_, &QComboBox::activated, this, [this](int i) { onSourceActivated(i); });
     devRow->addWidget(cmbSource_, 1);
     hwCol->addLayout(devRow);
@@ -877,6 +898,7 @@ void StudioController::buildMainWindow() {
     cmbBtCodec_->addItem(QStringLiteral("aptX"), SALSA_BT_PREF_APTX);
     cmbBtCodec_->addItem(QStringLiteral("AAC"), SALSA_BT_PREF_AAC);
     cmbBtCodec_->addItem(QStringLiteral("SBC"), SALSA_BT_PREF_SBC);
+    cmbBtCodec_->setToolTip(QStringLiteral("Bluetooth Preferred Codec — Requests LDAC, aptX HD, aptX, AAC, or SBC negotiation via BlueZ MediaEndpoint1 when supported by the headset."));
     connect(cmbBtCodec_, &QComboBox::currentIndexChanged, this, [this]() { if (!updatingUi_) onBtCfgChanged(); });
     btRow->addWidget(cmbBtCodec_);
 
@@ -885,15 +907,18 @@ void StudioController::buildMainWindow() {
     cmbBtLdac_->addItem(QStringLiteral("990 kbps"), SALSA_LDAC_MODE_990);
     cmbBtLdac_->addItem(QStringLiteral("660 kbps"), SALSA_LDAC_MODE_660);
     cmbBtLdac_->addItem(QStringLiteral("330 kbps"), SALSA_LDAC_MODE_330);
+    cmbBtLdac_->setToolTip(QStringLiteral("LDAC Bitrate Tier — Chooses adaptive ABR or locks fixed 990 / 660 / 330 kbps transmission when an LDAC headset is connected."));
     connect(cmbBtLdac_, &QComboBox::currentIndexChanged, this, [this]() { if (!updatingUi_) onBtCfgChanged(); });
     btRow->addWidget(cmbBtLdac_);
 
     chkBtAbr_ = new QCheckBox(QStringLiteral("Wireless ABR"), hwCard);
     chkBtAbr_->setChecked(true);
+    chkBtAbr_->setToolTip(QStringLiteral("Wireless Adaptive Bitrate (ABR) — Automatically steps down or restores LDAC/AAC bitrate when L2CAP socket congestion is detected."));
     connect(chkBtAbr_, &QCheckBox::toggled, this, [this]() { if (!updatingUi_) onBtCfgChanged(); });
     btRow->addWidget(chkBtAbr_);
 
     chkBtSco_ = new QCheckBox(QStringLiteral("HFP Mic"), hwCard);
+    chkBtSco_->setToolTip(QStringLiteral("Bluetooth HFP Two-Way Mic — Enables Hands-Free SCO capture using the headset's built-in microphone (lowers downlink audio bandwidth while active)."));
     connect(chkBtSco_, &QCheckBox::toggled, this, [this]() { if (!updatingUi_) onBtCfgChanged(); });
     btRow->addWidget(chkBtSco_);
 
@@ -910,10 +935,12 @@ void StudioController::buildMainWindow() {
     sldSpk_ = new StepVolumeSlider([this]() { return volStepPct_; }, Qt::Horizontal, hwCard);
     sldSpk_->setRange(0, 150);
     sldSpk_->setValue(80);
+    sldSpk_->setToolTip(QStringLiteral("Master Speaker Volume — Adjusts global output gain (0–150%, syncs AVRCP on Bluetooth and DAC/PCM mixer cleanly); drag, scroll, or use arrow keys."));
     connect(sldSpk_, &QSlider::valueChanged, this, [this](int v) { if (!updatingUi_) onSpkSliderMoved(v); });
     connect(sldSpk_, &QSlider::sliderReleased, this, [this]() { spkSendTimer_->start(0); });
     spkRow->addWidget(sldSpk_, 1);
     btnSpkMute_ = new QPushButton(QStringLiteral("Mute Spk"), hwCard);
+    btnSpkMute_->setToolTip(QStringLiteral("Mute Master Output — Silences physical speakers/headphones cleanly without disconnecting client audio streams."));
     connect(btnSpkMute_, &QPushButton::clicked, this, [this]() {
         const int nextMute = status_.desktop_muted ? 0 : 1;
         spkHoldUntilMs_ = nowMs() + 350;
@@ -931,10 +958,12 @@ void StudioController::buildMainWindow() {
     sldMic_ = new StepVolumeSlider([this]() { return volStepPct_; }, Qt::Horizontal, hwCard);
     sldMic_->setRange(0, 150);
     sldMic_->setValue(100);
+    sldMic_->setToolTip(QStringLiteral("Master Mic Capture Gain — Adjusts software microphone input gain (0–150%) delivered to recording and voice applications."));
     connect(sldMic_, &QSlider::valueChanged, this, [this](int v) { if (!updatingUi_) onMicSliderMoved(v); });
     connect(sldMic_, &QSlider::sliderReleased, this, [this]() { micSendTimer_->start(0); });
     micRow->addWidget(sldMic_, 1);
     btnMicMute_ = new QPushButton(QStringLiteral("Mute Mic"), hwCard);
+    btnMicMute_->setToolTip(QStringLiteral("Mute Microphone — Silences captured microphone audio across all clients without closing the ALSA capture device."));
     connect(btnMicMute_, &QPushButton::clicked, this, [this]() {
         const int nextMute = status_.desktop_mic_muted ? 0 : 1;
         micHoldUntilMs_ = nowMs() + 350;
@@ -1029,7 +1058,7 @@ void StudioController::buildTopologyWindow() {
     graphHdrRow->addStretch(1);
 
     auto* lblAutoBadge = new QLabel(
-        QStringLiteral("✔ V1.19.4 LIVE | MASTER CLOCK | HW ANALOG DAC | DYNAMIC EQ | BT ABR"),
+        QStringLiteral("✔ V1.19.5 LIVE | MASTER CLOCK | HW ANALOG DAC | DYNAMIC EQ | BT ABR"),
         graphCard);
     lblAutoBadge->setObjectName(QStringLiteral("AutoBadgeLabel"));
     graphHdrRow->addWidget(lblAutoBadge);
@@ -1065,6 +1094,7 @@ void StudioController::buildTopologyWindow() {
         const QString lbl = co.value(QStringLiteral("label")).toString();
         auto* b = new QPushButton(lbl, manCard);
         b->setObjectName(QStringLiteral("CompactBtn"));
+        b->setToolTip(QStringLiteral("Owner's Manual Chapter — Jumps the guide viewer below to documentation for '%1'.").arg(lbl));
         connect(b, &QPushButton::clicked, this, [this, key]() { selectManualChapter(key); });
         manualBtns_.insert(key, b);
         chapBar->addWidget(b);
@@ -1072,6 +1102,7 @@ void StudioController::buildTopologyWindow() {
 
     auto* btnSync = new QPushButton(QStringLiteral("Sync Now"), manCard);
     btnSync->setObjectName(QStringLiteral("PrimaryBtn"));
+    btnSync->setToolTip(QStringLiteral("Sync Audio Modules Now — Verifies host library ABIs and rebuilds ALSA/Pulse/JACK shims and config files if needed."));
     connect(btnSync, &QPushButton::clicked, this, [this]() {
         const SalsaStr rep(salsa_run_sync_modules(true));
         selectManualChapter(QStringLiteral("autosync"));
@@ -1105,6 +1136,7 @@ void StudioController::buildTopologyWindow() {
     chkHideIntroStartup_ = new QCheckBox(QStringLiteral("Don't show Topology Intro on startup"), introFooter);
     chkHideIntroStartup_->setObjectName(QStringLiteral("EqEnableCheck"));
     chkHideIntroStartup_->setChecked(!guiSettings_.value(QStringLiteral("show_topology_intro")).toBool(true));
+    chkHideIntroStartup_->setToolTip(QStringLiteral("Skip Topology Intro on Launch — Opens directly into the Studio Mixer window next launch; press F1 anytime to reopen Topology."));
     connect(chkHideIntroStartup_, &QCheckBox::toggled, this, [this](bool hide) {
         guiSettings_.insert(QStringLiteral("show_topology_intro"), !hide);
         updateGuiSettingsPatch(QJsonObject{{QStringLiteral("show_topology_intro"), !hide}});
@@ -1121,12 +1153,14 @@ void StudioController::buildTopologyWindow() {
     footRow->addWidget(lblHint, 1);
 
     auto* btnAdv = new QPushButton(QStringLiteral("Advanced Options (Ctrl+,)"), introFooter);
+    btnAdv->setToolTip(QStringLiteral("Advanced Options (Ctrl+,) — Opens parametric band table, crossfeed, hardware analog stages, shortcuts, and diagnostics."));
     connect(btnAdv, &QPushButton::clicked, this, [this]() { openAdvancedWindow(); });
     footRow->addWidget(btnAdv);
 
     auto* btnEnter = new QPushButton(QStringLiteral("Enter Studio Mixer  ->"), introFooter);
     btnEnter->setObjectName(QStringLiteral("PrimaryBtn"));
     btnEnter->setMinimumHeight(32);
+    btnEnter->setToolTip(QStringLiteral("Enter Studio Mixer — Switches focus to the full 10-band Dynamic EQ, mixer, and active client session controls."));
     connect(btnEnter, &QPushButton::clicked, this, [this]() { enterStudioFromTopology(); });
     footRow->addWidget(btnEnter);
     graphLayout->addWidget(introFooter);
@@ -1161,6 +1195,7 @@ void StudioController::buildAdvancedWindow() {
     hcLay->addWidget(fontBarAdv_);
 
     auto* btnCloseAdv = new QPushButton(QStringLiteral("Close (Esc)"), hdrCard);
+    btnCloseAdv->setToolTip(QStringLiteral("Close Advanced Options (Esc) — Hides this window while keeping all DSP, hardware, and shortcut settings active."));
     connect(btnCloseAdv, &QPushButton::clicked, advWin_, &QWidget::hide);
     hcLay->addWidget(btnCloseAdv);
     advRoot->addWidget(hdrCard);
@@ -1192,10 +1227,12 @@ void StudioController::buildAdvancedWindow() {
     gDiag->setSpacing(6);
     auto* btnOpenDbg = new QPushButton(QStringLiteral("Open Live Debugger Window (Ctrl+D)"), diagCard);
     btnOpenDbg->setObjectName(QStringLiteral("PrimaryBtn"));
+    btnOpenDbg->setToolTip(QStringLiteral("Live Architecture Debugger (Ctrl+D) — Launches real-time event tracing, process leak audits, RT timing, and ScreenCast previews."));
     connect(btnOpenDbg, &QPushButton::clicked, this, [this]() { openLiveDebuggerWindow(); });
     gDiag->addWidget(btnOpenDbg, 0, 0, 1, 2);
 
     auto* btnBench = new QPushButton(QStringLiteral("Run Latency Benchmark"), diagCard);
+    btnBench->setToolTip(QStringLiteral("Latency Benchmark — Runs a silent timing and ultrasonic loopback test comparing Native WASAPI, Pulse, and ALSA shims."));
     connect(btnBench, &QPushButton::clicked, this, [this]() {
         const SalsaStr rep(salsa_run_latency_bench());
         showReportDialog(advWin_, QStringLiteral("Salsa Latency Benchmark"), rep.toQString(), currentTheme_, fontPct_);
@@ -1203,6 +1240,7 @@ void StudioController::buildAdvancedWindow() {
     gDiag->addWidget(btnBench, 1, 0);
 
     auto* btnAudit = new QPushButton(QStringLiteral("Run System Health Audit"), diagCard);
+    btnAudit->setToolTip(QStringLiteral("System Health Audit — Checks sockets, ELF hardening, systemd services, BlueZ power, and build artifact freshness."));
     connect(btnAudit, &QPushButton::clicked, this, [this]() {
         const QJsonObject rep = parseJsonObj(SalsaStr(salsa_run_health_audit_json()).toQString());
         const QString pretty = QString::fromUtf8(QJsonDocument(rep).toJson(QJsonDocument::Indented));
@@ -1211,6 +1249,7 @@ void StudioController::buildAdvancedWindow() {
     gDiag->addWidget(btnAudit, 1, 1);
 
     auto* btnSync = new QPushButton(QStringLiteral("Sync Audio Modules Now"), diagCard);
+    btnSync->setToolTip(QStringLiteral("Sync Audio Modules Now — Verifies host `.so` ABI symbol tables and rebuilds ALSA/Pulse/JACK shims via lwasapi-autosync."));
     connect(btnSync, &QPushButton::clicked, this, [this]() {
         const SalsaStr rep(salsa_run_sync_modules(true));
         showReportDialog(advWin_, QStringLiteral("Salsa Module Auto-Sync Report"), rep.toQString(), currentTheme_, fontPct_, 760, 360);
@@ -1218,14 +1257,17 @@ void StudioController::buildAdvancedWindow() {
     gDiag->addWidget(btnSync, 2, 0);
 
     auto* btnMidi = new QPushButton(QStringLiteral("Send Test MIDI (C4)"), diagCard);
+    btnMidi->setToolTip(QStringLiteral("Send Test MIDI (C4) — Injects a synthetic Note-On C4 packet into the LWASAPI MIDI Hub to test synth or debugger reception."));
     connect(btnMidi, &QPushButton::clicked, this, []() { salsa_send_test_midi(60, 115); });
     gDiag->addWidget(btnMidi, 2, 1);
 
     btnRstEngine_ = new QPushButton(QStringLiteral("Restart Audio Engine"), diagCard);
+    btnRstEngine_->setToolTip(QStringLiteral("Restart Audio Engine — Restarts `lwasapi-audiodg.service` and re-establishes hardware, BlueZ, and Pulse clients."));
     connect(btnRstEngine_, &QPushButton::clicked, this, [this]() { runSystemdRestart(QStringLiteral("lwasapi-audiodg.service"), btnRstEngine_); });
     gDiag->addWidget(btnRstEngine_, 3, 0);
 
     btnRstTray_ = new QPushButton(QStringLiteral("Restart Tray Service"), diagCard);
+    btnRstTray_->setToolTip(QStringLiteral("Restart Tray Service — Restarts `lwasapi-tray.service` to reload the taskbar Quick Mixer indicator."));
     connect(btnRstTray_, &QPushButton::clicked, this, [this]() { runSystemdRestart(QStringLiteral("lwasapi-tray.service"), btnRstTray_); });
     gDiag->addWidget(btnRstTray_, 3, 1);
     dcLay->addLayout(gDiag);
@@ -1245,6 +1287,7 @@ void StudioController::buildAdvancedWindow() {
     btnTogglePacman_ = new QPushButton(QStringLiteral("Toggle Pacman Hook (pkexec)"), diagCard);
     btnTogglePacman_->setObjectName(QStringLiteral("CompactBtn"));
     btnTogglePacman_->setCheckable(true);
+    btnTogglePacman_->setToolTip(QStringLiteral("Pacman Autosync Hook — Installs or removes `/etc/pacman.d/hooks/99-salsa-autosync.hook` via pkexec so package upgrades auto-resync shims."));
     connect(btnTogglePacman_, &QPushButton::clicked, this, [this]() {
         const SalsaStr msg(salsa_toggle_pacman_hook());
         refreshAdvIntegration();
@@ -1253,6 +1296,7 @@ void StudioController::buildAdvancedWindow() {
     hookRow->addWidget(btnTogglePacman_, 1);
 
     chkAutosyncNow_ = new QCheckBox(QStringLiteral("Auto-Sync Watcher + Sync Now"), diagCard);
+    chkAutosyncNow_->setToolTip(QStringLiteral("Background ABI Watcher — Enables or disables `lwasapi-module-watcher.path/.timer` so library updates trigger automatic shim rebuilds."));
     connect(chkAutosyncNow_, &QCheckBox::clicked, this, [this](bool checked) {
         const SalsaStr msg(salsa_toggle_autosync_watcher(checked));
         refreshAdvIntegration();
@@ -1274,6 +1318,7 @@ void StudioController::buildAdvancedWindow() {
 
     btnEngineToggle_ = new QPushButton(QStringLiteral("Engine: SALSA NATIVE AUDIO (Revert to PW/WP)"), engCard);
     btnEngineToggle_->setObjectName(QStringLiteral("PrimaryBtn"));
+    btnEngineToggle_->setToolTip(QStringLiteral("Switch Audio Engine Ownership — Toggles between Pure Salsa Native Audio (Video-Only PipeWire broker) and upstream PipeWire/WirePlumber."));
     connect(btnEngineToggle_, &QPushButton::clicked, this, [this]() {
         const QJsonObject st = parseJsonObj(SalsaStr(salsa_get_integration_status_json()).toQString());
         const bool active = st.value(QStringLiteral("engine_active")).toBool(true);
@@ -1285,6 +1330,7 @@ void StudioController::buildAdvancedWindow() {
 
     chkShowIntroAdv_ = new QCheckBox(QStringLiteral("Show Auto-Graph Topology Intro window on startup"), engCard);
     chkShowIntroAdv_->setChecked(guiSettings_.value(QStringLiteral("show_topology_intro")).toBool(true));
+    chkShowIntroAdv_->setToolTip(QStringLiteral("Startup Topology Intro — Shows the Auto-Graph Topology & Owner's Manual window first whenever launching Salsa Studio."));
     connect(chkShowIntroAdv_, &QCheckBox::toggled, this, [this](bool on) {
         guiSettings_.insert(QStringLiteral("show_topology_intro"), on);
         updateGuiSettingsPatch(QJsonObject{{QStringLiteral("show_topology_intro"), on}});
@@ -1298,11 +1344,13 @@ void StudioController::buildAdvancedWindow() {
 
     auto* rowApp = new QHBoxLayout();
     auto* btnThemeEd = new QPushButton(QStringLiteral("Open Custom Theme Studio..."), engCard);
+    btnThemeEd->setToolTip(QStringLiteral("Custom Theme Studio — Opens an interactive color palette editor with Auto-Shade harmony and a live miniature Salsa UI preview."));
     connect(btnThemeEd, &QPushButton::clicked, this, [this]() { openCustomThemeDialog(); });
     rowApp->addWidget(btnThemeEd, 1);
 
     auto* btnResetSafe = new QPushButton(QStringLiteral("Reset Settings to Safe Defaults"), engCard);
     btnResetSafe->setObjectName(QStringLiteral("CompactBtn"));
+    btnResetSafe->setToolTip(QStringLiteral("Reset Settings to Safe Defaults — Flattens EQ, reverts discrete hardware analog stages to Auto-Preserve, and restores the Topology intro."));
     connect(btnResetSafe, &QPushButton::clicked, this, [this]() {
         onResetFlatClicked();
         onHwAnalogReset();
@@ -1325,11 +1373,13 @@ void StudioController::buildAdvancedWindow() {
     auto* rQa1 = new QHBoxLayout();
     chkLimiter_ = new QCheckBox(QStringLiteral("Soft-Knee Mastering Limiter"), eqAdvCard);
     chkLimiter_->setChecked(true);
+    chkLimiter_->setToolTip(QStringLiteral("Soft-Knee Mastering Limiter — Gently compresses peaks near 0 dBFS so hot mixes and positive EQ boosts cannot hard-clip."));
     connect(chkLimiter_, &QCheckBox::toggled, this, [this]() { if (!updatingUi_) pushEqToEngine(); });
     rQa1->addWidget(chkLimiter_);
 
     chkEqPerDev_ = new QCheckBox(QStringLiteral("Per-Device EQ"), eqAdvCard);
     chkEqPerDev_->setChecked(guiSettings_.value(QStringLiteral("eq_per_device")).toBool(false));
+    chkEqPerDev_->setToolTip(QStringLiteral("Per-Device EQ Memory — Saves and restores separate EQ profiles automatically whenever the active output endpoint changes."));
     connect(chkEqPerDev_, &QCheckBox::toggled, this, [this](bool on) { onPerDeviceEqToggled(on); });
     rQa1->addWidget(chkEqPerDev_);
     rQa1->addStretch(1);
@@ -1338,11 +1388,13 @@ void StudioController::buildAdvancedWindow() {
     auto* rQa2 = new QHBoxLayout();
     auto* btnImp = new QPushButton(QStringLiteral("Import AutoEQ .txt"), eqAdvCard);
     btnImp->setObjectName(QStringLiteral("CompactBtn"));
+    btnImp->setToolTip(QStringLiteral("Import AutoEQ .txt — Parses an EqualizerAPO / Oratory1990 text profile into Salsa's preamp and 10 parametric filter slots."));
     connect(btnImp, &QPushButton::clicked, this, [this]() { onImportAutoEqClicked(); });
     rQa2->addWidget(btnImp);
 
     auto* btnRel = new QPushButton(QStringLiteral("Reload AutoEQ .txt"), eqAdvCard);
     btnRel->setObjectName(QStringLiteral("CompactBtn"));
+    btnRel->setToolTip(QStringLiteral("Reload AutoEQ .txt — Re-reads the currently bound AutoEQ file from disk and applies any updates."));
     connect(btnRel, &QPushButton::clicked, this, [this]() { onReloadAutoEqClicked(); });
     rQa2->addWidget(btnRel);
     rQa2->addStretch(1);
@@ -1350,6 +1402,7 @@ void StudioController::buildAdvancedWindow() {
 
     auto* rXf = new QHBoxLayout();
     chkCrossfeed_ = new QCheckBox(QStringLiteral("Bauer Crossfeed"), eqAdvCard);
+    chkCrossfeed_->setToolTip(QStringLiteral("Bauer Stereo Crossfeed — Blends frequency-shaped interaural delay between left and right ears for natural speaker-like headphone imaging."));
     connect(chkCrossfeed_, &QCheckBox::toggled, this, [this]() {
         if (!updatingUi_) pushEqToEngine();
     });
@@ -1358,6 +1411,7 @@ void StudioController::buildAdvancedWindow() {
     sldCrossfeed_ = new QSlider(Qt::Horizontal, eqAdvCard);
     sldCrossfeed_->setRange(0, 100);
     sldCrossfeed_->setValue(30);
+    sldCrossfeed_->setToolTip(QStringLiteral("Crossfeed Blend Level — Sets opposite-channel feed mix (0–100%) when Bauer Crossfeed is enabled."));
     connect(sldCrossfeed_, &QSlider::valueChanged, this, [this](int v) {
         lblCrossfeed_->setText(QStringLiteral("%1%").arg(v));
         if (!updatingUi_) pushEqToEngine();
@@ -1371,6 +1425,7 @@ void StudioController::buildAdvancedWindow() {
     cmbCrossfeedCut_->addItem(QStringLiteral("700 Hz"), 700);
     cmbCrossfeedCut_->addItem(QStringLiteral("850 Hz"), 850);
     cmbCrossfeedCut_->setCurrentIndex(1);
+    cmbCrossfeedCut_->setToolTip(QStringLiteral("Crossfeed Corner Frequency — Bessel low-pass cutoff (650/700/850 Hz) shaping how low/mid frequencies cross between ears."));
     connect(cmbCrossfeedCut_, &QComboBox::currentIndexChanged, this, [this]() { if (!updatingUi_) pushEqToEngine(); });
     rXf->addWidget(cmbCrossfeedCut_);
     qaLay->addLayout(rXf);
@@ -1391,6 +1446,7 @@ void StudioController::buildAdvancedWindow() {
         spnHz->setRange(15.0, 22000.0);
         spnHz->setDecimals(1);
         spnHz->setValue(DEFAULT_BAND_FREQS_HZ[i]);
+        spnHz->setToolTip(QStringLiteral("Band %1 Frequency (Hz) — Sets this biquad filter's center or shelf corner frequency (15–22000 Hz) live.").arg(i + 1));
         connect(spnHz, &QDoubleSpinBox::valueChanged, this, [this, i](double val) {
             if (updatingUi_) return;
             paramExt_.band_freq_hz[i] = static_cast<float>(val);
@@ -1404,6 +1460,7 @@ void StudioController::buildAdvancedWindow() {
         spnQ->setSingleStep(0.10);
         spnQ->setDecimals(2);
         spnQ->setValue(1.414);
+        spnQ->setToolTip(QStringLiteral("Band %1 Q Factor — Adjusts filter bandwidth from wide shelf/bell (0.20) to narrow surgical notch (10.00).").arg(i + 1));
         connect(spnQ, &QDoubleSpinBox::valueChanged, this, [this, i](double val) {
             if (updatingUi_) return;
             eqCfg_.band_q[i] = static_cast<float>(val);
@@ -1415,6 +1472,7 @@ void StudioController::buildAdvancedWindow() {
         cmbType->addItem(QStringLiteral("Peak"), SALSA_FILTER_PEAK);
         cmbType->addItem(QStringLiteral("Low-Shelf"), SALSA_FILTER_LOW_SHELF);
         cmbType->addItem(QStringLiteral("High-Shelf"), SALSA_FILTER_HIGH_SHELF);
+        cmbType->setToolTip(QStringLiteral("Band %1 Filter Shape — Selects Peak bell, Low-Shelf bass boost/cut, or High-Shelf treble tilt for this band.").arg(i + 1));
         connect(cmbType, &QComboBox::currentIndexChanged, this, [this, i, cmbType]() {
             if (updatingUi_) return;
             paramExt_.band_type[i] = static_cast<uint32_t>(cmbType->currentData().toInt());
@@ -1438,6 +1496,7 @@ void StudioController::buildAdvancedWindow() {
     auto* haR1 = new QHBoxLayout();
     chkHwDacUnity_ = new QCheckBox(QStringLiteral("HW DAC Unity"), hwaCard);
     chkHwDacUnity_->setChecked(true);
+    chkHwDacUnity_->setToolTip(QStringLiteral("Hardware DAC Unity Gain — Pins supported soundcard DAC ALSA mixers to 0 dB unity so volume scaling stays pure 32-bit float in Salsa."));
     connect(chkHwDacUnity_, &QCheckBox::toggled, this, [this]() { if (!updatingUi_) onHwAnalogCfgChanged(); });
     haR1->addWidget(chkHwDacUnity_);
 
@@ -1446,6 +1505,7 @@ void StudioController::buildAdvancedWindow() {
     cmbHwAmp_->addItem(QStringLiteral("Amp: Low (<=32Ω IEM)"), SALSA_HW_AMP_LOW);
     cmbHwAmp_->addItem(QStringLiteral("Amp: Med (64-150Ω)"), SALSA_HW_AMP_MED);
     cmbHwAmp_->addItem(QStringLiteral("Amp: High (600Ω TPA6120)"), SALSA_HW_AMP_HIGH);
+    cmbHwAmp_->setToolTip(QStringLiteral("Discrete Headphone Amp Tier — Configures hardware impedance gain on supported audiophile cards (or preserves card defaults in Auto)."));
     connect(cmbHwAmp_, &QComboBox::currentIndexChanged, this, [this]() { if (!updatingUi_) onHwAnalogCfgChanged(); });
     haR1->addWidget(cmbHwAmp_);
 
@@ -1453,10 +1513,12 @@ void StudioController::buildAdvancedWindow() {
     cmbHwRoute_->addItem(QStringLiteral("Route: Auto"), SALSA_HW_ROUTE_AUTO);
     cmbHwRoute_->addItem(QStringLiteral("Route: Headphones"), SALSA_HW_ROUTE_HP);
     cmbHwRoute_->addItem(QStringLiteral("Route: Line / Spk"), SALSA_HW_ROUTE_SPK);
+    cmbHwRoute_->setToolTip(QStringLiteral("Hardware Analog Route — Switches discrete output relays between Headphones and Line/Speakers when exposed by the ALSA mixer."));
     connect(cmbHwRoute_, &QComboBox::currentIndexChanged, this, [this]() { if (!updatingUi_) onHwAnalogCfgChanged(); });
     haR1->addWidget(cmbHwRoute_);
 
     chkHwRails_ = new QCheckBox(QStringLiteral("0dB Rails"), hwaCard);
+    chkHwRails_->setToolTip(QStringLiteral("0 dB Analog Master Rails — Pins supported discrete card analog output rails cleanly at full 0 dB reference headroom."));
     connect(chkHwRails_, &QCheckBox::toggled, this, [this]() { if (!updatingUi_) onHwAnalogCfgChanged(); });
     haR1->addWidget(chkHwRails_);
     haLay->addLayout(haR1);
@@ -1465,6 +1527,7 @@ void StudioController::buildAdvancedWindow() {
     haR2->addWidget(new QLabel(QStringLiteral("Analog Drive:"), hwaCard));
     sldHwBoost_ = new QSlider(Qt::Horizontal, hwaCard);
     sldHwBoost_->setRange(0, 24);
+    sldHwBoost_->setToolTip(QStringLiteral("Analog / Pre-Limiter Drive — Applies +0.0 to +12.0 dB extra analog output drive (safely soft-clipped if Limiter is active)."));
     connect(sldHwBoost_, &QSlider::valueChanged, this, [this](int v) {
         lblHwBoost_->setText(QStringLiteral("+%1 dB").arg(v * 0.5, 0, 'f', 1));
         if (!updatingUi_ && !sldHwBoost_->isSliderDown()) onHwAnalogCfgChanged();
@@ -1480,6 +1543,7 @@ void StudioController::buildAdvancedWindow() {
     haR3->addWidget(new QLabel(QStringLiteral("Mic HW Boost:"), hwaCard));
     sldHwMicBoost_ = new QSlider(Qt::Horizontal, hwaCard);
     sldHwMicBoost_->setRange(0, 24);
+    sldHwMicBoost_->setToolTip(QStringLiteral("Hardware Mic Preamp Boost — Configures supported ALSA capture boost (+0 to +24 dB) for quiet microphones."));
     connect(sldHwMicBoost_, &QSlider::valueChanged, this, [this](int v) {
         lblHwMicBoost_->setText(QStringLiteral("+%1 dB").arg(static_cast<double>(v), 0, 'f', 1));
         if (!updatingUi_ && !sldHwMicBoost_->isSliderDown()) onHwAnalogCfgChanged();
@@ -1491,6 +1555,7 @@ void StudioController::buildAdvancedWindow() {
     haR3->addWidget(lblHwMicBoost_);
 
     auto* btnSafeHw = new QPushButton(QStringLiteral("Safe Defaults"), hwaCard);
+    btnSafeHw->setToolTip(QStringLiteral("Safe Hardware Defaults — Reverts all analog amp, route, rail, and boost settings to Auto-Preserve."));
     connect(btnSafeHw, &QPushButton::clicked, this, [this]() { onHwAnalogReset(); });
     haR3->addWidget(btnSafeHw);
     haLay->addLayout(haR3);
@@ -1520,6 +1585,7 @@ void StudioController::buildAdvancedWindow() {
     scHdr->addStretch(1);
     auto* btnScReset = new QPushButton(QStringLiteral("Restore Defaults"), scCard);
     btnScReset->setObjectName(QStringLiteral("CompactBtn"));
+    btnScReset->setToolTip(QStringLiteral("Restore Default Shortcuts — Reverts all Salsa Studio keyboard shortcuts to their built-in factory bindings."));
     connect(btnScReset, &QPushButton::clicked, this, [this]() {
         const QJsonArray defSc = parseJsonArr(SalsaStr(salsa_default_shortcuts_json()).toQString());
         QJsonObject scObj;
@@ -2543,6 +2609,8 @@ void StudioController::pollEngine(bool initial) {
             auto* sld = new StepVolumeSlider([this]() { return volStepPct_; }, Qt::Horizontal, tblSessions_);
             sld->setRange(0, 150);
             sld->setValue(static_cast<int>(s.volume_milli / 10));
+            sld->setToolTip(QStringLiteral("Per-Session Volume — Scales %1 stream gain (0–150%, saved per application); scroll wheel steps cleanly by your configured increment.")
+                                .arg(cFixedStr(s.client_name, sizeof(s.client_name))));
             connect(sld, &QSlider::valueChanged, this, [this, sid, sld](int v) {
                 if (sld->signalsBlocked()) return;
                 onSessionSliderMoved(sid, v);
@@ -2556,6 +2624,7 @@ void StudioController::pollEngine(bool initial) {
             btnM->setObjectName(QStringLiteral("CompactBtn"));
             btnM->setCheckable(true);
             btnM->setChecked(s.muted != 0);
+            btnM->setToolTip(QStringLiteral("Per-Session Mute — Mutes or unmutes this individual client inside the Salsa mixer without affecting other applications."));
             connect(btnM, &QPushButton::clicked, this, [sid, btnM]() {
                 const bool m = btnM->isChecked();
                 btnM->setText(m ? QStringLiteral("Muted") : QStringLiteral("Mute"));
@@ -2567,6 +2636,7 @@ void StudioController::pollEngine(bool initial) {
             cmbR->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
             cmbR->setMinimumContentsLength(12);
             cmbR->addItem(QStringLiteral("Default Sink/Mic"), QStringLiteral("auto"));
+            cmbR->setToolTip(QStringLiteral("Per-Session Endpoint Route — Pins this client stream to a specific sink or capture device, or follows the active Default endpoint."));
             for (uint32_t d = 0; d < std::min<uint32_t>(devices_.num_devices, SALSA_MAX_DEVICES); ++d) {
                 if ((devices_.devices[d].is_capture != 0) == (s.is_capture != 0)) {
                     cmbR->addItem(cFixedStr(devices_.devices[d].name, sizeof(devices_.devices[d].name)),

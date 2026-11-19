@@ -54,6 +54,7 @@ SalsaAutoGraphCanvas::SalsaAutoGraphCanvas(QWidget* parent) : QWidget(parent) {
     setMinimumSize(620, 400);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setMouseTracking(true);
+    setToolTip(QStringLiteral("Interactive Signal Flow Topology — Displays live app clients, DSP/EQ processing, output sinks, capture mics, and MIDI routes. Click any node to open its Owner's Manual chapter."));
     data_.playApps = {QStringLiteral("(No active playback streams)")};
     data_.captApps = {QStringLiteral("Loopback / Capture Ready")};
 }
@@ -100,6 +101,30 @@ void SalsaAutoGraphCanvas::mouseMoveEvent(QMouseEvent* event) {
     if (hit != hoveredNode_) {
         hoveredNode_ = hit;
         setCursor(hit.isEmpty() ? Qt::ArrowCursor : Qt::PointingHandCursor);
+        if (hit.isEmpty()) {
+            setToolTip(QStringLiteral("Interactive Signal Flow Topology — Displays live app clients, DSP/EQ processing, output sinks, capture mics, and MIDI routes. Click any node to open its Owner's Manual chapter."));
+        } else {
+            QString desc = QStringLiteral("Click node '%1' to open its corresponding Owner's Manual chapter.").arg(hit);
+            for (const auto& n : hitNodes_) {
+                if (n.key == hit) {
+                    if (n.manualKey == QLatin1String("apps") || hit == QLatin1String("play")) {
+                        desc = QStringLiteral("Active Playback & App Clients — Native WASAPI, Pulse v35, ALSA, and JACK client streams entering Salsa's lock-free mixer. Click to open manual details.");
+                    } else if (n.manualKey == QLatin1String("cap") || hit == QLatin1String("capt")) {
+                        desc = QStringLiteral("Capture & Microphone Input — Direct ALSA capture hardware, loopback monitors, RNNoise/HPF/gate Mic APO, and HFP SCO. Click to open manual details.");
+                    } else if (n.manualKey == QLatin1String("dsp") || hit == QLatin1String("dsp")) {
+                        desc = QStringLiteral("10-Band Dynamic EQ & Spatial DSP — Real-time biquad parametric EQ, dynamic compress/expand, crossfeed, and limiter stage. Click to open manual details.");
+                    } else if (n.manualKey == QLatin1String("out") || hit == QLatin1String("sink")) {
+                        desc = QStringLiteral("Master Output Endpoint — Direct kernel WaveRT ALSA PCM or BlueZ A2DP L2CAP wireless output stage. Click to open manual details.");
+                    } else if (n.manualKey == QLatin1String("midi") || hit == QLatin1String("midi")) {
+                        desc = QStringLiteral("DAW MIDI Hub — Lock-free ALSA Sequencer and JACK MIDI event bridge. Click to open manual details.");
+                    } else if (n.manualKey == QLatin1String("overview")) {
+                        desc = QStringLiteral("Salsa RT Audio Engine — SCHED_FIFO real-time WaveRT mixer coordinating all audio, DSP, Video ScreenCast, and device clocks. Click to open overview.");
+                    }
+                    break;
+                }
+            }
+            setToolTip(desc);
+        }
         update();
     }
 }
@@ -1016,6 +1041,7 @@ MiniSalsaPreview::MiniSalsaPreview(const SalsaThemeData& theme, QWidget* parent)
         col->addWidget(new QLabel(QString::fromLatin1(mh.lbl), topCard));
         auto* cmb = new QComboBox(topCard);
         cmb->addItems({QString::fromLatin1(mh.opt1), QString::fromLatin1(mh.opt2)});
+        cmb->setToolTip(QStringLiteral("Interactive Preview Dropdown — Test how dropdown menus and popup lists look in this custom theme."));
         col->addWidget(cmb);
         topLay->addLayout(col);
     }
@@ -1026,12 +1052,14 @@ MiniSalsaPreview::MiniSalsaPreview(const SalsaThemeData& theme, QWidget* parent)
     lblLat->setObjectName(QStringLiteral("LatencyLabel"));
     auto* btnEng = new QPushButton(QStringLiteral("SALSA NATIVE"), topCard);
     btnEng->setObjectName(QStringLiteral("PrimaryBtn"));
+    btnEng->setToolTip(QStringLiteral("Interactive Preview Primary Button — Shows primary button styling and hover state in this theme."));
     engCol->addWidget(lblLat);
     engCol->addWidget(btnEng);
     topLay->addLayout(engCol);
     root->addWidget(topCard);
 
     tabs_ = new QTabWidget(this);
+    tabs_->setToolTip(QStringLiteral("Preview Tabs — Switch between Studio Mixer & EQ and Topology Graph previews."));
     root->addWidget(tabs_, 1);
 
     // Tab 1: Studio EQ + Mixer
@@ -1051,6 +1079,7 @@ MiniSalsaPreview::MiniSalsaPreview(const SalsaThemeData& theme, QWidget* parent)
     auto* chkEq = new QCheckBox(QStringLiteral("Dynamic EQ APO"), eqCard);
     chkEq->setChecked(true);
     chkEq->setObjectName(QStringLiteral("EqEnableCheck"));
+    chkEq->setToolTip(QStringLiteral("Interactive Preview Checkbox — Test checkbox checked/unchecked colors under this palette."));
     eqBar->addWidget(chkEq);
     eqBar->addWidget(new QLabel(QStringLiteral("Preset:"), eqCard));
     auto* chipP = new QLabel(QStringLiteral("Saved: Studio Ref"), eqCard);
@@ -1058,13 +1087,16 @@ MiniSalsaPreview::MiniSalsaPreview(const SalsaThemeData& theme, QWidget* parent)
     eqBar->addWidget(chipP);
     auto* cmbP = new QComboBox(eqCard);
     cmbP->addItems({QStringLiteral("Audiophile"), QStringLiteral("Flat Reference")});
+    cmbP->setToolTip(QStringLiteral("Interactive Preview Preset Combo — Shows preset selector colors in this theme."));
     eqBar->addWidget(cmbP);
     auto* btnFlat = new QPushButton(QStringLiteral("Reset Flat"), eqCard);
     btnFlat->setObjectName(QStringLiteral("CompactBtn"));
+    btnFlat->setToolTip(QStringLiteral("Interactive Preview Compact Button — Shows secondary/compact button contrast."));
     eqBar->addWidget(btnFlat);
     eqLay->addLayout(eqBar);
 
     spectrum_ = new MiniSpectrumCanvas(theme_, eqCard);
+    spectrum_->setToolTip(QStringLiteral("Live Theme EQ Curve Preview — Displays grid lines, EQ curve stroke, and fill gradient using the current palette tokens."));
     eqLay->addWidget(spectrum_);
 
     static constexpr double kMGains[10] = {2.5, 2.0, -1.5, -1.0, 0.5, 1.5, 2.5, 3.0, 3.5, 4.0};
@@ -1081,6 +1113,7 @@ MiniSalsaPreview::MiniSalsaPreview(const SalsaThemeData& theme, QWidget* parent)
         sld->setValue(static_cast<int>(kMGains[i] * 10));
         sld->setMinimumHeight(40);
         sld->setMaximumHeight(48);
+        sld->setToolTip(QStringLiteral("Preview EQ Band Fader — Drag to inspect vertical slider handle & groove contrast."));
         auto* lf = new QLabel(QString::fromLatin1(BAND_FREQS_SHORT[i]), eqCard);
         lf->setObjectName(QStringLiteral("BandFreqLabel"));
         lf->setAlignment(Qt::AlignCenter);
@@ -1107,9 +1140,11 @@ MiniSalsaPreview::MiniSalsaPreview(const SalsaThemeData& theme, QWidget* parent)
     auto* sSpk = new QSlider(Qt::Horizontal, hwCard);
     sSpk->setRange(0, 150);
     sSpk->setValue(80);
+    sSpk->setToolTip(QStringLiteral("Preview Master Slider — Drag to test horizontal slider fill and thumb styling."));
     spkRow->addWidget(sSpk, 1);
     auto* btnRev = new QPushButton(QStringLiteral("Mute"), hwCard);
     btnRev->setObjectName(QStringLiteral("AccentBtn"));
+    btnRev->setToolTip(QStringLiteral("Preview Accent Button — Demonstrates secondary accent button colors in the active palette."));
     spkRow->addWidget(btnRev);
     hwCol->addLayout(spkRow);
     bot->addWidget(hwCard, 1);
@@ -1286,6 +1321,7 @@ void SalsaCustomThemeDialog::buildUi() {
     topRow->setSpacing(8);
     topRow->addWidget(new QLabel(QStringLiteral("Clone Base Palette:"), this));
     cmbClone_ = new QComboBox(this);
+    cmbClone_->setToolTip(QStringLiteral("Base Theme Preset — Pick an existing theme to copy into the custom palette editor."));
     for (const QString& n : presetNames_) {
         if (n != QLatin1String(CUSTOM_THEME_NAME)) cmbClone_->addItem(n);
     }
@@ -1297,6 +1333,7 @@ void SalsaCustomThemeDialog::buildUi() {
     topRow->addWidget(cmbClone_);
 
     auto* btnClone = new QPushButton(QStringLiteral("Load Base"), this);
+    btnClone->setToolTip(QStringLiteral("Load Base Palette — Overwrites the working tokens with the selected preset's colors so you can customize from it."));
     connect(btnClone, &QPushButton::clicked, this, [this]() {
         const QString name = cmbClone_->currentText();
         if (!name.isEmpty()) {
@@ -1317,6 +1354,7 @@ void SalsaCustomThemeDialog::buildUi() {
     topRow->addWidget(btnAutoShade);
 
     chkLight_ = new QCheckBox(QStringLiteral("Light Mode Polarity"), this);
+    chkLight_->setToolTip(QStringLiteral("Light Polarity — Flips text/surface contrast shading math for bright background palettes."));
     connect(chkLight_, &QCheckBox::toggled, this, [this](bool on) {
         workingTheme_.isLight = on;
         schedulePreviewUpdate();
@@ -1325,6 +1363,7 @@ void SalsaCustomThemeDialog::buildUi() {
 
     topRow->addStretch(1);
     chkMirrorMain_ = new QCheckBox(QStringLiteral("Mirror Live on Main Salsa Window"), this);
+    chkMirrorMain_->setToolTip(QStringLiteral("Mirror Live — Previews unsaved custom palette edits directly on the main Salsa Studio windows as you edit."));
     connect(chkMirrorMain_, &QCheckBox::toggled, this, [this](bool on) {
         if (on) emit liveThemeChanged(workingTheme_);
         else emit mirrorStopped();
@@ -1336,6 +1375,7 @@ void SalsaCustomThemeDialog::buildUi() {
     body->setSpacing(12);
 
     tokenTabs_ = new QTabWidget(this);
+    tokenTabs_->setToolTip(QStringLiteral("Color Token Categories — Switch tabs to inspect and edit Base, Accents, EQ/Graph, and Control color tokens."));
     tokenTabs_->setUsesScrollButtons(false);
     tokenTabs_->setMinimumWidth(420);
     tokenTabs_->setMaximumWidth(490);
@@ -1397,6 +1437,7 @@ void SalsaCustomThemeDialog::buildUi() {
     auto* actRow = new QHBoxLayout();
     actRow->setSpacing(8);
     auto* btnReset = new QPushButton(QStringLiteral("Reset Changes"), this);
+    btnReset->setToolTip(QStringLiteral("Reset Changes — Reverts working colors back to what you had when opening Theme Studio."));
     connect(btnReset, &QPushButton::clicked, this, [this]() {
         workingTheme_ = initialSnapshot_;
         refreshAllControlsFromTheme();
@@ -1406,6 +1447,7 @@ void SalsaCustomThemeDialog::buildUi() {
     actRow->addStretch(1);
 
     auto* btnCancel = new QPushButton(QStringLiteral("Cancel"), this);
+    btnCancel->setToolTip(QStringLiteral("Cancel — Discards unsaved color changes and closes Theme Studio."));
     connect(btnCancel, &QPushButton::clicked, this, &QDialog::reject);
     actRow->addWidget(btnCancel);
 
@@ -1419,6 +1461,7 @@ void SalsaCustomThemeDialog::buildUi() {
     });
 
     auto* btnApply = new QPushButton(QStringLiteral("Apply"), this);
+    btnApply->setToolTip(QStringLiteral("Apply Custom Theme — Saves and activates your Custom palette immediately while keeping Theme Studio open."));
     connect(btnApply, &QPushButton::clicked, this, [this]() {
         initialSnapshot_ = workingTheme_;
         emit themeApplied(workingTheme_);
@@ -1426,6 +1469,7 @@ void SalsaCustomThemeDialog::buildUi() {
     actRow->addWidget(btnApply);
 
     auto* btnSave = new QPushButton(QStringLiteral("Save && Apply Custom Theme"), this);
+    btnSave->setToolTip(QStringLiteral("Save & Close — Persists the Custom palette to gui_settings.json, applies it to all windows, and closes the dialog."));
     btnSave->setObjectName(QStringLiteral("PrimaryBtn"));
     connect(btnSave, &QPushButton::clicked, this, [this]() {
         initialSnapshot_ = workingTheme_;

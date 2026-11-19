@@ -8,10 +8,10 @@ High-Frequency (Up to **192,000 Hz / 32-Bit Float**) WASAPI style Architecture /
 
 ## Quick 1-Command Install on Any Linux PC
 
-Unzip the archive (for example `V1.19.4` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
+Unzip the archive (for example `V1.19.5` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
 
 ```bash
-unzip "salsa-lwasapi-installer (V1.19.4).zip"
+unzip "salsa-lwasapi-installer (V1.19.5).zip"
 cd salsa-lwasapi
 ./install-salsa.sh
 ```
@@ -83,6 +83,12 @@ cd salsa-lwasapi
   ```bash
   ./install-salsa.sh --uninstall
   ```
+
+---
+
+## License
+
+Licensed under the **GNU Lesser General Public License v3.0 (`LGPL-3.0`)** — see [LICENSE](LICENSE).
 
 ---
 

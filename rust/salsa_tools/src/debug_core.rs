@@ -559,6 +559,22 @@ pub fn snapshot_once(sock_path: Option<&str>, timeout: Duration) -> Result<JsonV
     Err(format!("timed out waiting for SNAPSHOT telemetry from {path}"))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BtUsbAdapterPower {
+    pub hci: String,
+    pub usb_id: String,
+    pub power_control: String,
+    pub suspended_ms: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BtUsbPowerReport {
+    pub btusb_autosuspend: Option<bool>,
+    pub adapters: Vec<BtUsbAdapterPower>,
+    pub autosuspend_risk: bool,
+    pub summary: String,
+}
+
 pub struct SystemAuditScanner;
 
 impl SystemAuditScanner {
@@ -740,6 +756,105 @@ impl SystemAuditScanner {
             ("stale_artifacts", JsonValue::Array(stale)),
             ("summary", JsonValue::Str(summary)),
         ])
+    }
+
+    pub fn inspect_bt_usb_power() -> BtUsbPowerReport {
+        Self::inspect_bt_usb_power_in(Path::new("/sys"))
+    }
+
+    /// Checks `btusb` module autosuspend and per-HCI USB `power/control` sysfs attributes.
+    pub fn inspect_bt_usb_power_in(sys_root: &Path) -> BtUsbPowerReport {
+        let btusb_param = read_text_lossy(
+            &sys_root.join("module/btusb/parameters/enable_autosuspend"),
+            128,
+        );
+        let btusb_autosuspend = match btusb_param.trim() {
+            "Y" | "y" | "1" => Some(true),
+            "N" | "n" | "0" => Some(false),
+            _ => None,
+        };
+
+        let mut adapters = Vec::new();
+        let bt_class = sys_root.join("class/bluetooth");
+        if let Ok(rd) = fs::read_dir(&bt_class) {
+            for ent in rd.flatten() {
+                let hci = ent.file_name().to_string_lossy().into_owned();
+                if !hci.starts_with("hci") || hci.contains(':') {
+                    continue;
+                }
+                let dev_link = ent.path().join("device");
+                let resolved = fs::canonicalize(&dev_link).unwrap_or(dev_link);
+                let usb_root = resolved
+                    .parent()
+                    .filter(|p| p.join("power/control").is_file() || p.join("idVendor").is_file())
+                    .map(Path::to_path_buf)
+                    .unwrap_or(resolved);
+                let ctrl = read_text_lossy(&usb_root.join("power/control"), 128)
+                    .trim()
+                    .to_string();
+                if ctrl.is_empty() {
+                    continue;
+                }
+                let vid = read_text_lossy(&usb_root.join("idVendor"), 128)
+                    .trim()
+                    .to_string();
+                let pid = read_text_lossy(&usb_root.join("idProduct"), 128)
+                    .trim()
+                    .to_string();
+                let usb_id = if !vid.is_empty() && !pid.is_empty() {
+                    format!("{vid}:{pid}")
+                } else {
+                    String::new()
+                };
+                let suspended_ms =
+                    read_text_lossy(&usb_root.join("power/runtime_suspended_time"), 128)
+                        .trim()
+                        .to_string();
+                adapters.push(BtUsbAdapterPower {
+                    hci,
+                    usb_id,
+                    power_control: ctrl,
+                    suspended_ms,
+                });
+            }
+        }
+        adapters.sort_by(|a, b| a.hci.cmp(&b.hci));
+
+        let auto_ctrl = adapters.iter().any(|a| a.power_control == "auto");
+        let autosuspend_risk = btusb_autosuspend == Some(true) || auto_ctrl;
+        let mod_str = match btusb_autosuspend {
+            Some(true) => "btusb.enable_autosuspend=Y",
+            Some(false) => "btusb.enable_autosuspend=N",
+            None => "btusb.enable_autosuspend=n/a",
+        };
+        let devs = if adapters.is_empty() {
+            "none".to_string()
+        } else {
+            adapters
+                .iter()
+                .map(|a| {
+                    if a.usb_id.is_empty() {
+                        format!("{}(power={})", a.hci, a.power_control)
+                    } else {
+                        format!(
+                            "{}[{}](power={},susp_ms={})",
+                            a.hci,
+                            a.usb_id,
+                            a.power_control,
+                            if a.suspended_ms.is_empty() { "0" } else { &a.suspended_ms }
+                        )
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let summary = format!("{mod_str}; {devs}");
+        BtUsbPowerReport {
+            btusb_autosuspend,
+            adapters,
+            autosuspend_risk,
+            summary,
+        }
     }
 
     pub fn collect_full_audit() -> JsonValue {
@@ -1682,6 +1797,13 @@ impl DiagnosticProbes {
                     s_str(bt, "transport_path"),
                     s_str(bt, "endpoint_path")
                 );
+                let usb_pwr = SystemAuditScanner::inspect_bt_usb_power();
+                let _ = writeln!(
+                    out,
+                    "  BT USB Pwr: risk={} ({})",
+                    u8::from(usb_pwr.autosuspend_risk),
+                    usb_pwr.summary
+                );
             }
             if let Some(cap) = snap.get("capture") {
                 let _ = writeln!(
@@ -2549,5 +2671,32 @@ mod tests {
 
         let freshness = SystemAuditScanner::check_build_freshness(&install_root());
         assert!(freshness.get("checked_count").and_then(JsonValue::as_i64).unwrap_or(0) >= 18);
+
+        let fake_sys =
+            env::temp_dir().join(format!("salsa_bt_usb_pwr_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&fake_sys);
+        let usb_dev = fake_sys.join("devices/usb8/8-12");
+        let usb_intf = usb_dev.join("8-12:1.0");
+        let bt_class = fake_sys.join("class/bluetooth/hci0");
+        fs::create_dir_all(fake_sys.join("module/btusb/parameters")).unwrap();
+        fs::create_dir_all(usb_dev.join("power")).unwrap();
+        fs::create_dir_all(&usb_intf).unwrap();
+        fs::create_dir_all(&bt_class).unwrap();
+        fs::write(
+            fake_sys.join("module/btusb/parameters/enable_autosuspend"),
+            "Y\n",
+        )
+        .unwrap();
+        fs::write(usb_dev.join("idVendor"), "13d3\n").unwrap();
+        fs::write(usb_dev.join("idProduct"), "3616\n").unwrap();
+        fs::write(usb_dev.join("power/control"), "auto\n").unwrap();
+        fs::write(usb_dev.join("power/runtime_suspended_time"), "1234\n").unwrap();
+        std::os::unix::fs::symlink(&usb_intf, bt_class.join("device")).unwrap();
+        let rep = SystemAuditScanner::inspect_bt_usb_power_in(&fake_sys);
+        assert!(rep.autosuspend_risk);
+        assert_eq!(rep.adapters.len(), 1);
+        assert_eq!(rep.adapters[0].usb_id, "13d3:3616");
+        assert_eq!(rep.adapters[0].power_control, "auto");
+        let _ = fs::remove_dir_all(&fake_sys);
     }
 }

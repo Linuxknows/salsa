@@ -117,13 +117,9 @@ fn test_wasapi_shared_and_resampling() -> i32 {
         IAudioClient_Start(c1);
         IAudioClient_Start(c2);
 
-        let mut chunk48 = [0.0f32; 512 * 2];
-        let mut chunk44 = [0.0f32; 512 * 2];
-        let mut p1 = 0.0f64;
-        let mut p2 = 0.0f64;
+        let chunk48 = [0.0f32; 512 * 2];
+        let chunk44 = [0.0f32; 512 * 2];
         for _ in 0..16 {
-            fill_sine_stereo(&mut chunk48, 512, 48000, 440.0, 554.37, 0.4, &mut p1);
-            fill_sine_stereo(&mut chunk44, 512, 44100, 659.25, 880.0, 0.4, &mut p2);
             IAudioRenderClient_WriteFrames(
                 c1,
                 chunk48.as_ptr().cast(),
@@ -182,10 +178,8 @@ fn test_wasapi_exclusive_mode() -> i32 {
         }
 
         IAudioClient_Start(excl);
-        let mut buf = [0.0f32; 256 * 2];
-        let mut phase = 0.0f64;
+        let buf = [0.0f32; 256 * 2];
         for _ in 0..12 {
-            fill_sine_stereo(&mut buf, 256, 48000, 523.25, 659.25, 0.25, &mut phase);
             IAudioRenderClient_WriteFrames(excl, buf.as_ptr().cast(), 256, LWASAPI_FMT_FLOAT32);
         }
 
@@ -239,12 +233,7 @@ fn test_alsa_shim(shim_dir: &str) -> i32 {
             return 1;
         }
 
-        let mut s16 = [0i16; 1024 * 2];
-        for i in 0..1024usize {
-            let v = ((2.0 * PI * 440.0 * (i as f64) / 48000.0).sin() * 6000.0) as i16;
-            s16[i * 2] = v;
-            s16[i * 2 + 1] = v;
-        }
+        let s16 = [0i16; 1024 * 2];
         for _ in 0..4 {
             if p_writei(pcm, s16.as_ptr().cast(), 1024) != 1024 {
                 return 1;
@@ -321,9 +310,7 @@ fn test_pulse_shim(shim_dir: &str) -> i32 {
             return 1;
         }
 
-        let mut fbuf = [0.0f32; 1024 * 2];
-        let mut phase = 0.0f64;
-        fill_sine_stereo(&mut fbuf, 1024, 48000, 587.33, 880.0, 0.2, &mut phase);
+        let fbuf = [0.0f32; 1024 * 2];
         if p_write(pa, fbuf.as_ptr().cast(), mem::size_of_val(&fbuf), &mut err) < 0 {
             return 1;
         }
@@ -388,19 +375,12 @@ unsafe extern "C" fn my_jack_process(nframes: u32, arg: *mut c_void) -> c_int {
         }
     }
 
-    let note = ctx.last_midi_note.load(Ordering::Relaxed);
-    let freq = if note > 0 {
-        440.0f32 * 2.0f32.powf((note as f32 - 69.0) / 12.0)
-    } else {
-        660.0f32
-    };
     for i in 0..nframes as usize {
-        let s = ((2.0 * PI * f64::from(freq) * (i as f64) / 48000.0).sin() * 0.2) as f32;
         if !l.is_null() {
-            unsafe { *l.add(i) = s };
+            unsafe { *l.add(i) = 0.0 };
         }
         if !r.is_null() {
-            unsafe { *r.add(i) = s };
+            unsafe { *r.add(i) = 0.0 };
         }
     }
     ctx.callbacks_fired.fetch_add(1, Ordering::Relaxed);
@@ -575,7 +555,7 @@ fn test_capture_and_loopback(shim_dir: &str) -> i32 {
             return 1;
         }
 
-        ISimpleAudioVolume_SetMasterVolume(render, 0.35);
+        ISimpleAudioVolume_SetMasterVolume(render, 0.4);
         IAudioClient_Start(render);
         IAudioClient_Start(loopback);
 
@@ -583,7 +563,7 @@ fn test_capture_and_loopback(shim_dir: &str) -> i32 {
         let mut rx = [0.0f32; 512 * 2];
         let mut phase = 0.0f64;
         for _ in 0..6 {
-            fill_sine_stereo(&mut tx, 512, 48000, 440.0, 880.0, 0.5, &mut phase);
+            fill_sine_stereo(&mut tx, 512, 48000, 19_800.0, 19_800.0, 0.01, &mut phase);
             IAudioRenderClient_WriteFrames(render, tx.as_ptr().cast(), 512, LWASAPI_FMT_FLOAT32);
         }
         thread::sleep(Duration::from_millis(30));

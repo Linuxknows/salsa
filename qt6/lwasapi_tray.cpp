@@ -1392,11 +1392,13 @@ void TrayController::buildPopup() {
     btnTabDev_->setCheckable(true);
     btnTabDev_->setChecked(true);
     btnTabDev_->setCursor(Qt::PointingHandCursor);
+    btnTabDev_->setToolTip(QStringLiteral("Devices Tab — Manage output/input hardware selection, master/mic volume, Bluetooth status, and quick DSP toggles."));
 
     btnTabApps_ = new QPushButton(QStringLiteral("Applications"), card_);
     btnTabApps_->setObjectName(QStringLiteral("TabUnderline"));
     btnTabApps_->setCheckable(true);
     btnTabApps_->setCursor(Qt::PointingHandCursor);
+    btnTabApps_->setToolTip(QStringLiteral("Applications Tab — Lists every active playback and recording app stream with per-app volume faders and mute toggles."));
 
     auto* grp = new QButtonGroup(this);
     grp->setExclusive(true);
@@ -1461,6 +1463,7 @@ void TrayController::buildPopup() {
     btnBtRst_ = new QPushButton(QStringLiteral("Reset BT"), btPill_);
     btnBtRst_->setObjectName(QStringLiteral("SmallBtn"));
     btnBtRst_->setCursor(Qt::PointingHandCursor);
+    btnBtRst_->setToolTip(QStringLiteral("Reset Bluetooth Link — Releases and re-acquires the BlueZ A2DP transport to recover glitched wireless audio."));
     connect(btnBtRst_, &QPushButton::clicked, this, [this]() {
         if (btResetting_) return;
         btResetting_ = true;
@@ -1493,6 +1496,7 @@ void TrayController::buildPopup() {
     lblOutD->setObjectName(QStringLiteral("DimLabel"));
     lblOutD->setFixedWidth(scaledPx(46, fontPct_));
     cmbOutDev_ = new QComboBox(devPage);
+    cmbOutDev_->setToolTip(QStringLiteral("Master Output Device — Switches default playback between Auto-Priority, kernel ALSA cards, and BlueZ A2DP headsets."));
     connect(cmbOutDev_, &QComboBox::activated, this, [this](int idx) {
         if (syncingUi_) return;
         const QString pbId = cmbOutDev_->itemData(idx).toString();
@@ -1516,6 +1520,7 @@ void TrayController::buildPopup() {
     spkRow->setSpacing(6);
     faderSpk_ = new SwipeFader(QStringLiteral("Master Output"), theme_.qcolor("accent_primary", "#00e676"), false, devPage);
     faderSpk_->setStepProvider([this]() { return volStepPct_; });
+    faderSpk_->setToolTip(QStringLiteral("Master Output Volume — Drag horizontally, scroll wheel, or press arrow keys to adjust system playback gain (0–150%, syncs AVRCP on BT)."));
     connect(faderSpk_, &SwipeFader::valueChanged, this, [this](int v) {
         const qint64 now = nowMs();
         osdSuppressUntilMs_ = now + 900;
@@ -1539,6 +1544,7 @@ void TrayController::buildPopup() {
     btnSpkMute_->setObjectName(QStringLiteral("MuteBtn"));
     btnSpkMute_->setFixedWidth(scaledPx(62, fontPct_));
     btnSpkMute_->setCursor(Qt::PointingHandCursor);
+    btnSpkMute_->setToolTip(QStringLiteral("Mute Master Output — Silences speakers or Bluetooth headphones while keeping running audio clients connected."));
     connect(btnSpkMute_, &QPushButton::clicked, this, &TrayController::toggleMasterMute);
     spkRow->addWidget(btnSpkMute_);
     spkCol->addLayout(spkRow);
@@ -1555,6 +1561,7 @@ void TrayController::buildPopup() {
     lblMicD->setObjectName(QStringLiteral("DimLabel"));
     lblMicD->setFixedWidth(scaledPx(46, fontPct_));
     cmbMicDev_ = new QComboBox(devPage);
+    cmbMicDev_->setToolTip(QStringLiteral("Recording Input Device — Switches the active direct kernel ALSA capture source used by voice and DAW apps."));
     connect(cmbMicDev_, &QComboBox::activated, this, [this](int idx) {
         if (syncingUi_) return;
         const QString capId = cmbMicDev_->itemData(idx).toString();
@@ -1575,6 +1582,7 @@ void TrayController::buildPopup() {
     micRow->setSpacing(6);
     faderMic_ = new SwipeFader(QStringLiteral("Mic / Input Gain"), theme_.qcolor("accent_secondary", "#38bdf8"), false, devPage);
     faderMic_->setStepProvider([this]() { return volStepPct_; });
+    faderMic_->setToolTip(QStringLiteral("Master Mic Gain — Drag or scroll to scale microphone capture gain (0–150%) fed to recording applications."));
     connect(faderMic_, &SwipeFader::valueChanged, this, [this](int v) {
         const qint64 now = nowMs();
         osdSuppressUntilMs_ = now + 900;
@@ -1598,6 +1606,7 @@ void TrayController::buildPopup() {
     btnMicMute_->setObjectName(QStringLiteral("MuteBtn"));
     btnMicMute_->setFixedWidth(scaledPx(62, fontPct_));
     btnMicMute_->setCursor(Qt::PointingHandCursor);
+    btnMicMute_->setToolTip(QStringLiteral("Mute Mic Input — Silences microphone capture globally without releasing the ALSA capture device."));
     connect(btnMicMute_, &QPushButton::clicked, this, &TrayController::toggleMicMute);
     micRow->addWidget(btnMicMute_);
     devLay->addLayout(micRow);
@@ -1618,6 +1627,7 @@ void TrayController::buildPopup() {
     lblEq->setObjectName(QStringLiteral("DimLabel"));
     eqRow->addWidget(lblEq);
     cmbQuickEqPreset_ = new QComboBox(dspFrame);
+    cmbQuickEqPreset_->setToolTip(QStringLiteral("Quick EQ Preset — Applies built-in studio EQ curves or imported AutoEQ profiles to the real-time DSP biquad filter bank."));
     rebuildEqPresetCombo();
     connect(cmbQuickEqPreset_, &QComboBox::activated, this, [this](int idx) {
         if (syncingUi_) return;
@@ -1654,6 +1664,7 @@ void TrayController::buildPopup() {
     btnEqBypass_->setObjectName(QStringLiteral("TogglePill"));
     btnEqBypass_->setCheckable(true);
     btnEqBypass_->setCursor(Qt::PointingHandCursor);
+    btnEqBypass_->setToolTip(QStringLiteral("EQ Bypass — Temporarily bypasses all 10 EQ bands and dynamic gain curves for quick A/B listening."));
     connect(btnEqBypass_, &QPushButton::clicked, this, [this](bool checked) {
         if (syncingUi_) return;
         eqHoldUntilMs_ = nowMs() + 700;
@@ -1672,6 +1683,7 @@ void TrayController::buildPopup() {
     modeRow->addWidget(lblSr);
 
     cmbRate_ = new QComboBox(dspFrame);
+    cmbRate_->setToolTip(QStringLiteral("Master Sample Rate — Changes the engine's fixed internal mixing and hardware clock rate cleanly on the fly."));
     for (int r : TRAY_SAMPLE_RATES) {
         cmbRate_->addItem(QStringLiteral("%1 kHz").arg(r / 1000.0, 0, 'g', 4), r);
     }
@@ -1692,6 +1704,7 @@ void TrayController::buildPopup() {
     btnPerDevEq_->setObjectName(QStringLiteral("TogglePill"));
     btnPerDevEq_->setCheckable(true);
     btnPerDevEq_->setCursor(Qt::PointingHandCursor);
+    btnPerDevEq_->setToolTip(QStringLiteral("Per-Device EQ Memory — Automatically saves and loads a distinct EQ preset whenever you switch output sinks."));
     connect(btnPerDevEq_, &QPushButton::clicked, this, [](bool checked) {
         updateGuiSettingsPatch(QJsonObject{
             {QStringLiteral("eq_per_device_enabled"), checked},
@@ -1704,6 +1717,7 @@ void TrayController::buildPopup() {
     btnLimiter_->setObjectName(QStringLiteral("TogglePill"));
     btnLimiter_->setCheckable(true);
     btnLimiter_->setCursor(Qt::PointingHandCursor);
+    btnLimiter_->setToolTip(QStringLiteral("Mastering Soft-Knee Limiter — Tames peaks near 0 dBFS so heavy EQ boosts or hot mixes don't harshly clip."));
     connect(btnLimiter_, &QPushButton::clicked, this, [this](bool checked) {
         if (syncingUi_) return;
         eqHoldUntilMs_ = nowMs() + 700;
@@ -1742,6 +1756,7 @@ void TrayController::buildPopup() {
     apoRow->addWidget(btnCrossfeed_);
 
     cmbBtCodec_ = new QComboBox(dspFrame);
+    cmbBtCodec_->setToolTip(QStringLiteral("Bluetooth Preferred Codec — Requests LDAC, aptX HD, aptX, AAC, or SBC negotiation via BlueZ MediaEndpoint1 when supported by your headset."));
     cmbBtCodec_->addItem(QStringLiteral("BT: Auto"), 0);
     cmbBtCodec_->addItem(QStringLiteral("LDAC"), 1);
     cmbBtCodec_->addItem(QStringLiteral("aptX HD"), 2);
@@ -1796,6 +1811,7 @@ void TrayController::buildPopup() {
     micThemeRow->addWidget(lblTheme);
 
     cmbTrayTheme_ = new QComboBox(dspFrame);
+    cmbTrayTheme_->setToolTip(QStringLiteral("Quick Mixer Theme — Changes the system tray popup color palette and saves it to gui_settings.json."));
     for (const QString& tn : allThemeNames(true)) {
         cmbTrayTheme_->addItem(tn, tn);
     }
@@ -1854,6 +1870,7 @@ void TrayController::buildPopup() {
     auto* btnStudio = new QPushButton(QStringLiteral("Open Studio"), card_);
     btnStudio->setObjectName(QStringLiteral("PrimaryBtn"));
     btnStudio->setCursor(Qt::PointingHandCursor);
+    btnStudio->setToolTip(QStringLiteral("Open Salsa Studio — Launches the full 10-band Dynamic EQ, session routing, and hardware stage window."));
     connect(btnStudio, &QPushButton::clicked, this, [this]() {
         if (!pinned_) popupWin_->hide();
         spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--studio")});
@@ -1863,6 +1880,7 @@ void TrayController::buildPopup() {
     auto* btnGraph = new QPushButton(QStringLiteral("Graph"), card_);
     btnGraph->setObjectName(QStringLiteral("FooterBtn"));
     btnGraph->setCursor(Qt::PointingHandCursor);
+    btnGraph->setToolTip(QStringLiteral("Signal Flow Graph — Opens Salsa Studio directly on the live interactive pipeline topology & Owner's Manual."));
     connect(btnGraph, &QPushButton::clicked, this, [this]() {
         if (!pinned_) popupWin_->hide();
         spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--topology")});
@@ -1872,6 +1890,7 @@ void TrayController::buildPopup() {
     auto* btnDbg = new QPushButton(QStringLiteral("Debug"), card_);
     btnDbg->setObjectName(QStringLiteral("FooterBtn"));
     btnDbg->setCursor(Qt::PointingHandCursor);
+    btnDbg->setToolTip(QStringLiteral("Live Architecture Debugger — Opens real-time event logging, RT timing telemetry, process leak checks, and ScreenCast viewer."));
     connect(btnDbg, &QPushButton::clicked, this, [this]() {
         if (!pinned_) popupWin_->hide();
         spawnDetachedWaylandBinary(QStringLiteral("salsa-debug"));
@@ -1881,6 +1900,7 @@ void TrayController::buildPopup() {
     auto* btnRst = new QPushButton(QStringLiteral("Restart"), card_);
     btnRst->setObjectName(QStringLiteral("WarnBtn"));
     btnRst->setCursor(Qt::PointingHandCursor);
+    btnRst->setToolTip(QStringLiteral("Restart Audio Engine — Restarts `lwasapi-audiodg.service` via systemd user control without signing out."));
     connect(btnRst, &QPushButton::clicked, this, [this]() {
         runSystemdAction("restart");
     });
@@ -1890,39 +1910,47 @@ void TrayController::buildPopup() {
 
 void TrayController::buildContextMenu() {
     ctxMenu_ = new QMenu();
+    ctxMenu_->setToolTipsVisible(true);
     actStatus_ = ctxMenu_->addAction(QStringLiteral("Salsa — Checking..."));
     actStatus_->setEnabled(false);
     ctxMenu_->addSeparator();
 
     auto* aPopover = ctxMenu_->addAction(QStringLiteral("Open Quick Mixer"));
+    aPopover->setToolTip(QStringLiteral("Opens the tray Quick Mixer popup anchored near the system tray icon."));
     connect(aPopover, &QAction::triggered, this, [this]() {
         positionAndShowPopup(lastTrayRawPt_);
     });
 
     auto* aStudio = ctxMenu_->addAction(QStringLiteral("Open Salsa Studio"));
+    aStudio->setToolTip(QStringLiteral("Launches the full Salsa Studio equalizer, mixer, and advanced configuration window."));
     connect(aStudio, &QAction::triggered, this, []() {
         spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--studio")});
     });
 
     auto* aGraph = ctxMenu_->addAction(QStringLiteral("Signal Flow Graph"));
+    aGraph->setToolTip(QStringLiteral("Opens Salsa Studio directly on the live topology pipeline diagram."));
     connect(aGraph, &QAction::triggered, this, []() {
         spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--topology")});
     });
 
     auto* aDbg = ctxMenu_->addAction(QStringLiteral("Live Debugger"));
+    aDbg->setToolTip(QStringLiteral("Launches the standalone Live Architecture Debugger and ScreenCast Inspector."));
     connect(aDbg, &QAction::triggered, this, []() {
         spawnDetachedWaylandBinary(QStringLiteral("salsa-debug"));
     });
 
     ctxMenu_->addSeparator();
     actMuteSpk_ = ctxMenu_->addAction(QStringLiteral("Mute Master Output"));
+    actMuteSpk_->setToolTip(QStringLiteral("Mutes or unmutes final output to speakers or Bluetooth headsets."));
     connect(actMuteSpk_, &QAction::triggered, this, &TrayController::toggleMasterMute);
 
     actMuteMic_ = ctxMenu_->addAction(QStringLiteral("Mute Mic Input"));
+    actMuteMic_->setToolTip(QStringLiteral("Mutes or unmutes captured microphone audio globally."));
     connect(actMuteMic_, &QAction::triggered, this, &TrayController::toggleMicMute);
 
     actPin_ = ctxMenu_->addAction(QStringLiteral("Pin Quick Mixer Open"));
     actPin_->setCheckable(true);
+    actPin_->setToolTip(QStringLiteral("Keeps the Quick Mixer open when switching focus to other windows."));
     connect(actPin_, &QAction::toggled, this, [this](bool on) {
         pinned_ = on;
         if (btnPin_) btnPin_->setChecked(on);
@@ -1932,6 +1960,7 @@ void TrayController::buildContextMenu() {
     actGlow_ = ctxMenu_->addAction(QStringLiteral("Green Glow on Active Icon"));
     actGlow_->setCheckable(true);
     actGlow_->setChecked(trayGlow_);
+    actGlow_->setToolTip(QStringLiteral("Draws a status glow ring on the tray icon when `lwasapi-audiodg` is active."));
     connect(actGlow_, &QAction::toggled, this, [this](bool on) {
         trayGlow_ = on;
         updateGuiSettingsPatch(QJsonObject{
@@ -1944,6 +1973,7 @@ void TrayController::buildContextMenu() {
     actLeftMode_ = ctxMenu_->addAction(QStringLiteral("Left-Click Opens Quick Mixer"));
     actLeftMode_->setCheckable(true);
     actLeftMode_->setChecked(leftClickQuickMixer_);
+    actLeftMode_->setToolTip(QStringLiteral("When checked, left-clicking the tray icon opens Quick Mixer instead of launching Studio directly."));
     connect(actLeftMode_, &QAction::toggled, this, [this](bool on) {
         leftClickQuickMixer_ = on;
         updateGuiSettingsPatch(QJsonObject{
@@ -1953,6 +1983,7 @@ void TrayController::buildContextMenu() {
     });
 
     auto* themeSub = ctxMenu_->addMenu(QStringLiteral("Quick Mixer Theme"));
+    themeSub->setToolTipsVisible(true);
     auto* themeGrp = new QActionGroup(themeSub);
     themeGrp->setExclusive(true);
     themeActions_.clear();
@@ -1961,6 +1992,7 @@ void TrayController::buildContextMenu() {
         ta->setCheckable(true);
         ta->setData(tn);
         ta->setChecked(tn == themeName_);
+        ta->setToolTip(QStringLiteral("Switch tray Quick Mixer palette to %1.").arg(tn));
         themeGrp->addAction(ta);
         themeActions_.append(ta);
         connect(ta, &QAction::triggered, this, [this, tn]() {
@@ -1969,6 +2001,7 @@ void TrayController::buildContextMenu() {
     }
 
     auto* fontSub = ctxMenu_->addMenu(QStringLiteral("UI Font Scale"));
+    fontSub->setToolTipsVisible(true);
     auto* fontGrp = new QActionGroup(fontSub);
     fontGrp->setExclusive(true);
     fontActions_.clear();
@@ -1977,6 +2010,7 @@ void TrayController::buildContextMenu() {
         fa->setCheckable(true);
         fa->setData(pct);
         fa->setChecked(pct == fontPct_);
+        fa->setToolTip(QStringLiteral("Set tray popup font scale to %1%.").arg(pct));
         fontGrp->addAction(fa);
         fontActions_.append(fa);
         connect(fa, &QAction::triggered, this, [this, pct]() {
@@ -1986,14 +2020,18 @@ void TrayController::buildContextMenu() {
 
     ctxMenu_->addSeparator();
     actStartEng_ = ctxMenu_->addAction(QStringLiteral("Start Engine"));
+    actStartEng_->setToolTip(QStringLiteral("Starts `lwasapi-audiodg.service` via systemd user control."));
     connect(actStartEng_, &QAction::triggered, this, [this]() { runSystemdAction("start"); });
     actRestartEng_ = ctxMenu_->addAction(QStringLiteral("Restart Engine"));
+    actRestartEng_->setToolTip(QStringLiteral("Restarts `lwasapi-audiodg.service` to reload devices or recover cleanly."));
     connect(actRestartEng_, &QAction::triggered, this, [this]() { runSystemdAction("restart"); });
     actStopEng_ = ctxMenu_->addAction(QStringLiteral("Stop Engine"));
+    actStopEng_->setToolTip(QStringLiteral("Stops `lwasapi-audiodg.service` cleanly via systemd."));
     connect(actStopEng_, &QAction::triggered, this, [this]() { runSystemdAction("stop"); });
 
     ctxMenu_->addSeparator();
     auto* aQuit = ctxMenu_->addAction(QStringLiteral("Quit Tray"));
+    aQuit->setToolTip(QStringLiteral("Closes `lwasapi-tray` from the system tray (the background audio engine stays running)."));
     connect(aQuit, &QAction::triggered, qApp, &QApplication::quit);
 }
 
@@ -2602,6 +2640,7 @@ void TrayController::populateQuickMixer() {
                 theme_.qcolor("text_bright", "#f8fafc"),
                 theme_.qcolor("text_muted", "#94a3b8"));
             fader->setValue(static_cast<int>(s.volume_milli / 10), s.muted != 0);
+            fader->setToolTip(QStringLiteral("Per-App Stream Volume — Drag, scroll, or use arrow keys to adjust %1 volume (0–150%); saved per application.").arg(nm));
             connect(fader, &SwipeFader::valueChanged, this, [this, sid](int v) {
                 const qint64 now = nowMs();
                 for (auto& ar : appRows_) {
@@ -2630,6 +2669,7 @@ void TrayController::populateQuickMixer() {
             btnM->setObjectName(QStringLiteral("MuteBtn"));
             btnM->setFixedSize(56, 28);
             btnM->setCursor(Qt::PointingHandCursor);
+            btnM->setToolTip(QStringLiteral("Per-App Stream Mute — Mutes or unmutes %1 inside the Salsa engine mixer without affecting other apps.").arg(nm));
             if (s.muted) {
                 btnM->setStyleSheet(QStringLiteral("color: #EF4444; border-color: #EF4444; font-weight: 700;"));
             }

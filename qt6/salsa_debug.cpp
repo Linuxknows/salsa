@@ -59,6 +59,7 @@ public:
         topLay->addLayout(titleCol, 1);
 
         auto* btnStudio = new QPushButton(QStringLiteral("Open Salsa Studio"), topCard);
+        btnStudio->setToolTip(QStringLiteral("Open Salsa Studio — Launches the main Salsa mixer, 10-band EQ, and Advanced Options window."));
         connect(btnStudio, &QPushButton::clicked, this, []() {
             spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--studio")});
         });
@@ -66,6 +67,7 @@ public:
 
         topLay->addWidget(new QLabel(QStringLiteral("Theme:"), topCard));
         cmbTheme_ = new QComboBox(topCard);
+        cmbTheme_->setToolTip(QStringLiteral("Debugger Theme — Changes the Live Debugger color palette and persists your choice."));
         for (const QString& tn : allThemeNames(false)) cmbTheme_->addItem(tn);
         cmbTheme_->setCurrentText(themeName_);
         connect(cmbTheme_, &QComboBox::activated, this, [this](int idx) {

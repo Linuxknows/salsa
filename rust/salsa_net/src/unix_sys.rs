@@ -21,6 +21,8 @@ pub const POLLNVAL: c_short = 32;
 
 pub const SOL_SOCKET: c_int = 1;
 pub const SO_ERROR: c_int = 4;
+pub const SO_SNDBUF: c_int = 7;
+pub const SO_PRIORITY: c_int = 12;
 pub const SO_PASSCRED: c_int = 16;
 pub const SO_PEERCRED: c_int = 17;
 pub const SCM_RIGHTS: c_int = 1;

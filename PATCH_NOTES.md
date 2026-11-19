@@ -4,7 +4,24 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.19.4 — Current (`2026-11-19`)
+## V1.19.5 — Current (`2026-11-19`)
+
+### 1. Bluetooth A2DP Dropout, Socket Backpressure & Lock-Free RT Fixes
+- Hardened the BlueZ A2DP transmit loop across [`bluez_media.rs`](rust/salsa_net/src/bluez_media.rs), [`bluez_runtime.rs`](rust/salsa_net/src/bluez_runtime.rs), and [`unix_sys.rs`](rust/salsa_net/src/unix_sys.rs): raised the target TX ring jitter headroom from `20 ms` (`960` frames, smaller than one `1024`-frame AAC packet) to `45 ms` / `2x` packet size (`bt_tx_margin_frames`) consistently across prebuffering and overflow trimming, widened/softened drift scaling (`[0.70 .. 1.65]` deadband, `1.0006`/`0.9994`), avoided blacking out the RF stream on isolated partial pops (`should_reprebuffer_after_partial_pop`), tuned L2CAP socket buffers/priority (`SO_SNDBUF`, `SO_PRIORITY`), added bounded 4-slice `POLLOUT` retries on transient `EAGAIN` (`send_l2cap_packet`) with `BT_TX_CONGEST` logging and `period_ns * 2` cadence recovery, preserved queued TX ring frames in `set_tx_enabled_impl` unless unpausing, and replaced the `rt.state.lock()` on the `SCHED_FIFO 65` audio thread (`bluez_write_period_impl`) with a lock-free `tx_transport_ready` atomic flag.
+- Added host Bluetooth USB power inspection (`inspect_bt_usb_power`) to [`debug_core.rs`](rust/salsa_tools/src/debug_core.rs) and [`salsa_installer.rs`](rust/salsa_tools/src/bin/salsa_installer.rs) so `salsa-debug-cli` and `salsa-installer --check` surface `btusb` / `power/control=auto` autosuspend warnings automatically.
+
+### 2. Full Interactive Control Tooltips (Studio, Tray Quick Mixer & Live Debugger)
+- Added descriptive tooltips explaining purpose and operation across every interactive button, dropdown, slider, fader, spinbox, checkbox, shortcut capture input, tab, context menu action, theme preview control, and hoverable Topology node across [`salsa_studio.cpp`](qt6/salsa_studio.cpp), [`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp), [`salsa_debugger_widget.cpp`](qt6/salsa_debugger_widget.cpp), [`salsa_debug.cpp`](qt6/salsa_debug.cpp), [`salsa_widgets.cpp`](qt6/salsa_widgets.cpp), and [`salsa_common.cpp`](qt6/salsa_common.cpp).
+
+### 3. Silent Automated Test Suites & Quiet Loopback Probe
+- Updated [`lwasapi_test.rs`](rust/lwasapi_client/src/bin/lwasapi_test.rs) so Tests 1–6 stream digital silence and Test 7's loopback verification uses a quiet ultrasonic `19.8 kHz` (`0.01`) probe signal, and updated [`lwasapi_bench.rs`](rust/lwasapi_client/src/bin/lwasapi_bench.rs) to probe loopback timing with the same quiet ultrasonic wave rather than a `0.55` DC pop.
+
+### 4. License Change (`LGPL-3.0`)
+- Switched project licensing from MIT to **GNU Lesser General Public License v3.0 (`LGPL-3.0`)** in [`LICENSE`](LICENSE), `rust/*/Cargo.toml`, and [`README.md`](README.md).
+
+---
+
+## V1.19.4 (`2026-11-19`)
 
 ### 1. Fixed-Width Studio Output Peak Readout (`dynRow` Layout Stability)
 - Locked `lblPeaks_` (`Output Peak L/R: ... dBFS`) in [`salsa_studio.cpp`](qt6/salsa_studio.cpp) with `Qt::AlignRight | Qt::AlignVCenter`, `QSizePolicy::Fixed`, and a font-scale-aware monospace `setFixedWidth` computed from `"Output Peak L/R: -100.0 / -100.0 dBFS"` in `applyThemeAndFontAll`, alongside minimum widths on `lblPreamp_`, `lblThresh_`, and `lblRatio_`, preventing `120 Hz` peak updates across `-10 dBFS` / `-100 dBFS` thresholds from shifting the dynamics slider bar horizontally.

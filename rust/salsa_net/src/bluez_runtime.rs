@@ -38,7 +38,8 @@ use crate::bluez_ffi::{
     SBC_LE, SOL_BLUETOOTH,
 };
 use crate::bluez_media::{
-    pop_bt_resampled_s16, sco_push_pcm_to_cap_ring, write_tx_period, BT_TX_RING_FRAMES,
+    bt_tx_margin_frames, pop_bt_resampled_s16, sco_push_pcm_to_cap_ring, write_tx_period,
+    BT_TX_RING_FRAMES,
 };
 use crate::bluez_wire::{
     abr_step_aac, abr_step_ldac, extract_mac_from_id, hfp_make_batt_path, ldac_eqmid_to_kbps,
@@ -61,6 +62,7 @@ use crate::unix_sys::{
     getsockopt_raw, last_errno, mono_ns, recv_raw, send_raw, setsockopt_raw, shutdown_rdwr,
     sleep_abs_mono_ns, socket_raw, PollFd, MSG_DONTWAIT, MSG_NOSIGNAL, POLLERR, POLLHUP, POLLIN,
     POLLNVAL, POLLOUT, SOCK_CLOEXEC, SOCK_NONBLOCK, SOCK_SEQPACKET, SOL_SOCKET, SO_ERROR,
+    SO_PRIORITY, SO_SNDBUF,
 };
 
 const A2DP_SOURCE_UUID: &str = "0000110a-0000-1000-8000-00805f9b34fb";
@@ -342,6 +344,7 @@ pub struct BluezRuntime {
     pub avrcp_supported: AtomicBool,
     pub delay_tenths_ms: AtomicU16,
 
+    pub tx_transport_ready: AtomicBool,
     pub tx_paused: AtomicBool,
     pub tx_write_frame: AtomicU64,
     pub tx_read_frame: AtomicU64,
@@ -387,6 +390,7 @@ impl BluezRuntime {
             avrcp_volume: AtomicU16::new(127),
             avrcp_supported: AtomicBool::new(false),
             delay_tenths_ms: AtomicU16::new(0),
+            tx_transport_ready: AtomicBool::new(false),
             tx_paused: AtomicBool::new(false),
             tx_write_frame: AtomicU64::new(0),
             tx_read_frame: AtomicU64::new(0),
@@ -737,6 +741,84 @@ fn pop_s16_for_tx(
     )
 }
 
+fn sync_tx_ready(rt: &BluezRuntime, st: &BtMutable) {
+    let ready =
+        st.has_bluez_transport && st.direct_socket_mode && st.bt_fd >= 0 && st.tx_stream_active;
+    rt.tx_transport_ready.store(ready, Ordering::Release);
+}
+
+fn configure_bt_l2cap_socket(fd: c_int, write_mtu: u16) {
+    if fd < 0 {
+        return;
+    }
+    let sndbuf = ((usize::from(write_mtu.max(672))) * 24).clamp(32_768, 65_536) as c_int;
+    let prio: c_int = 6; // TC_PRIO_INTERACTIVE for low-jitter A2DP L2CAP frames
+    unsafe {
+        let _ = setsockopt_raw(
+            fd,
+            SOL_SOCKET,
+            SO_SNDBUF,
+            (&sndbuf as *const c_int).cast::<c_void>(),
+            mem::size_of::<c_int>() as u32,
+        );
+        let _ = setsockopt_raw(
+            fd,
+            SOL_SOCKET,
+            SO_PRIORITY,
+            (&prio as *const c_int).cast::<c_void>(),
+            mem::size_of::<c_int>() as u32,
+        );
+    }
+}
+
+#[inline]
+fn should_reprebuffer_after_partial_pop(
+    popped: usize,
+    expected_pop: usize,
+    partial_streak: u32,
+) -> bool {
+    if expected_pop == 0 {
+        return false;
+    }
+    popped == 0 || popped < (expected_pop / 2) || partial_streak >= 3
+}
+
+fn send_l2cap_packet(rt: &BluezRuntime, tx_fd: c_int, pkt: &[u8]) -> (isize, bool, c_int) {
+    let mut sres = send_raw(tx_fd, pkt, MSG_DONTWAIT | MSG_NOSIGNAL);
+    if sres >= 0 {
+        return (sres, false, 0);
+    }
+    let mut saved_err = last_errno();
+    if saved_err != ERRNO_EAGAIN {
+        return (sres, false, saved_err);
+    }
+    for _ in 0..4 {
+        if !rt.tx_thread_running.load(Ordering::Acquire) || rt.tx_paused.load(Ordering::Acquire) {
+            break;
+        }
+        let mut pfd = [PollFd {
+            fd: tx_fd,
+            events: POLLOUT,
+            revents: 0,
+        }];
+        let pr = do_poll(&mut pfd, 12);
+        if pr > 0 && (pfd[0].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 {
+            return (-1, true, ERRNO_EPIPE);
+        }
+        if pr > 0 && (pfd[0].revents & POLLOUT) != 0 {
+            sres = send_raw(tx_fd, pkt, MSG_DONTWAIT | MSG_NOSIGNAL);
+            if sres > 0 {
+                return (sres, true, 0);
+            }
+            saved_err = last_errno();
+            if saved_err != ERRNO_EAGAIN {
+                return (sres, true, saved_err);
+            }
+        }
+    }
+    (-1, true, saved_err)
+}
+
 fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
     let rt_bg = Arc::clone(&rt);
     let jh = thread::spawn(move || {
@@ -749,7 +831,10 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
         let mut frac_pos = 0.0f64;
         let mut next_tick_ns = mono_ns();
         let mut prebuffering = true;
-        let mut avg_avail = 960.0f64;
+        let mut avg_avail = 2160.0f64;
+        let mut partial_streak = 0u32;
+        let mut local_clean_streak = 0u32;
+        let mut last_congest_log_ns = 0u64;
 
         while rt.tx_thread_running.load(Ordering::Acquire) {
             let (active, rate, ch, raw_mtu, codec_id, codec_kind, fdk_flen) = {
@@ -772,12 +857,13 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                 0 => 48_000,
                 r => r,
             };
-            let margin_in = (u64::from(in_rate) * 20) / 1000;
 
             if rt.tx_paused.load(Ordering::Acquire) || !active {
                 prebuffering = true;
                 frac_pos = 0.0;
-                avg_avail = margin_in as f64;
+                avg_avail = bt_tx_margin_frames(in_rate, 1024) as f64;
+                partial_streak = 0;
+                local_clean_streak = 0;
                 next_tick_ns = mono_ns();
                 thread::sleep(Duration::from_millis(10));
                 continue;
@@ -797,6 +883,7 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
             };
             let est_need_in =
                 ((est_need_out as f64) * (f64::from(in_rate) / f64::from(rate))).ceil() as u64 + 4;
+            let margin_in = bt_tx_margin_frames(in_rate, est_need_in);
 
             {
                 let wr = rt.tx_write_frame.load(Ordering::Acquire);
@@ -804,27 +891,28 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                 let mut avail = wr.saturating_sub(rd);
                 if prebuffering {
                     let goal = est_need_in
-                        .saturating_add(margin_in.max(est_need_in))
+                        .saturating_add(margin_in)
                         .min((BT_TX_RING_FRAMES as u64) - 1024);
                     if avail < goal {
                         thread::sleep(Duration::from_micros(1500));
                         continue;
                     }
                     prebuffering = false;
+                    partial_streak = 0;
                     avg_avail = if avail > est_need_in {
                         (avail - est_need_in) as f64
                     } else {
                         margin_in as f64
                     };
                     next_tick_ns = mono_ns();
-                } else if avail > 0 && avail < est_need_in {
-                    for _ in 0..20 {
+                } else if avail < est_need_in {
+                    for _ in 0..12 {
                         if !rt.tx_thread_running.load(Ordering::Acquire)
                             || rt.tx_paused.load(Ordering::Acquire)
                         {
                             break;
                         }
-                        thread::sleep(Duration::from_micros(1200));
+                        thread::sleep(Duration::from_micros(1000));
                         let wr2 = rt.tx_write_frame.load(Ordering::Acquire);
                         let rd2 = rt.tx_read_frame.load(Ordering::Relaxed);
                         avail = wr2.saturating_sub(rd2);
@@ -835,10 +923,11 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                 }
             }
 
-            let drift_scale = if avg_avail > (margin_in as f64) * 1.50 {
-                1.001
-            } else if avg_avail < (margin_in as f64) * 0.45 {
-                0.999
+            let margin_f = margin_in.max(1) as f64;
+            let drift_scale = if avg_avail > margin_f * 1.65 {
+                1.0006
+            } else if avg_avail < margin_f * 0.70 {
+                0.9994
             } else {
                 1.0
             };
@@ -1113,155 +1202,181 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
             }
 
             if popped == expected_pop {
+                partial_streak = 0;
                 avg_avail = avg_avail * 0.90 + f64::from(rem_avail) * 0.10;
-            } else if popped > 0 {
+            } else if expected_pop > 0 {
+                partial_streak = partial_streak.saturating_add(1);
                 rt.tx_underruns.fetch_add(1, Ordering::Relaxed);
-                dbg_emit_vals(
-                    LWASAPI_DBG_BLUEZ,
-                    LWASAPI_DBG_WARN,
-                    0,
-                    0,
-                    popped as i32,
-                    expected_pop as i32,
-                    0,
-                    "BT_TX_UNDERRUN",
-                    &dev_alias,
-                    &format!("TX ring partial pop ({popped}/{expected_pop} frames) -> re-prebuffering"),
-                );
-                prebuffering = true;
+                if should_reprebuffer_after_partial_pop(popped, expected_pop, partial_streak) {
+                    prebuffering = true;
+                    partial_streak = 0;
+                    dbg_emit_vals(
+                        LWASAPI_DBG_BLUEZ,
+                        LWASAPI_DBG_WARN,
+                        0,
+                        0,
+                        popped as i32,
+                        expected_pop as i32,
+                        0,
+                        "BT_TX_UNDERRUN",
+                        &dev_alias,
+                        &format!("TX ring underrun ({popped}/{expected_pop} frames) -> re-prebuffering"),
+                    );
+                } else {
+                    avg_avail = avg_avail * 0.70 + f64::from(rem_avail) * 0.30;
+                    dbg_emit_vals(
+                        LWASAPI_DBG_BLUEZ,
+                        LWASAPI_DBG_WARN,
+                        0,
+                        0,
+                        popped as i32,
+                        expected_pop as i32,
+                        0,
+                        "BT_TX_UNDERRUN",
+                        &dev_alias,
+                        &format!("TX ring minor slip ({popped}/{expected_pop} frames) -> keeping link live"),
+                    );
+                }
             }
 
             if pkt_len > 0 && tx_fd >= 0 {
-                let mut had_eagain = false;
-                let mut sres = send_raw(tx_fd, &pkt[..pkt_len], MSG_DONTWAIT | MSG_NOSIGNAL);
-                if sres < 0 && last_errno() == ERRNO_EAGAIN {
-                    had_eagain = true;
-                    let mut pfd = [PollFd {
-                        fd: tx_fd,
-                        events: POLLOUT,
-                        revents: 0,
-                    }];
-                    if do_poll(&mut pfd, 15) > 0 && (pfd[0].revents & POLLOUT) != 0 {
-                        sres = send_raw(tx_fd, &pkt[..pkt_len], MSG_DONTWAIT | MSG_NOSIGNAL);
-                    }
-                }
+                let (sres, had_eagain, saved_err) =
+                    send_l2cap_packet(&rt, tx_fd, &pkt[..pkt_len]);
                 if sres > 0 {
                     rt.tx_packets_sent.fetch_add(1, Ordering::Relaxed);
-                    let now_ms = mono_ns() / 1_000_000;
-                    let mut st = rt.state.lock().unwrap();
-                    if had_eagain {
-                        st.tx_congest_streak = st.tx_congest_streak.saturating_add(1);
-                        st.tx_clean_streak = 0;
-                    } else {
-                        st.tx_congest_streak = st.tx_congest_streak.saturating_sub(1);
-                        st.tx_clean_streak = st.tx_clean_streak.saturating_add(1);
+                    if !had_eagain {
+                        local_clean_streak = local_clean_streak.saturating_add(1);
                     }
-                    if st.active_codec_kind == LWASAPI_BT_CODEC_LDAC
-                        && !st.enc.ldac_enc.is_null()
-                        && st.ldac_mode == LWASAPI_LDAC_MODE_ADAPTIVE
-                        && st.wireless_abr_enabled != 0
-                        && now_ms.saturating_sub(st.abr_last_ms) >= 20
-                    {
-                        st.abr_last_ms = now_ms;
-                        let qdepth = if had_eagain {
-                            4 + st.tx_congest_streak.min(6)
+                    let check_abr = had_eagain
+                        || local_clean_streak >= 8
+                        || (codec_kind == LWASAPI_BT_CODEC_LDAC && local_clean_streak >= 4);
+                    if check_abr {
+                        let now_ms = mono_ns() / 1_000_000;
+                        let mut st = rt.state.lock().unwrap();
+                        if had_eagain {
+                            st.tx_congest_streak = st.tx_congest_streak.saturating_add(1);
+                            st.tx_clean_streak = 0;
                         } else {
-                            0
-                        };
-                        let prev_eq = st.enc.ldac_eqmid;
-                        let mut new_eq = prev_eq;
-                        if !st.enc.ldac_abr.is_null() {
-                            if let Some(abr_api) = load_ldac_abr_library() {
-                                let ret = unsafe {
-                                    (abr_api.proc_step)(st.enc.ldac_enc, st.enc.ldac_abr, qdepth, 1)
-                                };
-                                if (LDACBT_EQMID_HQ..=LDACBT_EQMID_MQ).contains(&ret) {
-                                    new_eq = ret;
+                            st.tx_congest_streak =
+                                st.tx_congest_streak.saturating_sub(local_clean_streak);
+                            st.tx_clean_streak =
+                                st.tx_clean_streak.saturating_add(local_clean_streak);
+                        }
+                        local_clean_streak = 0;
+                        if st.active_codec_kind == LWASAPI_BT_CODEC_LDAC
+                            && !st.enc.ldac_enc.is_null()
+                            && st.ldac_mode == LWASAPI_LDAC_MODE_ADAPTIVE
+                            && st.wireless_abr_enabled != 0
+                            && now_ms.saturating_sub(st.abr_last_ms) >= 20
+                        {
+                            st.abr_last_ms = now_ms;
+                            let qdepth = if had_eagain {
+                                4 + st.tx_congest_streak.min(6)
+                            } else {
+                                0
+                            };
+                            let prev_eq = st.enc.ldac_eqmid;
+                            let mut new_eq = prev_eq;
+                            if !st.enc.ldac_abr.is_null() {
+                                if let Some(abr_api) = load_ldac_abr_library() {
+                                    let ret = unsafe {
+                                        (abr_api.proc_step)(
+                                            st.enc.ldac_enc,
+                                            st.enc.ldac_abr,
+                                            qdepth,
+                                            1,
+                                        )
+                                    };
+                                    if (LDACBT_EQMID_HQ..=LDACBT_EQMID_MQ).contains(&ret) {
+                                        new_eq = ret;
+                                    }
+                                }
+                            } else if let Some(set_eqmid) =
+                                load_ldac_library().and_then(|l| l.set_eqmid)
+                            {
+                                let (cand_eq, clr_cong, clr_clean) = abr_step_ldac(
+                                    prev_eq,
+                                    st.tx_congest_streak,
+                                    st.tx_clean_streak,
+                                );
+                                if cand_eq != prev_eq
+                                    && unsafe { set_eqmid(st.enc.ldac_enc, cand_eq) } == 0
+                                {
+                                    new_eq = cand_eq;
+                                    if clr_cong {
+                                        st.tx_congest_streak = 0;
+                                    }
+                                    if clr_clean {
+                                        st.tx_clean_streak = 0;
+                                    }
                                 }
                             }
-                        } else if let Some(set_eqmid) = load_ldac_library().and_then(|l| l.set_eqmid)
+                            if new_eq != prev_eq
+                                && (LDACBT_EQMID_HQ..=LDACBT_EQMID_MQ).contains(&new_eq)
+                            {
+                                st.enc.ldac_eqmid = new_eq;
+                                st.effective_kbps = ldac_eqmid_to_kbps(st.bt_sample_rate, new_eq);
+                                st.neg_reason =
+                                    format!("LDAC ABR adapted -> {}kbps", st.effective_kbps);
+                                dbg_emit_vals(
+                                    LWASAPI_DBG_BLUEZ,
+                                    LWASAPI_DBG_INFO,
+                                    0,
+                                    0,
+                                    prev_eq,
+                                    new_eq,
+                                    st.effective_kbps as i32,
+                                    "BT_LDAC_ABR",
+                                    &st.device_alias,
+                                    &format!(
+                                        "eqmid {} -> {} ({}kbps)",
+                                        prev_eq, new_eq, st.effective_kbps
+                                    ),
+                                );
+                            }
+                        } else if (st.codec_id == A2DP_CODEC_MPEG24
+                            || st.active_codec_kind == LWASAPI_BT_CODEC_AAC)
+                            && !st.enc.fdk_enc.is_null()
+                            && st.wireless_abr_enabled != 0
                         {
-                            let (cand_eq, clr_cong, clr_clean) = abr_step_ldac(
-                                prev_eq,
+                            let cur_bps = if st.aac_target_bps > 0 {
+                                st.aac_target_bps
+                            } else {
+                                192_000
+                            };
+                            let max_bps = if st.aac_max_bps > 0 {
+                                st.aac_max_bps
+                            } else {
+                                256_000
+                            };
+                            let (next_bps, clr_cong, clr_clean) = abr_step_aac(
+                                cur_bps,
+                                max_bps,
                                 st.tx_congest_streak,
                                 st.tx_clean_streak,
                             );
-                            if cand_eq != prev_eq
-                                && unsafe { set_eqmid(st.enc.ldac_enc, cand_eq) } == 0
-                            {
-                                new_eq = cand_eq;
-                                if clr_cong {
-                                    st.tx_congest_streak = 0;
-                                }
-                                if clr_clean {
-                                    st.tx_clean_streak = 0;
-                                }
+                            if clr_cong {
+                                st.tx_congest_streak = 0;
                             }
-                        }
-                        if new_eq != prev_eq && (LDACBT_EQMID_HQ..=LDACBT_EQMID_MQ).contains(&new_eq)
-                        {
-                            st.enc.ldac_eqmid = new_eq;
-                            st.effective_kbps = ldac_eqmid_to_kbps(st.bt_sample_rate, new_eq);
-                            st.neg_reason =
-                                format!("LDAC ABR adapted -> {}kbps", st.effective_kbps);
-                            dbg_emit_vals(
-                                LWASAPI_DBG_BLUEZ,
-                                LWASAPI_DBG_INFO,
-                                0,
-                                0,
-                                prev_eq,
-                                new_eq,
-                                st.effective_kbps as i32,
-                                "BT_LDAC_ABR",
-                                &st.device_alias,
-                                &format!(
-                                    "eqmid {} -> {} ({}kbps)",
-                                    prev_eq, new_eq, st.effective_kbps
-                                ),
-                            );
-                        }
-                    } else if (st.codec_id == A2DP_CODEC_MPEG24
-                        || st.active_codec_kind == LWASAPI_BT_CODEC_AAC)
-                        && !st.enc.fdk_enc.is_null()
-                        && st.wireless_abr_enabled != 0
-                    {
-                        let cur_bps = if st.aac_target_bps > 0 {
-                            st.aac_target_bps
-                        } else {
-                            192_000
-                        };
-                        let max_bps = if st.aac_max_bps > 0 {
-                            st.aac_max_bps
-                        } else {
-                            256_000
-                        };
-                        let (next_bps, clr_cong, clr_clean) = abr_step_aac(
-                            cur_bps,
-                            max_bps,
-                            st.tx_congest_streak,
-                            st.tx_clean_streak,
-                        );
-                        if clr_cong {
-                            st.tx_congest_streak = 0;
-                        }
-                        if clr_clean {
-                            st.tx_clean_streak = 0;
-                        }
-                        if next_bps != cur_bps {
-                            if let Some(fdk) = load_fdk_aac_library() {
-                                if unsafe { (fdk.set_param)(st.enc.fdk_enc, FDK_PARAM_BITRATE, next_bps) }
-                                    == FDK_AACENC_OK
-                                {
-                                    st.aac_target_bps = next_bps;
-                                    st.effective_kbps = next_bps / 1000;
-                                    st.neg_reason =
-                                        format!("AAC ABR adapted -> {}kbps", st.effective_kbps);
+                            if clr_clean {
+                                st.tx_clean_streak = 0;
+                            }
+                            if next_bps != cur_bps {
+                                if let Some(fdk) = load_fdk_aac_library() {
+                                    if unsafe {
+                                        (fdk.set_param)(st.enc.fdk_enc, FDK_PARAM_BITRATE, next_bps)
+                                    } == FDK_AACENC_OK
+                                    {
+                                        st.aac_target_bps = next_bps;
+                                        st.effective_kbps = next_bps / 1000;
+                                        st.neg_reason =
+                                            format!("AAC ABR adapted -> {}kbps", st.effective_kbps);
+                                    }
                                 }
                             }
                         }
                     }
                 } else if sres < 0 {
-                    let saved_err = last_errno();
                     if saved_err == ERRNO_EPIPE
                         || saved_err == ERRNO_ECONNRESET
                         || saved_err == ERRNO_EBADF
@@ -1289,11 +1404,36 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                                 st.direct_socket_mode = false;
                                 st.tx_stream_active = false;
                                 st.has_bluez_transport = false;
+                                sync_tx_ready(&rt, &st);
                             }
                         }
                         rt.tx_drop_event_ns.store(mono_ns(), Ordering::Relaxed);
                         continue;
-                    } else if saved_err != ERRNO_EAGAIN {
+                    } else if saved_err == ERRNO_EAGAIN {
+                        rt.tx_errors.fetch_add(1, Ordering::Relaxed);
+                        local_clean_streak = 0;
+                        {
+                            let mut st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
+                            st.tx_congest_streak = st.tx_congest_streak.saturating_add(1);
+                            st.tx_clean_streak = 0;
+                        }
+                        let now_c = mono_ns();
+                        if now_c.saturating_sub(last_congest_log_ns) >= 2_000_000_000 {
+                            last_congest_log_ns = now_c;
+                            dbg_emit_vals(
+                                LWASAPI_DBG_BLUEZ,
+                                LWASAPI_DBG_WARN,
+                                0,
+                                0,
+                                tx_fd,
+                                pkt_len as i32,
+                                0,
+                                "BT_TX_CONGEST",
+                                &dev_alias,
+                                "L2CAP socket backpressure persisted after POLLOUT retry window; packet dropped",
+                            );
+                        }
+                    } else {
                         rt.tx_errors.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -1307,7 +1447,7 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
             let period_ns = (u64::from(step_frames) * 1_000_000_000) / u64::from(rate);
             next_tick_ns = next_tick_ns.saturating_add(period_ns);
             let now_ns = mono_ns();
-            if now_ns > next_tick_ns.saturating_add(period_ns * 4) {
+            if now_ns > next_tick_ns.saturating_add(period_ns * 2) {
                 next_tick_ns = now_ns.saturating_add(period_ns);
             }
             sleep_abs_mono_ns(next_tick_ns);
@@ -1710,12 +1850,14 @@ fn acquire_bluez_transport(db: &DBusApi, conn: *mut DBusConnection, rt: &BluezRu
                 let (cname, alias, srate) = {
                     let mut st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
                     st.replace_bt_fd(fd);
+                    configure_bt_l2cap_socket(fd, wmtu);
                     st.read_mtu = rmtu;
                     st.write_mtu = wmtu;
                     st.direct_socket_mode = true;
                     st.has_bluez_transport = true;
                     init_bt_encoder_for_transport_locked(&mut st);
                     st.tx_stream_active = true;
+                    sync_tx_ready(rt, &st);
                     (st.codec_name.clone(), st.device_alias.clone(), st.bt_sample_rate)
                 };
                 println!(
@@ -2006,6 +2148,7 @@ unsafe extern "C" fn endpoint_message_handler(
                 st.tx_stream_active = false;
                 st.transport_path.clear();
                 st.enc.close_all();
+                sync_tx_ready(rt, &st);
             }
         }
         dbg_emit(
@@ -2142,6 +2285,7 @@ unsafe extern "C" fn bluez_signal_filter(
                     st.adapter_path.clear();
                     st.endpoints_registered = false;
                     st.enc.close_all();
+                    sync_tx_ready(rt, &st);
                 }
                 if !new_owner.is_empty() {
                     rt.need_reregister.store(true, Ordering::Release);
@@ -2221,6 +2365,7 @@ unsafe extern "C" fn bluez_signal_filter(
                     st.tx_stream_active = false;
                     st.transport_path.clear();
                     st.enc.close_all();
+                    sync_tx_ready(rt, &st);
                     removed = true;
                 }
             }
@@ -3483,6 +3628,7 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                             st.has_bluez_transport = false;
                             st.tx_stream_active = false;
                             st.enc.close_all();
+                            sync_tx_ready(&rt, &st);
                         }
                         if !old_tp.is_empty() {
                             let rel = dbus_new_method_call(
@@ -4290,6 +4436,7 @@ pub unsafe fn bluez_init_rates_impl(
     rt.tx_drop_event_ns.store(0, Ordering::Relaxed);
     rt.tx_write_frame.store(0, Ordering::Release);
     rt.tx_read_frame.store(0, Ordering::Release);
+    rt.tx_transport_ready.store(false, Ordering::Release);
     rt.tx_paused.store(false, Ordering::Release);
 
     let has_pref_mac = {
@@ -4359,10 +4506,10 @@ pub unsafe fn bluez_reconfigure_rate_impl(bt: *mut c_void, new_engine_sample_rat
 fn set_tx_enabled_impl(rt: &BluezRuntime, enabled: bool) {
     if !enabled {
         rt.tx_paused.store(true, Ordering::Release);
-    } else {
+    } else if rt.tx_paused.swap(false, Ordering::AcqRel) {
+        let _ring = rt.tx_ring.lock().unwrap_or_else(|e| e.into_inner());
         let wr = rt.tx_write_frame.load(Ordering::Acquire);
         rt.tx_read_frame.store(wr, Ordering::Release);
-        rt.tx_paused.store(false, Ordering::Release);
     }
 }
 
@@ -4390,17 +4537,12 @@ pub unsafe fn bluez_write_period_impl(
         return -1;
     };
     if !rt.initialized.load(Ordering::Acquire)
+        || !rt.tx_transport_ready.load(Ordering::Acquire)
         || interleaved_float.is_null()
         || frames == 0
         || channels == 0
     {
         return -1;
-    }
-    {
-        let st = rt.state.lock().unwrap();
-        if !st.has_bluez_transport || st.bt_fd < 0 {
-            return -1;
-        }
     }
     let Some(total) = (frames as usize).checked_mul(channels as usize) else {
         return -1;
@@ -4981,6 +5123,8 @@ pub unsafe fn bluez_close_impl(bt: *mut c_void) {
         st.enc.close_all();
         st.direct_socket_mode = false;
         st.has_bluez_transport = false;
+        st.tx_stream_active = false;
+        sync_tx_ready(rt, &st);
     }
     rt.initialized.store(false, Ordering::Release);
 }
@@ -5229,5 +5373,40 @@ mod tests {
             assert_eq!(vol, 80);
             assert!(!muted);
         }
+    }
+
+    #[test]
+    fn partial_pop_recovery_and_enable_preserve_queue() {
+        assert!(!should_reprebuffer_after_partial_pop(767, 1024, 1));
+        assert!(!should_reprebuffer_after_partial_pop(767, 1024, 2));
+        assert!(should_reprebuffer_after_partial_pop(767, 1024, 3));
+        assert!(should_reprebuffer_after_partial_pop(400, 1024, 1));
+        assert!(should_reprebuffer_after_partial_pop(0, 1024, 1));
+
+        let rt = BluezRuntime::new();
+        rt.initialized.store(true, Ordering::Release);
+        let p = (&rt as *const BluezRuntime as *mut BluezRuntime).cast::<c_void>();
+        let pcm = [0.25f32; 128 * 2];
+
+        // Lock-free tx_transport_ready gates period writes without locking rt.state
+        assert_eq!(
+            unsafe { bluez_write_period_impl(p, pcm.as_ptr(), 128, 2) },
+            -1
+        );
+        rt.tx_transport_ready.store(true, Ordering::Release);
+        assert_eq!(
+            unsafe { bluez_write_period_impl(p, pcm.as_ptr(), 128, 2) },
+            0
+        );
+        assert_eq!(rt.tx_write_frame.load(Ordering::Acquire), 128);
+
+        // Re-enabling TX when already unpaused must not flush queued audio
+        set_tx_enabled_impl(&rt, true);
+        assert_eq!(rt.tx_read_frame.load(Ordering::Acquire), 0);
+
+        // Resuming from a real pause advances read cursor cleanly past stale frames
+        set_tx_enabled_impl(&rt, false);
+        set_tx_enabled_impl(&rt, true);
+        assert_eq!(rt.tx_read_frame.load(Ordering::Acquire), 128);
     }
 }

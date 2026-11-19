@@ -511,6 +511,7 @@ void showReportDialog(
     txt->setPlainText(bodyText);
     lay->addWidget(txt);
     auto* btnClose = new QPushButton(QStringLiteral("Close Report"), &dlg);
+    btnClose->setToolTip(QStringLiteral("Close Report — Dismisses this scrollable diagnostic report dialog."));
     QObject::connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::accept);
     lay->addWidget(btnClose);
     dlg.exec();

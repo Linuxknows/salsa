@@ -455,7 +455,14 @@ fn bench_roundtrip_lwasapi(rate: u32, period_frames: u32) -> (f64, f64, u32, u32
             );
         }
 
-        let impulse = [0.55f32; 64 * 2];
+        let mut impulse = [0.0f32; 64 * 2];
+        for i in 0..64usize {
+            let s = ((2.0 * core::f64::consts::PI * 19_800.0 * (i as f64) / f64::from(actual_rate))
+                .sin()
+                * 0.02) as f32;
+            impulse[i * 2] = s;
+            impulse[i * 2 + 1] = s;
+        }
         let t_send = now_ns();
         IAudioRenderClient_WriteFrames(render, impulse.as_ptr().cast(), 64, LWASAPI_FMT_FLOAT32);
 
@@ -475,7 +482,7 @@ fn bench_roundtrip_lwasapi(rate: u32, period_frames: u32) -> (f64, f64, u32, u32
                 );
                 if cap_buf[..(to_read as usize) * 2]
                     .iter()
-                    .any(|&v| v.abs() > 0.05)
+                    .any(|&v| v.abs() > 0.004)
                 {
                     let t_recv = now_ns();
                     rt_ms = (t_recv.saturating_sub(t_send) as f64) / 1e6;
