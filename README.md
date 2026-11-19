@@ -90,3 +90,4 @@ cd salsa-lwasapi
 
 - **Linuxknows** — Creator & Maintainer
 - **Antigravity (Google DeepMind — Gemini 4 Hydrogen)** — AI Pair-Programming Contributor
+- **Thorr1337** — Beta Tester
