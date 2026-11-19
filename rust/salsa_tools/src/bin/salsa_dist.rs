@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -138,7 +145,7 @@ fn main() -> ExitCode {
         }
         _ => {
             if current_ver.is_empty() {
-                "V1.19.5".to_string()
+                "V1.19.6".to_string()
             } else {
                 current_ver
             }

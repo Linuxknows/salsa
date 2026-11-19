@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use core::ffi::{c_char, c_int, c_void, CStr};
@@ -32,6 +39,10 @@ use salsa_tools::zlib_png::{decode_png_rgba, encode_png_rgba, RgbaImage};
 use salsa_wire::c_abi::{
     LwasapiBtCodecCfg, LwasapiDeviceList, LwasapiEngineStatus, LwasapiEqConfig, LwasapiHwAnalogCfg,
     LwasapiMicApoCfg, LwasapiParamEqExt,
+};
+use salsa_wire::legal::{
+    full_license_bundle, handle_common_cli_flag, salsa_version, short_legal_notice, COPY_TEXT,
+    LESSER_COPY_TEXT, THIRD_PARTY_TEXT,
 };
 use salsa_wire::unix_sys::reset_sigpipe_default;
 
@@ -1992,4 +2003,45 @@ pub extern "C" fn salsa_debug_selftest() -> *mut c_char {
         "OK: freshness_items={checked}, proc_rows={}, Qt6+9Themes+PNG OK",
         procs.len()
     ))
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_version_str() -> *mut c_char {
+    to_c_string(salsa_version().to_string())
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_license_section_text(
+    app_name_c: *const c_char,
+    section: c_int,
+) -> *mut c_char {
+    let app = cstr_to_string(app_name_c)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Salsa".to_string());
+    let text = match section {
+        0 => short_legal_notice(&app),
+        1 => THIRD_PARTY_TEXT.to_string(),
+        2 => LESSER_COPY_TEXT.to_string(),
+        3 => COPY_TEXT.to_string(),
+        _ => full_license_bundle(&app),
+    };
+    to_c_string(text)
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_handle_legal_cli_flag(
+    app_name_c: *const c_char,
+    arg_c: *const c_char,
+) -> c_int {
+    let app = cstr_to_string(app_name_c)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Salsa".to_string());
+    let Some(arg) = cstr_to_string(arg_c) else {
+        return -1;
+    };
+    if matches!(arg.as_str(), "--version" | "-V" | "--license" | "--legal") {
+        handle_common_cli_flag(&app, &arg).unwrap_or(-1)
+    } else {
+        -1
+    }
 }

@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::thread;
@@ -9,6 +16,7 @@ use crate::debug_core::{
 };
 use crate::host::install_root;
 use crate::json::JsonValue;
+use salsa_wire::legal::handle_common_cli_flag;
 use salsa_wire::unix_sys::{install_term_signals, term_signal_requested};
 
 #[derive(Default)]
@@ -61,6 +69,8 @@ fn print_help() {
          --note N              Test MIDI note 0..127 (default 60)\n  \
          --telem               Include telemetry summaries in --stream output\n  \
          --json                Emit machine-readable JSON\n  \
+         -V, --version         Show version and LGPL-3.0 legal notice\n  \
+         --license             Show full LGPL-3.0, GPL-3.0, and third-party terms\n  \
          -h, --help            Show help"
     );
 }
@@ -307,6 +317,9 @@ pub fn run_debug_cli(raw_args: &[String]) -> u8 {
     let mut i = 0usize;
     while i < raw_args.len() {
         let arg = &raw_args[i];
+        if let Some(rc) = handle_common_cli_flag("salsa-debug", arg) {
+            return rc as u8;
+        }
         match arg.as_str() {
             "-h" | "--help" => {
                 print_help();

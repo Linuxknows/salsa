@@ -4,7 +4,17 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.19.5 — Current (`2026-11-19`)
+## V1.19.6 — Current (`2026-11-19`)
+
+### 1. Full GNU LGPL-3.0 (`LGPL-3.0-only`) Compliance
+- Replaced standalone `LICENSE` with the canonical FSF license pair [`COPYING`](COPYING) (verbatim GNU GPL-3.0 base terms) and [`COPYING.LESSER`](COPYING.LESSER) (verbatim GNU LGPL-3.0 permissions), and added [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) documenting Salsa's zero external `crates.io` dependencies, dynamically linked frameworks (Qt6 under `LGPL-3.0-only`), library relinking / Corresponding Source terms (`LGPL-3.0` §4), and optional runtime `dlopen()` codec policy (`libfdk-aac.so.2`, `libldac`, `libfreeaptx`, `libsbc`, `librnnoise`, `libdbus-1` — never bundled or vendored).
+- Added standard `SPDX-License-Identifier: LGPL-3.0-only` and `Copyright (C) 2026 Linuxknows` headers across all Rust, C++, C ABI header, and build/install source files ([`Makefile`](Makefile), [`install-salsa.sh`](install-salsa.sh), `qt6/*`, and `rust/*/src/**/*.rs`).
+- Added centralized legal notices ([`legal.rs`](rust/salsa_net/src/legal.rs)), `--version` / `--license` flags across CLI and GUI binaries (`lwasapi-ctl`, `lwasapi-audiodg`, `lwasapi-run`, `lwasapi-autosync`, `salsa-installer`, `salsa-debug`, `salsa-studio`, `lwasapi-tray`), a shared themed About & License viewer dialog (`About / LGPL-3.0`) in [`salsa_studio.cpp`](qt6/salsa_studio.cpp), [`salsa_debug.cpp`](qt6/salsa_debug.cpp), and [`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp), plus **Chapter 13 (`13. License`)** in [`studio_manual.rs`](rust/salsa_ui/src/studio_manual.rs).
+- Updated [`salsa_installer.rs`](rust/salsa_tools/src/bin/salsa_installer.rs) to install `COPYING`, `COPYING.LESSER`, and `THIRD_PARTY_LICENSES.md` into `~/.local/share/licenses/salsa/` (and verify/uninstall cleanly), and added automated SPDX/license/CLI compliance verification to [`salsa_regression.rs`](rust/salsa_tools/src/bin/salsa_regression.rs).
+
+---
+
+## V1.19.5 (`2026-11-19`)
 
 ### 1. Bluetooth A2DP Dropout, Socket Backpressure & Lock-Free RT Fixes
 - Hardened the BlueZ A2DP transmit loop across [`bluez_media.rs`](rust/salsa_net/src/bluez_media.rs), [`bluez_runtime.rs`](rust/salsa_net/src/bluez_runtime.rs), and [`unix_sys.rs`](rust/salsa_net/src/unix_sys.rs): raised the target TX ring jitter headroom from `20 ms` (`960` frames, smaller than one `1024`-frame AAC packet) to `45 ms` / `2x` packet size (`bt_tx_margin_frames`) consistently across prebuffering and overflow trimming, widened/softened drift scaling (`[0.70 .. 1.65]` deadband, `1.0006`/`0.9994`), avoided blacking out the RF stream on isolated partial pops (`should_reprebuffer_after_partial_pop`), tuned L2CAP socket buffers/priority (`SO_SNDBUF`, `SO_PRIORITY`), added bounded 4-slice `POLLOUT` retries on transient `EAGAIN` (`send_l2cap_packet`) with `BT_TX_CONGEST` logging and `period_ns * 2` cadence recovery, preserved queued TX ring frames in `set_tx_enabled_impl` unless unpausing, and replaced the `rt.state.lock()` on the `SCHED_FIFO 65` audio thread (`bluez_write_period_impl`) with a lock-free `tx_transport_ready` atomic flag.

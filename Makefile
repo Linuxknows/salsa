@@ -1,3 +1,10 @@
+# SPDX-License-Identifier: LGPL-3.0-only
+# Copyright (C) 2026 Linuxknows
+#
+# Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+# under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, version 3 of the License.
+
 CC         := gcc
 SO_LDFLAGS := -pthread -lm -Wl,-z,relro,-z,now -Wl,--gc-sections -Wl,-S
 HOST_LIBASOUND := $(shell ldconfig -p 2>/dev/null | awk '/libasound\.so\.2 /{print $$NF; exit}')
@@ -285,7 +292,7 @@ test-sanitized: rust-test fuzz-wire
 test: all
 	$(BUILD_DIR)/salsa-regression
 
-REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo V1.19.5))
+REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo V1.19.6))
 
 installer: all
 	$(BUILD_DIR)/salsa-dist "$(REV)"

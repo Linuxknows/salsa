@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 use std::fs;
 use std::path::Path;
 
@@ -290,6 +297,7 @@ pub const MANUAL_CHAPTER_BUTTONS: &[(&str, &str)] = &[
     ("10. Cross-PC", "crosspc"),
     ("11. Video", "vid_broker"),
     ("12. Mix/BT", "mix_bt"),
+    ("13. License", "license"),
 ];
 
 pub fn xml_escape(s: &str) -> String {
@@ -460,10 +468,29 @@ pub fn render_manual_chapter_pango(key: &str, t: &SalsaTheme, host: &HostProfile
                 "accent_warn",
                 "🎛️ Chapter 12: HW Analog Boost & BlueZ HFP SCO",
                 "Discrete Sound Card DAC/Amp • Two-Way Bluetooth HFP Headset Mic",
-                "Salsa V1.19.5 unifies discrete sound card analog stages and wireless headset controls:".into(),
+                format!(
+                    "Salsa {} unifies discrete sound card analog stages and wireless headset controls:",
+                    salsa_wire::legal::salsa_version()
+                ),
                 vec![
                     "<b>Hardware Analog Architecture:</b> Utilizes ALSA DAC unity volume, discrete headphone amp gain tiers (32Ω / 150Ω / 600Ω TPA6120), Analog Soft-Knee Drive, and USB HID volume dials (e.g. ASUS Strix Raid DLX / Focusrite Scarlett).".into(),
                     format!("<b>Two-Way Bluetooth HFP {}:</b> Optional two-way Bluetooth HFP mSBC/CVSD headset mic support alongside lossless output codecs.", c("BTPROTO_SCO")),
+                ],
+            ),
+            "license" => (
+                "accent_secondary",
+                "📜 Chapter 13: License, Warranty Notice & Third-Party Libraries (LGPL-3.0)",
+                "Copyright (C) 2026 Linuxknows — GNU Lesser General Public License v3.0 Only (LGPL-3.0-only)",
+                format!(
+                    "Salsa (LWASAPI) {} is free software released strictly under the <b>GNU Lesser General Public License, version 3.0 only</b> ({}), accompanied by GNU GPL-3.0 ({}), distributed <b>WITHOUT ANY WARRANTY</b>:",
+                    salsa_wire::legal::salsa_version(),
+                    c("COPYING.LESSER"),
+                    c("COPYING"),
+                ),
+                vec![
+                    format!("<b>Copyleft Library &amp; Relinking Rights (LGPL-3.0 §4):</b> Complete Corresponding Source for {}, {}, {}, {}, {}, and Qt6 frontends lives in {}, enabling modification, static/dynamic rebuilding via {}, and in-place replacement.", c("liblwasapi.so"), c("build/shims/*.so"), c("libasound_module_pcm_lwasapi.so"), c("libsalsa_wire.a"), c("libsalsa_ui.a"), c("rust/ + qt6/"), c("make all")),
+                    format!("<b>Qt6 Framework &amp; Zero External Crates:</b> Salsa links dynamically to {} strictly under {}, and uses zero third-party {} dependencies.", c("Qt6 (qt6-base)"), c("LGPL-3.0-only"), c("crates.io")),
+                    format!("<b>Optional Host {} Codecs (Never Bundled):</b> Optional codecs such as {} (Fraunhofer FDK-AAC), {}, {}, {}, and {} are opened only at runtime via {} if already installed on your system, and fall back cleanly when absent. See {} and {}.", c("dlopen"), c("libfdk-aac.so.2"), c("libldacBT_enc.so.2"), c("libfreeaptx.so.0"), c("libsbc.so.1"), c("librnnoise.so.0"), c("dlopen()"), c("THIRD_PARTY_LICENSES.md"), c("~/.local/share/licenses/salsa/")),
                 ],
             ),
             _ => (
@@ -753,6 +780,7 @@ Filter 4: ON HSC Fc 10000 Hz Gain 2.0 dB
             "vid_relay",
             "vid_cons",
             "mix_bt",
+            "license",
         ] {
             let m = render_manual_chapter_pango(key, &theme, &host);
             assert!(m.contains("<span"));

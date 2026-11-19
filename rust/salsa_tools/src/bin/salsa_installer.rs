@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 use std::env;
 use std::fs::{self, Permissions};
 use std::os::unix::fs::{symlink, PermissionsExt};
@@ -11,6 +18,9 @@ use salsa_tools::host::{
 };
 use salsa_tools::json::JsonValue;
 use salsa_tools::zlib_png::{decode_png_rgba, encode_png_rgba, resize_rgba};
+use salsa_wire::legal::{
+    handle_common_cli_flag, COPY_TEXT, LESSER_COPY_TEXT, THIRD_PARTY_TEXT,
+};
 use salsa_wire::unix_sys::reset_sigpipe_default;
 
 const ICON_SIZES: [u32; 5] = [512, 256, 128, 64, 48];
@@ -462,6 +472,28 @@ fn install_icons_and_desktop(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+const LICENSE_FILES: [(&str, &str); 3] = [
+    ("COPYING", COPY_TEXT),
+    ("COPYING.LESSER", LESSER_COPY_TEXT),
+    ("THIRD_PARTY_LICENSES.md", THIRD_PARTY_TEXT),
+];
+
+fn licenses_install_dir() -> PathBuf {
+    data_home().join("licenses/salsa")
+}
+
+fn install_license_files(root: &Path) -> Result<(), String> {
+    let lic_dir = licenses_install_dir();
+    fs::create_dir_all(&lic_dir).map_err(|e| format!("mkdir {}: {e}", lic_dir.display()))?;
+    for (name, fallback) in LICENSE_FILES {
+        let src = root.join(name);
+        let bytes = fs::read(&src).unwrap_or_else(|_| fallback.as_bytes().to_vec());
+        write_atomic_secure(&lic_dir.join(name), &bytes, 0o644)
+            .map_err(|e| format!("write {}: {e}", lic_dir.join(name).display()))?;
+    }
+    Ok(())
+}
+
 fn is_symlink_path(path: &Path) -> bool {
     fs::symlink_metadata(path)
         .map(|m| m.file_type().is_symlink())
@@ -732,6 +764,10 @@ fn do_install(root: &Path) -> ExitCode {
         eprintln!("{e}");
         return ExitCode::from(1);
     }
+    if let Err(e) = install_license_files(root) {
+        eprintln!("{e}");
+        return ExitCode::from(1);
+    }
     configure_flatpak_and_kde(&st_dir);
 
     println!("==> Enabling systemd user services...");
@@ -873,6 +909,26 @@ fn do_check(root: &Path) -> ExitCode {
         ICON_SIZES
     );
 
+    let lic_dir = licenses_install_dir();
+    let missing_lics: Vec<&str> = LICENSE_FILES
+        .iter()
+        .map(|(n, _)| *n)
+        .filter(|n| !lic_dir.join(n).is_file())
+        .collect();
+    if missing_lics.is_empty() {
+        println!(
+            "  [OK] LGPL-3.0 license bundle installed ({})",
+            lic_dir.display()
+        );
+    } else {
+        println!(
+            "  [FAIL] Missing LGPL-3.0 license file(s) in {}: {:?}",
+            lic_dir.display(),
+            missing_lics
+        );
+        failures += 1;
+    }
+
     if Path::new("/etc/pacman.d").is_dir() {
         let hook = Path::new(PACMAN_HOOK_PATH).is_file();
         let up_to_date = hook
@@ -950,6 +1006,11 @@ fn do_uninstall(root: &Path) -> ExitCode {
             data_home().join(format!("icons/hicolor/{sz}x{sz}/apps/salsa-lwasapi.png")),
         );
     }
+    let lic_dir = licenses_install_dir();
+    for (name, _) in LICENSE_FILES {
+        let _ = fs::remove_file(lic_dir.join(name));
+    }
+    let _ = fs::remove_dir(&lic_dir);
 
     let st_dir = state_dir();
     let cfg_home = config_home();
@@ -1122,6 +1183,8 @@ fn print_help() {
          --uninstall           Remove Salsa user units, symlinks, and desktop integration\n  \
          --install-pacman-hook Install {PACMAN_HOOK_PATH} (uses pkexec/sudo)\n  \
          --remove-pacman-hook  Remove {PACMAN_HOOK_PATH} (uses pkexec/sudo)\n  \
+         -V, --version         Show Salsa version & LGPL-3.0 legal notice\n  \
+         --license             Show full LGPL-3.0, GPL-3.0, and third-party terms\n  \
          -h, --help            Show this help"
     );
 }
@@ -1130,6 +1193,9 @@ fn main() -> ExitCode {
     reset_sigpipe_default();
     let mut action = Action::Install;
     for arg in env::args().skip(1) {
+        if let Some(rc) = handle_common_cli_flag("salsa-installer", &arg) {
+            return ExitCode::from(rc as u8);
+        }
         match arg.as_str() {
             "--install" => action = Action::Install,
             "--check" => action = Action::Check,

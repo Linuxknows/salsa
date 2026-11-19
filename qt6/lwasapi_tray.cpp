@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 #include "salsa_common.hpp"
 
 #include <QAbstractItemView>
@@ -2030,6 +2037,11 @@ void TrayController::buildContextMenu() {
     connect(actStopEng_, &QAction::triggered, this, [this]() { runSystemdAction("stop"); });
 
     ctxMenu_->addSeparator();
+    auto* aAbout = ctxMenu_->addAction(QStringLiteral("About & License (LGPL-3.0)"));
+    aAbout->setToolTip(QStringLiteral("Opens Salsa copyright, no-warranty notice, third-party dlopen disclosures, and full COPYING/COPYING.LESSER license viewer."));
+    connect(aAbout, &QAction::triggered, this, [this]() {
+        showAboutLicenseDialog(nullptr, QStringLiteral("Salsa Tray"), theme_, fontPct_);
+    });
     auto* aQuit = ctxMenu_->addAction(QStringLiteral("Quit Tray"));
     aQuit->setToolTip(QStringLiteral("Closes `lwasapi-tray` from the system tray (the background audio engine stays running)."));
     connect(aQuit, &QAction::triggered, qApp, &QApplication::quit);
@@ -2856,6 +2868,9 @@ void TrayController::checkSettingsSync() {
 
 int main(int argc, char** argv) {
     salsa_reset_sigpipe();
+    if (const int cliRc = salsa::handleLegalCliArgs(argc, argv, "lwasapi-tray"); cliRc >= 0) {
+        return cliRc;
+    }
     bool selfTest = false;
     bool replace = false;
     for (int i = 1; i < argc; ++i) {

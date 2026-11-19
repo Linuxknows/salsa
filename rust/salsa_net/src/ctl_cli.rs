@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 #![allow(unsafe_code)]
 #![allow(clippy::missing_safety_doc)]
 
@@ -36,6 +43,7 @@ use crate::hw_analog::{
     LWASAPI_HW_AMP_AUTO, LWASAPI_HW_AMP_HIGH, LWASAPI_HW_AMP_LOW, LWASAPI_HW_AMP_MED,
     LWASAPI_HW_ROUTE_AUTO, LWASAPI_HW_ROUTE_HP, LWASAPI_HW_ROUTE_SPK,
 };
+use crate::legal::{handle_common_cli_flag, one_line_legal_notice, salsa_version};
 use crate::unix_sys::{current_uid, resolve_sock_path_common, O_CLOEXEC, O_NOFOLLOW};
 
 use crate::c_abi::{lwasapi_bluez_enumerate_devices, lwasapi_bluez_reset_device};
@@ -231,7 +239,11 @@ fn cmd_status() -> i32 {
     };
 
     println!("================================================================================");
-    println!(" Salsa V1.19.5 — Linux WASAPI Studio Engine (Fixed/Split Clock + HW Analog)");
+    println!(
+        " Salsa {} — Linux WASAPI Studio Engine (Fixed/Split Clock + HW Analog)",
+        salsa_version()
+    );
+    println!(" {}", one_line_legal_notice("lwasapi-ctl"));
     println!("================================================================================");
     println!(" Render / Sink Endpoint : {hw_device} [{act_pb}]");
     println!(" Capture / Mic Endpoint : {hw_cap} [{act_cap}]");
@@ -2200,9 +2212,10 @@ fn cmd_disable_auto() -> i32 {
 }
 
 fn print_usage(prog: &str) {
+    let ver = salsa_version();
     eprint!(
         "Usage: {prog} <command>\n\
-  status                                    Show Salsa V1.19.5 engine, BlueZ, PA socket & HW analog status\n\
+  status                                    Show Salsa {ver} engine, BlueZ, PA socket & HW analog status\n\
   bench                                     Run live latency benchmark vs. Native PA / ALSA\n\
   sync-modules                              Sync ELF symbol versions, rebuild shims & self-heal configs\n\
   devices                                   List active WaveRT ALSA, BlueZ A2DP & MIDI endpoints\n\
@@ -2242,8 +2255,11 @@ fn print_usage(prog: &str) {
   midi-send <note> [velocity]               Inject a MIDI Note-On into the LWASAPI DAW MIDI Hub\n\
   pw-self-test                              Run PipeWire ScreenCast broker live self-test via debug socket\n\
   enable-auto                               Enable Zero-PipeWire Salsa mode (Video Broker, Steam/ALSA/PA direct)\n\
-  disable-auto                              Restore upstream PipeWire, PipeWire-Pulse & WirePlumber cleanly\n"
-    );
+  disable-auto                              Restore upstream PipeWire, PipeWire-Pulse & WirePlumber cleanly\n\
+  license                                   Show Salsa Copyright, No-Warranty Notice & full LGPL-3.0 / GPL-3.0 terms\n\
+  --version                                 Show Salsa version & LGPL-3.0 legal notice\n\n\
+{}\n"
+    , one_line_legal_notice("lwasapi-ctl"));
 }
 
 pub fn run_ctl(args: &[String]) -> i32 {
@@ -2252,6 +2268,13 @@ pub fn run_ctl(args: &[String]) -> i32 {
         return cmd_status();
     }
     let sub = args[1].as_str();
+    if let Some(rc) = handle_common_cli_flag("lwasapi-ctl", sub) {
+        return rc;
+    }
+    if sub == "-h" || sub == "--help" {
+        print_usage(prog);
+        return 0;
+    }
     match sub {
         "devices" => return cmd_devices(),
         "set-sink" | "set-output" if args.len() >= 3 => return cmd_set_device(false, &args[2]),

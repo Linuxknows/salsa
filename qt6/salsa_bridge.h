@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 #pragma once
 
 #include <stdbool.h>
@@ -356,6 +363,10 @@ void salsa_apply_x11_popup_hints(uint64_t xid, bool skip_taskbar, bool above, in
 void salsa_apply_x11_osd_hints(uint64_t xid, int32_t w, int32_t h);
 void salsa_move_x11_window(uint64_t xid, int32_t x, int32_t y);
 double salsa_ui_scale(void);
+
+char* salsa_version_str(void);
+char* salsa_license_section_text(const char* app_name, int section);
+int salsa_handle_legal_cli_flag(const char* app_name, const char* arg);
 
 char* salsa_studio_selftest(void);
 char* salsa_tray_selftest(void);

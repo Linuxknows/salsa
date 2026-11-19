@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 use core::mem;
 use std::collections::BTreeSet;
 use std::env;
@@ -434,10 +441,112 @@ fn test_tools_and_settings_security(base_dir: &Path) -> Result<String, String> {
         return Err("zlib_png resize/encode/decode mismatch".to_string());
     }
 
+    verify_lgpl_compliance(base_dir)?;
+
     Ok(
-        "0700/0600 settings + symlink guard + tools + zlib_png + pure-Rust Studio/Tray/Debugger UI --self-test OK"
+        "0700/0600 settings + symlink guard + tools + zlib_png + LGPL-3.0 compliance + Studio/Tray/Debugger UI --self-test OK"
             .to_string(),
     )
+}
+
+fn check_spdx_dir_rs(dir: &Path) -> Result<(), String> {
+    let entries = fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            check_spdx_dir_rs(&p)?;
+        } else if p.extension().and_then(|s| s.to_str()) == Some("rs") {
+            let txt = fs::read_to_string(&p)
+                .map_err(|e| format!("read {}: {e}", p.display()))?;
+            if !txt
+                .chars()
+                .take(400)
+                .collect::<String>()
+                .contains("SPDX-License-Identifier: LGPL-3.0-only")
+            {
+                return Err(format!("missing LGPL-3.0 SPDX header in {}", p.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_lgpl_compliance(base_dir: &Path) -> Result<(), String> {
+    let copying = fs::read_to_string(base_dir.join("COPYING"))
+        .map_err(|e| format!("missing COPYING (GPL-3.0): {e}"))?;
+    if !copying.contains("GNU GENERAL PUBLIC LICENSE") || !copying.contains("Version 3, 29 June 2007") {
+        return Err("COPYING does not contain verbatim GPL-3.0 text".to_string());
+    }
+    let lesser = fs::read_to_string(base_dir.join("COPYING.LESSER"))
+        .map_err(|e| format!("missing COPYING.LESSER (LGPL-3.0): {e}"))?;
+    if !lesser.contains("GNU LESSER GENERAL PUBLIC LICENSE") || !lesser.contains("Version 3, 29 June 2007") {
+        return Err("COPYING.LESSER does not contain verbatim LGPL-3.0 text".to_string());
+    }
+    let tp = fs::read_to_string(base_dir.join("THIRD_PARTY_LICENSES.md"))
+        .map_err(|e| format!("missing THIRD_PARTY_LICENSES.md: {e}"))?;
+    if !tp.contains("libfdk-aac.so.2") {
+        return Err("THIRD_PARTY_LICENSES.md missing optional dlopen libfdk-aac disclosure".to_string());
+    }
+
+    for f in ["Makefile", "install-salsa.sh"] {
+        let txt = fs::read_to_string(base_dir.join(f))
+            .map_err(|e| format!("read {f}: {e}"))?;
+        if !txt
+            .chars()
+            .take(400)
+            .collect::<String>()
+            .contains("SPDX-License-Identifier: LGPL-3.0-only")
+        {
+            return Err(format!("missing LGPL-3.0 SPDX header in {f}"));
+        }
+    }
+
+    for entry in fs::read_dir(base_dir.join("qt6")).map_err(|e| format!("read_dir qt6: {e}"))?.flatten() {
+        let p = entry.path();
+        if matches!(p.extension().and_then(|s| s.to_str()), Some("cpp" | "hpp" | "h")) {
+            let txt = fs::read_to_string(&p)
+                .map_err(|e| format!("read {}: {e}", p.display()))?;
+            if !txt
+                .chars()
+                .take(400)
+                .collect::<String>()
+                .contains("SPDX-License-Identifier: LGPL-3.0-only")
+            {
+                return Err(format!("missing LGPL-3.0 SPDX header in {}", p.display()));
+            }
+        }
+    }
+
+    for entry in fs::read_dir(base_dir.join("rust")).map_err(|e| format!("read_dir rust: {e}"))?.flatten() {
+        let pkg_dir = entry.path();
+        let manifest = pkg_dir.join("Cargo.toml");
+        if manifest.is_file() {
+            let mtxt = fs::read_to_string(&manifest)
+                .map_err(|e| format!("read {}: {e}", manifest.display()))?;
+            if !mtxt.contains("license = \"LGPL-3.0-only\"") {
+                return Err(format!("Cargo.toml missing LGPL-3.0-only license: {}", manifest.display()));
+            }
+            let src = pkg_dir.join("src");
+            if src.is_dir() {
+                check_spdx_dir_rs(&src)?;
+            }
+        }
+    }
+
+    for bin_name in ["build/lwasapi-ctl", "build/salsa-installer", "build/salsa-debug-cli", "build/lwasapi-audiodg"] {
+        let out = Command::new(base_dir.join(bin_name))
+            .arg("--version")
+            .output()
+            .map_err(|e| format!("{bin_name} --version: {e}"))?;
+        if !out.status.success() {
+            return Err(format!("{bin_name} --version failed"));
+        }
+        let s = String::from_utf8_lossy(&out.stdout);
+        if !s.contains("LGPL-3.0-only") || !s.contains("WITHOUT ANY WARRANTY") {
+            return Err(format!("{bin_name} --version missing LGPL-3.0 notice: {s}"));
+        }
+    }
+    Ok(())
 }
 
 fn test_elf_hardening_and_proxy_parity(base_dir: &Path) -> Result<String, String> {

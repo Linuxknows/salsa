@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 #include "salsa_common.hpp"
 #include "salsa_widgets.hpp"
 
@@ -555,7 +562,7 @@ void StudioController::buildMainWindow() {
     lblTitle_ = new QLabel(QStringLiteral("SALSA — LINUX WASAPI STUDIO"), topCard);
     lblTitle_->setObjectName(QStringLiteral("TitleBanner"));
     titleRow->addWidget(lblTitle_);
-    lblVerPill_ = new QLabel(QStringLiteral("V1.19.5"), topCard);
+    lblVerPill_ = new QLabel(SalsaStr(salsa_version_str()).toQString(), topCard);
     lblVerPill_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     titleRow->addWidget(lblVerPill_);
     titleRow->addStretch(1);
@@ -653,6 +660,12 @@ void StudioController::buildMainWindow() {
     btnAdv->setToolTip(QStringLiteral("Advanced Options (Ctrl+,) — Opens parametric EQ table, crossfeed, discrete analog stages, shortcuts, and diagnostics."));
     connect(btnAdv, &QPushButton::clicked, this, [this]() { openAdvancedWindow(); });
     hdrBtns->addWidget(btnAdv);
+    auto* btnAboutMain = new QPushButton(QStringLiteral("About / LGPL-3.0"), topCard);
+    btnAboutMain->setToolTip(QStringLiteral("About & LGPL-3.0 License — Displays Salsa copyright, no-warranty disclaimer, relinking/source terms, third-party dlopen disclosures, and full COPYING/COPYING.LESSER texts."));
+    connect(btnAboutMain, &QPushButton::clicked, this, [this]() {
+        showAboutLicenseDialog(mainWin_, QStringLiteral("Salsa Studio"), currentTheme_, fontPct_);
+    });
+    hdrBtns->addWidget(btnAboutMain);
     engCol->addLayout(hdrBtns);
     topLay->addLayout(engCol);
     root->addWidget(topCard);
@@ -1058,7 +1071,8 @@ void StudioController::buildTopologyWindow() {
     graphHdrRow->addStretch(1);
 
     auto* lblAutoBadge = new QLabel(
-        QStringLiteral("✔ V1.19.5 LIVE | MASTER CLOCK | HW ANALOG DAC | DYNAMIC EQ | BT ABR"),
+        QStringLiteral("✔ %1 LIVE | MASTER CLOCK | HW ANALOG DAC | DYNAMIC EQ | BT ABR")
+            .arg(SalsaStr(salsa_version_str()).toQString()),
         graphCard);
     lblAutoBadge->setObjectName(QStringLiteral("AutoBadgeLabel"));
     graphHdrRow->addWidget(lblAutoBadge);
@@ -1152,6 +1166,12 @@ void StudioController::buildTopologyWindow() {
     lblHint->setObjectName(QStringLiteral("BandDynLabel"));
     footRow->addWidget(lblHint, 1);
 
+    auto* btnAboutIntro = new QPushButton(QStringLiteral("About / LGPL-3.0"), introFooter);
+    btnAboutIntro->setToolTip(QStringLiteral("About & LGPL-3.0 License — Opens Salsa copyright, warranty disclaimer, relinking rights, and COPYING/COPYING.LESSER viewer."));
+    connect(btnAboutIntro, &QPushButton::clicked, this, [this]() {
+        showAboutLicenseDialog(introWin_, QStringLiteral("Salsa Studio"), currentTheme_, fontPct_);
+    });
+    footRow->addWidget(btnAboutIntro);
     auto* btnAdv = new QPushButton(QStringLiteral("Advanced Options (Ctrl+,)"), introFooter);
     btnAdv->setToolTip(QStringLiteral("Advanced Options (Ctrl+,) — Opens parametric band table, crossfeed, hardware analog stages, shortcuts, and diagnostics."));
     connect(btnAdv, &QPushButton::clicked, this, [this]() { openAdvancedWindow(); });
@@ -1194,6 +1214,12 @@ void StudioController::buildAdvancedWindow() {
     connect(fontBarAdv_, &FontScaleBar::fontScaleChanged, this, [this](int p) { setFontScalePctAndSync(p); });
     hcLay->addWidget(fontBarAdv_);
 
+    auto* btnAboutAdv = new QPushButton(QStringLiteral("About / LGPL-3.0"), hdrCard);
+    btnAboutAdv->setToolTip(QStringLiteral("About & LGPL-3.0 License — Opens Salsa copyright, no-warranty notice, third-party dlopen disclosures, and COPYING/COPYING.LESSER texts."));
+    connect(btnAboutAdv, &QPushButton::clicked, this, [this]() {
+        showAboutLicenseDialog(advWin_, QStringLiteral("Salsa Studio"), currentTheme_, fontPct_);
+    });
+    hcLay->addWidget(btnAboutAdv);
     auto* btnCloseAdv = new QPushButton(QStringLiteral("Close (Esc)"), hdrCard);
     btnCloseAdv->setToolTip(QStringLiteral("Close Advanced Options (Esc) — Hides this window while keeping all DSP, hardware, and shortcut settings active."));
     connect(btnCloseAdv, &QPushButton::clicked, advWin_, &QWidget::hide);
@@ -2760,6 +2786,9 @@ void StudioController::pollEngine(bool initial) {
 
 int main(int argc, char** argv) {
     salsa_reset_sigpipe();
+    if (const int cliRc = salsa::handleLegalCliArgs(argc, argv, "salsa-studio"); cliRc >= 0) {
+        return cliRc;
+    }
     bool selfTest = false;
     bool forceStudio = false;
     bool forceTopology = false;

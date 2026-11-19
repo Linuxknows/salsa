@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 #include "salsa_common.hpp"
 #include "salsa_widgets.hpp"
 
@@ -64,6 +71,13 @@ public:
             spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--studio")});
         });
         topLay->addWidget(btnStudio);
+
+        auto* btnAbout = new QPushButton(QStringLiteral("About / LGPL-3.0"), topCard);
+        btnAbout->setToolTip(QStringLiteral("About & LGPL-3.0 License — Displays Salsa copyright, no-warranty disclaimer, relinking/source terms, third-party dlopen disclosures, and full COPYING/COPYING.LESSER texts."));
+        connect(btnAbout, &QPushButton::clicked, this, [this]() {
+            showAboutLicenseDialog(this, QStringLiteral("Salsa Live Debugger"), theme_, fontPct_);
+        });
+        topLay->addWidget(btnAbout);
 
         topLay->addWidget(new QLabel(QStringLiteral("Theme:"), topCard));
         cmbTheme_ = new QComboBox(topCard);
@@ -205,6 +219,10 @@ static bool isCliModeArg(int argc, char** argv) {
             || std::strcmp(a, "--dbus") == 0
             || std::strcmp(a, "--pw-test") == 0
             || std::strcmp(a, "--send") == 0
+            || std::strcmp(a, "-V") == 0
+            || std::strcmp(a, "--version") == 0
+            || std::strcmp(a, "--license") == 0
+            || std::strcmp(a, "--legal") == 0
             || std::strcmp(a, "-h") == 0
             || std::strcmp(a, "--help") == 0) {
             return true;

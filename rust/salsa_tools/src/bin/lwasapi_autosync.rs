@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 use core::ffi::c_int;
 use std::collections::BTreeSet;
 use std::env;
@@ -286,6 +293,8 @@ fn print_help() {
          --auto                Background watcher mode\n  \
          --quiet               Reduce stdout output\n  \
          --check               Exit 0 if up-to-date, 1 if sync/rebuild needed\n  \
+         -V, --version         Show Salsa version & LGPL-3.0 legal notice\n  \
+         --license             Show full LGPL-3.0, GPL-3.0, and third-party terms\n  \
          -h, --help            Show this help"
     );
 }
@@ -294,6 +303,11 @@ fn main() -> ExitCode {
     reset_sigpipe_default();
     let mut opts = Opts::default();
     for arg in env::args().skip(1) {
+        if matches!(arg.as_str(), "--version" | "-V" | "--license" | "--legal") {
+            if let Some(rc) = salsa_wire::legal::handle_common_cli_flag("lwasapi-autosync", &arg) {
+                return ExitCode::from(rc as u8);
+            }
+        }
         match arg.as_str() {
             "--print-fingerprint" => opts.print_fingerprint = true,
             "--force" => opts.force = true,

@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 use std::env;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitCode};
@@ -15,8 +22,19 @@ fn set_default_env(key: &str, val: &str) {
 fn main() -> ExitCode {
     reset_sigpipe_default();
     let args: Vec<String> = env::args().skip(1).collect();
+    if let Some(first) = args.first() {
+        if matches!(first.as_str(), "--version" | "-V" | "--license" | "--legal") {
+            if let Some(rc) = salsa_wire::legal::handle_common_cli_flag("lwasapi-run", first) {
+                return ExitCode::from(rc as u8);
+            }
+        }
+    }
     if args.is_empty() || matches!(args[0].as_str(), "-h" | "--help") {
-        eprintln!("Usage: lwasapi-run <command> [args...]");
+        eprintln!(
+            "Usage: lwasapi-run <command> [args...]\n\
+             Options: --version, --license, -h/--help\n{}",
+            salsa_wire::legal::one_line_legal_notice("lwasapi-run")
+        );
         return if args.is_empty() {
             ExitCode::from(1)
         } else {

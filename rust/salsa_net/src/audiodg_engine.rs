@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 #![allow(unsafe_code)]
 #![allow(clippy::missing_safety_doc)]
 
@@ -3304,11 +3311,6 @@ unsafe extern "C" fn dbg_handle_cmd_cb(
 pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_char) -> c_int {
     std::env::remove_var("LD_LIBRARY_PATH");
 
-    let mut sock_path = resolve_sock_path_common("LWASAPI_SOCKET", "audiodg.sock", LWASAPI_SOCKET_DEFAULT);
-    if sock_path != LWASAPI_SOCKET_DEFAULT {
-        let _ = fs::remove_file(LWASAPI_SOCKET_DEFAULT);
-    }
-
     let mut args: Vec<String> = Vec::new();
     if argc > 0 && !argv.is_null() {
         for i in 0..(argc as isize) {
@@ -3319,6 +3321,19 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                 args.push(String::new());
             }
         }
+    }
+
+    for arg in args.iter().skip(1) {
+        if matches!(arg.as_str(), "--version" | "-V" | "--license" | "--legal") {
+            if let Some(rc) = crate::legal::handle_common_cli_flag("lwasapi-audiodg", arg) {
+                return rc;
+            }
+        }
+    }
+
+    let mut sock_path = resolve_sock_path_common("LWASAPI_SOCKET", "audiodg.sock", LWASAPI_SOCKET_DEFAULT);
+    if sock_path != LWASAPI_SOCKET_DEFAULT {
+        let _ = fs::remove_file(LWASAPI_SOCKET_DEFAULT);
     }
 
     let mut rt = default_runtime_state();

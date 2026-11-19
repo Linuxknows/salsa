@@ -1,16 +1,27 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 #include "salsa_common.hpp"
 
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QFont>
+#include <QHBoxLayout>
 #include <QImage>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QProxyStyle>
+#include <QPushButton>
 #include <QScreen>
 #include <QStandardPaths>
 #include <QTextEdit>
@@ -637,6 +648,91 @@ int salsaDetectedOutputHz(const QWidget* w) {
 int salsaTelemetryIntervalMs(const QWidget* w, int maxHz) {
     const int hz = std::clamp(salsaDetectedOutputHz(w), 30, std::max(30, maxHz));
     return std::clamp(static_cast<int>(std::floor(1000.0 / hz)), 4, 33);
+}
+
+int handleLegalCliArgs(int argc, char** argv, const char* appName) {
+    for (int i = 1; i < argc; ++i) {
+        const int rc = salsa_handle_legal_cli_flag(appName, argv[i]);
+        if (rc >= 0) return rc;
+    }
+    return -1;
+}
+
+void showAboutLicenseDialog(
+    QWidget* parent,
+    const QString& appName,
+    const SalsaThemeData& theme,
+    int fontPct) {
+    QDialog dlg(parent);
+    const SalsaStr ver(salsa_version_str());
+    dlg.setWindowTitle(
+        QStringLiteral("About %1 — Salsa %2 (LGPL-3.0-only)").arg(appName, ver.toQString()));
+    dlg.resize(scaledPx(860, fontPct), scaledPx(580, fontPct));
+    dlg.setPalette(buildSalsaPalette(theme));
+    dlg.setStyleSheet(buildSalsaStylesheet(theme, false, fontPct));
+
+    auto* lay = new QVBoxLayout(&dlg);
+    lay->setContentsMargins(12, 10, 12, 10);
+    lay->setSpacing(8);
+
+    auto* hdr = new QLabel(
+        QStringLiteral("<b>Salsa (LWASAPI) %1 — %2</b><br>"
+                       "Copyright (C) 2026 Linuxknows &nbsp;|&nbsp; "
+                       "License: <b>GNU Lesser General Public License v3.0 only (LGPL-3.0-only)</b><br>"
+                       "<span style=\"color:%3;\">Distributed WITHOUT ANY WARRANTY; without even the implied warranty of "
+                       "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.</span>")
+            .arg(ver.toQString(), appName.toHtmlEscaped(), theme.colors.value(QStringLiteral("text_secondary"), QStringLiteral("#94A3B8"))),
+        &dlg);
+    hdr->setWordWrap(true);
+    lay->addWidget(hdr);
+
+    auto* tabRow = new QHBoxLayout();
+    tabRow->setSpacing(6);
+    auto* btnSummary = new QPushButton(QStringLiteral("Notice & Summary"), &dlg);
+    btnSummary->setToolTip(QStringLiteral("Legal Notice & Summary — Shows Salsa copyright, LGPL-3.0-only licensing, no-warranty disclaimer, relinking terms, and optional dlopen disclosure."));
+    auto* btnThird = new QPushButton(QStringLiteral("Third-Party / dlopen"), &dlg);
+    btnThird->setToolTip(QStringLiteral("Third-Party Libraries — Lists dynamically linked Qt6/audio frameworks and optional runtime dlopen codecs (including libfdk-aac notice)."));
+    auto* btnLgpl = new QPushButton(QStringLiteral("LGPL-3.0 (COPYING.LESSER)"), &dlg);
+    btnLgpl->setToolTip(QStringLiteral("GNU LGPL v3.0 Text — Displays the full verbatim GNU Lesser General Public License v3.0 additional permissions text (COPYING.LESSER)."));
+    auto* btnGpl = new QPushButton(QStringLiteral("GPL-3.0 (COPYING)"), &dlg);
+    btnGpl->setToolTip(QStringLiteral("GNU GPL v3.0 Text — Displays the full verbatim GNU General Public License v3.0 base license text (COPYING)."));
+    for (QPushButton* b : {btnSummary, btnThird, btnLgpl, btnGpl}) {
+        b->setCheckable(true);
+        b->setAutoExclusive(true);
+        tabRow->addWidget(b);
+    }
+    tabRow->addStretch(1);
+    lay->addLayout(tabRow);
+
+    auto* viewer = new QTextEdit(&dlg);
+    viewer->setReadOnly(true);
+    QFont mono(QStringLiteral("monospace"), scaledPx(10, fontPct));
+    mono.setStyleHint(QFont::Monospace);
+    viewer->setFont(mono);
+    lay->addWidget(viewer, 1);
+
+    const QByteArray appUtf8 = appName.toUtf8();
+    auto loadSection = [viewer, appUtf8](int sec) {
+        const SalsaStr txt(salsa_license_section_text(appUtf8.constData(), sec));
+        viewer->setPlainText(txt.toQString());
+    };
+    QObject::connect(btnSummary, &QPushButton::clicked, &dlg, [loadSection]() { loadSection(0); });
+    QObject::connect(btnThird, &QPushButton::clicked, &dlg, [loadSection]() { loadSection(1); });
+    QObject::connect(btnLgpl, &QPushButton::clicked, &dlg, [loadSection]() { loadSection(2); });
+    QObject::connect(btnGpl, &QPushButton::clicked, &dlg, [loadSection]() { loadSection(3); });
+    btnSummary->setChecked(true);
+    loadSection(0);
+
+    auto* footRow = new QHBoxLayout();
+    footRow->addStretch(1);
+    auto* btnClose = new QPushButton(QStringLiteral("Close"), &dlg);
+    btnClose->setObjectName(QStringLiteral("PrimaryBtn"));
+    btnClose->setToolTip(QStringLiteral("Close License Viewer — Returns to the Salsa interface."));
+    QObject::connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::accept);
+    footRow->addWidget(btnClose);
+    lay->addLayout(footRow);
+
+    dlg.exec();
 }
 
 }  // namespace salsa

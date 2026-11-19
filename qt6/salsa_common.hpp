@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 #pragma once
 
 #include <QApplication>
@@ -162,6 +169,12 @@ void showReportDialog(
     int fontPct,
     int width = 820,
     int height = 500);
+int handleLegalCliArgs(int argc, char** argv, const char* appName);
+void showAboutLicenseDialog(
+    QWidget* parent,
+    const QString& appName,
+    const SalsaThemeData& theme,
+    int fontPct);
 
 class StepVolumeSlider : public QSlider {
     Q_OBJECT

@@ -8,10 +8,10 @@ High-Frequency (Up to **192,000 Hz / 32-Bit Float**) WASAPI style Architecture /
 
 ## Quick 1-Command Install on Any Linux PC
 
-Unzip the archive (for example `V1.19.5` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
+Unzip the archive (for example `V1.19.6` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
 
 ```bash
-unzip "salsa-lwasapi-installer (V1.19.5).zip"
+unzip "salsa-lwasapi-installer (V1.19.6).zip"
 cd salsa-lwasapi
 ./install-salsa.sh
 ```
@@ -88,7 +88,13 @@ cd salsa-lwasapi
 
 ## License
 
-Licensed under the **GNU Lesser General Public License v3.0 (`LGPL-3.0`)** — see [LICENSE](LICENSE).
+Copyright (C) 2026 **Linuxknows**
+
+Salsa (LWASAPI) is licensed under the **GNU Lesser General Public License v3.0 only (`LGPL-3.0-only`)** and is distributed **WITHOUT ANY WARRANTY**:
+
+- [COPYING.LESSER](COPYING.LESSER) — GNU Lesser General Public License v3.0 permissions
+- [COPYING](COPYING) — GNU General Public License v3.0 base terms (required alongside LGPL-3.0)
+- [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) — Dynamically linked frameworks (Qt6 under `LGPL-3.0-only`, ALSA/Pulse/JACK), library relinking & source instructions (`make all`), and optional runtime `dlopen()` codec disclosure (`libfdk-aac`, `libldac`, `libfreeaptx`, `libsbc`, `librnnoise` — never bundled or vendored)
 
 ---
 

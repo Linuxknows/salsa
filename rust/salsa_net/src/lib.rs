@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Copyright (C) 2026 Linuxknows
+//
+// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+
 #![deny(unsafe_code)]
 #![deny(warnings)]
 
@@ -15,6 +22,7 @@ pub mod dsp;
 pub mod failsafe;
 pub mod ffi;
 pub mod hw_analog;
+pub mod legal;
 pub mod midi_hub;
 pub mod pa_server;
 pub mod pa_wire;
