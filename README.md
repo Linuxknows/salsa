@@ -1,4 +1,4 @@
-# Salsa — Linux WASAPI Portable Installer Package
+# Salsa — Linux WASAPI Portable Installer
 
 "**"You can't spell Salsa without ALSA — because even the cleanest audio chips sound flat until they have a zero-latency dip to taste, with zero chunks dropped and plenty of Dynamic EQ heat!"**
 
