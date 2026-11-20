@@ -1092,9 +1092,21 @@ void SalsaLiveDebuggerWidget::renderTelemetryTab() {
     tblPaClients_->setRowCount(pcArr.size());
     for (int i = 0; i < pcArr.size(); ++i) {
         const QJsonObject c = pcArr[i].toObject();
+        const qint64 pid = c.value(QStringLiteral("pid")).toInteger();
+        const QString appName = c.value(QStringLiteral("name")).toString().trimmed();
+        const QString binName = c.value(QStringLiteral("binary")).toString().trimmed();
+        const QString displayApp = !appName.isEmpty()
+            ? appName
+            : (!binName.isEmpty() ? binName : QStringLiteral("PID %1").arg(pid));
+        QTableWidgetItem* appItem = makeRoItem(displayApp);
+        if (!binName.isEmpty() && binName != displayApp) {
+            appItem->setToolTip(QStringLiteral("Binary: %1 (PID %2)").arg(binName).arg(pid));
+        } else if (appName.isEmpty() && !binName.isEmpty()) {
+            appItem->setToolTip(QStringLiteral("Daemon/client omitted PA application.name; executable: %1").arg(binName));
+        }
         tblPaClients_->setItem(i, 0, makeRoItem(QString::number(c.value(QStringLiteral("index")).toInteger())));
-        tblPaClients_->setItem(i, 1, makeRoItem(QString::number(c.value(QStringLiteral("pid")).toInteger())));
-        tblPaClients_->setItem(i, 2, makeRoItem(c.value(QStringLiteral("name")).toString()));
+        tblPaClients_->setItem(i, 1, makeRoItem(QString::number(pid)));
+        tblPaClients_->setItem(i, 2, appItem);
         tblPaClients_->setItem(i, 3, makeRoItem(QStringLiteral("v%1").arg(c.value(QStringLiteral("version")).toInteger())));
         tblPaClients_->setItem(i, 4, makeRoItem(QString::number(c.value(QStringLiteral("out_count")).toInteger())));
     }

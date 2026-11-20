@@ -29,10 +29,14 @@ use crate::c_abi::{
     c_str_to_string, copy_str_to_c, AUDCLNT_SHAREMODE_EXCLUSIVE, E_FAIL, LwasapiDeviceList,
     LwasapiEngineStatus, LwasapiEqConfig, LwasapiHwAnalogCfg, LwasapiIpcReq, LwasapiIpcResp,
     LwasapiParamEqPayload, LWASAPI_BT_CAP_AAC, LWASAPI_BT_CAP_APTX, LWASAPI_BT_CAP_APTX_HD,
-    LWASAPI_BT_CAP_LDAC, LWASAPI_BT_CAP_SBC, LWASAPI_BT_PREF_AAC, LWASAPI_BT_PREF_APTX,
+    LWASAPI_BT_CAP_LDAC, LWASAPI_BT_CAP_SBC, LWASAPI_BT_CONN_CONNECT,
+    LWASAPI_BT_CONN_DISCONNECT, LWASAPI_BT_CONN_QUERY, LWASAPI_BT_CONN_SET_AUTOCONN,
+    LWASAPI_BT_CONN_SET_OPTIONAL, LWASAPI_BT_PREF_AAC, LWASAPI_BT_PREF_APTX,
     LWASAPI_BT_PREF_APTX_HD, LWASAPI_BT_PREF_AUTO, LWASAPI_BT_PREF_LDAC, LWASAPI_BT_PREF_SBC,
-    LWASAPI_CFG_FLAG_CAPTURE_RATE, LWASAPI_CMD_GET_STATUS, LWASAPI_CMD_INJECT_MIDI,
-    LWASAPI_CMD_LIST_DEVICES, LWASAPI_CMD_SET_BT_CODEC, LWASAPI_CMD_SET_DEVICES,
+    LWASAPI_BT_STAT_CONNECTED, LWASAPI_BT_STAT_OPTIONAL, LWASAPI_BT_STAT_TRANSPORT,
+    LWASAPI_BT_STAT_USB_MATCHES_BT, LWASAPI_CFG_FLAG_CAPTURE_RATE, LWASAPI_CMD_BT_CONNECTION,
+    LWASAPI_CMD_GET_STATUS, LWASAPI_CMD_INJECT_MIDI, LWASAPI_CMD_LIST_DEVICES,
+    LWASAPI_CMD_SET_BT_CODEC, LWASAPI_CMD_SET_DEVICES,
     LWASAPI_CMD_SET_ENGINE_CONFIG, LWASAPI_CMD_SET_EQ, LWASAPI_CMD_SET_HW_ANALOG,
     LWASAPI_CMD_SET_MIC_APO, LWASAPI_CMD_SET_PARAM_EQ, LWASAPI_CMD_SET_SESSION_CONTROL,
     LWASAPI_CMD_SET_VOLUME, LWASAPI_EQ_BANDS, LWASAPI_FILTER_HIGH_SHELF, LWASAPI_FILTER_LOW_SHELF,
@@ -329,6 +333,23 @@ fn cmd_status() -> i32 {
             neg_reason_raw.as_str()
         };
         println!("   BT Supported SEPs    : {bt_caps} | {neg_disp}");
+    }
+    let mut bt_q: LwasapiIpcReq = zeroed_struct();
+    bt_q.cmd = LWASAPI_CMD_BT_CONNECTION;
+    bt_q.requested_period_frames = LWASAPI_BT_CONN_QUERY;
+    if let Some(bt_r) = send_req_only(&bt_q) {
+        let f = bt_r.session_id;
+        let pol = if (f & LWASAPI_BT_STAT_OPTIONAL) != 0 {
+            "Optional (Not Mandatory)"
+        } else {
+            "Auto-Connect"
+        };
+        let usb_pri = if (f & LWASAPI_BT_STAT_USB_MATCHES_BT) != 0 {
+            " | USB Priority ACTIVE (Matching USB plugged)"
+        } else {
+            ""
+        };
+        println!("   BT Connection Policy : {pol}{usb_pri}");
     }
 
     println!(
@@ -759,6 +780,43 @@ fn cmd_session_control(session_id: u32, vol_pct: i32, mute_mode: i32, dev_id: Op
         "Session #{session_id} updated (vol={clamped_pct_disp}% mute={mute_mode} dev={}) -> HRESULT=0x{hr:08x}",
         dev_id.filter(|d| !d.is_empty()).unwrap_or("-"),
         clamped_pct_disp = if vol_pct >= 0 { clamped_pct } else { vol_pct },
+    );
+    i32::from(resp.hr != S_OK)
+}
+
+fn cmd_bt_link(mode: &str, mac: &str) -> i32 {
+    let action = match mode {
+        "" | "status" | "query" => LWASAPI_BT_CONN_QUERY,
+        "on" | "connect" => LWASAPI_BT_CONN_CONNECT,
+        "off" | "disconnect" => LWASAPI_BT_CONN_DISCONNECT,
+        "optional" => LWASAPI_BT_CONN_SET_OPTIONAL,
+        "auto" | "mandatory" => LWASAPI_BT_CONN_SET_AUTOCONN,
+        other => {
+            eprintln!("Unknown bt-link mode '{other}'. Use status|on|off|optional|auto.");
+            return 2;
+        }
+    };
+    let mut req: LwasapiIpcReq = zeroed_struct();
+    req.cmd = LWASAPI_CMD_BT_CONNECTION;
+    req.requested_period_frames = action;
+    if !mac.is_empty() {
+        copy_str_to_c(&mut req.target_device, mac);
+    }
+    let Some(resp) = send_req_only(&req) else {
+        eprintln!("Error: could not contact lwasapi-audiodg for bt-link");
+        return 1;
+    };
+    let flags = resp.session_id;
+    let opt = (flags & LWASAPI_BT_STAT_OPTIONAL) != 0;
+    let conn = (flags & LWASAPI_BT_STAT_CONNECTED) != 0;
+    let tp = (flags & LWASAPI_BT_STAT_TRANSPORT) != 0;
+    let usb_pri = (flags & LWASAPI_BT_STAT_USB_MATCHES_BT) != 0;
+    println!(
+        "Bluetooth Link Policy={} | Connected={} | A2DP Transport={} | Dual USB+BT Priority={}",
+        if opt { "Optional" } else { "Auto-Connect" },
+        if conn { "Yes" } else { "No" },
+        if tp { "Active" } else { "Idle" },
+        if usb_pri { "USB-First" } else { "None" },
     );
     i32::from(resp.hr != S_OK)
 }
@@ -2222,6 +2280,8 @@ fn print_usage(prog: &str) {
   set-sink <id|auto|virtual>                Switch playback output endpoint (e.g. hw:3,0, bluez:MAC)\n\
   set-source <id|auto>                      Switch kernel ALSA capture endpoint (e.g. hw:3,0)\n\
   bt-reset [mac]                            Cleanly reset & reconnect Bluetooth A2DP over BR/EDR\n\
+  bt-link <status|on|off|optional|auto> [mac]\n\
+                                            Control optional BT connection & check USB-over-BT priority\n\
   bt-codecs                                 Inspect remote BT supported SEPs & negotiation diagnostics\n\
   set-codec <auto|ldac|aptxhd|aptx|aac|sbc> [abr|990|660|330]\n\
                                             Switch BlueZ A2DP preferred codec & LDAC bitrate tier\n\
@@ -2281,6 +2341,11 @@ pub fn run_ctl(args: &[String]) -> i32 {
         "set-source" | "set-input" if args.len() >= 3 => return cmd_set_device(true, &args[2]),
         "bt-reset" | "reset-bt" | "bt-reconnect" => {
             return cmd_bt_reset(if args.len() >= 3 { &args[2] } else { "" });
+        }
+        "bt-link" | "bt-connect" | "bt-policy" => {
+            let mode = if args.len() >= 3 { &args[2] } else { "status" };
+            let mac = if args.len() >= 4 { &args[3] } else { "" };
+            return cmd_bt_link(mode, mac);
         }
         "volume" | "set-volume" | "app-volume" if args.len() >= 4 => {
             if sub == "app-volume" {

@@ -22,8 +22,9 @@ use std::os::unix::io::{AsRawFd, OwnedFd};
 use salsa_wire::c_abi::{
     copy_str_to_c, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_ALREADY_INITIALIZED,
     AUDCLNT_E_BUFFER_TOO_LARGE, AUDCLNT_E_NOT_INITIALIZED, E_FAIL, E_INVALIDARG, E_OUTOFMEMORY,
-    LWASAPI_CFG_FLAG_CAPTURE_RATE, LWASAPI_CMD_CREATE_SESSION, LWASAPI_CMD_GET_STATUS,
-    LWASAPI_CMD_INJECT_MIDI, LWASAPI_CMD_LIST_DEVICES, LWASAPI_CMD_SET_BT_CODEC,
+    LWASAPI_CFG_FLAG_CAPTURE_RATE, LWASAPI_CMD_BT_CONNECTION, LWASAPI_CMD_CREATE_SESSION,
+    LWASAPI_CMD_GET_STATUS, LWASAPI_CMD_INJECT_MIDI, LWASAPI_CMD_LIST_DEVICES,
+    LWASAPI_CMD_SET_BT_CODEC,
     LWASAPI_CMD_SET_DEVICES, LWASAPI_CMD_SET_ENGINE_CONFIG, LWASAPI_CMD_SET_EQ,
     LWASAPI_CMD_SET_HW_ANALOG, LWASAPI_CMD_SET_MIC_APO, LWASAPI_CMD_SET_PARAM_EQ,
     LWASAPI_CMD_SET_SESSION_CONTROL, LWASAPI_DBG_INFO, LWASAPI_DBG_SHIM, LWASAPI_DBG_TRACE,
@@ -1363,4 +1364,34 @@ pub unsafe extern "C" fn LWASAPI_SetHwAnalog(hw_cfg: *const LwasapiHwAnalogCfg) 
         "",
         0,
     )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn LWASAPI_BtConnectionCtl(
+    action: u32,
+    mac_or_empty: *const c_char,
+    out_flags: *mut u32,
+) -> HRESULT {
+    let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
+        return E_FAIL;
+    };
+    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
+    req.cmd = LWASAPI_CMD_BT_CONNECTION;
+    req.requested_period_frames = action;
+    let mac = unsafe { cstr_to_str(mac_or_empty) };
+    if !mac.is_empty() {
+        copy_str_to_c(&mut req.target_device, mac);
+    }
+    if send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) }).is_err() {
+        return E_FAIL;
+    }
+    let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+    if recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
+        if !out_flags.is_null() {
+            unsafe { *out_flags = resp.session_id };
+        }
+        resp.hr
+    } else {
+        E_FAIL
+    }
 }

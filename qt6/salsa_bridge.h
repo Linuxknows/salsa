@@ -302,6 +302,20 @@ char* salsa_run_sync_modules(bool force);
 char* salsa_run_latency_bench(void);
 char* salsa_run_health_audit_json(void);
 char* salsa_bt_reset_sync(void);
+enum {
+    SALSA_BT_CONN_QUERY = 0,
+    SALSA_BT_CONN_SET_OPTIONAL = 1,
+    SALSA_BT_CONN_SET_AUTOCONN = 2,
+    SALSA_BT_CONN_CONNECT = 3,
+    SALSA_BT_CONN_DISCONNECT = 4,
+};
+enum {
+    SALSA_BT_STAT_OPTIONAL = 1 << 0,
+    SALSA_BT_STAT_CONNECTED = 1 << 1,
+    SALSA_BT_STAT_TRANSPORT = 1 << 2,
+    SALSA_BT_STAT_USB_MATCHES_BT = 1 << 3,
+};
+int salsa_bt_connection_ctl(uint32_t action, const char* mac_or_empty, uint32_t* out_flags);
 int salsa_ctl_systemd(const char* unit, const char* action);
 
 int salsa_debug_cli_main(int argc, const char* const* argv);

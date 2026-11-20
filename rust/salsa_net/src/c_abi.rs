@@ -56,6 +56,18 @@ pub const LWASAPI_CMD_SET_PARAM_EQ: u32 = 11;
 pub const LWASAPI_CMD_SET_MIC_APO: u32 = 12;
 pub const LWASAPI_CMD_SET_BT_CODEC: u32 = 14;
 pub const LWASAPI_CMD_SET_HW_ANALOG: u32 = 15;
+pub const LWASAPI_CMD_BT_CONNECTION: u32 = 16;
+
+pub const LWASAPI_BT_CONN_QUERY: u32 = 0;
+pub const LWASAPI_BT_CONN_SET_OPTIONAL: u32 = 1;
+pub const LWASAPI_BT_CONN_SET_AUTOCONN: u32 = 2;
+pub const LWASAPI_BT_CONN_CONNECT: u32 = 3;
+pub const LWASAPI_BT_CONN_DISCONNECT: u32 = 4;
+
+pub const LWASAPI_BT_STAT_OPTIONAL: u32 = 1 << 0;
+pub const LWASAPI_BT_STAT_CONNECTED: u32 = 1 << 1;
+pub const LWASAPI_BT_STAT_TRANSPORT: u32 = 1 << 2;
+pub const LWASAPI_BT_STAT_USB_MATCHES_BT: u32 = 1 << 3;
 
 pub const LWASAPI_FILTER_PEAK: u32 = 0;
 pub const LWASAPI_FILTER_LOW_SHELF: u32 = 1;
@@ -716,6 +728,7 @@ pub struct SalsaRuntimeState {
     pub desktop_mic_muted: u32,
     pub desktop_mic_gain_ppm: u32,
     pub has_saved_vol_state: bool,
+    pub bt_optional_mode: u32,
 }
 
 pub const E_INVALIDARG: i32 = 0x8007_0057u32 as i32;
@@ -1327,6 +1340,70 @@ pub(crate) unsafe fn lwasapi_bluez_reset_device(
     }
 }
 
+pub(crate) unsafe fn lwasapi_bluez_set_optional_mode(bt: *mut c_void, optional: bool) {
+    #[cfg(not(test))]
+    unsafe {
+        crate::bluez_runtime::bluez_set_optional_mode_impl(bt, optional);
+    }
+    #[cfg(test)]
+    let _ = (bt, optional);
+}
+
+pub(crate) unsafe fn lwasapi_bluez_is_optional_mode(bt: *const c_void) -> bool {
+    #[cfg(not(test))]
+    {
+        unsafe { crate::bluez_runtime::bluez_is_optional_mode_impl(bt) }
+    }
+    #[cfg(test)]
+    {
+        let _ = bt;
+        true
+    }
+}
+
+pub(crate) unsafe fn lwasapi_bluez_known_audio_aliases(bt: *const c_void) -> Vec<String> {
+    #[cfg(not(test))]
+    {
+        unsafe { crate::bluez_runtime::bluez_known_audio_aliases_impl(bt) }
+    }
+    #[cfg(test)]
+    {
+        let _ = bt;
+        Vec::new()
+    }
+}
+
+pub(crate) unsafe fn lwasapi_bluez_connection_ctl(
+    bt: *mut c_void,
+    action: u32,
+    mac_or_empty: *const c_char,
+    out_msg: *mut c_char,
+    out_len: usize,
+    out_flags: *mut u32,
+) -> c_int {
+    #[cfg(not(test))]
+    {
+        unsafe {
+            crate::bluez_runtime::bluez_connection_ctl_impl(
+                bt,
+                action,
+                mac_or_empty,
+                out_msg,
+                out_len,
+                out_flags,
+            )
+        }
+    }
+    #[cfg(test)]
+    {
+        let _ = (bt, action, mac_or_empty, out_msg, out_len);
+        if !out_flags.is_null() {
+            unsafe { *out_flags = LWASAPI_BT_STAT_OPTIONAL };
+        }
+        0
+    }
+}
+
 /// Runs a `extern "C" fn(argc, argv) -> c_int` entrypoint using process arguments and exits with its status code.
 pub fn run_c_main(entry: unsafe extern "C" fn(c_int, *const *const c_char) -> c_int) -> ! {
     use std::ffi::CString;
@@ -1397,10 +1474,11 @@ mod tests {
         assert_eq!(size_of::<LwasapiParamEqPayload>(), 232);
         assert_eq!(size_of::<SalsaMicCubicState>(), 28);
         assert_eq!(offset_of!(SalsaMicCubicState, valid), 24);
-        assert_eq!(size_of::<SalsaRuntimeState>(), 572);
+        assert_eq!(size_of::<SalsaRuntimeState>(), 576);
         assert_eq!(offset_of!(SalsaRuntimeState, eq_cfg), 144);
         assert_eq!(offset_of!(SalsaRuntimeState, hw_analog_cfg), 524);
         assert_eq!(offset_of!(SalsaRuntimeState, has_saved_vol_state), 568);
+        assert_eq!(offset_of!(SalsaRuntimeState, bt_optional_mode), 572);
         assert_eq!(size_of::<LwasapiEngineStatus>(), 7_136);
         assert_eq!(offset_of!(LwasapiEngineStatus, eq_cfg), 264);
         assert_eq!(offset_of!(LwasapiEngineStatus, sessions), 496);

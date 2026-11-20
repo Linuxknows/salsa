@@ -33,17 +33,106 @@
 #include <QScrollArea>
 #include <QShortcut>
 #include <QSlider>
+#include <QSocketNotifier>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTableWidget>
 #include <QTextBrowser>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QWindow>
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+namespace {
+
+QString studioSingleInstanceSockPath() {
+    const QByteArray xdg = qgetenv("XDG_RUNTIME_DIR");
+    if (!xdg.isEmpty()) {
+        const QString dir = QString::fromLocal8Bit(xdg) + QStringLiteral("/lwasapi");
+        ::mkdir(dir.toLocal8Bit().constData(), 0700);
+        ::chmod(dir.toLocal8Bit().constData(), 0700);
+        return dir + QStringLiteral("/salsa-studio.sock");
+    }
+    return QStringLiteral("/tmp/lwasapi-studio-%1.sock").arg(static_cast<qulonglong>(::getuid()));
+}
+
+int connectStudioSingleInstance(const QString& sockPath) {
+    const QByteArray pBytes = sockPath.toLocal8Bit();
+    if (pBytes.size() >= static_cast<qsizetype>(sizeof(sockaddr_un::sun_path))) {
+        return -1;
+    }
+    const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    std::memcpy(addr.sun_path, pBytes.constData(), static_cast<size_t>(pBytes.size()));
+    if (::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+        ::close(fd);
+        return -1;
+    }
+    struct ucred cred{};
+    socklen_t clen = sizeof(cred);
+    if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &clen) != 0 || cred.uid != ::getuid()) {
+        ::close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+bool tryActivateExistingStudioInstance(const QString& mode, const QByteArray& rawToken) {
+    const QString sockPath = studioSingleInstanceSockPath();
+    const int fd = connectStudioSingleInstance(sockPath);
+    if (fd < 0) return false;
+    QByteArray cleanTok = rawToken;
+    cleanTok.replace('\n', "");
+    cleanTok.replace('\r', "");
+    cleanTok.replace('\t', "");
+    const QByteArray msg = QByteArray("SHOW ") + mode.toUtf8() + "\t" + cleanTok + "\n";
+    ssize_t off = 0;
+    while (off < msg.size()) {
+        const ssize_t n = ::write(fd, msg.constData() + off, static_cast<size_t>(msg.size() - off));
+        if (n <= 0) break;
+        off += n;
+    }
+    struct pollfd pfd{fd, POLLIN, 0};
+    if (::poll(&pfd, 1, 1000) > 0) {
+        char ack[16]{};
+        const ssize_t _r = ::read(fd, ack, sizeof(ack));
+        (void)_r;
+    }
+    ::close(fd);
+    return true;
+}
+
+QByteArray readSingleLineBounded(int fd, size_t maxBytes = 512) {
+    QByteArray out;
+    out.reserve(128);
+    char ch = 0;
+    struct pollfd pfd{fd, POLLIN, 0};
+    while (static_cast<size_t>(out.size()) < maxBytes) {
+        const int pr = ::poll(&pfd, 1, 50);
+        if (pr <= 0) break;
+        const ssize_t n = ::read(fd, &ch, 1);
+        if (n <= 0 || ch == '\n') break;
+        out.append(ch);
+    }
+    return out;
+}
+
+}  // namespace
 
 namespace salsa {
 
@@ -245,7 +334,18 @@ private:
     QComboBox* cmbBtLdac_ = nullptr;
     QCheckBox* chkBtAbr_ = nullptr;
     QCheckBox* chkBtSco_ = nullptr;
+    QCheckBox* chkBtOptional_ = nullptr;
+    QPushButton* btnBtLink_ = nullptr;
+    uint32_t lastBtConnFlags_ = SALSA_BT_STAT_OPTIONAL;
+    qint64 lastBtLinkPollMs_ = 0;
     QLabel* lblBtDiag_ = nullptr;
+    int singleInstListenFd_ = -1;
+    QSocketNotifier* singleInstNotifier_ = nullptr;
+    QString singleInstSockPath_;
+    void setupSingleInstanceServer();
+    void handleSingleInstanceClient();
+    void activateExistingWindow(const QString& targetMode, const QByteArray& actToken);
+    void syncBtConnectionControls(uint32_t flags, const QString& noteOverride = QString());
     QLabel* lblSpk_ = nullptr;
     StepVolumeSlider* sldSpk_ = nullptr;
     QPushButton* btnSpkMute_ = nullptr;
@@ -501,9 +601,167 @@ void StudioController::shutdownAll() {
         studioDbgHandle_ = nullptr;
     }
     if (themeDlg_) { themeDlg_->close(); delete themeDlg_; themeDlg_ = nullptr; }
+    if (singleInstNotifier_) {
+        singleInstNotifier_->setEnabled(false);
+        singleInstNotifier_->deleteLater();
+        singleInstNotifier_ = nullptr;
+    }
+    if (singleInstListenFd_ >= 0) {
+        ::close(singleInstListenFd_);
+        singleInstListenFd_ = -1;
+    }
+    if (!singleInstSockPath_.isEmpty()) {
+        ::unlink(singleInstSockPath_.toLocal8Bit().constData());
+        singleInstSockPath_.clear();
+    }
     if (advWin_) { advWin_->close(); }
     if (introWin_) { introWin_->close(); }
     if (mainWin_) { mainWin_->close(); }
+}
+
+void StudioController::setupSingleInstanceServer() {
+    if (singleInstListenFd_ >= 0) return;
+    const QString sockPath = studioSingleInstanceSockPath();
+    const QByteArray pBytes = sockPath.toLocal8Bit();
+    if (pBytes.size() >= static_cast<qsizetype>(sizeof(sockaddr_un::sun_path))) return;
+
+    auto tryBind = [&]() -> int {
+        const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if (fd < 0) return -1;
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        std::memcpy(addr.sun_path, pBytes.constData(), static_cast<size_t>(pBytes.size()));
+        if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0) {
+            return fd;
+        }
+        ::close(fd);
+        return -1;
+    };
+
+    int fd = tryBind();
+    if (fd < 0 && errno == EADDRINUSE) {
+        const int probe = connectStudioSingleInstance(sockPath);
+        if (probe >= 0) {
+            ::close(probe);
+            return;
+        }
+        ::unlink(pBytes.constData());
+        fd = tryBind();
+    }
+    if (fd < 0) return;
+    ::chmod(pBytes.constData(), 0600);
+    if (::listen(fd, 8) != 0) {
+        ::close(fd);
+        ::unlink(pBytes.constData());
+        return;
+    }
+    singleInstListenFd_ = fd;
+    singleInstSockPath_ = sockPath;
+    singleInstNotifier_ = new QSocketNotifier(fd, QSocketNotifier::Read, this);
+    connect(singleInstNotifier_, &QSocketNotifier::activated, this, [this](QSocketDescriptor) {
+        handleSingleInstanceClient();
+    });
+}
+
+void StudioController::handleSingleInstanceClient() {
+    if (singleInstListenFd_ < 0) return;
+    for (;;) {
+        const int cfd = ::accept4(singleInstListenFd_, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+        if (cfd < 0) break;
+        struct ucred cred{};
+        socklen_t clen = sizeof(cred);
+        if (::getsockopt(cfd, SOL_SOCKET, SO_PEERCRED, &cred, &clen) == 0 && cred.uid == ::getuid()) {
+            const QByteArray line = readSingleLineBounded(cfd);
+            const ssize_t _w = ::write(cfd, "OK\n", 3);
+            (void)_w;
+            ::close(cfd);
+            QString mode = QStringLiteral("auto");
+            QByteArray token;
+            if (line.startsWith("SHOW ")) {
+                const QByteArray rest = line.mid(5);
+                const qsizetype tab = rest.indexOf('\t');
+                if (tab >= 0) {
+                    mode = QString::fromUtf8(rest.left(tab)).trimmed();
+                    token = rest.mid(tab + 1).trimmed();
+                } else {
+                    mode = QString::fromUtf8(rest).trimmed();
+                }
+            }
+            activateExistingWindow(mode, token);
+        } else {
+            ::close(cfd);
+        }
+    }
+}
+
+void StudioController::activateExistingWindow(const QString& targetMode, const QByteArray& actToken) {
+    QWidget* target = nullptr;
+    if (targetMode == QStringLiteral("topology") && introWin_) {
+        target = introWin_;
+    } else if (mainWin_
+               && (targetMode == QStringLiteral("studio")
+                   || studioEntered_
+                   || mainWin_->isVisible()
+                   || mainWin_->isMinimized())) {
+        studioEntered_ = true;
+        target = mainWin_;
+        if (targetMode == QStringLiteral("studio") && introWin_) {
+            introWin_->hide();
+        }
+    } else if (introWin_) {
+        target = introWin_;
+    } else if (mainWin_) {
+        studioEntered_ = true;
+        target = mainWin_;
+    }
+    if (!target) return;
+
+    if (!actToken.isEmpty()) {
+        qputenv("XDG_ACTIVATION_TOKEN", actToken);
+    }
+    const Qt::WindowStates st = target->windowState();
+    if (st & Qt::WindowMinimized) {
+        target->setWindowState((st & ~Qt::WindowMinimized) | Qt::WindowActive);
+    }
+    target->showNormal();
+    target->show();
+    target->raise();
+    target->activateWindow();
+    if (QWindow* wh = target->windowHandle()) {
+        wh->requestActivate();
+    }
+    syncGraphTimer();
+}
+
+void StudioController::syncBtConnectionControls(uint32_t flags, const QString& noteOverride) {
+    lastBtConnFlags_ = flags;
+    const bool opt = (flags & SALSA_BT_STAT_OPTIONAL) != 0;
+    const bool conn = (flags & SALSA_BT_STAT_CONNECTED) != 0;
+    const bool tp = (flags & SALSA_BT_STAT_TRANSPORT) != 0;
+    const bool usbPri = (flags & SALSA_BT_STAT_USB_MATCHES_BT) != 0;
+    if (chkBtOptional_) {
+        chkBtOptional_->blockSignals(true);
+        chkBtOptional_->setChecked(opt);
+        chkBtOptional_->blockSignals(false);
+    }
+    if (btnBtLink_) {
+        btnBtLink_->setText(conn ? QStringLiteral("Disconnect BT") : QStringLiteral("Turn On BT"));
+        btnBtLink_->setToolTip(conn
+            ? QStringLiteral("Disconnect Bluetooth audio headset (USB cable & Bluetooth mice/keyboards stay active).")
+            : (usbPri ? QStringLiteral("Turn On Bluetooth Headset — Currently prioritized to USB cable; click to connect BT anyway.")
+                      : QStringLiteral("Turn On Bluetooth Headset — Manually initiate BlueZ audio connection when Optional BT is enabled.")));
+    }
+    if (lblBtDiag_) {
+        if (!noteOverride.isEmpty()) {
+            lblBtDiag_->setText(noteOverride);
+        } else if (!tp && usbPri) {
+            lblBtDiag_->setText(conn
+                ? QStringLiteral("BT: Standby (USB Priority Active)")
+                : QStringLiteral("BT: Optional Off (USB Priority Active)"));
+        } else if (!tp && !conn && opt) {
+            lblBtDiag_->setText(QStringLiteral("BT: Optional Standby"));
+        }
+    }
 }
 
 void StudioController::start(bool forceStudio, bool forceTopology) {
@@ -524,6 +782,7 @@ void StudioController::start(bool forceStudio, bool forceTopology) {
         mainWin_->raise();
         mainWin_->activateWindow();
     }
+    setupSingleInstanceServer();
     pollTimer_->start();
     syncGraphTimer();
 }
@@ -884,8 +1143,8 @@ void StudioController::buildMainWindow() {
     cmbSink_ = new QComboBox(hwCard);
     cmbSink_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     cmbSink_->setMinimumContentsLength(14);
-    cmbSink_->addItem(QStringLiteral("Auto-Priority (BT A2DP > USB > Analog > HDMI)"), QStringLiteral("auto"));
-    cmbSink_->setToolTip(QStringLiteral("Playback Output Sink — Switches active audio output between Auto-Priority, kernel ALSA WaveRT cards, or native BlueZ A2DP Bluetooth."));
+    cmbSink_->addItem(QStringLiteral("Auto-Priority (Dual USB > BT A2DP > USB > Analog > HDMI)"), QStringLiteral("auto"));
+    cmbSink_->setToolTip(QStringLiteral("Playback Output Sink — Auto-Priority gives plugged USB cables priority over matching Bluetooth headsets, then BT A2DP, USB, Analog, and HDMI."));
     connect(cmbSink_, &QComboBox::activated, this, [this](int i) { onSinkActivated(i); });
     devRow->addWidget(cmbSink_, 1);
     btnBtReset_ = new QPushButton(QStringLiteral("Reset BT"), hwCard);
@@ -934,6 +1193,45 @@ void StudioController::buildMainWindow() {
     chkBtSco_->setToolTip(QStringLiteral("Bluetooth HFP Two-Way Mic — Enables Hands-Free SCO capture using the headset's built-in microphone (lowers downlink audio bandwidth while active)."));
     connect(chkBtSco_, &QCheckBox::toggled, this, [this]() { if (!updatingUi_) onBtCfgChanged(); });
     btRow->addWidget(chkBtSco_);
+
+    chkBtOptional_ = new QCheckBox(QStringLiteral("Optional BT"), hwCard);
+    chkBtOptional_->setChecked(true);
+    chkBtOptional_->setToolTip(QStringLiteral("Optional Bluetooth Connection — When enabled, Bluetooth is not mandatory when a matching USB cable or local card is active, eliminating background BT/mouse interference."));
+    connect(chkBtOptional_, &QCheckBox::toggled, this, [this](bool checked) {
+        if (updatingUi_) return;
+        btHoldUntilMs_ = nowMs() + 1800;
+        uint32_t flags = 0;
+        const int rc = salsa_bt_connection_ctl(
+            checked ? SALSA_BT_CONN_SET_OPTIONAL : SALSA_BT_CONN_SET_AUTOCONN,
+            "",
+            &flags);
+        syncBtConnectionControls(flags, rc == 0 ? (checked ? QStringLiteral("BT: Optional (USB-First)") : QStringLiteral("BT: Auto-Connect enabled")) : QString());
+    });
+    btRow->addWidget(chkBtOptional_);
+
+    btnBtLink_ = new QPushButton(QStringLiteral("Turn On BT"), hwCard);
+    btnBtLink_->setObjectName(QStringLiteral("CompactBtn"));
+    btnBtLink_->setToolTip(QStringLiteral("Connect or Disconnect Bluetooth Headset — Manually turn on or drop the BlueZ audio link without affecting Bluetooth mice or keyboards."));
+    connect(btnBtLink_, &QPushButton::clicked, this, [this]() {
+        btnBtLink_->setEnabled(false);
+        btHoldUntilMs_ = nowMs() + 2500;
+        const bool wantOff = (lastBtConnFlags_ & SALSA_BT_STAT_CONNECTED) != 0;
+        uint32_t flags = 0;
+        const int rc = salsa_bt_connection_ctl(
+            wantOff ? SALSA_BT_CONN_DISCONNECT : SALSA_BT_CONN_CONNECT,
+            "",
+            &flags);
+        btnBtLink_->setEnabled(true);
+        QString note;
+        if (rc == 0) {
+            note = wantOff ? QStringLiteral("BT: Disconnected (USB/mice unaffected)") : QStringLiteral("BT: Connection requested");
+        } else {
+            note = wantOff ? QStringLiteral("BT: Disconnect failed") : QStringLiteral("BT: No paired audio headset ready");
+        }
+        syncBtConnectionControls(flags, note);
+        lastBtLinkPollMs_ = 0;
+    });
+    btRow->addWidget(btnBtLink_);
 
     lblBtDiag_ = new QLabel(QStringLiteral("BT: Standby"), hwCard);
     lblBtDiag_->setObjectName(QStringLiteral("BandDynLabel"));
@@ -2465,7 +2763,7 @@ void StudioController::pollEngine(bool initial) {
             lastDevSig_ = sig;
             updatingUi_ = true;
             cmbSink_->clear();
-            cmbSink_->addItem(QStringLiteral("Auto-Priority (BT A2DP > USB > Analog > HDMI)"), QStringLiteral("auto"));
+            cmbSink_->addItem(QStringLiteral("Auto-Priority (Dual USB > BT A2DP > USB > Analog > HDMI)"), QStringLiteral("auto"));
             cmbSource_->clear();
             cmbSource_->addItem(QStringLiteral("Auto-Priority (USB Mic > HDA > Virtual)"), QStringLiteral("auto"));
             for (uint32_t i = 0; i < std::min<uint32_t>(dl.num_devices, SALSA_MAX_DEVICES); ++i) {
@@ -2574,13 +2872,32 @@ void StudioController::pollEngine(bool initial) {
         chkBtAbr_->setChecked(btCfg_.wireless_abr_enabled != 0);
         chkBtSco_->setChecked(btCfg_.hfp_sco_enabled != 0);
     }
-    lblBtDiag_->setText(
-        st.bt_active ? QStringLiteral("BT: %1 %2 kbps (%3 ms) %4")
-                           .arg(cFixedStr(st.bt_codec, sizeof(st.bt_codec)))
-                           .arg(st.bt_codec_cfg.effective_kbps)
-                           .arg(st.bt_delay_ms)
-                           .arg(cFixedStr(st.bt_codec_cfg.neg_reason, sizeof(st.bt_codec_cfg.neg_reason)))
-                     : QStringLiteral("BT: Standby"));
+    if (tNow >= btHoldUntilMs_ && (lastBtLinkPollMs_ == 0 || (tNow - lastBtLinkPollMs_) >= 1500)) {
+        lastBtLinkPollMs_ = tNow;
+        uint32_t btFlags = SALSA_BT_STAT_OPTIONAL;
+        if (salsa_bt_connection_ctl(SALSA_BT_CONN_QUERY, "", &btFlags) == 0) {
+            syncBtConnectionControls(btFlags);
+        }
+    }
+    if (st.bt_active) {
+        lblBtDiag_->setText(
+            QStringLiteral("BT: %1 %2 kbps (%3 ms) %4")
+                .arg(cFixedStr(st.bt_codec, sizeof(st.bt_codec)))
+                .arg(st.bt_codec_cfg.effective_kbps)
+                .arg(st.bt_delay_ms)
+                .arg(cFixedStr(st.bt_codec_cfg.neg_reason, sizeof(st.bt_codec_cfg.neg_reason))));
+    } else if (tNow >= btHoldUntilMs_) {
+        const bool usbPri = (lastBtConnFlags_ & SALSA_BT_STAT_USB_MATCHES_BT) != 0;
+        const bool conn = (lastBtConnFlags_ & SALSA_BT_STAT_CONNECTED) != 0;
+        const bool opt = (lastBtConnFlags_ & SALSA_BT_STAT_OPTIONAL) != 0;
+        if (usbPri) {
+            lblBtDiag_->setText(conn
+                ? QStringLiteral("BT: Standby (USB Priority Active)")
+                : QStringLiteral("BT: Optional Off (USB Priority Active)"));
+        } else {
+            lblBtDiag_->setText(opt ? QStringLiteral("BT: Optional Standby") : QStringLiteral("BT: Standby"));
+        }
+    }
 
     if (tNow >= hwHoldUntilMs_) {
         hwAnalog_ = st.hw_analog_cfg;
@@ -2823,6 +3140,12 @@ int main(int argc, char** argv) {
         }
         salsa::StudioController ctrl(true);
         std::printf("%s\n", res.toUtf8().constData());
+        return 0;
+    }
+
+    const QString mode = forceTopology ? QStringLiteral("topology")
+                                       : (forceStudio ? QStringLiteral("studio") : QStringLiteral("auto"));
+    if (tryActivateExistingStudioInstance(mode, qgetenv("XDG_ACTIVATION_TOKEN"))) {
         return 0;
     }
 

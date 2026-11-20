@@ -28,8 +28,11 @@ use crate::c_abi::{
     LwasapiMidiEvent, LwasapiMidiHub, LwasapiPaCallbacks, LwasapiParamEqExt,
     LwasapiParamEqPayload, LwasapiPwBrokerOpts, LwasapiShmRing, SalsaBtSnapshot,
     SalsaMicCubicState, SalsaRuntimeState, AUDCLNT_E_DEVICE_IN_USE, AUDCLNT_SHAREMODE_EXCLUSIVE,
-    AUDCLNT_STREAMFLAGS_CAPTURE, AUDCLNT_STREAMFLAGS_LOOPBACK, E_INVALIDARG, E_OUTOFMEMORY,
-    LWASAPI_BT_RING_FRAMES, LWASAPI_CFG_FLAG_CAPTURE_RATE, LWASAPI_CMD_CREATE_SESSION,
+    AUDCLNT_STREAMFLAGS_CAPTURE, AUDCLNT_STREAMFLAGS_LOOPBACK, E_FAIL, E_INVALIDARG, E_OUTOFMEMORY,
+    LWASAPI_BT_CONN_CONNECT, LWASAPI_BT_CONN_DISCONNECT, LWASAPI_BT_CONN_QUERY,
+    LWASAPI_BT_CONN_SET_AUTOCONN, LWASAPI_BT_RING_FRAMES, LWASAPI_BT_STAT_CONNECTED,
+    LWASAPI_BT_STAT_OPTIONAL, LWASAPI_BT_STAT_TRANSPORT, LWASAPI_BT_STAT_USB_MATCHES_BT,
+    LWASAPI_CFG_FLAG_CAPTURE_RATE, LWASAPI_CMD_BT_CONNECTION, LWASAPI_CMD_CREATE_SESSION,
     LWASAPI_CMD_GET_STATUS, LWASAPI_CMD_INJECT_MIDI, LWASAPI_CMD_LIST_DEVICES,
     LWASAPI_CMD_SET_BT_CODEC, LWASAPI_CMD_SET_DEVICES, LWASAPI_CMD_SET_ENGINE_CONFIG,
     LWASAPI_CMD_SET_EQ, LWASAPI_CMD_SET_HW_ANALOG, LWASAPI_CMD_SET_MIC_APO,
@@ -179,10 +182,12 @@ pub(crate) struct SndXferi {
 }
 
 use crate::c_abi::{
-    lwasapi_bluez_close, lwasapi_bluez_enumerate_devices, lwasapi_bluez_get_codec_config,
-    lwasapi_bluez_hw_fingerprint, lwasapi_bluez_init_rates, lwasapi_bluez_open_capture,
-    lwasapi_bluez_read_capture_native, lwasapi_bluez_reconfigure_rate, lwasapi_bluez_set_codec_config,
-    lwasapi_bluez_set_mic_gain_ppm, lwasapi_bluez_set_mic_volume,
+    lwasapi_bluez_close, lwasapi_bluez_connection_ctl, lwasapi_bluez_enumerate_devices,
+    lwasapi_bluez_get_codec_config, lwasapi_bluez_hw_fingerprint, lwasapi_bluez_init_rates,
+    lwasapi_bluez_is_optional_mode, lwasapi_bluez_known_audio_aliases,
+    lwasapi_bluez_open_capture, lwasapi_bluez_read_capture_native,
+    lwasapi_bluez_reconfigure_rate, lwasapi_bluez_set_codec_config, lwasapi_bluez_set_mic_gain_ppm,
+    lwasapi_bluez_set_mic_volume, lwasapi_bluez_set_optional_mode,
     lwasapi_bluez_set_preferred_target, lwasapi_bluez_set_sco_enabled,
     lwasapi_bluez_set_tx_enabled, lwasapi_bluez_set_volume, lwasapi_bluez_write_period,
     salsa_audiodg_bt_ptr, salsa_bt_get_snapshot, salsa_bt_rt_master_vol,
@@ -334,6 +339,7 @@ struct SavedBtState {
     saved_mic_vol_pct: u32,
     saved_mic_muted: u32,
     saved_mic_gain_ppm: u32,
+    bt_optional_mode: u32,
 }
 
 impl SavedBtState {
@@ -346,6 +352,7 @@ impl SavedBtState {
             saved_mic_vol_pct: rt.desktop_mic_volume_pct,
             saved_mic_muted: rt.desktop_mic_muted,
             saved_mic_gain_ppm: rt.desktop_mic_gain_ppm,
+            bt_optional_mode: rt.bt_optional_mode,
         }
     }
 }
@@ -510,7 +517,14 @@ impl AudiodgEngine {
                 sb.saved_mic_vol_pct = bt_snap.desktop_mic_volume_pct;
                 sb.saved_mic_muted = u32::from(bt_snap.desktop_mic_muted);
                 sb.saved_mic_gain_ppm = bt_snap.desktop_mic_gain_ppm;
-                sb.has_saved_vol_state = true;
+                let opt = unsafe { lwasapi_bluez_is_optional_mode(self.bt()) };
+            if bt_snap.initialized {
+                st.bt_optional_mode = u32::from(opt);
+                sb.bt_optional_mode = st.bt_optional_mode;
+            } else {
+                st.bt_optional_mode = sb.bt_optional_mode;
+            }
+            sb.has_saved_vol_state = true;
             } else {
                 st.bt_cfg = sb.saved_bt_cfg;
             }
@@ -624,22 +638,94 @@ impl AudiodgEngine {
             format_bits: target_bits,
         };
         let next_id: String;
+        let mut local_dl: LwasapiDeviceList = unsafe { mem::zeroed() };
+        let dlp: Option<&LwasapiDeviceList> = if !force_virtual && req != "virtual" {
+            Some(match pre_dl {
+                Some(d) => d,
+                None => {
+                    unsafe {
+                        lwasapi_bluez_enumerate_devices(
+                            self.bt(),
+                            ptr::null(),
+                            ptr::null(),
+                            &mut local_dl,
+                        );
+                    }
+                    &local_dl
+                }
+            })
+        } else {
+            None
+        };
 
-        if !force_virtual && (want_bt || auto_mode) {
-            let bt_snap = snapshot_bt(self.bt());
+        let mut bt_snap = snapshot_bt(self.bt());
+        let known_bt_aliases = unsafe { lwasapi_bluez_known_audio_aliases(self.bt()) };
+        let matching_usb_idx = dlp.and_then(|d| {
+            let alias = c_str_to_string(&bt_snap.device_alias);
+            find_matching_usb_pb_idx_for_list(d, &alias, &known_bt_aliases)
+        });
+        let skip_bt_for_matching_usb = auto_mode && !force_bt && matching_usb_idx.is_some();
+        if skip_bt_for_matching_usb {
+            if let (Some(d), Some(u_idx)) = (dlp, matching_usb_idx) {
+                let u_name = c_str_to_string(&d.devices[u_idx].name);
+                eprintln!(
+                    "[LWASAPI-audiodg] Dual USB+BT device detected ({}) — prioritizing USB endpoint",
+                    u_name
+                );
+                dbg_emit(
+                    LWASAPI_DBG_ENGINE,
+                    LWASAPI_DBG_INFO,
+                    0,
+                    0,
+                    "USB_BT_PRIORITY",
+                    &u_name,
+                    "USB matches BT alias; prioritizing USB",
+                );
+            }
+        }
+
+        if !force_virtual && !skip_bt_for_matching_usb && (want_bt || auto_mode) {
+            let bt_opt = unsafe { lwasapi_bluez_is_optional_mode(self.bt()) };
             let mut bt_ready =
                 bt_snap.has_bluez_transport && bt_snap.direct_socket_mode && bt_snap.bt_fd >= 0;
-            let bt_mac = c_str_to_string(&bt_snap.mac_address);
-            let bt_alias = c_str_to_string(&bt_snap.device_alias);
-            let bt_codec = c_str_to_string(&bt_snap.codec_name);
-            let bt_rate = bt_snap.bt_sample_rate;
+            let mut bt_mac = c_str_to_string(&bt_snap.mac_address);
+            let mut bt_alias = c_str_to_string(&bt_snap.device_alias);
+            let mut bt_codec = c_str_to_string(&bt_snap.codec_name);
+            let mut bt_rate = bt_snap.bt_sample_rate;
 
-            if bt_ready {
+            let req_mac_ok = |mac_now: &str| -> bool {
                 if let Some(req_mac) = req.strip_prefix("bluez:") {
-                    if !bt_mac.is_empty() && !req_mac.eq_ignore_ascii_case(&bt_mac) {
-                        bt_ready = false;
+                    mac_now.is_empty() || req_mac.eq_ignore_ascii_case(mac_now)
+                } else {
+                    true
+                }
+            };
+
+            if !bt_ready
+                && req_mac_ok(&bt_mac)
+                && (want_bt || (auto_mode && !bt_opt && !bt_mac.is_empty()))
+            {
+                unsafe { lwasapi_bluez_set_tx_enabled(self.bt(), true) };
+                for _ in 0..24 {
+                    std::thread::sleep(Duration::from_millis(25));
+                    bt_snap = snapshot_bt(self.bt());
+                    if bt_snap.has_bluez_transport
+                        && bt_snap.direct_socket_mode
+                        && bt_snap.bt_fd >= 0
+                    {
+                        break;
                     }
                 }
+                bt_ready =
+                    bt_snap.has_bluez_transport && bt_snap.direct_socket_mode && bt_snap.bt_fd >= 0;
+                bt_mac = c_str_to_string(&bt_snap.mac_address);
+                bt_alias = c_str_to_string(&bt_snap.device_alias);
+                bt_codec = c_str_to_string(&bt_snap.codec_name);
+                bt_rate = bt_snap.bt_sample_rate;
+            }
+
+            if bt_ready && !req_mac_ok(&bt_mac) {
+                bt_ready = false;
             }
             if bt_ready {
                 next_hw.is_bluetooth = true;
@@ -747,22 +833,7 @@ impl AudiodgEngine {
             );
         }
 
-        if !force_virtual && req != "virtual" {
-            let mut local_dl: LwasapiDeviceList = unsafe { mem::zeroed() };
-            let dlp: &LwasapiDeviceList = match pre_dl {
-                Some(d) => d,
-                None => {
-                    unsafe {
-                        lwasapi_bluez_enumerate_devices(
-                            self.bt(),
-                            ptr::null(),
-                            ptr::null(),
-                            &mut local_dl,
-                        );
-                    }
-                    &local_dl
-                }
-            };
+        if let Some(dlp) = dlp {
             let n = (dlp.num_devices as usize).min(LWASAPI_MAX_DEVICES);
             let mut cands: Vec<(usize, i32)> = Vec::new();
             for (i, e) in dlp.devices.iter().enumerate().take(n) {
@@ -772,6 +843,9 @@ impl AudiodgEngine {
                 let mut sc = unsafe { lwasapi_hw_analog_score_card(e.card_index, e.name.as_ptr().cast()) };
                 if e.device_index == 0 {
                     sc += 10;
+                }
+                if matching_usb_idx == Some(i) {
+                    sc += 50_000;
                 }
                 cands.push((i, sc));
             }
@@ -886,7 +960,7 @@ impl AudiodgEngine {
             let cap_rate = resolve_cap_sample_rate(rate, pref_cap);
             let c_cap = to_cstring_lossy(&target_cap);
             let c_pb = to_cstring_lossy(&target_pb);
-            let (bt_cfg_saved, has_vol, d_vol, d_muted, m_vol, m_muted, m_gain) = {
+            let (bt_cfg_saved, has_vol, d_vol, d_muted, m_vol, m_muted, m_gain, bt_optional) = {
                 let sb = self.saved_bt.lock().unwrap();
                 (
                     sb.saved_bt_cfg,
@@ -896,9 +970,11 @@ impl AudiodgEngine {
                     sb.saved_mic_vol_pct,
                     sb.saved_mic_muted,
                     sb.saved_mic_gain_ppm,
+                    sb.bt_optional_mode,
                 )
             };
             unsafe {
+                lwasapi_bluez_set_optional_mode(self.bt(), bt_optional != 0);
                 lwasapi_bluez_init_rates(self.bt(), rate, cap_rate, c_cap.as_ptr(), c_pb.as_ptr());
                 lwasapi_bluez_set_sco_enabled(self.bt(), bt_cfg_saved.hfp_sco_enabled != 0);
                 lwasapi_bluez_set_codec_config(self.bt(), &bt_cfg_saved);
@@ -1427,7 +1503,9 @@ impl AudiodgEngine {
                 && (!target_is_bt || bt_now)
                 && active_pb != target_pb
                 && device_list_has_type(&dlist, &target_pb, 0);
-            let auto_upgrade_bt = target_auto && !hw_is_bt && bt_now;
+            let usb_bt_active = unsafe { any_usb_matches_bt(&dlist, self.bt()) };
+            let auto_upgrade_bt = target_auto && !hw_is_bt && bt_now && !usb_bt_active;
+            let auto_upgrade_matching_usb = target_auto && hw_is_bt && usb_bt_active;
             let auto_recover_hw =
                 target_auto && hw_is_virtual && device_list_has_any_type(&dlist, 0, false);
             let auto_upgrade_usb = target_auto
@@ -1450,7 +1528,13 @@ impl AudiodgEngine {
                     "restored preferred target",
                 );
                 self.apply_playback_endpoint(&target_pb, pref_r, pref_p, pref_b, false, false, Some(&dlist));
-            } else if active_kernel_lost || active_bt_lost || auto_upgrade_bt || auto_recover_hw || auto_upgrade_usb {
+            } else if active_kernel_lost
+                || active_bt_lost
+                || auto_upgrade_bt
+                || auto_upgrade_matching_usb
+                || auto_recover_hw
+                || auto_upgrade_usb
+            {
                 eprintln!("[LWASAPI-audiodg] Hotplug playback change detected, re-evaluating auto route...");
                 let tgt = if target_auto { "auto" } else { &target_pb };
                 dbg_emit(
@@ -1461,10 +1545,11 @@ impl AudiodgEngine {
                     "HOTPLUG_PB",
                     tgt,
                     &format!(
-                        "lost={} btlost={} upg_bt={} rec={} usb={}",
+                        "lost={} btlost={} upg_bt={} upg_usb_bt={} rec={} usb={}",
                         i32::from(active_kernel_lost),
                         i32::from(active_bt_lost),
                         i32::from(auto_upgrade_bt),
+                        i32::from(auto_upgrade_matching_usb),
                         i32::from(auto_recover_hw),
                         i32::from(auto_upgrade_usb)
                     ),
@@ -2304,6 +2389,108 @@ impl AudiodgEngine {
                     ),
                 );
                 resp.hr = S_OK;
+                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
+            }
+            LWASAPI_CMD_BT_CONNECTION => {
+                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+                let action = req.requested_period_frames;
+                let mac = c_str_to_string(&req.target_device);
+                let c_mac = to_cstring_lossy(&mac);
+                let mut flags: u32 = 0;
+                let mut msg_buf = [0u8; 256];
+                let rc = unsafe {
+                    lwasapi_bluez_connection_ctl(
+                        self.bt(),
+                        action,
+                        c_mac.as_ptr(),
+                        msg_buf.as_mut_ptr().cast(),
+                        msg_buf.len(),
+                        &mut flags,
+                    )
+                };
+                let mut dlist: LwasapiDeviceList = unsafe { mem::zeroed() };
+                self.enumerate_devices_safe(&mut dlist);
+                let usb_matches_bt = unsafe { any_usb_matches_bt(&dlist, self.bt()) };
+                if usb_matches_bt {
+                    flags |= LWASAPI_BT_STAT_USB_MATCHES_BT;
+                }
+                if action != LWASAPI_BT_CONN_QUERY {
+                    {
+                        let mut sb = self.saved_bt.lock().unwrap();
+                        sb.bt_optional_mode = u32::from((flags & LWASAPI_BT_STAT_OPTIONAL) != 0);
+                    }
+                    let (target_pb, pref_r, pref_p, pref_b, hw_is_bt) = {
+                        let hws = self.hw_lock.lock().unwrap();
+                        (
+                            c_str_to_string(&hws.target_playback_id),
+                            if hws.pref_sample_rate != 0 { hws.pref_sample_rate } else { hws.hw.sample_rate },
+                            if hws.pref_period_frames != 0 { hws.pref_period_frames } else { hws.hw.period_frames },
+                            if hws.pref_format_bits != 0 { hws.pref_format_bits } else { hws.hw.format_bits },
+                            hws.hw.is_bluetooth,
+                        )
+                    };
+                    let want_bt_target =
+                        target_pb == "bluetooth" || target_pb.starts_with("bluez");
+                    let reeval_connect = rc >= 0
+                        && ((target_pb == "auto" && !usb_matches_bt) || want_bt_target);
+                    let reeval_disconnect = hw_is_bt;
+                    let should_reapply = match action {
+                        LWASAPI_BT_CONN_CONNECT => reeval_connect,
+                        LWASAPI_BT_CONN_SET_AUTOCONN => {
+                            reeval_connect && (flags & LWASAPI_BT_STAT_CONNECTED) != 0
+                        }
+                        LWASAPI_BT_CONN_DISCONNECT => reeval_disconnect,
+                        _ => false,
+                    };
+                    let _reconf = self.reconf_lock.lock().unwrap();
+                    if should_reapply {
+                        self.apply_playback_endpoint(
+                            &target_pb,
+                            pref_r,
+                            pref_p,
+                            pref_b,
+                            false,
+                            false,
+                            Some(&dlist),
+                        );
+                    }
+                    self.save_state();
+                    let pa = self.pa();
+                    if !pa.is_null() {
+                        unsafe { lwasapi_pa_server_notify_change(pa) };
+                    }
+                    let snap_after = snapshot_bt(self.bt());
+                    flags = 0;
+                    if unsafe { lwasapi_bluez_is_optional_mode(self.bt()) } {
+                        flags |= LWASAPI_BT_STAT_OPTIONAL;
+                    }
+                    if snap_after.has_bluez_transport || !c_str_to_string(&snap_after.device_path).is_empty() {
+                        flags |= LWASAPI_BT_STAT_CONNECTED;
+                    }
+                    if snap_after.has_bluez_transport
+                        && snap_after.direct_socket_mode
+                        && snap_after.bt_fd >= 0
+                    {
+                        flags |= LWASAPI_BT_STAT_TRANSPORT;
+                    }
+                    if usb_matches_bt {
+                        flags |= LWASAPI_BT_STAT_USB_MATCHES_BT;
+                    }
+                }
+                dbg_emit_vals(
+                    LWASAPI_DBG_BLUEZ,
+                    if rc >= 0 { LWASAPI_DBG_INFO } else { LWASAPI_DBG_WARN },
+                    0,
+                    0,
+                    action as i32,
+                    flags as i32,
+                    rc,
+                    "BT_CONN_CTL",
+                    if mac.is_empty() { "bluetooth" } else { &mac },
+                    &c_str_to_string(&msg_buf),
+                );
+                resp.hr = if rc >= 0 { S_OK } else { E_FAIL };
+                resp.session_id = flags;
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
             LWASAPI_CMD_SET_HW_ANALOG => {
@@ -3502,7 +3689,10 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     );
 
     let init_bt = snapshot_bt(engine.bt());
-    let mut prev_bt_has = init_bt.has_bluez_transport && init_bt.direct_socket_mode;
+    let mut prev_bt_has = init_bt.has_bluez_transport
+        && init_bt.direct_socket_mode
+        && init_bt.bt_fd >= 0
+        && !init_bt.tx_paused;
     let mut prev_bt_avrcp = init_bt.avrcp_volume;
     let mut prev_muted = init_bt.desktop_muted;
     let mut next_watcher_ns = mono_ns().saturating_add(250_000_000);
@@ -3615,7 +3805,10 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         next_watcher_ns = now_w_ns.saturating_add(250_000_000);
 
         let bt_snap = snapshot_bt(engine.bt());
-        let bt_now = bt_snap.has_bluez_transport && bt_snap.direct_socket_mode;
+        let bt_now = bt_snap.has_bluez_transport
+            && bt_snap.direct_socket_mode
+            && bt_snap.bt_fd >= 0
+            && !bt_snap.tx_paused;
         let avrcp_now = bt_snap.avrcp_volume;
         let muted_now = bt_snap.desktop_muted;
         let bt_alias = c_str_to_string(&bt_snap.device_alias);
@@ -4167,10 +4360,170 @@ fn open_kernel_pcm_device(
     })
 }
 
+fn is_usb_device_entry(dev: &crate::c_abi::LwasapiDeviceEntry) -> bool {
+    if dev.is_bluetooth != 0 {
+        return false;
+    }
+    let drv = c_str_to_string(&dev.driver).to_ascii_lowercase();
+    let name = c_str_to_string(&dev.name).to_ascii_lowercase();
+    drv.contains("usb") || name.contains("usb")
+}
+
+fn normalize_bt_usb_tokens(raw: &str) -> (Vec<String>, String) {
+    const FILLER: &[&str] = &[
+        "usb",
+        "audio",
+        "bluetooth",
+        "bt",
+        "le",
+        "a2dp",
+        "avrcp",
+        "hfp",
+        "hsp",
+        "corporation",
+        "corp",
+        "inc",
+        "ltd",
+        "llc",
+        "co",
+        "gmbh",
+        "analog",
+        "digital",
+        "hw",
+        "stereo",
+        "mono",
+    ];
+    let mut tokens = Vec::new();
+    let mut cur = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            cur.push(ch.to_ascii_lowercase());
+        } else if !cur.is_empty() {
+            let tok = core::mem::take(&mut cur);
+            if !FILLER.contains(&tok.as_str()) {
+                tokens.push(tok);
+            }
+        }
+    }
+    if !cur.is_empty() && !FILLER.contains(&cur.as_str()) {
+        tokens.push(cur);
+    }
+    let joined = tokens.concat();
+    (tokens, joined)
+}
+
+/// Returns `true` when a plugged USB endpoint name represents the same physical
+/// hardware as a Bluetooth device alias/name (e.g., `"Bose Corporation Bose QC Ultra 2 HP - USB Audio"`
+/// vs `"Bose QC Ultra 2 HP"`).
+pub(crate) fn usb_device_matches_bt_name(usb_name: &str, bt_name: &str) -> bool {
+    let (usb_toks, usb_joined) = normalize_bt_usb_tokens(usb_name);
+    let (bt_toks, bt_joined) = normalize_bt_usb_tokens(bt_name);
+    if usb_toks.is_empty() || bt_toks.is_empty() || usb_joined.len() < 4 || bt_joined.len() < 4 {
+        return false;
+    }
+    if usb_toks == bt_toks || usb_joined == bt_joined {
+        return true;
+    }
+    if bt_toks.len() >= 2
+        && bt_joined.len() >= 6
+        && usb_toks.windows(bt_toks.len()).any(|w| w == bt_toks.as_slice())
+    {
+        return true;
+    }
+    if usb_toks.len() >= 2
+        && usb_joined.len() >= 6
+        && bt_toks.windows(usb_toks.len()).any(|w| w == usb_toks.as_slice())
+    {
+        return true;
+    }
+    let shorter_joined = usb_joined.len().min(bt_joined.len());
+    shorter_joined >= 8 && (usb_joined.contains(&bt_joined) || bt_joined.contains(&usb_joined))
+}
+
+fn find_matching_usb_pb_idx_for_list(
+    dlist: &LwasapiDeviceList,
+    bt_alias: &str,
+    extra_bt_aliases: &[String],
+) -> Option<usize> {
+    let n = (dlist.num_devices as usize).min(LWASAPI_MAX_DEVICES);
+    let mut bt_names: Vec<String> = Vec::new();
+    let trimmed_alias = bt_alias.trim();
+    if !trimmed_alias.is_empty() {
+        bt_names.push(trimmed_alias.to_string());
+    }
+    for extra in extra_bt_aliases {
+        let t = extra.trim();
+        if !t.is_empty() && !bt_names.iter().any(|existing| existing == t) {
+            bt_names.push(t.to_string());
+        }
+    }
+    for dev in &dlist.devices[..n] {
+        if dev.is_capture == 0 && dev.is_bluetooth != 0 {
+            let name = c_str_to_string(&dev.name);
+            let t = name.trim();
+            if !t.is_empty() && !bt_names.iter().any(|existing| existing == t) {
+                bt_names.push(t.to_string());
+            }
+        }
+    }
+    if bt_names.is_empty() {
+        return None;
+    }
+    for (i, dev) in dlist.devices[..n].iter().enumerate() {
+        if dev.is_capture != 0 || !is_usb_device_entry(dev) {
+            continue;
+        }
+        let usb_name = c_str_to_string(&dev.name);
+        if bt_names
+            .iter()
+            .any(|bt_n| usb_device_matches_bt_name(&usb_name, bt_n))
+        {
+            return Some(i);
+        }
+    }
+    None
+}
+
+unsafe fn any_usb_matches_bt(dlist: &LwasapiDeviceList, bt: *const c_void) -> bool {
+    let snap = if bt.is_null() {
+        String::new()
+    } else {
+        let mut s: crate::c_abi::SalsaBtSnapshot = unsafe { mem::zeroed() };
+        unsafe { salsa_bt_get_snapshot(bt, &mut s) };
+        c_str_to_string(&s.device_alias)
+    };
+    let extra = unsafe { lwasapi_bluez_known_audio_aliases(bt) };
+    find_matching_usb_pb_idx_for_list(dlist, &snap, &extra).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::mem::{offset_of, size_of};
+
+    #[test]
+    fn usb_matches_dual_mode_bt_headset_names() {
+        assert!(usb_device_matches_bt_name(
+            "Bose Corporation Bose QC Ultra 2 HP - USB Audio",
+            "Bose QC Ultra 2 HP"
+        ));
+        assert!(usb_device_matches_bt_name(
+            "Sonova Consumer Hearing MOMENTUM 4 - USB Audio",
+            "MOMENTUM 4"
+        ));
+        assert!(usb_device_matches_bt_name(
+            "WH1000XM5 USB Audio",
+            "Sony WH-1000XM5"
+        ));
+        assert!(!usb_device_matches_bt_name(
+            "Bose QC Ultra 2 HP - USB Audio",
+            "Logitech MX Anywhere 3"
+        ));
+        assert!(!usb_device_matches_bt_name(
+            "Generic USB Audio",
+            "Sony BT Audio"
+        ));
+    }
 
     #[test]
     fn alsa_pcm_uapi_layouts_match_kernel() {

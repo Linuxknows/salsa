@@ -28,11 +28,11 @@ use salsa_tools::host::{
     read_text_lossy, state_dir, which,
 };
 use salsa_tools::ipc::{
-    get_engine_status, gui_settings_path, list_devices, load_gui_settings, load_screencast_prefs,
-    save_screencast_prefs, save_studio_gui_settings, set_bt_codec_config, set_capture_sample_rate,
-    set_devices, set_dynamic_eq, set_engine_config, set_hw_analog, set_master_volume, set_mic_apo,
-    set_mic_volume, set_parametric_eq, set_session_control, update_gui_settings, ScreenCastPrefs,
-    EQ_PRESETS, MIC_APO_PRESETS,
+    bt_connection_ctl, get_engine_status, gui_settings_path, list_devices, load_gui_settings,
+    load_screencast_prefs, save_screencast_prefs, save_studio_gui_settings, set_bt_codec_config,
+    set_capture_sample_rate, set_devices, set_dynamic_eq, set_engine_config, set_hw_analog,
+    set_master_volume, set_mic_apo, set_mic_volume, set_parametric_eq, set_session_control,
+    update_gui_settings, ScreenCastPrefs, EQ_PRESETS, MIC_APO_PRESETS,
 };
 use salsa_tools::json::JsonValue;
 use salsa_tools::zlib_png::{decode_png_rgba, encode_png_rgba, RgbaImage};
@@ -432,6 +432,20 @@ pub extern "C" fn salsa_set_hw_analog(hwa: *const LwasapiHwAnalogCfg) -> c_int {
         return -1;
     }
     unsafe { set_hw_analog(&*hwa) }
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_bt_connection_ctl(
+    action: u32,
+    mac_or_empty: *const c_char,
+    out_flags: *mut u32,
+) -> c_int {
+    let mac = cstr_to_string(mac_or_empty);
+    let (hr, flags) = bt_connection_ctl(action, mac.as_deref().filter(|s| !s.is_empty()));
+    if !out_flags.is_null() {
+        unsafe { *out_flags = flags };
+    }
+    hr
 }
 
 #[no_mangle]

@@ -241,6 +241,14 @@ pub fn set_hw_analog(cfg: &LwasapiHwAnalogCfg) -> i32 {
     unsafe { lwasapi::LWASAPI_SetHwAnalog(cfg) }
 }
 
+pub fn bt_connection_ctl(action: u32, mac: Option<&str>) -> (i32, u32) {
+    let c_mac = mac.and_then(|s| CString::new(s).ok());
+    let mac_ptr = c_mac.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
+    let mut flags = 0u32;
+    let hr = unsafe { lwasapi::LWASAPI_BtConnectionCtl(action, mac_ptr, &raw mut flags) };
+    (hr, flags)
+}
+
 pub fn list_devices() -> Option<LwasapiDeviceList> {
     let mut list: LwasapiDeviceList = unsafe { mem::zeroed() };
     let hr = unsafe { lwasapi::LWASAPI_ListDevices(&raw mut list) };

@@ -34,12 +34,14 @@ const MAGIC_V2: u32 = 0x5341_4C54; // 'SALT'
 const MAGIC_V3: u32 = 0x5341_4C55; // 'SALU'
 const MAGIC_V4: u32 = 0x5341_4C56; // 'SALV'
 const MAGIC_V5: u32 = 0x5341_4C57; // 'SALW'
+const MAGIC_V6: u32 = 0x5341_4C58; // 'SALX'
 
 pub const PERSISTED_V1_SIZE: usize = 152;
 pub const PERSISTED_V2_SIZE: usize = 280;
 pub const PERSISTED_V3_SIZE: usize = 532;
 pub const PERSISTED_V4_SIZE: usize = 556;
 pub const PERSISTED_V5_SIZE: usize = 576;
+pub const PERSISTED_V6_SIZE: usize = 580;
 
 pub fn default_runtime_state() -> SalsaRuntimeState {
     let mut preset_name = [0u8; 32];
@@ -119,6 +121,7 @@ pub fn default_runtime_state() -> SalsaRuntimeState {
         desktop_mic_muted: 0,
         desktop_mic_gain_ppm: 1_000_000,
         has_saved_vol_state: false,
+        bt_optional_mode: 1,
     }
 }
 
@@ -235,12 +238,13 @@ pub fn decode_persisted_state_bytes(bytes: &[u8], out: &mut SalsaRuntimeState) -
         return false;
     }
     let magic = read_u32(bytes, 0);
+    let valid_v6 = bytes.len() == PERSISTED_V6_SIZE && magic == MAGIC_V6;
     let valid_v5 = bytes.len() == PERSISTED_V5_SIZE && magic == MAGIC_V5;
     let valid_v4 = bytes.len() >= PERSISTED_V4_SIZE && magic == MAGIC_V4;
     let valid_v3 = bytes.len() >= PERSISTED_V3_SIZE && magic == MAGIC_V3;
     let valid_v2 = bytes.len() >= PERSISTED_V2_SIZE && magic == MAGIC_V2;
     let valid_v1 = bytes.len() >= PERSISTED_V1_SIZE && magic == MAGIC_V1;
-    if !(valid_v5 || valid_v4 || valid_v3 || valid_v2 || valid_v1) {
+    if !(valid_v6 || valid_v5 || valid_v4 || valid_v3 || valid_v2 || valid_v1) {
         return false;
     }
 
@@ -275,7 +279,7 @@ pub fn decode_persisted_state_bytes(bytes: &[u8], out: &mut SalsaRuntimeState) -
     st.eq_cfg.preset_name[31] = 0;
     clamp_eq_cfg(&mut st.eq_cfg);
 
-    if valid_v5 || valid_v4 || valid_v3 || valid_v2 {
+    if valid_v6 || valid_v5 || valid_v4 || valid_v3 || valid_v2 {
         // Offset 152..216: target_playback_id[64], Offset 216..280: target_capture_id[64]
         if bytes[152] != 0 {
             copy_c_field(&mut st.target_playback_id, &bytes[152..216]);
@@ -285,7 +289,7 @@ pub fn decode_persisted_state_bytes(bytes: &[u8], out: &mut SalsaRuntimeState) -
         }
     }
 
-    if valid_v5 || valid_v4 || valid_v3 {
+    if valid_v6 || valid_v5 || valid_v4 || valid_v3 {
         // Offset 280..284: reserved_0, Offset 284..288: reserved_1
         // Offset 288..384: LwasapiParamEqExt (96 bytes)
         for i in 0..LWASAPI_EQ_BANDS {
@@ -333,7 +337,7 @@ pub fn decode_persisted_state_bytes(bytes: &[u8], out: &mut SalsaRuntimeState) -
         st.bt_cfg.neg_reason[63] = 0;
     }
 
-    if valid_v5 || valid_v4 {
+    if valid_v6 || valid_v5 || valid_v4 {
         // Offset 532..556: LwasapiHwAnalogCfg (24 bytes)
         st.hw_analog_cfg.hw_dac_unity_vol = read_u32(bytes, 532);
         st.hw_analog_cfg.hp_amp_tier = read_u32(bytes, 536);
@@ -344,7 +348,7 @@ pub fn decode_persisted_state_bytes(bytes: &[u8], out: &mut SalsaRuntimeState) -
         unsafe { lwasapi_hw_analog_clamp_cfg(&mut st.hw_analog_cfg) };
     }
 
-    if valid_v5 {
+    if valid_v6 || valid_v5 {
         let reserved_0 = read_u32(bytes, 280);
         let d_vol = read_u32(bytes, 556);
         let d_muted = read_u32(bytes, 560);
@@ -369,8 +373,21 @@ pub fn decode_persisted_state_bytes(bytes: &[u8], out: &mut SalsaRuntimeState) -
         st.has_saved_vol_state = true;
     }
 
+    if valid_v6 {
+        st.bt_optional_mode = u32::from(read_u32(bytes, 576) != 0);
+    }
+
     *out = st;
     true
+}
+
+pub fn encode_persisted_state_v6(st: &SalsaRuntimeState) -> [u8; PERSISTED_V6_SIZE] {
+    let mut out = [0u8; PERSISTED_V6_SIZE];
+    let v5 = encode_persisted_state_v5(st);
+    out[..PERSISTED_V5_SIZE].copy_from_slice(&v5);
+    write_u32(&mut out, 0, MAGIC_V6);
+    write_u32(&mut out, 576, u32::from(st.bt_optional_mode != 0));
+    out
 }
 
 pub fn encode_persisted_state_v5(st: &SalsaRuntimeState) -> [u8; PERSISTED_V5_SIZE] {
@@ -485,13 +502,13 @@ pub fn load_state_from_path(path: &Path, out: &mut SalsaRuntimeState) -> bool {
     let Ok(meta) = f.metadata() else {
         return false;
     };
-    let max_len = (PERSISTED_V5_SIZE as u64) * 2;
+    let max_len = (PERSISTED_V6_SIZE as u64) * 2;
     if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > max_len {
         return false;
     }
-    let mut buf = Vec::with_capacity(PERSISTED_V5_SIZE);
-    let mut limited = f.take((PERSISTED_V5_SIZE as u64) + 1);
-    if limited.read_to_end(&mut buf).is_err() || buf.len() > PERSISTED_V5_SIZE {
+    let mut buf = Vec::with_capacity(PERSISTED_V6_SIZE);
+    let mut limited = f.take((PERSISTED_V6_SIZE as u64) + 1);
+    if limited.read_to_end(&mut buf).is_err() || buf.len() > PERSISTED_V6_SIZE {
         return false;
     }
     decode_persisted_state_bytes(&buf, out)
@@ -518,7 +535,7 @@ pub fn save_state_to_path(dir: &Path, path: &Path, st: &SalsaRuntimeState) -> bo
         return false;
     };
 
-    let bytes = encode_persisted_state_v5(st);
+    let bytes = encode_persisted_state_v6(st);
     let ok = f.write_all(&bytes).is_ok() && f.sync_all().is_ok();
     drop(f);
     if !ok {
@@ -680,6 +697,17 @@ mod tests {
         assert_eq!(loaded.desktop_mic_volume_pct, 115);
         assert_eq!(loaded.desktop_mic_gain_ppm, 1_500_000);
         assert!(loaded.has_saved_vol_state);
+        assert_eq!(loaded.bt_optional_mode, 1);
+
+        st.bt_optional_mode = 0;
+        let raw6 = encode_persisted_state_v6(&st);
+        let mut loaded6 = default_runtime_state();
+        assert!(decode_persisted_state_bytes(&raw6, &mut loaded6));
+        assert_eq!(loaded6.bt_optional_mode, 0);
+        st.bt_optional_mode = 1;
+        let raw6_opt = encode_persisted_state_v6(&st);
+        assert!(decode_persisted_state_bytes(&raw6_opt, &mut loaded6));
+        assert_eq!(loaded6.bt_optional_mode, 1);
     }
 
     #[test]
