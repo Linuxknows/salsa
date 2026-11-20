@@ -4,7 +4,16 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.19.7 — Current (`2026-11-19`)
+## V1.19.8 — Current (`2026-11-19`)
+
+### 1. Installer Terminal Auto-Launch, Step Progress, Completion Notice & Launch Guide
+- Updated [`install-salsa.sh`](install-salsa.sh) to automatically open a visible desktop terminal window (`konsole`, `gnome-terminal`, `kgx`, `xfce4-terminal`, `kitty`, `alacritty`, `wezterm`, `foot`, `xterm`, or `$TERMINAL`) when launched outside an interactive TTY on X11/Wayland, show `[0/6]` bootstrap compilation progress when needed, and hold the window open until Enter is pressed so users can inspect everything installed (supports `--no-terminal` / `SALSA_INSTALLER_NO_TERMINAL=1` for scripted use).
+- Updated [`salsa_installer.rs`](rust/salsa_tools/src/bin/salsa_installer.rs) with a structured `[1/6]`–`[6/6]` progress indicator (`print_stage()`), descriptive Flatpak & KDE Plasma setup notes from `configure_flatpak_and_kde()`, live user-service status checks (`lwasapi-audiodg.service`, `lwasapi-tray.service`, `lwasapi-module-watcher.path`), a clear **What Was Installed & Configured** ledger, an explicit **Where To Find & Open Salsa** guide (System Tray, Application Launcher `.desktop` files, `~/.local/bin/` CLI/GUI commands, `$PATH` check, and `--check` / `disable-auto` commands), and a desktop completion notification via `notify-send` / `kdialog` / `zenity` (`--no-notify` / `SALSA_INSTALLER_NO_NOTIFY=1` opt-out).
+- Added top navigation links and an expandable Architecture Breakdown preview to [`README.md`](README.md) linking directly to [`SALSA Architecture Breakdown.md`](SALSA%20Architecture%20Breakdown.md), [`PATCH_NOTES.md`](PATCH_NOTES.md), [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md), and [`COPYING.LESSER`](COPYING.LESSER).
+
+---
+
+## V1.19.7 (`2026-11-19`)
 
 ### 1. PulseAudio Reconnect Latency Fallback & Benchmark Accuracy Fixes
 - Fixed a boolean gating bug in [`imp.rs`](rust/salsa_pa_reconnect/src/imp.rs) (`pa_stream_get_time()`, `pa_stream_get_latency()`, and `pa_stream_get_timing_info()`) via `stream_is_reconnecting_fallback()`: healthy live PulseAudio streams no longer swallow `-PA_ERR_NODATA` or inject a hardcoded `20_000` µs (`20.00 ms`) fallback before initial server timing arrives, while preserving monotonic stream time and `20_000` µs fallback strictly during active daemon reconnects (covered by a new `fallback_requires_active_reconnect` unit test).

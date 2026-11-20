@@ -7,6 +7,7 @@
 
 use std::env;
 use std::fs::{self, Permissions};
+use std::io::Write as _;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -19,7 +20,7 @@ use salsa_tools::host::{
 use salsa_tools::json::JsonValue;
 use salsa_tools::zlib_png::{decode_png_rgba, encode_png_rgba, resize_rgba};
 use salsa_wire::legal::{
-    handle_common_cli_flag, COPY_TEXT, LESSER_COPY_TEXT, THIRD_PARTY_TEXT,
+    handle_common_cli_flag, salsa_version, COPY_TEXT, LESSER_COPY_TEXT, THIRD_PARTY_TEXT,
 };
 use salsa_wire::unix_sys::reset_sigpipe_default;
 
@@ -500,7 +501,7 @@ fn is_symlink_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn configure_flatpak_and_kde(st_dir: &Path) {
+fn configure_flatpak_and_kde(st_dir: &Path) -> Vec<String> {
     const FLATPAK_ALLOWLIST: &[&str] = &[
         "com.valvesoftware.Steam",
         "com.usebottles.bottles",
@@ -518,6 +519,8 @@ fn configure_flatpak_and_kde(st_dir: &Path) {
         "MicrophoneSensitivityOsd",
         "DefaultOutputDeviceOsd",
     ];
+    let mut notes = Vec::new();
+    let mut flatpak_apps = Vec::new();
 
     if which("flatpak").is_some() {
         let ovr_path = st_dir.join("flatpak_overrides.list");
@@ -571,6 +574,7 @@ fn configure_flatpak_and_kde(st_dir: &Path) {
                         recorded.push(entry);
                     }
                 }
+                flatpak_apps.push(*app_id);
             }
             let body = if recorded.is_empty() {
                 String::new()
@@ -579,6 +583,12 @@ fn configure_flatpak_and_kde(st_dir: &Path) {
             };
             let _ = write_atomic_secure(&ovr_path, body.as_bytes(), 0o600);
         }
+    }
+    if !flatpak_apps.is_empty() {
+        notes.push(format!(
+            "Flatpak PulseAudio & ScreenCast overrides ensured for: {}",
+            flatpak_apps.join(", ")
+        ));
     }
 
     let cfg_home = config_home();
@@ -648,6 +658,7 @@ fn configure_flatpak_and_kde(st_dir: &Path) {
                     &["org.kde.kded6", "/kded", "loadModule", "audioshortcutsservice"],
                 );
             }
+            notes.push("Configured KDE Plasma volume OSD handoff (backed up for uninstall)".to_string());
         }
 
         let ksm_rc = cfg_home.join("ksmserverrc");
@@ -698,19 +709,95 @@ fn configure_flatpak_and_kde(st_dir: &Path) {
             }
         }
     }
+    notes
 }
 
-fn do_install(root: &Path) -> ExitCode {
+fn print_stage(step: u8, total: u8, title: &str) {
+    println!("\n==> [{step}/{total}] {title}");
+    let _ = std::io::stdout().flush();
+}
+
+fn path_contains_dir(target: &Path) -> bool {
+    let Some(path_var) = env::var_os("PATH") else {
+        return false;
+    };
+    let canonical_target = fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+    env::split_paths(&path_var).any(|p| {
+        p == target || fs::canonicalize(&p).ok().is_some_and(|cp| cp == canonical_target)
+    })
+}
+
+fn send_completion_notification(ver: &str, warnings: usize, gui_only: bool, no_notify: bool) {
+    if no_notify || env::var_os("SALSA_INSTALLER_NO_NOTIFY").is_some() {
+        return;
+    }
+    let has_gui = env::var_os("DISPLAY").is_some() || env::var_os("WAYLAND_DISPLAY").is_some();
+    if !has_gui {
+        return;
+    }
+
+    let title = if warnings == 0 {
+        format!("Salsa (LWASAPI) {ver} Installed")
+    } else {
+        format!("Salsa (LWASAPI) {ver} Installed ({warnings} warning(s))")
+    };
+    let body = "Setup complete. Open 'Salsa Audio Studio' from your App Launcher, click the Salsa system tray icon, or run 'salsa' in a terminal.";
+
+    if which("notify-send").is_some()
+        && Command::new("notify-send")
+            .args([
+                "-a",
+                "Salsa Installer",
+                "-i",
+                "salsa-lwasapi",
+                "-u",
+                if warnings == 0 { "normal" } else { "critical" },
+                &title,
+                body,
+            ])
+            .status()
+            .is_ok_and(|s| s.success())
+    {
+        return;
+    }
+
+    if which("kdialog").is_some() {
+        let _ = Command::new("kdialog")
+            .args(["--title", &title, "--passivepopup", body, "12"])
+            .status();
+        return;
+    }
+
+    if gui_only && which("zenity").is_some() {
+        let msg = format!("{title}\n\n{body}");
+        let _ = Command::new("zenity")
+            .args(["--info", "--title", &title, "--text", &msg])
+            .status();
+    }
+}
+
+fn do_install(root: &Path, no_notify: bool) -> ExitCode {
     if getuid() == 0 {
         eprintln!("Do not run salsa-installer --install as root; run as your normal user.");
         return ExitCode::from(1);
     }
 
-    println!("==> Checking host dependencies...");
+    let ver = salsa_version();
+    let total_steps = 6u8;
+    let mut actions: Vec<String> = Vec::new();
+    let mut warnings = 0usize;
+
+    println!("================================================================================");
+    println!("  Salsa (LWASAPI) {ver} — Installer");
+    println!("  Source directory : {}", root.display());
+    println!("================================================================================");
+
+    print_stage(1, total_steps, "Checking host toolchain, Qt6 & audio libraries...");
     match ensure_host_deps(false) {
         Ok(notes) => {
             for n in notes {
                 println!("  [OK] {n}");
+                actions.push(n);
             }
         }
         Err(e) => {
@@ -719,7 +806,7 @@ fn do_install(root: &Path) -> ExitCode {
         }
     }
 
-    println!("==> Ensuring runtime build is up to date...");
+    print_stage(2, total_steps, "Verifying & building native Salsa runtime, shims & GUIs...");
     let freshness = SystemAuditScanner::check_build_freshness(root);
     if freshness
         .get("stale")
@@ -741,8 +828,17 @@ fn do_install(root: &Path) -> ExitCode {
             eprintln!("Build failed during install.");
             return ExitCode::from(1);
         }
+        println!("  [OK] Built native engine, ABI shims & Qt6 apps in build/");
+        actions.push(format!(
+            "Built native WaveRT engine, PA v35/PipeWire-0 broker, shims & Qt6 GUIs in {}/build/",
+            root.display()
+        ));
     } else {
         println!("  [OK] Build artifacts are already up to date.");
+        actions.push(format!(
+            "Verified up-to-date runtime binaries, shims & Qt6 GUIs in {}/build/",
+            root.display()
+        ));
     }
 
     let st_dir = state_dir();
@@ -751,38 +847,91 @@ fn do_install(root: &Path) -> ExitCode {
         return ExitCode::from(1);
     }
 
-    println!("==> Writing systemd user units & binaries...");
+    print_stage(3, total_steps, "Installing systemd units, CLI commands, icons, launchers & licenses...");
     if let Err(e) = write_user_units(root) {
         eprintln!("{e}");
         return ExitCode::from(1);
     }
+    println!(
+        "  [OK] Systemd user units written to {}",
+        config_home().join("systemd/user").display()
+    );
+    actions.push(format!(
+        "Installed systemd user services & auto-sync watcher in {}",
+        config_home().join("systemd/user").display()
+    ));
+
     if let Err(e) = install_bin_links(root) {
         eprintln!("{e}");
         return ExitCode::from(1);
     }
+    println!(
+        "  [OK] CLI & GUI commands linked in {}",
+        bin_home().display()
+    );
+    actions.push(format!(
+        "Linked CLI/GUI commands (salsa, salsa-graph, salsa-debug, lwasapi-ctl, lwasapi-bench, lwasapi-run, lwasapi-tray) in {}",
+        bin_home().display()
+    ));
+
     if let Err(e) = install_icons_and_desktop(root) {
         eprintln!("{e}");
         return ExitCode::from(1);
     }
+    println!(
+        "  [OK] App icons & .desktop launchers written to {}",
+        data_home().join("applications").display()
+    );
+    actions.push(format!(
+        "Installed App Launcher entries (salsa-lwasapi.desktop, salsa-debug.desktop, lwasapi-tray.desktop) in {}",
+        data_home().join("applications").display()
+    ));
+
     if let Err(e) = install_license_files(root) {
         eprintln!("{e}");
         return ExitCode::from(1);
     }
-    configure_flatpak_and_kde(&st_dir);
+    println!(
+        "  [OK] LGPL-3.0 license bundle copied to {}",
+        licenses_install_dir().display()
+    );
 
-    println!("==> Enabling systemd user services...");
-    if !run_quiet("systemctl", &["--user", "daemon-reload"]) {
-        eprintln!("  [WARN] systemctl --user daemon-reload returned non-zero");
+    print_stage(4, total_steps, "Configuring Zero-PipeWire audio routing, Flatpak & desktop integration...");
+    let integ_notes = configure_flatpak_and_kde(&st_dir);
+    for note in &integ_notes {
+        println!("  [OK] {note}");
+        actions.push(note.clone());
     }
+
     let ctl = root.join("build/lwasapi-ctl");
-    if ctl.is_file() && !run_quiet(&ctl.to_string_lossy(), &["enable-auto"]) {
-        eprintln!("  [WARN] lwasapi-ctl enable-auto returned non-zero");
+    if ctl.is_file() {
+        if run_quiet(&ctl.to_string_lossy(), &["enable-auto"]) {
+            println!("  [OK] Activated Zero-PipeWire isolation & PA/ALSA cutover (lwasapi-ctl enable-auto)");
+            actions.push(
+                "Configured Zero-PipeWire audio ownership, PA v35 socket, ~/.asoundrc & built-in ScreenCast broker"
+                    .to_string(),
+            );
+        } else {
+            eprintln!("  [WARN] lwasapi-ctl enable-auto returned non-zero");
+            warnings += 1;
+        }
     }
     let autosync = root.join("build/lwasapi-autosync");
-    if autosync.is_file() && !run_quiet(&autosync.to_string_lossy(), &["--quiet"]) {
-        eprintln!("  [WARN] lwasapi-autosync --quiet returned non-zero");
+    if autosync.is_file() {
+        if run_quiet(&autosync.to_string_lossy(), &["--quiet"]) {
+            println!("  [OK] Synced host ALSA/Pulse ELF symbol versions (lwasapi-autosync)");
+            actions.push("Verified/synced host ALSA & PulseAudio ABI symbol versions".to_string());
+        } else {
+            eprintln!("  [WARN] lwasapi-autosync --quiet returned non-zero");
+            warnings += 1;
+        }
     }
 
+    print_stage(5, total_steps, "Enabling & starting Salsa background services...");
+    if !run_quiet("systemctl", &["--user", "daemon-reload"]) {
+        eprintln!("  [WARN] systemctl --user daemon-reload returned non-zero");
+        warnings += 1;
+    }
     for unit in [
         "lwasapi-audiodg.service",
         "lwasapi-module-watcher.path",
@@ -790,16 +939,81 @@ fn do_install(root: &Path) -> ExitCode {
     ] {
         if !run_ok("systemctl", &["--user", "enable", "--now", unit]) {
             eprintln!("  [WARN] systemctl --user enable --now {unit} failed");
+            warnings += 1;
         }
     }
     if !run_quiet("systemctl", &["--user", "restart", "lwasapi-audiodg.service"]) {
         eprintln!("  [WARN] systemctl --user restart lwasapi-audiodg.service returned non-zero");
+        warnings += 1;
     }
     if !run_quiet("systemctl", &["--user", "enable", "--now", "lwasapi-tray.service"]) {
         eprintln!("  [WARN] systemctl --user enable --now lwasapi-tray.service returned non-zero");
+        warnings += 1;
+    } else if !run_quiet("systemctl", &["--user", "restart", "lwasapi-tray.service"]) {
+        eprintln!("  [WARN] systemctl --user restart lwasapi-tray.service returned non-zero");
+        warnings += 1;
     }
 
-    println!("[OK] Salsa installation complete. Run `./install-salsa.sh --check` to audit.");
+    let audiodg_active = run_quiet("systemctl", &["--user", "is-active", "lwasapi-audiodg.service"]);
+    let tray_active = run_quiet("systemctl", &["--user", "is-active", "lwasapi-tray.service"]);
+    let watcher_active = run_quiet("systemctl", &["--user", "is-active", "lwasapi-module-watcher.path"]);
+    println!(
+        "  [{}] Services: audiodg={}, tray={}, module-watcher={}",
+        if audiodg_active && tray_active { "OK" } else { "WARN" },
+        if audiodg_active { "active" } else { "inactive" },
+        if tray_active { "active" } else { "inactive" },
+        if watcher_active { "active" } else { "inactive" }
+    );
+    actions.push(format!(
+        "Started user services (lwasapi-audiodg={}, lwasapi-tray={}, watcher={})",
+        if audiodg_active { "active" } else { "inactive" },
+        if tray_active { "active" } else { "inactive" },
+        if watcher_active { "active" } else { "inactive" },
+    ));
+
+    print_stage(6, total_steps, "Finalizing summary & desktop notification...");
+    let gui_only = !stdin_is_tty() && env::var_os("SALSA_INSTALLER_SPAWNED_TERM").is_none();
+    send_completion_notification(ver, warnings, gui_only, no_notify);
+
+    let bdir = bin_home();
+    let apps_dir = data_home().join("applications");
+    println!();
+    println!("================================================================================");
+    if warnings == 0 {
+        println!("  [OK] Salsa (LWASAPI) {ver} installation complete!");
+    } else {
+        println!("  [DONE] Salsa (LWASAPI) {ver} installed with {warnings} warning(s).");
+    }
+    println!("--------------------------------------------------------------------------------");
+    println!("  What Was Installed & Configured:");
+    for act in &actions {
+        println!("    * {act}");
+    }
+    println!("--------------------------------------------------------------------------------");
+    println!("  Where To Find & Open Salsa:");
+    println!("    1. System Tray           : Click the 'Salsa' icon in your panel tray for quick");
+    println!("                               output/mic selection, EQ presets & Studio launch.");
+    println!("    2. Application Launcher  : Search your app menu (Multimedia / Audio) for:");
+    println!("                               - Salsa Audio Studio");
+    println!("                               - Salsa — Live Interaction Debugger");
+    println!("                               - Salsa — Audio System Tray");
+    println!("                               Desktop files: {}", apps_dir.display());
+    println!("    3. Terminal Commands     : Installed in {}:", bdir.display());
+    println!("                               - salsa              (Open Salsa Audio Studio GUI)");
+    println!("                               - salsa-graph        (Open Signal Topology Graph)");
+    println!("                               - salsa-debug        (Open Live Interaction Debugger)");
+    println!("                               - lwasapi-ctl status (Inspect audio engine & devices)");
+    println!("                               - lwasapi-bench      (Run real-time latency benchmark)");
+    if !path_contains_dir(&bdir) {
+        println!(
+            "       Note: {} is not in your current PATH; launch e.g. {}/salsa",
+            bdir.display(),
+            bdir.display()
+        );
+    }
+    println!("    4. Audit or Revert       : ./install-salsa.sh --check   | lwasapi-ctl disable-auto");
+    println!("================================================================================");
+
     ExitCode::SUCCESS
 }
 
@@ -1183,6 +1397,8 @@ fn print_help() {
          --uninstall           Remove Salsa user units, symlinks, and desktop integration\n  \
          --install-pacman-hook Install {PACMAN_HOOK_PATH} (uses pkexec/sudo)\n  \
          --remove-pacman-hook  Remove {PACMAN_HOOK_PATH} (uses pkexec/sudo)\n  \
+         --no-terminal         Do not auto-spawn a terminal window when launched from a GUI\n  \
+         --no-notify           Skip desktop completion notification on install\n  \
          -V, --version         Show Salsa version & LGPL-3.0 legal notice\n  \
          --license             Show full LGPL-3.0, GPL-3.0, and third-party terms\n  \
          -h, --help            Show this help"
@@ -1192,6 +1408,7 @@ fn print_help() {
 fn main() -> ExitCode {
     reset_sigpipe_default();
     let mut action = Action::Install;
+    let mut no_notify = false;
     for arg in env::args().skip(1) {
         if let Some(rc) = handle_common_cli_flag("salsa-installer", &arg) {
             return ExitCode::from(rc as u8);
@@ -1202,6 +1419,8 @@ fn main() -> ExitCode {
             "--uninstall" => action = Action::Uninstall,
             "--install-pacman-hook" => action = Action::InstallPacmanHook,
             "--remove-pacman-hook" => action = Action::RemovePacmanHook,
+            "--no-terminal" => {}
+            "--no-notify" => no_notify = true,
             "-h" | "--help" => {
                 print_help();
                 return ExitCode::SUCCESS;
@@ -1216,7 +1435,7 @@ fn main() -> ExitCode {
 
     let root = install_root();
     match action {
-        Action::Install => do_install(&root),
+        Action::Install => do_install(&root, no_notify),
         Action::Check => do_check(&root),
         Action::Uninstall => do_uninstall(&root),
         Action::InstallPacmanHook => do_install_pacman_hook(),
