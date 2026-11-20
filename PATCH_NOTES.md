@@ -4,7 +4,20 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.19.8 — Current (`2026-11-19`)
+## V1.19.9 — Current (`2026-11-19`)
+
+### 1. Dual USB+BT Device Priority, Optional Bluetooth Link Policy & Radio Contention Fix
+- Added automatic **USB-over-Bluetooth priority** in [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) (`usb_device_matches_bt_name()`, `find_matching_usb_pb_idx_for_list()`, `any_usb_matches_bt()`): when a plugged USB DAC/headset shares hardware naming with a paired or connected BlueZ A2DP device (such as `Bose Corporation Bose QC Ultra 2 HP - USB Audio` paired alongside `Bose QC Ultra 2 HP`), `Auto-Priority` adds a `+50,000` card priority boost to that USB interface, automatically upgrades from Bluetooth to USB on plug-in (`auto_upgrade_matching_usb`), avoids re-switching to Bluetooth while USB is plugged, and pauses/releases BlueZ `MediaTransport1` TX so idle AVDTP/L2CAP traffic cannot destabilize shared USB Bluetooth controllers (`btusb`) or Bluetooth LE mice.
+- Made BlueZ audio connections **optional / non-mandatory by default** (`bt_optional_mode = 1`, persisted in `PERSISTED_V6_SIZE` / `MAGIC_V6` inside [`state_conf.rs`](rust/salsa_net/src/state_conf.rs)), backed by [`bluez_runtime.rs`](rust/salsa_net/src/bluez_runtime.rs) (`need_release`, `release_bluez_transport()`, `sync_known_bt_devices()`, `bluez_connection_ctl_impl()`), [`c_abi.rs`](rust/salsa_net/src/c_abi.rs) (`LWASAPI_CMD_BT_CONNECTION`), [`lib.rs`](rust/lwasapi_client/src/lib.rs) (`LWASAPI_BtConnectionCtl`), [`ipc.rs`](rust/salsa_tools/src/ipc.rs), [`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs), and [`salsa_bridge.h`](qt6/salsa_bridge.h).
+- Added the `Optional BT` checkbox, `Turn On BT` / `Disconnect BT` button (`chkBtOptional_`, `btnBtLink_`), and `Auto-Priority (Dual USB > BT A2DP > USB > Analog > HDMI)` selector in [`salsa_studio.cpp`](qt6/salsa_studio.cpp), plus `lwasapi-ctl bt-link <status|on|off|optional|auto>` and policy telemetry in `lwasapi-ctl status` ([`ctl_cli.rs`](rust/salsa_net/src/ctl_cli.rs)).
+
+### 2. Single-Instance Studio Window Restore & Debugger PA Client Fallback
+- Implemented UNIX socket single-instance activation (`$XDG_RUNTIME_DIR/lwasapi/salsa-studio.sock` with `SO_PEERCRED` check and `XDG_ACTIVATION_TOKEN` forwarding) in [`salsa_studio.cpp`](qt6/salsa_studio.cpp): launching `salsa` / `salsa-studio` while already open or minimized un-minimizes, shows, raises, and activates the existing window instead of spawning a duplicate process.
+- Updated `tblPaClients_` in [`salsa_debugger_widget.cpp`](qt6/salsa_debugger_widget.cpp) to fall back to the executable `binary` name (or `PID <n>`) with a diagnostic tooltip when PulseAudio clients (such as `kded6`, `polkit-kde-authentication-agent-1`, or `plasmashell`) omit `application.name`.
+
+---
+
+## V1.19.8 (`2026-11-19`)
 
 ### 1. Installer Terminal Auto-Launch, Step Progress, Completion Notice & Launch Guide
 - Updated [`install-salsa.sh`](install-salsa.sh) to automatically open a visible desktop terminal window (`konsole`, `gnome-terminal`, `kgx`, `xfce4-terminal`, `kitty`, `alacritty`, `wezterm`, `foot`, `xterm`, or `$TERMINAL`) when launched outside an interactive TTY on X11/Wayland, show `[0/6]` bootstrap compilation progress when needed, and hold the window open until Enter is pressed so users can inspect everything installed (supports `--no-terminal` / `SALSA_INSTALLER_NO_TERMINAL=1` for scripted use).
