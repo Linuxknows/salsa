@@ -1,8 +1,34 @@
 # Salsa — Linux WASAPI Portable Installer
 
+<p align="center">
+  <strong>📖 Overview</strong> &nbsp;|&nbsp;
+  <a href="SALSA%20Architecture%20Breakdown.md">📐 Architecture Breakdown</a> &nbsp;|&nbsp;
+  <a href="PATCH_NOTES.md">📝 Patch Notes (V1.19.7)</a> &nbsp;|&nbsp;
+  <a href="THIRD_PARTY_LICENSES.md">🔌 Third-Party &amp; Codecs</a> &nbsp;|&nbsp;
+  <a href="COPYING.LESSER">⚖️ LGPL-3.0 License</a>
+</p>
+
 "**"You can't spell Salsa without ALSA — because even the cleanest audio chips sound flat until they have a zero-latency dip to taste, with zero chunks dropped and plenty of Dynamic EQ heat!"**
 
 High-Frequency (Up to **192,000 Hz / 32-Bit Float**) WASAPI style Architecture / WaveRT Zero-Copy Audio Engine, **100% Pure Rust Backend Daemon & CLI (`lwasapi-audiodg` / `lwasapi-ctl`), PA v35 Server & PipeWire-0 Video Broker**, **Direct BlueZ D-Bus A2DP/AVRCP Audio**, **10-Band Real-Time Dynamic EQ APO**, Sample-Accurate **DAW MIDI Hub**, and Automatic **`qpwgraph`-Equivalent Signal Topology & Owner's Manual**, **Designed to remove all PipeWire-Pulse or WirePlumber audio dependencies**.  
+
+---
+
+## Architecture Breakdown
+
+Read the complete 4-stage engine walkthrough, zero-copy WaveRT shared-memory ring design (`memfd_create` + `eventfd`), PA v35 server, direct BlueZ A2DP pipeline, and Zero-PipeWire Wayland ScreenCast broker details in **[SALSA Architecture Breakdown](SALSA%20Architecture%20Breakdown.md)**.
+
+<details>
+<summary>📐 Preview Signal Flow &amp; Zero-PipeWire Architecture Summary</summary>
+
+1. **Inputs & Applications (`pa_server.rs`, `build/shims/`, `~/.asoundrc`)**: Auto-routes Native WASAPI (`liblwasapi.so`), Native PulseAudio v35 (`$XDG_RUNTIME_DIR/pulse/native`), ALSA/OpenAL Soft clients, and zero-IPC hollow ABI shims (`lwasapi-run`).
+2. **WaveRT Zero-Copy Engine (`memfd_create` + `eventfd`)**: Streams up to `192,000 Hz / 32-bit Float` through anonymous `32,768`-frame shared-memory rings mapped via `SCM_RIGHTS` with atomic commits (`~75–80 ns`).
+3. **Salsa APO & DAW MIDI Hub (`lwasapi-audiodg`, `SCHED_FIFO 65`, `mlockall`)**: Mixes multi-rate streams into a fixed/split master clock, applies the 10-band dynamic parametric EQ (`31 Hz–16 kHz`) + soft-knee limiter, and routes raw MIDI (`RawMIDI` / ALSA Sequencer).
+4. **Hardware Endpoints & Video ScreenCast Broker (`pw_broker.rs`)**: Outputs directly to kernel `/dev/snd/pcmC*D*` DACs or `org.bluez.MediaEndpoint1` Bluetooth A2DP sinks, provides full-duplex loopback capture, and serves `/run/user/$UID/pipewire-0` strictly for Wayland ScreenCast `DmaBuf`/`MemFd` video relays while rejecting PipeWire audio.
+
+👉 Open the full document with ASCII signal topology diagrams: **[SALSA Architecture Breakdown.md](SALSA%20Architecture%20Breakdown.md)**
+
+</details>
 
 ---
 
