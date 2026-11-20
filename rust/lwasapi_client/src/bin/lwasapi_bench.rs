@@ -364,6 +364,99 @@ fn bench_commit_pulse_lib(so_path: &str, iters: usize) -> Option<(f64, f64, f64)
     }
 }
 
+struct RtPriorityGuard {
+    restore: bool,
+    orig_sched: c_int,
+    orig_sp: SchedParam,
+}
+
+impl RtPriorityGuard {
+    fn acquire(prio: c_int) -> Self {
+        unsafe {
+            let orig_sched = sched_getscheduler(0);
+            let mut orig_sp = SchedParam::default();
+            let have_orig_sp = orig_sched >= 0 && sched_getparam(0, &mut orig_sp) == 0;
+            let rt_sp = SchedParam { sched_priority: prio };
+            let elevated = sched_setscheduler(0, SCHED_FIFO, &rt_sp) == 0;
+            Self {
+                restore: elevated && have_orig_sp,
+                orig_sched,
+                orig_sp,
+            }
+        }
+    }
+}
+
+impl Drop for RtPriorityGuard {
+    fn drop(&mut self) {
+        if self.restore {
+            unsafe {
+                sched_setscheduler(0, self.orig_sched, &self.orig_sp);
+            }
+        }
+    }
+}
+
+unsafe fn drain_loopback(loopback: *mut IAudioClient) {
+    let mut drain = [0.0f32; 512 * 2];
+    let mut pkt = 0u32;
+    while IAudioCaptureClient_GetNextPacketSize(loopback, &mut pkt) == S_OK && pkt > 0 {
+        let chunk = pkt.min(512);
+        IAudioCaptureClient_ReadFrames(
+            loopback,
+            drain.as_mut_ptr().cast(),
+            chunk,
+            LWASAPI_FMT_FLOAT32,
+        );
+    }
+}
+
+fn build_test_impulse(sample_rate: u32) -> [f32; 64 * 2] {
+    let mut impulse = [0.0f32; 64 * 2];
+    let tone_hz = (f64::from(sample_rate) * 0.4125).min(19_800.0);
+    for i in 0..64usize {
+        let s = ((2.0 * core::f64::consts::PI * tone_hz * (i as f64) / f64::from(sample_rate))
+            .sin()
+            * 0.02) as f32;
+        impulse[i * 2] = s;
+        impulse[i * 2 + 1] = s;
+    }
+    impulse
+}
+
+unsafe fn wait_for_loopback_impulse_ms(
+    loopback: *mut IAudioClient,
+    t_send: u64,
+    threshold: f32,
+    timeout_ns: u64,
+) -> f64 {
+    let mut cap_buf = [0.0f32; 128 * 2];
+    let deadline = t_send.saturating_add(timeout_ns);
+    while now_ns() < deadline {
+        let mut avail = 0u32;
+        IAudioCaptureClient_GetNextPacketSize(loopback, &mut avail);
+        if avail > 0 {
+            let to_read = avail.min(128);
+            IAudioCaptureClient_ReadFrames(
+                loopback,
+                cap_buf.as_mut_ptr().cast(),
+                to_read,
+                LWASAPI_FMT_FLOAT32,
+            );
+            if cap_buf[..(to_read as usize) * 2]
+                .iter()
+                .any(|&v| v.abs() > threshold)
+            {
+                let t_recv = now_ns();
+                return (t_recv.saturating_sub(t_send) as f64) / 1e6;
+            }
+        } else {
+            IAudioClient_WaitForPeriod(loopback, 2);
+        }
+    }
+    -1.0
+}
+
 fn bench_roundtrip_lwasapi(rate: u32, period_frames: u32) -> (f64, f64, u32, u32) {
     LWASAPI_SetEngineConfig(rate, period_frames, 32);
     thread::sleep(Duration::from_millis(40));
@@ -380,27 +473,17 @@ fn bench_roundtrip_lwasapi(rate: u32, period_frames: u32) -> (f64, f64, u32, u32
             actual_period = cur_st.hw_period_frames;
         }
 
-        let orig_sched = sched_getscheduler(0);
-        let mut orig_sp = SchedParam::default();
-        let have_orig_sp = orig_sched >= 0 && sched_getparam(0, &mut orig_sp) == 0;
-        let rt_sp = SchedParam { sched_priority: 60 };
-        let elevated_rt = sched_setscheduler(0, SCHED_FIFO, &rt_sp) == 0;
+        let _rt_guard = RtPriorityGuard::acquire(60);
 
         let mut render: *mut IAudioClient = ptr::null_mut();
         let mut loopback: *mut IAudioClient = ptr::null_mut();
         if LWASAPI_ActivateAudioClient(c"Bench-RT-Render".as_ptr(), &mut render) != S_OK {
-            if elevated_rt && have_orig_sp {
-                sched_setscheduler(0, orig_sched, &orig_sp);
-            }
             return (-1.0, 0.0, actual_rate, actual_period);
         }
         if LWASAPI_ActivateAudioClient(c"Bench-RT-Loopback".as_ptr(), &mut loopback)
             != S_OK
         {
             IAudioClient_Release(render);
-            if elevated_rt && have_orig_sp {
-                sched_setscheduler(0, orig_sched, &orig_sp);
-            }
             return (-1.0, 0.0, actual_rate, actual_period);
         }
 
@@ -450,63 +533,39 @@ fn bench_roundtrip_lwasapi(rate: u32, period_frames: u32) -> (f64, f64, u32, u32
         }
         let jitter_us = jitter_sum / f64::from(jitter_samples);
 
-        let mut drain = [0.0f32; 512 * 2];
-        let mut pkt = 0u32;
-        while IAudioCaptureClient_GetNextPacketSize(loopback, &mut pkt) == S_OK && pkt > 0 {
-            let chunk = pkt.min(512);
-            IAudioCaptureClient_ReadFrames(
-                loopback,
-                drain.as_mut_ptr().cast(),
-                chunk,
+        let impulse = build_test_impulse(actual_rate);
+        let trials = 4;
+        let mut rt_sum = 0.0f64;
+        let mut rt_ok = 0u32;
+        for _ in 0..trials {
+            IAudioClient_WaitForPeriod(render, 50);
+            drain_loopback(loopback);
+            let t_send = now_ns();
+            IAudioRenderClient_WriteFrames(
+                render,
+                impulse.as_ptr().cast(),
+                64,
                 LWASAPI_FMT_FLOAT32,
             );
-        }
-
-        let mut impulse = [0.0f32; 64 * 2];
-        for i in 0..64usize {
-            let s = ((2.0 * core::f64::consts::PI * 19_800.0 * (i as f64) / f64::from(actual_rate))
-                .sin()
-                * 0.02) as f32;
-            impulse[i * 2] = s;
-            impulse[i * 2 + 1] = s;
-        }
-        let t_send = now_ns();
-        IAudioRenderClient_WriteFrames(render, impulse.as_ptr().cast(), 64, LWASAPI_FMT_FLOAT32);
-
-        let mut rt_ms = -1.0f64;
-        let mut cap_buf = [0.0f32; 128 * 2];
-        let deadline = t_send + 250_000_000;
-        while now_ns() < deadline {
-            let mut avail = 0u32;
-            IAudioCaptureClient_GetNextPacketSize(loopback, &mut avail);
-            if avail > 0 {
-                let to_read = avail.min(128);
-                IAudioCaptureClient_ReadFrames(
-                    loopback,
-                    cap_buf.as_mut_ptr().cast(),
-                    to_read,
-                    LWASAPI_FMT_FLOAT32,
-                );
-                if cap_buf[..(to_read as usize) * 2]
-                    .iter()
-                    .any(|&v| v.abs() > 0.004)
-                {
-                    let t_recv = now_ns();
-                    rt_ms = (t_recv.saturating_sub(t_send) as f64) / 1e6;
-                    break;
-                }
-            } else {
-                IAudioClient_WaitForPeriod(loopback, 2);
+            let measured = wait_for_loopback_impulse_ms(loopback, t_send, 0.004, 250_000_000);
+            if measured > 0.0 {
+                rt_sum += measured;
+                rt_ok += 1;
+            }
+            for _ in 0..3 {
+                IAudioClient_WaitForPeriod(render, 50);
             }
         }
+        let rt_ms = if rt_ok > 0 {
+            rt_sum / f64::from(rt_ok)
+        } else {
+            -1.0
+        };
 
         IAudioClient_Stop(render);
         IAudioClient_Stop(loopback);
         IAudioClient_Release(render);
         IAudioClient_Release(loopback);
-        if elevated_rt && have_orig_sp {
-            sched_setscheduler(0, orig_sched, &orig_sp);
-        }
         (rt_ms, jitter_us, actual_rate, actual_period)
     }
 }
@@ -562,6 +621,152 @@ fn detect_pc_info() -> (String, String) {
         }
     }
     (cpu, os_name)
+}
+
+fn bench_roundtrip_pulse_impulse(so_path: &str, rate: u32, period_frames: u32) -> f64 {
+    let Ok(cpath) = CString::new(so_path) else {
+        return -1.0;
+    };
+    LWASAPI_SetEngineConfig(rate, period_frames, 32);
+    thread::sleep(Duration::from_millis(40));
+
+    unsafe {
+        let mut cur_st: LwasapiEngineStatus = mem::zeroed();
+        let mut actual_rate = rate;
+        let mut actual_period = period_frames;
+        if LWASAPI_GetEngineStatus(&mut cur_st) == S_OK
+            && cur_st.hw_sample_rate > 0
+            && cur_st.hw_period_frames > 0
+        {
+            actual_rate = cur_st.hw_sample_rate;
+            actual_period = cur_st.hw_period_frames;
+        }
+
+        let h = dlopen(cpath.as_ptr(), RTLD_NOW | RTLD_LOCAL);
+        if h.is_null() {
+            return -1.0;
+        }
+        type PaNewFn = unsafe extern "C" fn(
+            *const c_char,
+            *const c_char,
+            c_int,
+            *const c_char,
+            *const c_char,
+            *const PaSampleSpecBench,
+            *const c_void,
+            *const PaBufferAttrBench,
+            *mut c_int,
+        ) -> *mut c_void;
+        type PaWriteFn =
+            unsafe extern "C" fn(*mut c_void, *const c_void, usize, *mut c_int) -> c_int;
+        type PaFreeFn = unsafe extern "C" fn(*mut c_void);
+
+        let p_new = dl_sym_ptr(h, "pa_simple_new");
+        let p_write = dl_sym_ptr(h, "pa_simple_write");
+        let p_free = dl_sym_ptr(h, "pa_simple_free");
+        if p_new.is_null() || p_write.is_null() || p_free.is_null() {
+            dlclose(h);
+            return -1.0;
+        }
+        let fn_new: PaNewFn = mem::transmute(p_new);
+        let fn_write: PaWriteFn = mem::transmute(p_write);
+        let fn_free: PaFreeFn = mem::transmute(p_free);
+
+        let _rt_guard = RtPriorityGuard::acquire(60);
+
+        let mut loopback: *mut IAudioClient = ptr::null_mut();
+        if LWASAPI_ActivateAudioClient(c"Bench-PA-Loopback".as_ptr(), &mut loopback) != S_OK {
+            dlclose(h);
+            return -1.0;
+        }
+        let fmt = WaveFormatEx {
+            w_format_tag: LWASAPI_FMT_FLOAT32 as u16,
+            n_channels: 2,
+            n_samples_per_sec: actual_rate,
+            w_bits_per_sample: 32,
+            n_block_align: 8,
+            n_avg_bytes_per_sec: actual_rate * 8,
+            cb_size: 0,
+        };
+        IAudioClient_Initialize(
+            loopback,
+            AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_LOOPBACK,
+            actual_period * 4,
+            actual_period,
+            &fmt,
+        );
+        IAudioClient_Start(loopback);
+
+        let ss = PaSampleSpecBench {
+            format: 5,
+            rate: actual_rate,
+            channels: 2,
+        };
+        let fsz = 8u32;
+        let blk_frames = actual_period.max(64);
+        let ba = PaBufferAttrBench {
+            maxlength: blk_frames * 16 * fsz,
+            tlength: blk_frames * 4 * fsz,
+            prebuf: 64 * fsz,
+            minreq: 64 * fsz,
+            fragsize: blk_frames * 2 * fsz,
+        };
+        let mut err = 0;
+        let play = fn_new(
+            ptr::null(),
+            c"Bench-PA-RoundTrip".as_ptr(),
+            1,
+            ptr::null(),
+            c"RoundTripProbe".as_ptr(),
+            &ss,
+            ptr::null(),
+            &ba,
+            &mut err,
+        );
+        if play.is_null() {
+            IAudioClient_Stop(loopback);
+            IAudioClient_Release(loopback);
+            dlclose(h);
+            return -1.0;
+        }
+
+        let silence = [0.0f32; 64 * 2];
+        fn_write(play, silence.as_ptr().cast(), mem::size_of_val(&silence), &mut err);
+        for _ in 0..3 {
+            IAudioClient_WaitForPeriod(loopback, 50);
+        }
+
+        let impulse = build_test_impulse(actual_rate);
+        let trials = 4;
+        let mut rt_sum = 0.0f64;
+        let mut rt_ok = 0u32;
+        for _ in 0..trials {
+            IAudioClient_WaitForPeriod(loopback, 50);
+            drain_loopback(loopback);
+            let t_send = now_ns();
+            fn_write(play, impulse.as_ptr().cast(), mem::size_of_val(&impulse), &mut err);
+            let measured = wait_for_loopback_impulse_ms(loopback, t_send, 0.004, 250_000_000);
+            if measured > 0.0 {
+                rt_sum += measured;
+                rt_ok += 1;
+            }
+            for _ in 0..3 {
+                IAudioClient_WaitForPeriod(loopback, 50);
+            }
+        }
+
+        fn_free(play);
+        dlclose(h);
+        IAudioClient_Stop(loopback);
+        IAudioClient_Release(loopback);
+
+        if rt_ok > 0 {
+            rt_sum / f64::from(rt_ok)
+        } else {
+            -1.0
+        }
+    }
 }
 
 fn bench_roundtrip_stock_pulse() -> f64 {
@@ -676,7 +881,7 @@ fn main() {
         "Stock PipeWire-Pulse Socket (pa_simple_write)"
     };
     let pa_rt_lbl = if salsa_pa_active {
-        "Salsa Native PA Socket / ALSA Bridge"
+        "Salsa Native PA Socket (Default attr=NULL)"
     } else {
         "Stock PipeWire-Pulse / ALSA Bridge"
     };
@@ -761,6 +966,16 @@ fn main() {
     let (rt_192_64, jitter_192_64, act_r1, act_p1) = bench_roundtrip_lwasapi(192000, 64);
     let (rt_192_128, jitter_192_128, act_r2, act_p2) = bench_roundtrip_lwasapi(192000, 128);
     let (rt_48_256, jitter_48_256, act_r3, act_p3) = bench_roundtrip_lwasapi(48000, 256);
+    let rt_shim_pulse = if salsa_pa_active {
+        bench_roundtrip_pulse_impulse(&shim_pulse, 192000, 64)
+    } else {
+        -1.0
+    };
+    let rt_salsa_pa_lowlat = if salsa_pa_active {
+        bench_roundtrip_pulse_impulse(&sys_pulse, 192000, 64)
+    } else {
+        -1.0
+    };
     let stock_pw_lat = bench_roundtrip_stock_pulse();
 
     if have_orig && orig_st.hw_sample_rate > 0 {
@@ -807,6 +1022,18 @@ fn main() {
         rt_48_256,
         (1000.0 * f64::from(act_p3)) / f64::from(act_r3)
     );
+    if rt_shim_pulse > 0.0 {
+        println!(
+            "  {:<46} : {:8.2} ms  (lwasapi-run Zero-IPC WaveRT SHM)",
+            "LWASAPI Hollow Pulse Shim (libpulse-simple)", rt_shim_pulse
+        );
+    }
+    if rt_salsa_pa_lowlat > 0.0 {
+        println!(
+            "  {:<46} : {:8.2} ms  (Low-Latency pa_buffer_attr Socket)",
+            "Salsa Native PA Socket (Low-Lat Impulse)", rt_salsa_pa_lowlat
+        );
+    }
     println!(
         "  {:<46} : {:8.2} ms  (Default Pulse/ALSA Bridge Buffering)",
         pa_rt_lbl, stock_pw_lat

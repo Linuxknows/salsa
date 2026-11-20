@@ -292,7 +292,7 @@ test-sanitized: rust-test fuzz-wire
 test: all
 	$(BUILD_DIR)/salsa-regression
 
-REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo V1.19.6))
+REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo V1.19.7))
 
 installer: all
 	$(BUILD_DIR)/salsa-dist "$(REV)"

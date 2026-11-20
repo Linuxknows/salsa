@@ -735,4 +735,35 @@ void showAboutLicenseDialog(
     dlg.exec();
 }
 
+QString friendlyDeviceLabel(
+    const SalsaDeviceList& devs,
+    const QString& activeId,
+    const QString& rawFallback,
+    bool isCapture) {
+    if (!rawFallback.isEmpty() && !rawFallback.startsWith(QLatin1String("/dev/snd/"))) {
+        return rawFallback;
+    }
+    const uint32_t wantCap = isCapture ? 1u : 0u;
+    const uint32_t n = std::min<uint32_t>(devs.num_devices, SALSA_MAX_DEVICES);
+    for (uint32_t i = 0; i < n; ++i) {
+        const auto& d = devs.devices[i];
+        if (d.is_capture != wantCap) continue;
+        const QString did = cFixedStr(d.id, sizeof(d.id));
+        const QString dnm = cFixedStr(d.name, sizeof(d.name));
+        if (dnm.isEmpty()) continue;
+        if ((!activeId.isEmpty() && did == activeId)
+            || ((activeId.isEmpty() || activeId == QLatin1String("auto")) && d.is_active != 0)) {
+            return dnm;
+        }
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        const auto& d = devs.devices[i];
+        if (d.is_capture == wantCap && d.is_active != 0) {
+            const QString dnm = cFixedStr(d.name, sizeof(d.name));
+            if (!dnm.isEmpty()) return dnm;
+        }
+    }
+    return rawFallback;
+}
+
 }  // namespace salsa

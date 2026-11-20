@@ -175,6 +175,11 @@ void showAboutLicenseDialog(
     const QString& appName,
     const SalsaThemeData& theme,
     int fontPct);
+QString friendlyDeviceLabel(
+    const SalsaDeviceList& devs,
+    const QString& activeId,
+    const QString& rawFallback,
+    bool isCapture);
 
 class StepVolumeSlider : public QSlider {
     Q_OBJECT

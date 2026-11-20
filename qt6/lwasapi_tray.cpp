@@ -1073,11 +1073,14 @@ public:
     void toggleMasterMute();
     void toggleMicMute();
     void handleScroll(int delta, const QString& orientation);
+    bool verifyLayoutSelfTest(QString* errOut);
 
 private:
     void buildPopup();
     void buildContextMenu();
     void applyThemeAndFont(bool saveFont = false);
+    int computePopupWidth() const;
+    QString playbackDisplayLabel(const SalsaEngineStatus& st) const;
     void positionAndShowPopup(const QPoint& rawPt);
     void keepBottomAnchored();
     void populateQuickMixer();
@@ -1393,7 +1396,7 @@ void TrayController::buildPopup() {
 
     // KDE Plasma Underline Tabs + Font Scale + Wheel Step
     auto* tabRow = new QHBoxLayout();
-    tabRow->setSpacing(4);
+    tabRow->setSpacing(3);
     btnTabDev_ = new QPushButton(QStringLiteral("Devices"), card_);
     btnTabDev_->setObjectName(QStringLiteral("TabUnderline"));
     btnTabDev_->setCheckable(true);
@@ -1466,6 +1469,8 @@ void TrayController::buildPopup() {
     btLay->setSpacing(8);
     lblBtInfo_ = new QLabel(QStringLiteral("Bluetooth Ready"), btPill_);
     lblBtInfo_->setWordWrap(false);
+    lblBtInfo_->setMinimumWidth(0);
+    lblBtInfo_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     btLay->addWidget(lblBtInfo_, 1);
     btnBtRst_ = new QPushButton(QStringLiteral("Reset BT"), btPill_);
     btnBtRst_->setObjectName(QStringLiteral("SmallBtn"));
@@ -1913,6 +1918,17 @@ void TrayController::buildPopup() {
     });
     foot->addWidget(btnRst);
     root->addLayout(foot);
+
+    // Prevent long device or preset names from inflating layout width past popup bounds
+    for (QComboBox* cb : card_->findChildren<QComboBox*>()) {
+        cb->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        cb->setMinimumContentsLength(6);
+        cb->setMinimumWidth(0);
+        cb->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        if (cb->view()) {
+            cb->view()->setTextElideMode(Qt::ElideRight);
+        }
+    }
 }
 
 void TrayController::buildContextMenu() {
@@ -2129,7 +2145,7 @@ void TrayController::applyThemeAndFont(bool /*saveFont*/) {
     for (QPushButton* tb : {btnTabDev_, btnTabApps_}) {
         if (!tb) continue;
         tb->setFont(tabFont);
-        tb->setMinimumWidth(tabFm.horizontalAdvance(tb->text()) + sp(22));
+        tb->setMinimumWidth(tabFm.horizontalAdvance(tb->text()) + sp(18));
         tb->updateGeometry();
     }
 
@@ -2195,7 +2211,7 @@ void TrayController::applyThemeAndFont(bool /*saveFont*/) {
                    " border-radius: %9px; padding: %10; min-height: %11px; font-size: %12px; font-weight: 600; }"
                    " QPushButton#WarnBtn:hover { border-color: %18; background-color: %13; }")
                    .arg(mut,
-                        QStringLiteral("%1px %2px").arg(sp(4)).arg(sp(10)),
+                        QStringLiteral("%1px %2px").arg(sp(4)).arg(sp(8)),
                         QString::number(sp(12)),
                         txt, brt, acc, bgCtrl, bdrCtrl,
                         QString::number(sp(7)),
@@ -2246,11 +2262,24 @@ void TrayController::applyThemeAndFont(bool /*saveFont*/) {
     if (fontBar_) fontBar_->setFontScalePct(fontPct_);
 }
 
+int TrayController::computePopupWidth() const {
+    const int minHintW = card_ ? card_->minimumSizeHint().width() : 0;
+    return std::clamp(std::max(scaledPx(488, fontPct_), minHintW), 472, 660);
+}
+
+QString TrayController::playbackDisplayLabel(const SalsaEngineStatus& st) const {
+    return friendlyDeviceLabel(
+        devices_,
+        cFixedStr(st.active_playback_id, sizeof(st.active_playback_id)),
+        cFixedStr(st.hw_device, sizeof(st.hw_device)),
+        false);
+}
+
 void TrayController::positionAndShowPopup(const QPoint& rawPt) {
     if (!popupWin_) return;
     populateQuickMixer();
 
-    const int popW = std::clamp(scaledPx(456, fontPct_), 436, 580);
+    const int popW = computePopupWidth();
     popupWin_->setMinimumWidth(popW);
     popupWin_->setMaximumWidth(popW);
     popupWin_->resize(popW, popupWin_->sizeHint().height());
@@ -2299,10 +2328,12 @@ void TrayController::keepBottomAnchored() {
     if (card_) card_->updateGeometry();
     if (popupWin_->layout()) popupWin_->layout()->activate();
     const QSize sh = popupWin_->sizeHint();
-    const int popW = std::clamp(scaledPx(456, fontPct_), 436, 580);
+    const int popW = computePopupWidth();
     const int maxH = anchorAvail_.isValid() ? std::max(360, anchorAvail_.height() - 24) : 740;
     const int popH = std::min(maxH, std::max(scaledPx(360, fontPct_), sh.height()));
     if (std::abs(popH - popupWin_->height()) >= 2 || popW != popupWin_->width()) {
+        popupWin_->setMinimumWidth(popW);
+        popupWin_->setMaximumWidth(popW);
         popupWin_->resize(popW, popH);
         if (anchorPanelLoc_ != 3 && anchorAvail_.isValid()) {
             const int topLim = anchorAvail_.top() + 8;
@@ -2341,7 +2372,7 @@ void TrayController::toggleMasterMute() {
     if (osd_) {
         osd_->showVolume(
             static_cast<int>(status_.desktop_volume_pct), nextMute != 0,
-            cFixedStr(status_.hw_device, sizeof(status_.hw_device)),
+            playbackDisplayLabel(status_),
             false, theme_.qcolor("accent_primary", "#00e676"), fontPct_, lastTrayRawPt_);
     }
     syncFromEngine(false);
@@ -2395,7 +2426,7 @@ void TrayController::handleScroll(int delta, const QString& orientation) {
         if (osd_) {
             osd_->showVolume(
                 nxt, status_.desktop_muted != 0,
-                cFixedStr(status_.hw_device, sizeof(status_.hw_device)),
+                playbackDisplayLabel(status_),
                 false, theme_.qcolor("accent_primary", "#00e676"), fontPct_, lastTrayRawPt_);
         }
     }
@@ -2533,7 +2564,7 @@ void TrayController::populateQuickMixer() {
     const qint64 tnow = nowMs();
 
     if (!faderSpk_->isDragging() && tnow >= spkHoldUntilMs_) {
-        faderSpk_->setLabel(cFixedStr(status_.hw_device, sizeof(status_.hw_device)));
+        faderSpk_->setLabel(playbackDisplayLabel(status_));
         faderSpk_->setValue(static_cast<int>(status_.desktop_volume_pct), status_.desktop_muted != 0);
     }
     btnSpkMute_->setText(status_.desktop_muted ? QStringLiteral("Unmute") : QStringLiteral("Mute"));
@@ -2602,7 +2633,7 @@ void TrayController::populateQuickMixer() {
     if (btnTabApps_->text() != tabText) {
         btnTabApps_->setText(tabText);
         const QFontMetrics tabFm(btnTabApps_->font());
-        btnTabApps_->setMinimumWidth(tabFm.horizontalAdvance(tabText) + scaledPx(22, fontPct_));
+        btnTabApps_->setMinimumWidth(tabFm.horizontalAdvance(tabText) + scaledPx(18, fontPct_));
         btnTabApps_->updateGeometry();
     }
     lblNoApps_->setVisible(ns == 0);
@@ -2724,7 +2755,7 @@ void TrayController::syncFromEngine(bool showOsdIfExternal) {
 
     if (ok) {
         status_ = st;
-        if (tnow - lastDevPollMs_ >= 800 || showOsdIfExternal) {
+        if (devices_.num_devices == 0 || tnow - lastDevPollMs_ >= 800 || showOsdIfExternal) {
             lastDevPollMs_ = tnow;
             salsa_list_devices(&devices_);
         }
@@ -2754,7 +2785,7 @@ void TrayController::syncFromEngine(bool showOsdIfExternal) {
 
         if (osdInitDone_ && showOsdIfExternal && tnow >= osdSuppressUntilMs_) {
             if (curSpk != lastSpkVol_ || curSpkM != lastSpkMute_) {
-                osd_->showVolume(curSpk, curSpkM, cFixedStr(st.hw_device, sizeof(st.hw_device)),
+                osd_->showVolume(curSpk, curSpkM, playbackDisplayLabel(st),
                                  false, theme_.qcolor("accent_primary", "#00e676"), fontPct_, lastTrayRawPt_);
             } else if (curMic != lastMicVol_ || curMicM != lastMicMute_) {
                 osd_->showVolume(curMic, curMicM, cFixedStr(st.hw_capture_device, sizeof(st.hw_capture_device)),
@@ -2862,6 +2893,70 @@ void TrayController::checkSettingsSync() {
     }
 }
 
+bool TrayController::verifyLayoutSelfTest(QString* errOut) {
+    if (!popupWin_ || !card_ || !cmbOutDev_ || !btnVolStep_ || !faderSpk_) {
+        if (errOut) *errOut = QStringLiteral("missing popup widgets");
+        return false;
+    }
+    SalsaDeviceList testDevs{};
+    testDevs.num_devices = 1;
+    std::snprintf(reinterpret_cast<char*>(testDevs.devices[0].id), sizeof(testDevs.devices[0].id), "hw:6,0");
+    std::snprintf(
+        reinterpret_cast<char*>(testDevs.devices[0].name),
+        sizeof(testDevs.devices[0].name),
+        "Bose Corporation Bose QC Ultra 2 HP - USB Audio");
+    testDevs.devices[0].is_active = 1;
+    devices_ = testDevs;
+
+    SalsaEngineStatus testSt{};
+    std::snprintf(reinterpret_cast<char*>(testSt.active_playback_id), sizeof(testSt.active_playback_id), "hw:6,0");
+    std::snprintf(reinterpret_cast<char*>(testSt.hw_device), sizeof(testSt.hw_device), "/dev/snd/pcmC6D0p");
+    const QString friendly = playbackDisplayLabel(testSt);
+    if (friendly != QLatin1String("Bose Corporation Bose QC Ultra 2 HP - USB Audio")) {
+        if (errOut) *errOut = QStringLiteral("unexpected playbackDisplayLabel: %1").arg(friendly);
+        return false;
+    }
+
+    syncingUi_ = true;
+    cmbOutDev_->clear();
+    cmbOutDev_->addItem(friendly, QStringLiteral("hw:6,0"));
+    if (btnTabApps_) {
+        btnTabApps_->setText(QStringLiteral("Applications (2)"));
+        const QFontMetrics fm(btnTabApps_->font());
+        btnTabApps_->setMinimumWidth(fm.horizontalAdvance(btnTabApps_->text()) + scaledPx(18, fontPct_));
+    }
+    faderSpk_->setLabel(friendly);
+    syncingUi_ = false;
+
+    const int popW = computePopupWidth();
+    popupWin_->setMinimumWidth(popW);
+    popupWin_->setMaximumWidth(popW);
+    popupWin_->show();
+    if (popupWin_->layout()) popupWin_->layout()->activate();
+    if (card_->layout()) card_->layout()->activate();
+    const int popH = std::max(scaledPx(460, fontPct_), popupWin_->sizeHint().height());
+    popupWin_->resize(popW, popH);
+    if (popupWin_->layout()) popupWin_->layout()->activate();
+    if (card_->layout()) card_->layout()->activate();
+
+    const int cardRight = card_->width();
+    const int cmbRight = cmbOutDev_->mapTo(card_, QPoint(cmbOutDev_->width(), 0)).x();
+    const int stepRight = btnVolStep_->mapTo(card_, QPoint(btnVolStep_->width(), 0)).x();
+    popupWin_->hide();
+
+    if (card_->width() > popupWin_->width() || cmbRight > cardRight - 8 || stepRight > cardRight - 8) {
+        if (errOut) {
+            *errOut = QStringLiteral("tray layout overflow: popW=%1 cardW=%2 cmbR=%3 stepR=%4")
+                          .arg(popupWin_->width())
+                          .arg(card_->width())
+                          .arg(cmbRight)
+                          .arg(stepRight);
+        }
+        return false;
+    }
+    return true;
+}
+
 }  // namespace salsa
 
 #include "lwasapi_tray.moc"
@@ -2894,6 +2989,11 @@ int main(int argc, char** argv) {
             return 1;
         }
         salsa::TrayController ctrl(false);
+        QString layoutErr;
+        if (!ctrl.verifyLayoutSelfTest(&layoutErr)) {
+            std::fprintf(stderr, "ERR: %s\n", layoutErr.toUtf8().constData());
+            return 1;
+        }
         std::printf("%s\n", res.toUtf8().constData());
         return 0;
     }

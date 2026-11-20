@@ -6376,6 +6376,15 @@ stream_set_cb!(
     internal_stream_buffer_attr_cb
 );
 
+#[inline]
+unsafe fn stream_is_reconnecting_fallback(ws: *const Wstream) -> bool {
+    (*ws).ever_ready
+        && !(*ws).user_disconnected
+        && !(*ws).wctx.is_null()
+        && !(*(*ws).wctx).user_disconnected
+        && ((*ws).reconnecting || (*(*ws).wctx).reconnecting)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn pa_stream_get_time(s: *mut pa_stream, r_usec: *mut pa_usec_t) -> c_int {
     ensure_init();
@@ -6391,11 +6400,15 @@ pub unsafe extern "C" fn pa_stream_get_time(s: *mut pa_stream, r_usec: *mut pa_u
 
     pthread_mutex_lock(&raw mut (*(*ws).wctx).lock);
     if (*ws).real_stream.is_null() {
-        if !r_usec.is_null() {
-            *r_usec = (*ws).last_reported_time_us;
+        if stream_is_reconnecting_fallback(ws) {
+            if !r_usec.is_null() {
+                *r_usec = (*ws).last_reported_time_us;
+            }
+            pthread_mutex_unlock(&raw mut (*(*ws).wctx).lock);
+            return 0;
         }
         pthread_mutex_unlock(&raw mut (*(*ws).wctx).lock);
-        return 0;
+        return -1;
     }
     let mut raw: pa_usec_t = 0;
     let rc = real()
@@ -6413,7 +6426,7 @@ pub unsafe extern "C" fn pa_stream_get_time(s: *mut pa_stream, r_usec: *mut pa_u
         pthread_mutex_unlock(&raw mut (*(*ws).wctx).lock);
         return 0;
     }
-    if (*ws).ever_ready || (*ws).reconnecting || (*(*ws).wctx).reconnecting {
+    if stream_is_reconnecting_fallback(ws) {
         if !r_usec.is_null() {
             *r_usec = (*ws).last_reported_time_us;
         }
@@ -6435,19 +6448,28 @@ pub unsafe extern "C" fn pa_stream_get_latency(
     if !is_valid_wstream(ws) {
         return -1;
     }
-    if (*ws).real_stream.is_null() {
-        if !r_usec.is_null() {
-            *r_usec = 20_000;
+    let lock = &raw mut (*(*ws).wctx).lock;
+    pthread_mutex_lock(lock);
+    let rs = (*ws).real_stream;
+    let reconnecting = stream_is_reconnecting_fallback(ws);
+    if rs.is_null() {
+        pthread_mutex_unlock(lock);
+        if reconnecting {
+            if !r_usec.is_null() {
+                *r_usec = 20_000;
+            }
+            if !negative.is_null() {
+                *negative = 0;
+            }
+            return 0;
         }
-        if !negative.is_null() {
-            *negative = 0;
-        }
-        return 0;
+        return -1;
     }
     let rc = real()
         .pa_stream_get_latency
-        .map_or(-1, |f| f((*ws).real_stream, r_usec, negative));
-    if rc < 0 && ((*ws).ever_ready || (*ws).reconnecting || (*(*ws).wctx).reconnecting) {
+        .map_or(-1, |f| f(rs, r_usec, negative));
+    if rc < 0 && stream_is_reconnecting_fallback(ws) {
+        pthread_mutex_unlock(lock);
         if !r_usec.is_null() {
             *r_usec = 20_000;
         }
@@ -6456,6 +6478,7 @@ pub unsafe extern "C" fn pa_stream_get_latency(
         }
         return 0;
     }
+    pthread_mutex_unlock(lock);
     rc
 }
 
@@ -6466,23 +6489,34 @@ pub unsafe extern "C" fn pa_stream_get_timing_info(s: *mut pa_stream) -> *const 
     if !is_valid_wstream(ws) {
         return ptr::null();
     }
-    if !(*ws).real_stream.is_null() {
+    let lock = &raw mut (*(*ws).wctx).lock;
+    pthread_mutex_lock(lock);
+    let rs = (*ws).real_stream;
+    if !rs.is_null() {
         let ti = real()
             .pa_stream_get_timing_info
-            .map_or(ptr::null(), |f| f((*ws).real_stream));
+            .map_or(ptr::null(), |f| f(rs));
         if !ti.is_null() {
             (*ws).last_timing = *ti;
             (*ws).has_last_timing = true;
+            pthread_mutex_unlock(lock);
             return ti;
         }
-        if (*ws).ever_ready && (*ws).has_last_timing {
-            (*ws).last_timing.playing = if (*ws).corked == 0 { 1 } else { 0 };
+        if (*ws).has_last_timing && stream_is_reconnecting_fallback(ws) {
+            (*ws).last_timing.playing = i32::from((*ws).corked == 0);
+            pthread_mutex_unlock(lock);
             return &raw const (*ws).last_timing;
         }
+        pthread_mutex_unlock(lock);
         return ptr::null();
     }
-    (*ws).last_timing.playing = if (*ws).corked == 0 { 1 } else { 0 };
-    &raw const (*ws).last_timing
+    if (*ws).has_last_timing && stream_is_reconnecting_fallback(ws) {
+        (*ws).last_timing.playing = i32::from((*ws).corked == 0);
+        pthread_mutex_unlock(lock);
+        return &raw const (*ws).last_timing;
+    }
+    pthread_mutex_unlock(lock);
+    ptr::null()
 }
 
 #[no_mangle]
@@ -6610,5 +6644,38 @@ pub unsafe extern "C" fn pa_stream_get_underflow_index(s: *const pa_stream) -> i
             .map_or(0, |f| f((*ws).real_stream))
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe fn check_fallback(
+        ever_ready: bool,
+        stream_reconnecting: bool,
+        ctx_reconnecting: bool,
+        user_disconnected: bool,
+    ) -> bool {
+        let mut ctx: Wctx = core::mem::zeroed();
+        ctx.reconnecting = ctx_reconnecting;
+        ctx.user_disconnected = user_disconnected;
+        let mut st: Wstream = core::mem::zeroed();
+        st.wctx = &raw mut ctx;
+        st.ever_ready = ever_ready;
+        st.reconnecting = stream_reconnecting;
+        st.user_disconnected = user_disconnected;
+        stream_is_reconnecting_fallback(&raw const st)
+    }
+
+    #[test]
+    fn fallback_requires_active_reconnect() {
+        unsafe {
+            assert!(!check_fallback(true, false, false, false));
+            assert!(check_fallback(true, true, false, false));
+            assert!(check_fallback(true, false, true, false));
+            assert!(!check_fallback(false, true, true, false));
+            assert!(!check_fallback(true, true, true, true));
+        }
     }
 }

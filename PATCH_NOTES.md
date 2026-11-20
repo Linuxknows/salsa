@@ -4,7 +4,19 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.19.6 — Current (`2026-11-19`)
+## V1.19.7 — Current (`2026-11-19`)
+
+### 1. PulseAudio Reconnect Latency Fallback & Benchmark Accuracy Fixes
+- Fixed a boolean gating bug in [`imp.rs`](rust/salsa_pa_reconnect/src/imp.rs) (`pa_stream_get_time()`, `pa_stream_get_latency()`, and `pa_stream_get_timing_info()`) via `stream_is_reconnecting_fallback()`: healthy live PulseAudio streams no longer swallow `-PA_ERR_NODATA` or inject a hardcoded `20_000` µs (`20.00 ms`) fallback before initial server timing arrives, while preserving monotonic stream time and `20_000` µs fallback strictly during active daemon reconnects (covered by a new `fallback_requires_active_reconnect` unit test).
+- Updated [`lwasapi_bench.rs`](rust/lwasapi_client/src/bin/lwasapi_bench.rs) `[3/3]` end-to-end latency measurements to average `4` phase-distributed WaveRT impulse trials cleanly (`RtPriorityGuard`, `drain_loopback()`, `build_test_impulse()`, `wait_for_loopback_impulse_ms()`), benchmark real end-to-end impulse round-trips through both `LWASAPI Hollow Pulse Shim (libpulse-simple)` (`lwasapi-run` zero-IPC SHM) and low-latency `Salsa Native PA Socket (Low-Lat Impulse)` (`pa_buffer_attr`), and clearly label the unconfigured `attr = NULL` probe as `Salsa Native PA Socket (Default attr=NULL)`.
+
+### 2. Tray Quick Mixer Layout Clipping & Friendly Hardware Labels
+- Resolved right-edge clipping in the Qt6 tray popup ([`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp)) by computing popup width dynamically from `card_->minimumSizeHint()` (`computePopupWidth()`), keeping device/preset `QComboBox` widgets compact with `Qt::ElideRight`, ignoring long Bluetooth pill minimum-width expansion, and re-anchoring cleanly on `keepBottomAnchored()`, backed by `verifyLayoutSelfTest()` in `--self-test`.
+- Added shared `friendlyDeviceLabel()` in [`salsa_common.hpp`](qt6/salsa_common.hpp) / [`salsa_common.cpp`](qt6/salsa_common.cpp) and wired it into [`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp) and [`salsa_studio.cpp`](qt6/salsa_studio.cpp) so `/dev/snd/pcmC*D*` playback and capture paths display human-friendly endpoint names in tray faders, OSD volume overlays, and Studio headers.
+
+---
+
+## V1.19.6 (`2026-11-19`)
 
 ### 1. Full GNU LGPL-3.0 (`LGPL-3.0-only`) Compliance
 - Replaced standalone `LICENSE` with the canonical FSF license pair [`COPYING`](COPYING) (verbatim GNU GPL-3.0 base terms) and [`COPYING.LESSER`](COPYING.LESSER) (verbatim GNU LGPL-3.0 permissions), and added [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) documenting Salsa's zero external `crates.io` dependencies, dynamically linked frameworks (Qt6 under `LGPL-3.0-only`), library relinking / Corresponding Source terms (`LGPL-3.0` §4), and optional runtime `dlopen()` codec policy (`libfdk-aac.so.2`, `libldac`, `libfreeaptx`, `libsbc`, `librnnoise`, `libdbus-1` — never bundled or vendored).

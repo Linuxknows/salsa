@@ -2489,10 +2489,18 @@ void StudioController::pollEngine(bool initial) {
     hasStatus_ = true;
     status_ = st;
 
-    const QString hwDev = cFixedStr(st.hw_device, sizeof(st.hw_device));
-    const QString hwCap = cFixedStr(st.hw_capture_device, sizeof(st.hw_capture_device));
     const QString actPbId = cFixedStr(st.active_playback_id, sizeof(st.active_playback_id));
     const QString actCapId = cFixedStr(st.active_capture_id, sizeof(st.active_capture_id));
+    const QString hwDev = friendlyDeviceLabel(
+        devices_,
+        actPbId,
+        cFixedStr(st.hw_device, sizeof(st.hw_device)),
+        false);
+    const QString hwCap = friendlyDeviceLabel(
+        devices_,
+        actCapId,
+        cFixedStr(st.hw_capture_device, sizeof(st.hw_capture_device)),
+        true);
 
     if (!actPbId.isEmpty() && actPbId != lastSinkId_) {
         lastSinkId_ = actPbId;
