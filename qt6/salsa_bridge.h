@@ -355,6 +355,7 @@ int salsa_dbg_shm_poll_frame(
     uint8_t* rgba_out,
     size_t rgba_cap,
     SalsaScFrameMeta* meta_out);
+void salsa_dbg_shm_reset_cache(void* ctx);
 void salsa_dbg_shm_stop(void* ctx);
 int salsa_dbg_portal_start(void* ctx, bool force_reselect);
 void salsa_dbg_portal_stop(void* ctx);

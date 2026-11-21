@@ -132,6 +132,12 @@ static G_RT_HW_XRUNS: AtomicU64 = AtomicU64::new(0);
 static G_DBG_RUNNING: AtomicBool = AtomicBool::new(false);
 static G_TEST_BYPASS_RUNNING: AtomicBool = AtomicBool::new(false);
 
+#[inline]
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn is_dbg_running() -> bool {
+    G_DBG_RUNNING.load(Ordering::Relaxed) || G_TEST_BYPASS_RUNNING.load(Ordering::Relaxed)
+}
+
 struct ServerRuntime {
     cbs: LwasapiDbgCallbacks,
     sock_path: String,

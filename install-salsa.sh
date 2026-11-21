@@ -17,7 +17,7 @@ if [[ "${SALSA_INSTALLER_NO_TERMINAL:-0}" == "1" ]]; then
 fi
 for arg in "$@"; do
     case "${arg}" in
-        --no-terminal|--check|--uninstall|-h|--help|-V|--version|--license)
+        --no-terminal|--check|--uninstall|--install-pacman-hook|--remove-pacman-hook|-h|--help|-V|--version|--license)
             SKIP_TERM=1
             ;;
     esac

@@ -923,6 +923,18 @@ pub(crate) unsafe fn salsa_audiodg_bt_ptr() -> *mut c_void {
     }
 }
 
+pub(crate) unsafe fn salsa_bt_is_initialized(bt: *const c_void) -> bool {
+    if bt_ops().is_none() {
+        #[cfg(not(test))]
+        {
+            return unsafe { crate::bluez_runtime::bt_is_initialized_impl(bt) };
+        }
+    }
+    let mut snap: SalsaBtSnapshot = unsafe { core::mem::zeroed() };
+    unsafe { salsa_bt_get_snapshot(bt, &mut snap) };
+    snap.initialized
+}
+
 pub(crate) unsafe fn salsa_bt_get_snapshot(bt: *const c_void, out: *mut SalsaBtSnapshot) {
     if let Some(f) = bt_ops().and_then(|o| o.get_snapshot) {
         unsafe { f(bt, out) };

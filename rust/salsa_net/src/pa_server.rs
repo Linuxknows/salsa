@@ -17,9 +17,10 @@ use std::ffi::CStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixListener;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -40,8 +41,8 @@ use crate::pa_wire::{
 use crate::unix_sys::{
     self, bind_unix_listener_0600, current_hostname, current_pid, current_uid, current_username,
     dbg_emit_vals, do_poll, enable_realtime, ensure_owned_dir_0700, eventfd_drain, eventfd_signal,
-    nb_recv, nb_send, new_eventfd, realtime_sec_usec, socket_peercred, user_home_dir, PollFd,
-    POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT,
+    is_safe_owner_dir, mono_ns, nb_recv, nb_send, new_eventfd, realtime_sec_usec, socket_peercred,
+    user_home_dir, PollFd, POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT,
 };
 
 const PA_PROTO_VERSION: u32 = 35;
@@ -51,6 +52,10 @@ const PA_NATIVE_COOKIE_LEN: usize = 256;
 const PA_SERVER_COOKIE_ID: u32 = 0x5341_4C53;
 
 const PA_MAX_CLIENTS: usize = 32;
+const PA_MAX_TCP_CLIENTS: usize = 12;
+const PA_MAX_UNAUTH_CLIENTS: usize = 6;
+const PA_UNAUTH_TIMEOUT_MS: u64 = 2_000;
+const PA_ACCEPT_BATCH_CAP: usize = 16;
 const PA_MAX_STREAMS: usize = 48;
 const PA_MAX_OUT_QUEUE: usize = 2048;
 const PA_STREAM_RING_FRAMES: usize = 262_144;
@@ -322,6 +327,7 @@ impl PaRtStream {
 
 struct PaRtShared {
     streams: Vec<PaRtStream>,
+    has_active_doi: AtomicBool,
     mon_vol_milli: AtomicU32,
     mon_muted: AtomicI32,
     dom_stream_rate: AtomicU32,
@@ -337,12 +343,23 @@ impl PaRtShared {
         }
         Self {
             streams,
+            has_active_doi: AtomicBool::new(false),
             mon_vol_milli: AtomicU32::new(1000),
             mon_muted: AtomicI32::new(0),
             dom_stream_rate: AtomicU32::new(0),
             dom_stream_bits: AtomicU32::new(0),
             wake_fd: AtomicI32::new(wake_fd),
         }
+    }
+
+    #[inline]
+    fn sync_active_doi(&self) {
+        let any_doi = self.streams.iter().any(|s| {
+            s.in_use.load(Ordering::Relaxed)
+                && !s.is_playback.load(Ordering::Relaxed)
+                && s.direct_on_input.load(Ordering::Relaxed) != PA_INVALID_INDEX
+        });
+        self.has_active_doi.store(any_doi, Ordering::Release);
     }
 
     #[inline]
@@ -359,11 +376,44 @@ struct OutPacket {
     sent: usize,
 }
 
+#[inline]
+fn mono_ms() -> u64 {
+    mono_ns() / 1_000_000
+}
+
+#[inline]
+fn ct_eq_256(a: &[u8], b: &[u8; PA_NATIVE_COOKIE_LEN]) -> bool {
+    if a.len() != PA_NATIVE_COOKIE_LEN {
+        return false;
+    }
+    let mut diff = 0u8;
+    for i in 0..PA_NATIVE_COOKIE_LEN {
+        diff |= a[i] ^ b[i];
+    }
+    core::hint::black_box(diff) == 0
+}
+
+fn rand_tmp_suffix() -> String {
+    let mut b = [0u8; 8];
+    let ok = fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut b))
+        .is_ok();
+    let v = if ok {
+        u64::from_le_bytes(b)
+    } else {
+        mono_ns() ^ ((current_pid() as u64) << 32)
+    };
+    format!("{}.{v:016x}.tmp", current_pid())
+}
+
 struct PaClient {
     in_use: bool,
     _slot: usize,
     index: u32,
     fd: Option<OwnedFd>,
+    is_tcp: bool,
+    accepted_ms: u64,
+    auth_failures: u8,
     version: u32,
     authed: bool,
     sub_mask: u32,
@@ -390,6 +440,9 @@ impl PaClient {
             _slot: slot,
             index: 0,
             fd: None,
+            is_tcp: false,
+            accepted_ms: 0,
+            auth_failures: 0,
             version: 0,
             authed: false,
             sub_mask: 0,
@@ -401,7 +454,7 @@ impl PaClient {
             next_channel: 0,
             rx_hdr: [0; PA_PSTREAM_DESC_BYTES],
             rx_hdr_got: 0,
-            rx_body: Vec::new(),
+            rx_body: Vec::with_capacity(4096),
             rx_body_len: 0,
             rx_body_got: 0,
             rx_channel: 0,
@@ -410,10 +463,13 @@ impl PaClient {
         }
     }
 
-    fn reset_slot(&mut self, index: u32, fd: OwnedFd, uid_opt: Option<(u32, u32)>) {
+    fn reset_slot(&mut self, index: u32, fd: OwnedFd, uid_opt: Option<(u32, u32)>, is_tcp: bool) {
         self.in_use = true;
         self.index = index;
         self.fd = Some(fd);
+        self.is_tcp = is_tcp;
+        self.accepted_ms = mono_ms();
+        self.auth_failures = 0;
         self.version = 0;
         self.authed = false;
         self.sub_mask = 0;
@@ -579,6 +635,8 @@ struct PaState {
     mon_pa_vol: u32,
     app_vols: Vec<AppVolEntry>,
     app_vols_path: String,
+    scratch_rx: Vec<u8>,
+    scratch_tx_pcm: Vec<u8>,
 }
 
 impl PaState {
@@ -611,17 +669,37 @@ impl PaState {
             mon_pa_vol: PA_VOLUME_NORM,
             app_vols: Vec::with_capacity(64),
             app_vols_path: init_app_vols_path(),
+            scratch_rx: Vec::with_capacity(4096),
+            scratch_tx_pcm: Vec::with_capacity(16384),
         };
         ensure_pulse_cookie(&mut st.cookie, &mut st.cookie_valid);
         st.load_app_volumes_from_disk();
         st
     }
 
-    fn accept_client_fd(&mut self, owned: OwnedFd, uid_opt: Option<(u32, u32)>) {
+    fn accept_client_fd(&mut self, owned: OwnedFd, uid_opt: Option<(u32, u32)>, is_tcp: bool) {
+        let unauth_cnt = self
+            .clients
+            .iter()
+            .filter(|c| c.in_use && !c.authed)
+            .count();
+        if unauth_cnt >= PA_MAX_UNAUTH_CLIENTS {
+            return;
+        }
+        if is_tcp {
+            let tcp_cnt = self
+                .clients
+                .iter()
+                .filter(|c| c.in_use && c.is_tcp)
+                .count();
+            if tcp_cnt >= PA_MAX_TCP_CLIENTS {
+                return;
+            }
+        }
         if let Some(slot) = self.clients.iter().position(|c| !c.in_use) {
             let idx = self.next_client_idx;
             self.next_client_idx += 1;
-            self.clients[slot].reset_slot(idx, owned, uid_opt);
+            self.clients[slot].reset_slot(idx, owned, uid_opt, is_tcp);
         }
     }
 
@@ -1148,7 +1226,11 @@ impl PaState {
         let idx = self.streams[si].index;
         rt.streams[si].active.store(0, Ordering::Release);
         rt.streams[si].in_use.store(false, Ordering::Release);
+        rt.streams[si]
+            .direct_on_input
+            .store(PA_INVALID_INDEX, Ordering::Relaxed);
         self.streams[si].in_use = false;
+        rt.sync_active_doi();
         self.broadcast_sub_event(
             if is_pb {
                 SUB_EVENT_SINK_INPUT
@@ -1415,7 +1497,6 @@ impl PaState {
     }
 
     fn service_stream_events_and_capture(&mut self, rt: &PaRtShared) {
-        let mut pcm_tmp = [0u8; 16384];
         for si in 0..PA_MAX_STREAMS {
             if !self.streams[si].in_use {
                 continue;
@@ -1463,8 +1544,14 @@ impl PaState {
                 let ch_id = sm.channel;
                 let voice_fold = is_voice_comms_stream(sm);
 
+                if wr >= rd && wr.saturating_sub(rd) * (fsz as u64) >= frag
+                    && self.scratch_tx_pcm.len() < 16384
+                {
+                    self.scratch_tx_pcm.resize(16384, 0);
+                }
+
                 while wr >= rd && wr.saturating_sub(rd) * (fsz as u64) >= frag {
-                    let max_b = (pcm_tmp.len() / fsz) * fsz;
+                    let max_b = (self.scratch_tx_pcm.len() / fsz) * fsz;
                     let send_bytes = (sm.fragsize as usize).min(max_b);
                     let send_frames = send_bytes / fsz;
                     if send_frames == 0 {
@@ -1477,7 +1564,7 @@ impl PaState {
                             l = m;
                             r = m;
                         }
-                        let dp = &mut pcm_tmp[f * fsz..];
+                        let dp = &mut self.scratch_tx_pcm[f * fsz..];
                         if ss_ch == 1 {
                             encode_sample(
                                 dp,
@@ -1497,7 +1584,7 @@ impl PaState {
                             }
                         }
                     }
-                    if !self.clients[ci].queue_packet(ch_id, &pcm_tmp[..send_frames * fsz]) {
+                    if !self.clients[ci].queue_packet(ch_id, &self.scratch_tx_pcm[..send_frames * fsz]) {
                         break;
                     }
                     rd += send_frames as u64;
@@ -1561,19 +1648,15 @@ impl PaState {
             };
             let uid_ok = self.clients[ci].uid_valid
                 && (self.clients[ci].uid == current_uid() || self.clients[ci].uid == 0);
-            let mut cookie_ok = false;
-            if self.cookie_valid && ck_len == PA_NATIVE_COOKIE_LEN {
-                let mut diff = 0u8;
-                for (a, b) in buf[ck_off..ck_off + PA_NATIVE_COOKIE_LEN]
-                    .iter()
-                    .zip(self.cookie.iter())
-                {
-                    diff |= a ^ b;
-                }
-                cookie_ok = diff == 0;
-            }
+            let cookie_ok = self.cookie_valid
+                && ck_len == PA_NATIVE_COOKIE_LEN
+                && ct_eq_256(&buf[ck_off..ck_off + PA_NATIVE_COOKIE_LEN], &self.cookie);
             if !uid_ok && !cookie_ok {
+                self.clients[ci].auth_failures = self.clients[ci].auth_failures.saturating_add(1);
                 self.clients[ci].reply_err(tag, ERR_ACCESS);
+                if self.clients[ci].auth_failures >= 2 {
+                    self.close_client(ci, rt);
+                }
                 return;
             }
             self.clients[ci].version = cver & 0xFFFF;
@@ -2806,6 +2889,7 @@ impl PaState {
                 rs.is_monitor.store(is_mon, Ordering::Relaxed);
                 rs.peak_detect.store(peak_detect, Ordering::Relaxed);
                 rs.direct_on_input.store(doi, Ordering::Relaxed);
+                rt.sync_active_doi();
                 rs.fmt.store(ss.format, Ordering::Relaxed);
                 rs.frame_size.store(frame_size, Ordering::Relaxed);
                 rs.fragsize
@@ -3313,7 +3397,8 @@ impl PaState {
                             self.clients[ci].rx_body_len = hdr.body_len as usize;
                             self.clients[ci].rx_channel = hdr.channel;
                             self.clients[ci].rx_body_got = 0;
-                            self.clients[ci].rx_body.clear();
+                            let blen = self.clients[ci].rx_body_len;
+                            self.clients[ci].rx_body.resize(blen, 0);
                         }
                         Err(e) => {
                             let raw = e.raw_os_error().unwrap_or(0);
@@ -3332,15 +3417,12 @@ impl PaState {
                 let mut need_more_poll = false;
                 while self.clients[ci].rx_body_got < blen {
                     let bgot = self.clients[ci].rx_body_got;
-                    let mut tmp = [0u8; 8192];
-                    let want = (blen - bgot).min(tmp.len());
-                    match nb_recv(fd, &mut tmp[..want]) {
+                    match nb_recv(fd, &mut self.clients[ci].rx_body[bgot..blen]) {
                         Ok(0) => {
                             self.close_client(ci, rt);
                             return;
                         }
                         Ok(n) => {
-                            self.clients[ci].rx_body.extend_from_slice(&tmp[..n]);
                             self.clients[ci].rx_body_got += n;
                         }
                         Err(e) => {
@@ -3361,15 +3443,25 @@ impl PaState {
                     break;
                 }
                 let channel = self.clients[ci].rx_channel;
-                let body = core::mem::take(&mut self.clients[ci].rx_body);
+                core::mem::swap(&mut self.scratch_rx, &mut self.clients[ci].rx_body);
                 self.clients[ci].rx_hdr_got = 0;
                 self.clients[ci].rx_body_len = 0;
                 self.clients[ci].rx_body_got = 0;
+                let body = core::mem::take(&mut self.scratch_rx);
                 if channel == PA_PSTREAM_CTRL_CHANNEL {
-                    self.handle_control_packet(ci, &body, rt, vol_lock);
+                    self.handle_control_packet(ci, &body[..blen], rt, vol_lock);
+                } else if !self.clients[ci].authed {
+                    self.scratch_rx = body;
+                    self.close_client(ci, rt);
+                    return;
                 } else {
-                    self.handle_data_memblock(ci, channel, &body, rt);
+                    self.handle_data_memblock(ci, channel, &body[..blen], rt);
                 }
+                self.scratch_rx = body;
+                if self.scratch_rx.capacity() > 262_144 {
+                    self.scratch_rx.shrink_to(65_536);
+                }
+                core::mem::swap(&mut self.scratch_rx, &mut self.clients[ci].rx_body);
             }
         }
     }
@@ -3479,10 +3571,12 @@ fn server_thread_main(
     enable_realtime(60, -15);
     let listen_fd = listener.as_raw_fd();
     let tcp_listen_fd = tcp_listener.as_ref().map(|l| l.as_raw_fd());
+    let mut pfds = Vec::with_capacity(PA_MAX_CLIENTS + 3);
+    let mut cmap: Vec<usize> = Vec::with_capacity(PA_MAX_CLIENTS + 3);
 
     while running.load(Ordering::Relaxed) {
-        let mut pfds = Vec::with_capacity(PA_MAX_CLIENTS + 3);
-        let mut cmap: Vec<usize> = Vec::with_capacity(PA_MAX_CLIENTS + 3);
+        pfds.clear();
+        cmap.clear();
         pfds.push(PollFd {
             fd: listen_fd,
             events: POLLIN,
@@ -3508,28 +3602,41 @@ fn server_thread_main(
             None
         };
         let client_pfd_start = pfds.len();
+        let mut has_unauth = false;
 
-        {
+        let any_stream = {
+            let now_ms = mono_ms();
             let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
             st.service_stream_events_and_capture(&rt);
-            for (ci, c) in st.clients.iter().enumerate() {
-                if !c.in_use {
+            for ci in 0..PA_MAX_CLIENTS {
+                if !st.clients[ci].in_use {
                     continue;
                 }
-                let fd = c.raw_fd();
+                if !st.clients[ci].authed
+                    && now_ms.saturating_sub(st.clients[ci].accepted_ms) >= PA_UNAUTH_TIMEOUT_MS
+                {
+                    st.close_client(ci, &rt);
+                    continue;
+                }
+                if !st.clients[ci].authed {
+                    has_unauth = true;
+                }
+                let fd = st.clients[ci].raw_fd();
                 if fd < 0 {
                     continue;
                 }
                 pfds.push(PollFd {
                     fd,
-                    events: POLLIN | if !c.out_q.is_empty() { POLLOUT } else { 0 },
+                    events: POLLIN | if !st.clients[ci].out_q.is_empty() { POLLOUT } else { 0 },
                     revents: 0,
                 });
                 cmap.push(ci);
             }
-        }
+            st.streams.iter().any(|s| s.in_use)
+        };
 
-        let pr = do_poll(&mut pfds, 50);
+        let poll_timeout = if has_unauth || any_stream { 200 } else { 500 };
+        let pr = do_poll(&mut pfds, poll_timeout);
         if pr < 0 {
             if io::Error::last_os_error().raw_os_error() == Some(4) {
                 continue;
@@ -3542,7 +3649,7 @@ fn server_thread_main(
 
         let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
         if (pfds[0].revents & POLLIN) != 0 {
-            loop {
+            for _ in 0..PA_ACCEPT_BATCH_CAP {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let _ = stream.set_nonblocking(true);
@@ -3556,7 +3663,7 @@ fn server_thread_main(
                         let uid_pair = cred.map(|uc| {
                             (uc.uid, if uc.pid > 0 { uc.pid as u32 } else { 0 })
                         });
-                        st.accept_client_fd(owned, uid_pair);
+                        st.accept_client_fd(owned, uid_pair, false);
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(_) => break,
@@ -3565,13 +3672,13 @@ fn server_thread_main(
         }
         if let (Some(ref tl), Some(tidx)) = (&tcp_listener, tcp_pfd_idx) {
             if (pfds[tidx].revents & POLLIN) != 0 {
-                loop {
+                for _ in 0..PA_ACCEPT_BATCH_CAP {
                     match tl.accept() {
                         Ok((stream, addr)) if addr.ip().is_loopback() => {
                             let _ = stream.set_nodelay(true);
                             let _ = stream.set_nonblocking(true);
                             let owned: OwnedFd = stream.into();
-                            st.accept_client_fd(owned, None);
+                            st.accept_client_fd(owned, None, true);
                         }
                         Ok(_) => {}
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -3588,7 +3695,6 @@ fn server_thread_main(
                 st.process_client_io(ci, rev, &rt, &vol_lock);
             }
         }
-        st.service_stream_events_and_capture(&rt);
     }
 }
 
@@ -3675,9 +3781,8 @@ fn write_app_volumes_disk(file_lock: &Mutex<()>, path: &str, entries: &[AppVolEn
     if path.is_empty() {
         return;
     }
-    let tmp = format!("{path}.tmp.{}", current_pid());
+    let tmp = format!("{path}.{}", rand_tmp_suffix());
     let _guard = file_lock.lock().unwrap_or_else(|p| p.into_inner());
-    let _ = fs::remove_file(&tmp);
     let Ok(mut f) = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -3707,41 +3812,60 @@ fn write_app_volumes_disk(file_lock: &Mutex<()>, path: &str, entries: &[AppVolEn
 
 fn ensure_pulse_cookie(out_cookie: &mut [u8; PA_NATIVE_COOKIE_LEN], out_valid: &mut bool) {
     *out_valid = false;
+    let uid = current_uid();
     let home = user_home_dir();
+    if home == "/tmp" || !is_safe_owner_dir(Path::new(&home), uid, false) {
+        return;
+    }
     let dir = format!("{home}/.config/pulse");
-    let _ = ensure_owned_dir_0700(&dir, current_uid());
+    if !ensure_owned_dir_0700(&dir, uid) {
+        return;
+    }
     let cpath = format!("{dir}/cookie");
-    if let Ok(meta) = fs::symlink_metadata(&cpath) {
-        if meta.file_type().is_file() && meta.len() == PA_NATIVE_COOKIE_LEN as u64 {
-            if let Ok(mut f) = OpenOptions::new()
-                .read(true)
-                .custom_flags(unix_sys::O_NOFOLLOW | unix_sys::O_CLOEXEC)
-                .open(&cpath)
+    if let Ok(f) = OpenOptions::new()
+        .read(true)
+        .custom_flags(unix_sys::O_NOFOLLOW | unix_sys::O_NONBLOCK | unix_sys::O_CLOEXEC)
+        .open(&cpath)
+    {
+        if let Ok(meta) = f.metadata() {
+            if meta.is_file()
+                && meta.uid() == uid
+                && (meta.mode() & 0o077) == 0
+                && meta.len() == PA_NATIVE_COOKIE_LEN as u64
             {
+                let mut f = f;
                 let mut tmp = [0u8; PA_NATIVE_COOKIE_LEN];
                 if f.read_exact(&mut tmp).is_ok() {
                     *out_cookie = tmp;
                     *out_valid = true;
                 }
+                return;
             }
-            return;
         }
     }
     let mut cookie = [0u8; PA_NATIVE_COOKIE_LEN];
     if let Ok(mut ur) = fs::File::open("/dev/urandom") {
         if ur.read_exact(&mut cookie).is_ok() {
+            let tmp_cpath = format!("{cpath}.{}", rand_tmp_suffix());
+            let mut wrote = false;
             if let Ok(mut f) = OpenOptions::new()
                 .write(true)
-                .create(true)
-                .truncate(true)
+                .create_new(true)
                 .mode(0o600)
                 .custom_flags(unix_sys::O_NOFOLLOW | unix_sys::O_CLOEXEC)
-                .open(&cpath)
+                .open(&tmp_cpath)
             {
-                if f.write_all(&cookie).is_ok() {
+                if f.write_all(&cookie).is_ok()
+                    && f.flush().is_ok()
+                    && fs::rename(&tmp_cpath, &cpath).is_ok()
+                {
                     *out_cookie = cookie;
                     *out_valid = true;
+                    wrote = true;
                 }
+            }
+            if !wrote {
+                let _ = fs::remove_file(&tmp_cpath);
             }
         }
     }
@@ -4509,23 +4633,30 @@ fn bind_loopback_tcp_and_write_port(
     if port == 0 {
         return (None, None, None);
     }
+    let uid = current_uid();
     let home = user_home_dir();
+    if home == "/tmp" || !is_safe_owner_dir(Path::new(&home), uid, false) {
+        return (None, None, None);
+    }
     let cfg_dir = format!("{home}/.config/pulse");
-    if !ensure_owned_dir_0700(&cfg_dir, current_uid()) {
+    if !ensure_owned_dir_0700(&cfg_dir, uid) {
         return (None, None, None);
     }
     let port_path = format!("{cfg_dir}/salsa-tcp-port");
-    let tmp_path = format!("{port_path}.{}.tmp", current_pid());
+    let tmp_path = format!("{port_path}.{}", rand_tmp_suffix());
     let mut wrote = false;
     if let Ok(mut f) = OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .custom_flags(unix_sys::O_NOFOLLOW | unix_sys::O_CLOEXEC)
         .open(&tmp_path)
     {
-        if writeln!(f, "{port}").is_ok() && fs::rename(&tmp_path, &port_path).is_ok() {
+        if writeln!(f, "{port}").is_ok()
+            && f.flush().is_ok()
+            && f.sync_all().is_ok()
+            && fs::rename(&tmp_path, &port_path).is_ok()
+        {
             wrote = true;
         }
     }
@@ -4544,13 +4675,15 @@ pub unsafe extern "C" fn lwasapi_pa_server_start(
     if out_srv.is_null() {
         return -1;
     }
+    let uid = current_uid();
     let xdg = match std::env::var("XDG_RUNTIME_DIR") {
-        Ok(v) if !v.is_empty() => v,
-        _ => format!("/run/user/{}", current_uid()),
+        Ok(v) if !v.is_empty() && is_safe_owner_dir(Path::new(&v), uid, true) => v,
+        _ => format!("/run/user/{uid}"),
     };
     let pulse_dir = format!("{xdg}/pulse");
-    let _ = fs::create_dir_all(&pulse_dir);
-    let _ = fs::set_permissions(&pulse_dir, fs::Permissions::from_mode(0o700));
+    if !ensure_owned_dir_0700(&pulse_dir, uid) {
+        return -1;
+    }
     let sock_path = format!("{pulse_dir}/native");
     let pid_path = format!("{pulse_dir}/pid");
 
@@ -4568,6 +4701,8 @@ pub unsafe extern "C" fn lwasapi_pa_server_start(
         let _ = writeln!(pf, "{}", current_pid());
     }
     let Some(wake_efd) = new_eventfd() else {
+        let _ = fs::remove_file(&sock_path);
+        let _ = fs::remove_file(&pid_path);
         return -1;
     };
     let wake_raw = wake_efd.as_raw_fd();
@@ -4600,6 +4735,8 @@ pub unsafe extern "C" fn lwasapi_pa_server_start(
         .name("salsa-pa-srv".to_string())
         .spawn(move || server_thread_main(listener, tcp_listener, wake_raw, t_run, t_st, t_rt, t_vl))
     else {
+        let _ = fs::remove_file(&sock_path);
+        let _ = fs::remove_file(&pid_path);
         if let Some(ref p) = tcp_port_path {
             let _ = fs::remove_file(p);
         }
@@ -4651,12 +4788,25 @@ pub unsafe extern "C" fn lwasapi_pa_server_stop(srv: *mut PaServerHandle) {
     let _ = fs::remove_file(&handle.sock_path);
     let _ = fs::remove_file(&handle.pid_path);
     if let (Some(port), Some(ref ppath)) = (handle.tcp_port, &handle.tcp_port_path) {
-        if fs::read_to_string(ppath)
-            .ok()
-            .and_then(|s| s.trim().parse::<u16>().ok())
-            == Some(port)
+        if let Ok(f) = OpenOptions::new()
+            .read(true)
+            .custom_flags(unix_sys::O_NOFOLLOW | unix_sys::O_NONBLOCK | unix_sys::O_CLOEXEC)
+            .open(ppath)
         {
-            let _ = fs::remove_file(ppath);
+            if let Ok(meta) = f.metadata() {
+                if meta.is_file() && meta.len() <= 32 {
+                    let mut buf = [0u8; 32];
+                    if let Ok(n) = (&f).read(&mut buf) {
+                        if core::str::from_utf8(&buf[..n])
+                            .ok()
+                            .and_then(|s| s.trim().parse::<u16>().ok())
+                            == Some(port)
+                        {
+                            let _ = fs::remove_file(ppath);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -4796,7 +4946,11 @@ pub unsafe extern "C" fn lwasapi_pa_server_mix_playback(
     let h = unsafe { &*srv };
     let stereo_out = unsafe { core::slice::from_raw_parts_mut(stereo_out_ptr, (frames as usize) * 2) };
     let mut wake_needed = false;
-    let doi_cap = (frames as usize).min(PA_MAX_DOI_PERIOD);
+    let doi_cap = if h.rt.has_active_doi.load(Ordering::Relaxed) {
+        (frames as usize).min(PA_MAX_DOI_PERIOD)
+    } else {
+        0
+    };
     let mut best_rate = 0u32;
     let mut best_bits = 0u32;
 
@@ -4972,7 +5126,16 @@ pub unsafe extern "C" fn lwasapi_pa_server_mix_playback(
         rs.period_frames.store(doi_cap as u32, Ordering::Relaxed);
         rs.mix_peak_l.store(pk_l.to_bits(), Ordering::Relaxed);
         rs.mix_peak_r.store(pk_r.to_bits(), Ordering::Relaxed);
-        rs.rd_frame.store(rd, Ordering::Release);
+        let fseq_after = rs.flush_seq.load(Ordering::Acquire);
+        if fseq_after != fseq {
+            cur.reset_state();
+            cur.seen_flush_seq = fseq_after;
+            let wr_now = rs.wr_frame.load(Ordering::Acquire);
+            rs.rd_frame.store(wr_now, Ordering::Release);
+            rd = wr_now;
+        } else {
+            rs.rd_frame.store(rd, Ordering::Release);
+        }
 
         let tl = rs.tlength.load(Ordering::Relaxed) as u64;
         if wr.saturating_sub(rd) * fsz < tl {
@@ -5608,7 +5771,7 @@ mod tests {
             panic!("UnixStream::pair failed");
         };
         let owned: OwnedFd = sock_a.into();
-        st.accept_client_fd(owned, None);
+        st.accept_client_fd(owned, None, true);
         assert!(st.clients[0].in_use);
         assert!(!st.clients[0].uid_valid);
         assert!(!st.clients[0].authed);

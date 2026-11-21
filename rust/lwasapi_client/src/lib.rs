@@ -18,6 +18,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use std::ffi::CStr;
 use std::fs;
 use std::os::unix::io::{AsRawFd, OwnedFd};
+use std::sync::OnceLock;
 
 use salsa_wire::c_abi::{
     copy_str_to_c, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_ALREADY_INITIALIZED,
@@ -30,16 +31,16 @@ use salsa_wire::c_abi::{
     LWASAPI_CMD_SET_SESSION_CONTROL, LWASAPI_DBG_INFO, LWASAPI_DBG_SHIM, LWASAPI_DBG_TRACE,
     LWASAPI_DBG_WARN, LWASAPI_DBG_WASAPI, LWASAPI_DEBUG_DGRAM_MAGIC, LWASAPI_FMT_FLOAT32,
     LWASAPI_FMT_S16_LE, LWASAPI_FMT_S32_LE, LWASAPI_MAX_CHANNELS, LWASAPI_MIDI_RING_EVENTS,
-    LWASAPI_MIDI_RING_MASK, LWASAPI_RING_FRAMES, LWASAPI_RING_MASK, LwasapiBtCodecCfg,
-    LwasapiDbgDgram, LwasapiDeviceList, LwasapiEngineStatus, LwasapiEqConfig, LwasapiHwAnalogCfg,
-    LwasapiIpcReq, LwasapiIpcResp, LwasapiMicApoCfg, LwasapiMidiEvent, LwasapiParamEqExt,
-    LwasapiParamEqPayload, LwasapiShmRing, WaveFormatEx, S_OK,
+    LWASAPI_MIDI_RING_MASK, LWASAPI_RING_FRAMES, LWASAPI_RING_MAGIC, LWASAPI_RING_MASK,
+    LwasapiBtCodecCfg, LwasapiDbgDgram, LwasapiDeviceList, LwasapiEngineStatus, LwasapiEqConfig,
+    LwasapiHwAnalogCfg, LwasapiIpcReq, LwasapiIpcResp, LwasapiMicApoCfg, LwasapiMidiEvent,
+    LwasapiParamEqExt, LwasapiParamEqPayload, LwasapiShmRing, WaveFormatEx, S_OK,
 };
 use salsa_wire::unix_sys::{
     audiodg_sock_path, close_raw_fd, connect_unix_stream_blocking, current_pid, debug_in_sock_path,
-    do_poll, eventfd_drain, last_errno, recv_blocking_exact_with_2fds, recv_waitall,
-    send_all_nosignal, sendto_unix_dgram_nonblock, socket_raw, MappedMem, PollFd, AF_UNIX,
-    POLLIN, SOCK_CLOEXEC, SOCK_DGRAM, SOCK_NONBLOCK,
+    do_poll, eventfd_drain, last_errno, memfd_size_valid, recv_blocking_exact_with_2fds,
+    recv_waitall, send_all_nosignal, sendto_unix_dgram_nonblock, socket_raw, MappedMem, PollFd,
+    AF_UNIX, POLLIN, SOCK_CLOEXEC, SOCK_DGRAM, SOCK_NONBLOCK,
 };
 
 pub type HRESULT = i32;
@@ -55,11 +56,15 @@ pub struct IAudioClient {
     shm_fd: Option<OwnedFd>,
     event_fd: Option<OwnedFd>,
     ring: Option<MappedMem>,
+    channels: usize,
+    buffer_frames: u32,
     locked_frames: u32,
     staging_buf: Vec<f32>,
 }
 
 static DBG_DGRAM_FD: AtomicI32 = AtomicI32::new(-1);
+static DBG_IN_SOCK_CACHE: OnceLock<String> = OnceLock::new();
+static PROC_COMM_CACHE: OnceLock<String> = OnceLock::new();
 
 #[allow(clippy::too_many_arguments)]
 fn dbg_emit_dgram(
@@ -104,24 +109,28 @@ fn dbg_emit_dgram(
     copy_str_to_c(&mut dg.target, target);
     copy_str_to_c(&mut dg.detail, detail);
 
-    let path = debug_in_sock_path();
+    let path = DBG_IN_SOCK_CACHE.get_or_init(debug_in_sock_path);
     let bytes = unsafe {
         slice::from_raw_parts(
             (&dg as *const LwasapiDbgDgram).cast::<u8>(),
             mem::size_of::<LwasapiDbgDgram>(),
         )
     };
-    let _ = sendto_unix_dgram_nonblock(fd, &path, bytes);
+    let _ = sendto_unix_dgram_nonblock(fd, path, bytes);
 }
 
 fn get_process_comm() -> String {
-    if let Ok(raw) = fs::read_to_string("/proc/self/comm") {
-        let trimmed = raw.trim_end_matches(['\r', '\n']);
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    "app".to_string()
+    PROC_COMM_CACHE
+        .get_or_init(|| {
+            if let Ok(raw) = fs::read_to_string("/proc/self/comm") {
+                let trimmed = raw.trim_end_matches(['\r', '\n']);
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+            "app".to_string()
+        })
+        .clone()
 }
 
 #[inline]
@@ -211,6 +220,8 @@ pub unsafe extern "C" fn LWASAPI_ActivateAudioClient(
         shm_fd: None,
         event_fd: None,
         ring: None,
+        channels: 0,
+        buffer_frames: 0,
         locked_frames: 0,
         staging_buf: Vec::new(),
     });
@@ -372,6 +383,25 @@ pub unsafe extern "C" fn IAudioClient_Initialize(
         return resp.hr;
     }
 
+    if !memfd_size_valid(
+        shm_fd.as_raw_fd(),
+        0,
+        mem::size_of::<LwasapiShmRing>() as u64,
+    ) {
+        dbg_emit_dgram(
+            LWASAPI_DBG_WASAPI,
+            salsa_wire::c_abi::LWASAPI_DBG_ERR,
+            resp.session_id,
+            0,
+            0,
+            E_FAIL,
+            "WASAPI_INIT_FAIL",
+            &cname,
+            "shm ring size validation failed",
+        );
+        return E_FAIL;
+    }
+
     let Some(ring) = MappedMem::map_fd(shm_fd.as_raw_fd(), mem::size_of::<LwasapiShmRing>(), true, 0)
     else {
         dbg_emit_dgram(
@@ -388,22 +418,55 @@ pub unsafe extern "C" fn IAudioClient_Initialize(
         return E_OUTOFMEMORY;
     };
 
+    let ring_hdr = ring.as_ptr().cast::<LwasapiShmRing>();
+    let (ring_magic, ring_ch, ring_buf_frames) = unsafe {
+        (
+            ptr::addr_of!((*ring_hdr).magic).read(),
+            ptr::addr_of!((*ring_hdr).channels).read(),
+            ptr::addr_of!((*ring_hdr).buffer_frames).read(),
+        )
+    };
+    if ring_magic != LWASAPI_RING_MAGIC
+        || ring_ch == 0
+        || ring_ch as usize > LWASAPI_MAX_CHANNELS
+        || ring_buf_frames == 0
+        || ring_buf_frames as usize > LWASAPI_RING_FRAMES
+    {
+        dbg_emit_dgram(
+            LWASAPI_DBG_WASAPI,
+            salsa_wire::c_abi::LWASAPI_DBG_ERR,
+            resp.session_id,
+            ring_ch as i32,
+            ring_buf_frames as i32,
+            E_FAIL,
+            "WASAPI_INIT_FAIL",
+            &cname,
+            "shm ring header validation failed",
+        );
+        return E_FAIL;
+    }
+
     let sb_frames = if resp.actual_buffer_frames != 0 {
-        resp.actual_buffer_frames.min(LWASAPI_RING_FRAMES as u32)
+        resp.actual_buffer_frames.min(ring_buf_frames)
     } else {
-        LWASAPI_RING_FRAMES as u32
+        ring_buf_frames
     };
     let sb_ch = if resp.actual_channels != 0 {
-        resp.actual_channels.min(LWASAPI_MAX_CHANNELS as u32)
+        resp.actual_channels.min(ring_ch)
     } else {
-        2
+        ring_ch
     };
+    if sb_frames == 0 || sb_ch == 0 {
+        return E_FAIL;
+    }
 
     c.staging_buf = vec![0.0f32; (sb_frames as usize) * (sb_ch as usize)];
     c.sock_fd = Some(sock);
     c.shm_fd = Some(shm_fd);
     c.event_fd = Some(ev_fd);
     c.ring = Some(ring);
+    c.channels = sb_ch as usize;
+    c.buffer_frames = sb_frames;
     c.session_id = resp.session_id;
     c.initialized = true;
 
@@ -438,11 +501,10 @@ pub unsafe extern "C" fn IAudioClient_GetBufferSize(
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     let c = unsafe { &*client };
-    if !c.initialized {
+    if !c.initialized || unsafe { ring_ptr(c) }.is_null() {
         return AUDCLNT_E_NOT_INITIALIZED;
     }
-    let r = unsafe { &*ring_ptr(c) };
-    unsafe { *pNumBufferFrames = r.buffer_frames };
+    unsafe { *pNumBufferFrames = c.buffer_frames };
     S_OK
 }
 
@@ -459,7 +521,11 @@ pub unsafe extern "C" fn IAudioClient_GetDevicePeriod(
     if !c.initialized {
         return AUDCLNT_E_NOT_INITIALIZED;
     }
-    let r = unsafe { &*ring_ptr(c) };
+    let r_ptr = unsafe { ring_ptr(c) };
+    if r_ptr.is_null() {
+        return AUDCLNT_E_NOT_INITIALIZED;
+    }
+    let r = unsafe { &*r_ptr };
     if !pDefaultPeriodFrames.is_null() {
         unsafe { *pDefaultPeriodFrames = r.period_frames };
     }
@@ -522,7 +588,11 @@ pub unsafe extern "C" fn IAudioClient_Start(client: *mut IAudioClient) -> HRESUL
     if !c.initialized {
         return AUDCLNT_E_NOT_INITIALIZED;
     }
-    let r = unsafe { &*ring_ptr(c) };
+    let r_ptr = unsafe { ring_ptr(c) };
+    if r_ptr.is_null() {
+        return AUDCLNT_E_NOT_INITIALIZED;
+    }
+    let r = unsafe { &*r_ptr };
     r.active.store(1, Ordering::Release);
     dbg_emit_dgram(
         LWASAPI_DBG_WASAPI,
@@ -547,7 +617,11 @@ pub unsafe extern "C" fn IAudioClient_Stop(client: *mut IAudioClient) -> HRESULT
     if !c.initialized {
         return AUDCLNT_E_NOT_INITIALIZED;
     }
-    let r = unsafe { &*ring_ptr(c) };
+    let r_ptr = unsafe { ring_ptr(c) };
+    if r_ptr.is_null() {
+        return AUDCLNT_E_NOT_INITIALIZED;
+    }
+    let r = unsafe { &*r_ptr };
     r.active.store(0, Ordering::Release);
     dbg_emit_dgram(
         LWASAPI_DBG_WASAPI,
@@ -572,7 +646,11 @@ pub unsafe extern "C" fn IAudioClient_Reset(client: *mut IAudioClient) -> HRESUL
     if !c.initialized {
         return AUDCLNT_E_NOT_INITIALIZED;
     }
-    let r = unsafe { &*ring_ptr(c) };
+    let r_ptr = unsafe { ring_ptr(c) };
+    if r_ptr.is_null() {
+        return AUDCLNT_E_NOT_INITIALIZED;
+    }
+    let r = unsafe { &*r_ptr };
     if r.is_capture != 0 {
         let cw = r.cap_write_frame.load(Ordering::Acquire);
         r.cap_read_frame.store(cw, Ordering::Release);
@@ -624,16 +702,16 @@ pub unsafe extern "C" fn IAudioRenderClient_GetBuffer(
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() {
+    if r_ptr.is_null() || c.channels == 0 || c.buffer_frames == 0 {
         return AUDCLNT_E_NOT_INITIALIZED;
     }
-    let buf_frames = unsafe { ptr::addr_of!((*r_ptr).buffer_frames).read() };
-    if padding.saturating_add(NumFramesRequested) > buf_frames {
+    if padding.saturating_add(NumFramesRequested) > c.buffer_frames {
         return AUDCLNT_E_BUFFER_TOO_LARGE;
     }
-    if (NumFramesRequested as usize) * (unsafe { ptr::addr_of!((*r_ptr).channels).read() } as usize)
-        > c.staging_buf.len()
-    {
+    let Some(need) = (NumFramesRequested as usize).checked_mul(c.channels) else {
+        return AUDCLNT_E_BUFFER_TOO_LARGE;
+    };
+    if need > c.staging_buf.len() {
         return AUDCLNT_E_BUFFER_TOO_LARGE;
     }
 
@@ -660,26 +738,48 @@ pub unsafe extern "C" fn IAudioRenderClient_ReleaseBuffer(
     }
 
     let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() {
+    if r_ptr.is_null() || c.channels == 0 {
         return AUDCLNT_E_NOT_INITIALIZED;
     }
-    let ch = unsafe { ptr::addr_of!((*r_ptr).channels).read() } as usize;
+    let ch = c.channels;
+    let total_frames = NumFramesWritten as usize;
+    let Some(need) = total_frames.checked_mul(ch) else {
+        return E_INVALIDARG;
+    };
+    if need > c.staging_buf.len() {
+        return E_INVALIDARG;
+    }
     let w = unsafe { (*ptr::addr_of!((*r_ptr).write_frame)).load(Ordering::Relaxed) };
     let pcm_base = unsafe { ptr::addr_of_mut!((*r_ptr).pcm_data.0) }.cast::<f32>();
 
-    if (dwFlags & AUDCLNT_BUFFERFLAGS_SILENT) != 0 {
-        for f in 0..NumFramesWritten as usize {
-            let idx = (((w + f as u64) as usize) & LWASAPI_RING_MASK) * ch;
-            for ch_i in 0..ch {
-                unsafe { ptr::write_volatile(pcm_base.add(idx + ch_i), 0.0) };
+    if total_frames > 0 {
+        let start = (w as usize) & LWASAPI_RING_MASK;
+        let first = total_frames.min(LWASAPI_RING_FRAMES - start);
+        let second = total_frames - first;
+        if (dwFlags & AUDCLNT_BUFFERFLAGS_SILENT) != 0 {
+            unsafe {
+                ptr::write_bytes(
+                    pcm_base.add(start * ch),
+                    0,
+                    first * ch * mem::size_of::<f32>(),
+                );
+                if second > 0 {
+                    ptr::write_bytes(pcm_base, 0, second * ch * mem::size_of::<f32>());
+                }
             }
-        }
-    } else {
-        for f in 0..NumFramesWritten as usize {
-            let idx = (((w + f as u64) as usize) & LWASAPI_RING_MASK) * ch;
-            for ch_i in 0..ch {
-                unsafe {
-                    ptr::write_volatile(pcm_base.add(idx + ch_i), c.staging_buf[f * ch + ch_i]);
+        } else {
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    c.staging_buf.as_ptr(),
+                    pcm_base.add(start * ch),
+                    first * ch,
+                );
+                if second > 0 {
+                    ptr::copy_nonoverlapping(
+                        c.staging_buf.as_ptr().add(first * ch),
+                        pcm_base,
+                        second * ch,
+                    );
                 }
             }
         }
@@ -728,22 +828,22 @@ pub unsafe extern "C" fn IAudioRenderClient_WriteFrames(
     if client.is_null() || src.is_null() {
         return E_INVALIDARG;
     }
+    if src_fmt != LWASAPI_FMT_FLOAT32
+        && src_fmt != LWASAPI_FMT_S16_LE
+        && src_fmt != LWASAPI_FMT_S32_LE
+    {
+        return E_INVALIDARG;
+    }
     let (ch, buf_frames, r_ptr) = {
         let c = unsafe { &*client };
-        if !c.initialized {
+        if !c.initialized || c.channels == 0 || c.buffer_frames == 0 {
             return E_INVALIDARG;
         }
         let rp = unsafe { ring_ptr(c) };
         if rp.is_null() {
             return AUDCLNT_E_NOT_INITIALIZED;
         }
-        unsafe {
-            (
-                ptr::addr_of!((*rp).channels).read(),
-                ptr::addr_of!((*rp).buffer_frames).read(),
-                rp,
-            )
-        }
+        (c.channels as u32, c.buffer_frames, rp)
     };
 
     let mut remaining = frames;
@@ -821,7 +921,11 @@ pub unsafe extern "C" fn IAudioCaptureClient_GetNextPacketSize(
     if !c.initialized {
         return AUDCLNT_E_NOT_INITIALIZED;
     }
-    let r = unsafe { &*ring_ptr(c) };
+    let r_ptr = unsafe { ring_ptr(c) };
+    if r_ptr.is_null() {
+        return AUDCLNT_E_NOT_INITIALIZED;
+    }
+    let r = unsafe { &*r_ptr };
     let cw = r.cap_write_frame.load(Ordering::Acquire);
     let cr = r.cap_read_frame.load(Ordering::Relaxed);
     unsafe { *pNumFramesInNextPacket = cw.saturating_sub(cr) as u32 };
@@ -838,14 +942,31 @@ pub unsafe extern "C" fn IAudioCaptureClient_ReadFrames(
     if client.is_null() || dst.is_null() {
         return E_INVALIDARG;
     }
-    let c = unsafe { &*client };
-    if !c.initialized {
+    if dst_fmt != LWASAPI_FMT_FLOAT32
+        && dst_fmt != LWASAPI_FMT_S16_LE
+        && dst_fmt != LWASAPI_FMT_S32_LE
+    {
         return E_INVALIDARG;
     }
+    let c = unsafe { &*client };
+    if !c.initialized || c.channels == 0 {
+        return E_INVALIDARG;
+    }
+    let r_ptr = unsafe { ring_ptr(c) };
+    if r_ptr.is_null() {
+        return AUDCLNT_E_NOT_INITIALIZED;
+    }
 
-    let r = unsafe { &*ring_ptr(c) };
-    let ch = if r.channels != 0 { r.channels } else { 2 };
+    let r = unsafe { &*r_ptr };
+    let ch = c.channels.min(LWASAPI_MAX_CHANNELS);
     let bps = if dst_fmt == LWASAPI_FMT_S16_LE { 2usize } else { 4usize };
+    if (frames as usize)
+        .checked_mul(ch)
+        .and_then(|s| s.checked_mul(bps))
+        .is_none()
+    {
+        return E_INVALIDARG;
+    }
     let out_ptr = dst.cast::<u8>();
 
     let mut cw = r.cap_write_frame.load(Ordering::Acquire);
@@ -871,9 +992,14 @@ pub unsafe extern "C" fn IAudioCaptureClient_ReadFrames(
 
     for f in 0..to_copy as usize {
         let idx = (((cr + f as u64) as usize) & LWASAPI_RING_MASK) * 2;
-        for ch_i in 0..ch as usize {
-            let sample = (r.cap_pcm_data.0[idx + (ch_i & 1)] * vol).clamp(-1.0, 1.0);
-            let out_idx = f * (ch as usize) + ch_i;
+        for ch_i in 0..ch {
+            let raw_s = r.cap_pcm_data.0[idx + (ch_i & 1)] * vol;
+            let sample = if raw_s.is_finite() {
+                raw_s.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
+            let out_idx = f * ch + ch_i;
             if dst_fmt == LWASAPI_FMT_FLOAT32 {
                 unsafe { ptr::write_unaligned(out_ptr.cast::<f32>().add(out_idx), sample) };
             } else if dst_fmt == LWASAPI_FMT_S16_LE {
@@ -883,7 +1009,7 @@ pub unsafe extern "C" fn IAudioCaptureClient_ReadFrames(
                         (sample * 32767.0) as i16,
                     );
                 }
-            } else if dst_fmt == LWASAPI_FMT_S32_LE {
+            } else {
                 unsafe {
                     ptr::write_unaligned(
                         out_ptr.cast::<i32>().add(out_idx),
@@ -895,8 +1021,8 @@ pub unsafe extern "C" fn IAudioCaptureClient_ReadFrames(
     }
 
     if to_copy < frames {
-        let zero_off = (to_copy as usize) * (ch as usize) * bps;
-        let zero_len = ((frames - to_copy) as usize) * (ch as usize) * bps;
+        let zero_off = (to_copy as usize) * ch * bps;
+        let zero_len = ((frames - to_copy) as usize) * ch * bps;
         unsafe { ptr::write_bytes(out_ptr.add(zero_off), 0, zero_len) };
     }
 
@@ -920,7 +1046,11 @@ pub unsafe extern "C" fn ISimpleAudioVolume_SetMasterVolume(
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     let lvl = fLevel.clamp(0.0, 2.0);
-    let r = unsafe { &*ring_ptr(c) };
+    let r_ptr = unsafe { ring_ptr(c) };
+    if r_ptr.is_null() {
+        return AUDCLNT_E_NOT_INITIALIZED;
+    }
+    let r = unsafe { &*r_ptr };
     r.volume_milli
         .store((lvl * 1000.0) as u32, Ordering::Relaxed);
     S_OK
@@ -938,7 +1068,11 @@ pub unsafe extern "C" fn ISimpleAudioVolume_GetMasterVolume(
     if !c.initialized {
         return AUDCLNT_E_NOT_INITIALIZED;
     }
-    let r = unsafe { &*ring_ptr(c) };
+    let r_ptr = unsafe { ring_ptr(c) };
+    if r_ptr.is_null() {
+        return AUDCLNT_E_NOT_INITIALIZED;
+    }
+    let r = unsafe { &*r_ptr };
     unsafe { *pfLevel = (r.volume_milli.load(Ordering::Relaxed) as f32) / 1000.0 };
     S_OK
 }
@@ -953,10 +1087,14 @@ pub unsafe extern "C" fn IAudioClient_ReadMidiEvents(
         return 0;
     }
     let c = unsafe { &*client };
-    if !c.initialized || c.ring.is_none() {
+    if !c.initialized {
         return 0;
     }
-    let r = unsafe { &*ring_ptr(c) };
+    let r_ptr = unsafe { ring_ptr(c) };
+    if r_ptr.is_null() {
+        return 0;
+    }
+    let r = unsafe { &*r_ptr };
     let w = r.midi_write_idx.load(Ordering::Acquire);
     let mut rd = r.midi_read_idx.load(Ordering::Relaxed);
     if rd > w {
@@ -1030,8 +1168,11 @@ pub unsafe extern "C" fn IAudioClient_Release(client: *mut IAudioClient) -> HRES
             cbuf_to_str(&c.client_name),
             "closing session shm/eventfd",
         );
-        let r = unsafe { &*ring_ptr(&c) };
-        r.active.store(0, Ordering::SeqCst);
+        let r_ptr = unsafe { ring_ptr(&c) };
+        if !r_ptr.is_null() {
+            let r = unsafe { &*r_ptr };
+            r.active.store(0, Ordering::SeqCst);
+        }
     }
     S_OK
 }

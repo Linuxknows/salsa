@@ -678,25 +678,17 @@ pub fn connect_unix_stream_blocking(path: &str) -> Option<OwnedFd> {
     if path.is_empty() || path.len() >= 108 {
         return None;
     }
-    let fd = unsafe { socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0) };
-    if fd < 0 {
+    if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
         return None;
     }
-    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-    let mut addr = SockAddrUn {
-        sun_family: AF_UNIX as u16,
-        sun_path: [0u8; 108],
-    };
-    let bytes = path.as_bytes();
-    addr.sun_path[..bytes.len()].copy_from_slice(bytes);
-    if unsafe {
-        connect(
-            owned.as_raw_fd(),
-            (&addr as *const SockAddrUn).cast::<c_void>(),
-            mem::size_of::<SockAddrUn>() as u32,
-        )
-    } < 0
-    {
+    let stream = std::os::unix::net::UnixStream::connect(path).ok()?;
+    let timeout = std::time::Duration::from_secs(5);
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    let owned: OwnedFd = stream.into();
+    let uc = socket_peercred(owned.as_raw_fd())?;
+    let my_uid = current_uid();
+    if uc.uid != my_uid && uc.uid != 0 {
         return None;
     }
     Some(owned)
@@ -757,6 +749,7 @@ pub fn recv_blocking_exact_with_2fds(fd: RawFd, buf: &mut [u8]) -> Option<(Optio
     };
 
     let n = unsafe { recvmsg(fd, &mut msg, MSG_CMSG_CLOEXEC) };
+    let ctrunc = (msg.msg_flags & 0x08) != 0;
     let mut f0: Option<OwnedFd> = None;
     let mut f1: Option<OwnedFd> = None;
     let ctl_ref = unsafe { ctl.assume_init() };
@@ -790,7 +783,7 @@ pub fn recv_blocking_exact_with_2fds(fd: RawFd, buf: &mut [u8]) -> Option<(Optio
         }
         off += step;
     }
-    if n != buf.len() as isize {
+    if ctrunc || n != buf.len() as isize {
         drop(f0);
         drop(f1);
         return None;
@@ -926,7 +919,10 @@ pub fn recv_dgram_with_ucred(fd: RawFd, buf: &mut [u8]) -> RecvDgramCred {
 }
 
 pub fn unix_socket_actively_served(path: &str, my_pid: u32) -> bool {
-    if fs::symlink_metadata(path).is_err() {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if meta.file_type().is_symlink() {
         return false;
     }
     let Ok(stream) = std::os::unix::net::UnixStream::connect(path) else {
@@ -1094,6 +1090,10 @@ pub fn recvmsg_with_fds(fd: RawFd, buf: &mut [u8]) -> Result<RecvFdsResult, ()> 
         if raw == 11 || raw == 4 {
             return Ok(RecvFdsResult::WouldBlock);
         }
+        return Err(());
+    }
+    const MSG_CTRUNC: c_int = 0x08;
+    if (msg.msg_flags & MSG_CTRUNC) != 0 {
         return Err(());
     }
 
@@ -1304,6 +1304,9 @@ pub fn dbg_emit_vals(
 ) {
     #[cfg(not(test))]
     {
+        if !crate::debug_server::is_dbg_running() {
+            return;
+        }
         let Ok(c_op) = CString::new(op) else { return };
         let Ok(c_tgt) = CString::new(target) else { return };
         let Ok(c_det) = CString::new(detail) else { return };

@@ -2461,6 +2461,10 @@ impl ScreenCastShmReader {
     }
 
     pub fn read_frame(&self) -> Option<PreviewFrameData> {
+        self.read_frame_since(None)
+    }
+
+    pub fn read_frame_since(&self, prev_seq: Option<u64>) -> Option<PreviewFrameData> {
         let base = self.map.as_ptr();
         if base.is_null() {
             return None;
@@ -2473,97 +2477,16 @@ impl ScreenCastShmReader {
         }
         let seqlock_ptr =
             unsafe { base.add(offset_of!(LwasapiPwPreviewShm, seqlock)) as *const AtomicU64 };
-        for _ in 0..8 {
+        let mut deadline: Option<Instant> = None;
+        for attempt in 0..64 {
             let s1 = unsafe { (*seqlock_ptr).load(Ordering::Acquire) };
-            if (s1 & 1) != 0 {
-                std::hint::spin_loop();
-                continue;
-            }
-            let (
-                w,
-                h,
-                src_w,
-                src_h,
-                stride,
-                seq,
-                pts_ns,
-                prod_node_id,
-                cons_count,
-                active_stream,
-                is_dmabuf,
-                dmabuf_mappable,
-                actual_fps_x100,
-                target_max_w,
-                target_max_h,
-                target_fps,
-                cast_fps_cap,
-                prod_raw,
-                fmt_raw,
-            ) = unsafe {
-                (
-                    core::ptr::read_volatile(&shm.dst_width),
-                    core::ptr::read_volatile(&shm.dst_height),
-                    core::ptr::read_volatile(&shm.src_width),
-                    core::ptr::read_volatile(&shm.src_height),
-                    core::ptr::read_volatile(&shm.dst_stride),
-                    core::ptr::read_volatile(&shm.frame_seq),
-                    core::ptr::read_volatile(&shm.pts_ns),
-                    core::ptr::read_volatile(&shm.prod_node_id),
-                    core::ptr::read_volatile(&shm.cons_count),
-                    core::ptr::read_volatile(&shm.active_stream) != 0,
-                    core::ptr::read_volatile(&shm.is_dmabuf) != 0,
-                    core::ptr::read_volatile(&shm.dmabuf_mappable) != 0,
-                    core::ptr::read_volatile(&shm.actual_fps_x100),
-                    core::ptr::read_volatile(&shm.target_max_w),
-                    core::ptr::read_volatile(&shm.target_max_h),
-                    core::ptr::read_volatile(&shm.target_fps),
-                    core::ptr::read_volatile(&shm.cast_fps_cap),
-                    core::ptr::read_volatile(&shm.prod_name),
-                    core::ptr::read_volatile(&shm.format_name),
-                )
-            };
-            let row_bytes = (w as usize).saturating_mul(4);
-            let byte_len = (stride as usize).saturating_mul(h as usize);
-            let rgba = if w > 0
-                && h > 0
-                && w <= LWASAPI_PW_PREVIEW_MAX_W
-                && h <= LWASAPI_PW_PREVIEW_MAX_H
-                && (stride as usize) >= row_bytes
-                && byte_len <= LWASAPI_PW_PREVIEW_MAX_BYTES
-            {
-                let mut out = Vec::with_capacity(row_bytes.saturating_mul(h as usize));
-                let src = &shm.pixels[..byte_len];
-                let st = stride as usize;
-                let wu = w as usize;
-                for y in 0..(h as usize) {
-                    let row = &src[y * st..y * st + row_bytes];
-                    let (chunks, _) = row.as_chunks::<4>();
-                    for &[b, g, r, _] in chunks.iter().take(wu) {
-                        // PipeWire preview pixels arrive in BGRx/BGRA byte order;
-                        // force opaque alpha so BGRx frames render visibly and export cleanly.
-                        out.push(r);
-                        out.push(g);
-                        out.push(b);
-                        out.push(255);
-                    }
-                }
-                out
-            } else {
-                Vec::new()
-            };
-            let out_stride = if rgba.is_empty() { 0 } else { w.saturating_mul(4) };
-            let disp_w = if w > 0 { w } else { src_w };
-            let disp_h = if h > 0 { h } else { src_h };
-            let prod_name = cstr_to_string(&prod_raw);
-            let format_name = cstr_to_string(&fmt_raw);
-
-            fence(Ordering::Acquire);
-            let s2 = unsafe { (*seqlock_ptr).load(Ordering::Acquire) };
-            if s1 == s2 {
-                return Some(PreviewFrameData {
-                    width: disp_w,
-                    height: disp_h,
-                    stride: out_stride,
+            if (s1 & 1) == 0 {
+                let (
+                    w,
+                    h,
+                    src_w,
+                    src_h,
+                    stride,
                     seq,
                     pts_ns,
                     prod_node_id,
@@ -2576,10 +2499,105 @@ impl ScreenCastShmReader {
                     target_max_h,
                     target_fps,
                     cast_fps_cap,
-                    prod_name,
-                    format_name,
-                    rgba,
-                });
+                    prod_raw,
+                    fmt_raw,
+                ) = unsafe {
+                    (
+                        core::ptr::read_volatile(&shm.dst_width),
+                        core::ptr::read_volatile(&shm.dst_height),
+                        core::ptr::read_volatile(&shm.src_width),
+                        core::ptr::read_volatile(&shm.src_height),
+                        core::ptr::read_volatile(&shm.dst_stride),
+                        core::ptr::read_volatile(&shm.frame_seq),
+                        core::ptr::read_volatile(&shm.pts_ns),
+                        core::ptr::read_volatile(&shm.prod_node_id),
+                        core::ptr::read_volatile(&shm.cons_count),
+                        core::ptr::read_volatile(&shm.active_stream) != 0,
+                        core::ptr::read_volatile(&shm.is_dmabuf) != 0,
+                        core::ptr::read_volatile(&shm.dmabuf_mappable) != 0,
+                        core::ptr::read_volatile(&shm.actual_fps_x100),
+                        core::ptr::read_volatile(&shm.target_max_w),
+                        core::ptr::read_volatile(&shm.target_max_h),
+                        core::ptr::read_volatile(&shm.target_fps),
+                        core::ptr::read_volatile(&shm.cast_fps_cap),
+                        core::ptr::read_volatile(&shm.prod_name),
+                        core::ptr::read_volatile(&shm.format_name),
+                    )
+                };
+                let unchanged = active_stream && prev_seq.is_some_and(|p| p != 0 && seq == p);
+                let row_bytes = (w as usize).saturating_mul(4);
+                let byte_len = (stride as usize).saturating_mul(h as usize);
+                let rgba = if !unchanged
+                    && w > 0
+                    && h > 0
+                    && w <= LWASAPI_PW_PREVIEW_MAX_W
+                    && h <= LWASAPI_PW_PREVIEW_MAX_H
+                    && (stride as usize) >= row_bytes
+                    && byte_len <= LWASAPI_PW_PREVIEW_MAX_BYTES
+                    && byte_len <= shm.pixels.len()
+                {
+                    let total_out = row_bytes.saturating_mul(h as usize);
+                    let mut out = vec![0u8; total_out];
+                    let src = &shm.pixels[..byte_len];
+                    let st = stride as usize;
+                    let wu = w as usize;
+                    for (y, drow) in out.chunks_exact_mut(row_bytes).enumerate() {
+                        let srow = &src[y * st..y * st + row_bytes];
+                        let (schunks, _) = srow.as_chunks::<4>();
+                        let (dchunks, _) = drow.as_chunks_mut::<4>();
+                        for (&[b, g, r, _], dp) in schunks.iter().take(wu).zip(dchunks.iter_mut()) {
+                            // PipeWire preview pixels arrive in BGRx/BGRA byte order;
+                            // force opaque alpha so BGRx frames render visibly and export cleanly.
+                            *dp = [r, g, b, 255];
+                        }
+                    }
+                    out
+                } else {
+                    Vec::new()
+                };
+                let out_stride = if rgba.is_empty() { 0 } else { w.saturating_mul(4) };
+                let disp_w = if w > 0 { w } else { src_w };
+                let disp_h = if h > 0 { h } else { src_h };
+                let prod_name = cstr_to_string(&prod_raw);
+                let format_name = cstr_to_string(&fmt_raw);
+
+                fence(Ordering::Acquire);
+                let s2 = unsafe { (*seqlock_ptr).load(Ordering::Acquire) };
+                if s1 == s2 {
+                    return Some(PreviewFrameData {
+                        width: disp_w,
+                        height: disp_h,
+                        stride: out_stride,
+                        seq,
+                        pts_ns,
+                        prod_node_id,
+                        cons_count,
+                        active_stream,
+                        is_dmabuf,
+                        dmabuf_mappable,
+                        actual_fps_x100,
+                        target_max_w,
+                        target_max_h,
+                        target_fps,
+                        cast_fps_cap,
+                        prod_name,
+                        format_name,
+                        rgba,
+                    });
+                }
+            }
+            if attempt < 4 {
+                std::hint::spin_loop();
+            } else {
+                let d = *deadline.get_or_insert_with(|| Instant::now() + Duration::from_millis(8));
+                if Instant::now() >= d {
+                    return None;
+                }
+                if attempt == 4 {
+                    thread::yield_now();
+                } else {
+                    thread::sleep(Duration::from_micros(250));
+                }
             }
         }
         None
@@ -2705,5 +2723,79 @@ mod tests {
         assert_eq!(rep.adapters[0].usb_id, "13d3:3616");
         assert_eq!(rep.adapters[0].power_control, "auto");
         let _ = fs::remove_dir_all(&fake_sys);
+    }
+
+    #[test]
+    fn screencast_shm_reader_waits_for_seqlock_and_skips_unchanged_seq() {
+        let shm_path = env::temp_dir().join(format!("salsa_sc_shm_test_{}", std::process::id()));
+        let map_size = mem::size_of::<LwasapiPwPreviewShm>();
+        {
+            let f = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&shm_path)
+                .unwrap();
+            f.set_len(map_size as u64).unwrap();
+        }
+        let shm_str = shm_path.to_string_lossy().into_owned();
+        let fd = OpenOptions::new().read(true).write(true).open(&shm_path).unwrap();
+        let mut map = MappedMem::map_fd(fd.as_raw_fd(), map_size, true, 0).unwrap();
+        let base = map.as_mut_slice().as_mut_ptr();
+        unsafe {
+            let shm = &mut *(base as *mut LwasapiPwPreviewShm);
+            shm.magic = LWASAPI_PW_PREVIEW_MAGIC;
+            shm.version = LWASAPI_PW_PREVIEW_VERSION;
+            shm.active_stream = 1;
+            shm.dst_width = 4;
+            shm.dst_height = 2;
+            shm.dst_stride = 16;
+            shm.frame_seq = 1;
+            shm.seqlock = 2;
+            for px in shm.pixels[..32].as_chunks_mut::<4>().0 {
+                px.copy_from_slice(&[0x11, 0x55, 0xaa, 0x00]);
+            }
+        }
+
+        let reader = ScreenCastShmReader::open(&shm_str).unwrap();
+        let f1 = reader.read_frame_since(None).expect("initial frame");
+        assert!(f1.active_stream);
+        assert_eq!(f1.seq, 1);
+        assert_eq!(f1.rgba.len(), 32);
+        assert_eq!(&f1.rgba[..4], &[0xaa, 0x55, 0x11, 255]);
+
+        let unchanged = reader.read_frame_since(Some(1)).expect("unchanged seq");
+        assert!(unchanged.active_stream);
+        assert_eq!(unchanged.seq, 1);
+        assert!(unchanged.rgba.is_empty());
+
+        // Hold writer seqlock odd for 2ms, simulating a slow 1440p SHM copy.
+        unsafe {
+            let seq_ptr = base.add(offset_of!(LwasapiPwPreviewShm, seqlock)) as *const AtomicU64;
+            (*seq_ptr).store(3, Ordering::Release);
+        }
+        let shm_addr = base as usize;
+        let writer = thread::spawn(move || {
+            let base_p = shm_addr as *mut u8;
+            let seq_ptr =
+                unsafe { base_p.add(offset_of!(LwasapiPwPreviewShm, seqlock)) as *const AtomicU64 };
+            let shm = unsafe { &mut *(base_p as *mut LwasapiPwPreviewShm) };
+            thread::sleep(Duration::from_millis(2));
+            shm.frame_seq = 2;
+            for px in shm.pixels[..32].as_chunks_mut::<4>().0 {
+                px.copy_from_slice(&[0x22, 0x66, 0xbb, 0x00]);
+            }
+            unsafe { (*seq_ptr).store(4, Ordering::Release) };
+        });
+
+        let f2 = reader
+            .read_frame_since(Some(1))
+            .expect("reader must wait past 2ms odd seqlock");
+        writer.join().unwrap();
+        assert_eq!(f2.seq, 2);
+        assert_eq!(f2.rgba.len(), 32);
+        assert_eq!(&f2.rgba[..4], &[0xbb, 0x66, 0x22, 255]);
+        let _ = fs::remove_file(&shm_path);
     }
 }

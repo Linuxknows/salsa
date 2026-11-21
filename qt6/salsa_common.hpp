@@ -19,6 +19,8 @@
 #include <QPalette>
 #include <QPushButton>
 #include <QSlider>
+#include <QSocketNotifier>
+#include <QEventLoop>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -160,7 +162,36 @@ void applyGlobalFontScale(QApplication* app, int fontPct);
 QColor mixColors(const QColor& a, const QColor& b, double t);
 QString validHexColor(const QString& candidate, const QString& fallback);
 
-void spawnDetachedWaylandBinary(const QString& binName, const QStringList& args = {});
+void spawnDetachedWaylandBinary(
+    const QString& binName,
+    const QStringList& args = {},
+    QWidget* sourceWidget = nullptr);
+
+QString singleInstanceSockPath(const QString& sockFileName);
+bool tryActivateExistingSingleInstance(
+    const QString& sockFileName,
+    const QString& mode = QStringLiteral("auto"),
+    const QByteArray& rawToken = {});
+void raiseAndActivateWindow(QWidget* target, const QByteArray& actToken = {});
+
+class SingleInstanceServer {
+public:
+    SingleInstanceServer() = default;
+    ~SingleInstanceServer() { stop(); }
+    SingleInstanceServer(const SingleInstanceServer&) = delete;
+    SingleInstanceServer& operator=(const SingleInstanceServer&) = delete;
+
+    bool start(
+        const QString& sockFileName,
+        QObject* parent,
+        std::function<void(const QString&, const QByteArray&)> onActivate);
+    void stop();
+
+private:
+    int listenFd_ = -1;
+    QString sockPath_;
+    QSocketNotifier* notifier_ = nullptr;
+};
 void showReportDialog(
     QWidget* parent,
     const QString& title,
@@ -216,5 +247,24 @@ private:
     QPushButton* btnPct_ = nullptr;
     QPushButton* btnPlus_ = nullptr;
 };
+
+namespace detail {
+class ActivationTokenWaiter : public QObject {
+    Q_OBJECT
+public:
+    ActivationTokenWaiter(quint32 targetSerial, QEventLoop& loop)
+        : targetSerial_(targetSerial), loop_(loop) {}
+
+    QString token;
+    bool received = false;
+
+public slots:
+    void onToken(int sigSerial, const QString& tok);
+
+private:
+    quint32 targetSerial_;
+    QEventLoop& loop_;
+};
+}  // namespace detail
 
 }  // namespace salsa

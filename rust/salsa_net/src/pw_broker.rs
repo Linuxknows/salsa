@@ -474,6 +474,8 @@ struct PwNode {
     io_mem_fd: Option<OwnedFd>,
     io_map: Option<MappedMem>,
     io_mem_id: u32,
+    io_last_slot: u8,
+    buf_slot: [u8; PWB_MAX_BUFFERS],
     n_bufs: u32,
     bufs: Vec<NodeBuf>,
     buf_mem_ids: [u32; PWB_MAX_BUFFERS],
@@ -537,6 +539,8 @@ impl Default for PwNode {
             io_mem_fd: None,
             io_map: None,
             io_mem_id: SPA_ID_INVALID,
+            io_last_slot: 0,
+            buf_slot: [0; PWB_MAX_BUFFERS],
             n_bufs: 0,
             bufs: Vec::new(),
             buf_mem_ids: [SPA_ID_INVALID; PWB_MAX_BUFFERS],
@@ -579,9 +583,11 @@ impl PwNode {
             1
         };
 
+        slice[540..544].copy_from_slice(&1u32.to_le_bytes());
         slice[544..548].copy_from_slice(&1u32.to_le_bytes());
         slice[548..552].copy_from_slice(&driver_gid.to_le_bytes());
         slice[552..556].copy_from_slice(&driver_gid.to_le_bytes());
+        slice[556..560].copy_from_slice(&1u32.to_le_bytes());
 
         let clk_id = if self.is_driver {
             self.global_id
@@ -681,33 +687,104 @@ impl PwNode {
         d
     }
 
-    fn io_read_status_and_buf(&self) -> Option<(u32, u32)> {
+    fn io_read_slot(&self, slot: usize) -> Option<(u32, u32)> {
+        let off = slot.checked_mul(8)?;
         let map = self.io_map.as_ref()?;
         let sl = map.as_slice();
-        if sl.len() < 8 {
+        if off + 8 > sl.len() {
             return None;
         }
-        let st = u32::from_le_bytes([sl[0], sl[1], sl[2], sl[3]]);
-        let bid = u32::from_le_bytes([sl[4], sl[5], sl[6], sl[7]]);
+        let st = atomic_u32_load(unsafe { sl.as_ptr().add(off).cast::<u32>() }, Ordering::Acquire);
+        let bid = u32::from_le_bytes([sl[off + 4], sl[off + 5], sl[off + 6], sl[off + 7]]);
         Some((st, bid))
     }
 
-    fn io_write_status_and_buf(&mut self, status: u32, buf_id: u32) {
+    fn io_read_status_and_buf(&self) -> Option<(u32, u32)> {
+        self.io_read_slot(0)
+    }
+
+    fn io_write_slot(&mut self, slot: usize, status: u32, buf_id: u32) {
+        let Some(off) = slot.checked_mul(8) else {
+            return;
+        };
         if let Some(map) = self.io_map.as_mut() {
             let sl = map.as_mut_slice();
-            if sl.len() >= 8 {
-                sl[4..8].copy_from_slice(&buf_id.to_le_bytes());
-                atomic_u32_store(sl.as_mut_ptr().cast::<u32>(), status, Ordering::Release);
+            if off + 8 <= sl.len() {
+                sl[off + 4..off + 8].copy_from_slice(&buf_id.to_le_bytes());
+                atomic_u32_store(
+                    unsafe { sl.as_mut_ptr().add(off).cast::<u32>() },
+                    status,
+                    Ordering::Release,
+                );
             }
         }
     }
 
-    fn io_write_status(&mut self, status: u32) {
+    fn io_write_slot_status(&mut self, slot: usize, status: u32) {
+        let Some(off) = slot.checked_mul(8) else {
+            return;
+        };
         if let Some(map) = self.io_map.as_mut() {
             let sl = map.as_mut_slice();
-            if sl.len() >= 4 {
-                atomic_u32_store(sl.as_mut_ptr().cast::<u32>(), status, Ordering::Release);
+            if off + 4 <= sl.len() {
+                atomic_u32_store(
+                    unsafe { sl.as_mut_ptr().add(off).cast::<u32>() },
+                    status,
+                    Ordering::Release,
+                );
             }
+        }
+    }
+
+    fn io_write_all_slots(&mut self, status: u32, buf_id: u32) {
+        self.io_write_slot(0, status, buf_id);
+        self.io_write_slot(1, status, buf_id);
+    }
+
+    fn io_take_ready_slot(&mut self) -> Option<(usize, u32)> {
+        let s0 = self.io_read_slot(0);
+        let s1 = self.io_read_slot(1);
+        let h0 = s0.is_some_and(|(st, _)| st == PWB_STATUS_HAVE_DATA);
+        let h1 = s1.is_some_and(|(st, _)| st == PWB_STATUS_HAVE_DATA);
+        let chosen = match (h0, h1) {
+            (false, false) => return None,
+            (true, false) => 0,
+            (false, true) => 1,
+            (true, true) => {
+                // If both async slots have HAVE_DATA after coalesced wakeups, the writer
+                // wrote `io_last_slot ^ 1` first and wrapped to `io_last_slot` last.
+                let newest = (self.io_last_slot as usize) & 1;
+                let skipped = newest ^ 1;
+                if let Some((_, skipped_bid)) = [s0, s1][skipped] {
+                    self.io_write_slot(skipped, PWB_STATUS_NEED_DATA, skipped_bid);
+                }
+                newest
+            }
+        };
+        let (_, buf_id) = [s0, s1][chosen].unwrap();
+        self.io_last_slot = chosen as u8;
+        if let Some(slot_ref) = self.buf_slot.get_mut(buf_id as usize) {
+            *slot_ref = chosen as u8;
+        }
+        self.io_write_slot_status(chosen, PWB_STATUS_OK);
+        Some((chosen, buf_id))
+    }
+
+    fn io_write_status_and_buf(&mut self, status: u32, buf_id: u32) {
+        self.io_write_slot(0, status, buf_id);
+    }
+
+    fn io_write_status(&mut self, status: u32) {
+        self.io_write_slot_status(0, status);
+    }
+
+    fn io_recycle_buf(&mut self, buf_id: u32) {
+        let slot = self.buf_slot.get(buf_id as usize).copied().unwrap_or(0) as usize;
+        if !self
+            .io_read_slot(slot)
+            .is_some_and(|(st, _)| st == PWB_STATUS_HAVE_DATA)
+        {
+            self.io_write_slot(slot, PWB_STATUS_NEED_DATA, buf_id);
         }
     }
 }
@@ -1421,6 +1498,8 @@ impl PwState {
             nd.meta_mem_fd = None;
             nd.io_map = None;
             nd.io_mem_fd = None;
+            nd.io_last_slot = 0;
+            nd.buf_slot = [0; PWB_MAX_BUFFERS];
             if is_out {
                 nd.free_buffers();
             }
@@ -1626,7 +1705,9 @@ impl PwState {
                 self.nodes[prod_idx].io_mem_fd = Some(pfd);
                 self.nodes[prod_idx].io_map = pmap;
                 self.nodes[prod_idx].io_mem_id = mid;
-                self.nodes[prod_idx].io_write_status_and_buf(PWB_STATUS_OK, SPA_ID_INVALID);
+                self.nodes[prod_idx].io_last_slot = 0;
+                self.nodes[prod_idx].buf_slot = [0; PWB_MAX_BUFFERS];
+                self.nodes[prod_idx].io_write_all_slots(PWB_STATUS_NEED_DATA, SPA_ID_INVALID);
             }
         }
         if self.nodes[cons_idx].io_mem_fd.is_none() {
@@ -1639,7 +1720,8 @@ impl PwState {
                 self.nodes[cons_idx].io_mem_fd = Some(cfd);
                 self.nodes[cons_idx].io_map = cmap;
                 self.nodes[cons_idx].io_mem_id = mid;
-                self.nodes[cons_idx].io_write_status_and_buf(PWB_STATUS_OK, SPA_ID_INVALID);
+                self.nodes[cons_idx].io_last_slot = 0;
+                self.nodes[cons_idx].io_write_all_slots(PWB_STATUS_OK, SPA_ID_INVALID);
             }
         }
 
@@ -1647,7 +1729,11 @@ impl PwState {
             if let Some(dmap) = self.nodes[idx].done_act_map.as_mut() {
                 let sl = dmap.as_mut_slice();
                 if sl.len() >= PWB_ACT_SIZE {
+                    sl[540..544].copy_from_slice(&1u32.to_le_bytes());
                     sl[544..548].copy_from_slice(&1u32.to_le_bytes());
+                    sl[548..552].copy_from_slice(&prod_gid.to_le_bytes());
+                    sl[552..556].copy_from_slice(&prod_gid.to_le_bytes());
+                    sl[556..560].copy_from_slice(&1u32.to_le_bytes());
                     sl[0..4].copy_from_slice(&0u32.to_le_bytes());
                     sl[8..12].copy_from_slice(&0i32.to_le_bytes());
                     sl[12..16].copy_from_slice(&1i32.to_le_bytes());
@@ -2378,11 +2464,11 @@ impl PwState {
                 atomic_u32_store(sl.as_mut_ptr().cast::<u32>(), 0, Ordering::Release);
             }
         }
-        let Some((st, buf_id)) = self.nodes[nidx].io_read_status_and_buf() else {
+        let Some((chosen_slot, buf_id)) = self.nodes[nidx].io_take_ready_slot() else {
             return;
         };
-        if st != PWB_STATUS_HAVE_DATA {
-            return;
+        if let Some(awfd) = self.nodes[nidx].act_writefd.as_ref() {
+            eventfd_drain(awfd.as_raw_fd());
         }
         self.nodes[nidx].frames_count += 1;
         let now_ns = mono_ns();
@@ -2399,7 +2485,7 @@ impl PwState {
                 .any(|lk| lk.in_use && lk.out_node_idx as usize == nidx && lk.io_ready)
             && !pace_due(now_ns, &mut self.nodes[nidx].relay_next_due_ns, cl_fps)
         {
-            self.nodes[nidx].io_write_status(PWB_STATUS_NEED_DATA);
+            self.nodes[nidx].io_write_slot(chosen_slot, PWB_STATUS_NEED_DATA, buf_id);
             return;
         }
 
@@ -2449,12 +2535,14 @@ impl PwState {
                 continue;
             }
             if let Some((cst, prev_buf)) = self.nodes[cidx].io_read_status_and_buf() {
-                if cst == PWB_STATUS_HAVE_DATA
+                if (cst == PWB_STATUS_HAVE_DATA || cst == PWB_STATUS_NEED_DATA)
                     && prev_buf != SPA_ID_INVALID
                     && prev_buf != buf_id
                 {
                     stale_to_recycle = Some(prev_buf);
-                    self.shared.frames_dropped.fetch_add(1, Ordering::Relaxed);
+                    if cst == PWB_STATUS_HAVE_DATA {
+                        self.shared.frames_dropped.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
             if let (Some((h, crop, ch)), Some(cmap)) =
@@ -2504,7 +2592,7 @@ impl PwState {
                         .is_some_and(|(s, b)| s == PWB_STATUS_HAVE_DATA && b == prev_buf)
             });
             if !still_held {
-                self.nodes[nidx].io_write_status_and_buf(PWB_STATUS_NEED_DATA, prev_buf);
+                self.nodes[nidx].io_recycle_buf(prev_buf);
             }
         }
 
@@ -2521,7 +2609,7 @@ impl PwState {
             self.relay_last_frame_ns = now_ns;
             self.copy_frame_to_preview_shm(nidx, buf_id, cons_woken);
         } else {
-            self.nodes[nidx].io_write_status(PWB_STATUS_NEED_DATA);
+            self.nodes[nidx].io_write_slot(chosen_slot, PWB_STATUS_NEED_DATA, buf_id);
         }
     }
 
@@ -2531,6 +2619,9 @@ impl PwState {
         }
         if let Some(efd) = self.nodes[nidx].done_efd.as_ref() {
             eventfd_drain(efd.as_raw_fd());
+        }
+        if let Some(awfd) = self.nodes[nidx].act_writefd.as_ref() {
+            eventfd_drain(awfd.as_raw_fd());
         }
         if let Some(dmap) = self.nodes[nidx].done_act_map.as_mut() {
             let sl = dmap.as_mut_slice();
@@ -2544,6 +2635,10 @@ impl PwState {
         let Some((st, rec_id)) = self.nodes[nidx].io_read_status_and_buf() else {
             return;
         };
+        if st != PWB_STATUS_NEED_DATA || rec_id == SPA_ID_INVALID {
+            return;
+        }
+        self.nodes[nidx].io_write_status(PWB_STATUS_OK);
         for li in 0..PWB_MAX_LINKS {
             if !self.links[li].in_use
                 || self.links[li].in_node_idx as usize != nidx
@@ -2556,10 +2651,21 @@ impl PwState {
             {
                 continue;
             }
-            // Match C broker behavior: recycle producer's io_map slot without
-            // triggering prod->act_readfd out-of-phase between compositor vblanks.
-            if st == PWB_STATUS_NEED_DATA && rec_id != SPA_ID_INVALID {
-                self.nodes[pidx].io_write_status_and_buf(PWB_STATUS_NEED_DATA, rec_id);
+            let still_held = (0..PWB_MAX_LINKS).any(|other_li| {
+                other_li != li
+                    && self.links[other_li].in_use
+                    && self.links[other_li].out_node_idx as usize == pidx
+                    && self.links[other_li].io_ready
+                    && self
+                        .nodes
+                        .get(self.links[other_li].in_node_idx as usize)
+                        .and_then(|cn| cn.io_read_status_and_buf())
+                        .is_some_and(|(s, b)| s == PWB_STATUS_HAVE_DATA && b == rec_id)
+            });
+            if !still_held {
+                // Match C broker behavior: recycle producer's io_map slot without
+                // triggering prod->act_readfd out-of-phase between compositor vblanks.
+                self.nodes[pidx].io_recycle_buf(rec_id);
             }
         }
     }
@@ -3570,12 +3676,13 @@ impl PwState {
                 self.nodes[nidx].free_buffers();
                 self.nodes[nidx].alloc_buffers = true;
                 for _ in 0..n_buffers {
-                    let Some(n_datas) = st.read_u32() else {
+                    let Some(mut n_datas) = st.read_u32() else {
                         break;
                     };
                     if n_datas == 0 {
                         break;
                     }
+                    n_datas = n_datas.min(16);
                     for j in 0..n_datas {
                         let (Some(dt), Some(fd_idx), Some(dfl), Some(dmo), Some(dms)) = (
                             st.read_u32(),
@@ -3932,6 +4039,16 @@ fn broker_thread_main(state: Arc<Mutex<PwState>>, shared: Arc<SharedAtomics>) {
                         });
                         meta.push((if n.direction == PWB_DIR_OUT { 4 } else { 5 }, ni));
                     }
+                    if n.direction != PWB_DIR_OUT {
+                        if let Some(awfd) = n.act_writefd.as_ref() {
+                            pfds.push(PollFd {
+                                fd: awfd.as_raw_fd(),
+                                events: POLLIN,
+                                revents: 0,
+                            });
+                            meta.push((5, ni));
+                        }
+                    }
                 }
             }
         }
@@ -4014,11 +4131,11 @@ pub unsafe extern "C" fn lwasapi_pw_broker_start(
         .or_else(|| std::env::var("XDG_RUNTIME_DIR").ok().filter(|s| !s.is_empty()))
         .unwrap_or_else(|| format!("/run/user/{}", current_uid()));
     let sname = opt_sname
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && !s.contains('/') && *s != "." && *s != "..")
         .or_else(|| {
             std::env::var("LWASAPI_PW_SOCKET_NAME")
                 .ok()
-                .filter(|s| !s.is_empty())
+                .filter(|s| !s.is_empty() && !s.contains('/') && s != "." && s != "..")
         })
         .unwrap_or_else(|| "pipewire-0".to_string());
 
@@ -4804,7 +4921,83 @@ mod tests {
             snap_noprev.actual_fps_x100
         );
 
+        // Verify SPA_IO_AsyncBuffers dual-slot relay (`slot1` -> `slot0`) & non-clobbering recycle
+        {
+            let h = unsafe { &*brk };
+            let mut st = h.state.lock().unwrap();
+            let pidx = st
+                .nodes
+                .iter()
+                .position(|n| n.in_use && n.direction == PWB_DIR_OUT)
+                .unwrap();
+            let cidx = st
+                .nodes
+                .iter()
+                .position(|n| n.in_use && n.direction == PWB_DIR_IN)
+                .unwrap();
+            st.nodes[cidx].io_write_all_slots(PWB_STATUS_OK, SPA_ID_INVALID);
+            st.nodes[pidx].io_write_all_slots(PWB_STATUS_NEED_DATA, SPA_ID_INVALID);
+            st.nodes[pidx].io_write_slot(1, PWB_STATUS_HAVE_DATA, 1);
+            st.on_prod_done_event(pidx);
+            assert_eq!(
+                st.nodes[cidx].io_read_status_and_buf(),
+                Some((PWB_STATUS_HAVE_DATA, 1)),
+                "producer slot1 frame must relay to consumer"
+            );
+            assert_eq!(
+                st.nodes[pidx].io_read_slot(1),
+                Some((PWB_STATUS_OK, 1)),
+                "consumed async slot1 must clear HAVE_DATA"
+            );
+
+            // Simulate next producer frame in slot0 arriving just before consumer returns buf 1
+            st.nodes[pidx].io_write_slot(0, PWB_STATUS_HAVE_DATA, 2);
+            st.nodes[cidx].io_write_status_and_buf(PWB_STATUS_NEED_DATA, 1);
+            st.on_cons_done_event(cidx);
+            assert_eq!(
+                st.nodes[pidx].io_read_slot(0),
+                Some((PWB_STATUS_HAVE_DATA, 2)),
+                "consumer recycle must not clobber unconsumed slot0 frame"
+            );
+            assert_eq!(
+                st.nodes[pidx].io_read_slot(1),
+                Some((PWB_STATUS_NEED_DATA, 1)),
+                "returned buf 1 must recycle into originating slot1"
+            );
+
+            st.on_prod_done_event(pidx);
+            assert_eq!(
+                st.nodes[cidx].io_read_status_and_buf(),
+                Some((PWB_STATUS_HAVE_DATA, 2)),
+                "slot0 frame must relay after slot1 recycle"
+            );
+        }
+
         unsafe { lwasapi_pw_broker_stop(brk) };
         let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn pw_node_async_slot_helpers_handle_single_and_coalesced_slots() {
+        let fd = create_memfd("salsa-pw-slot-test", PWB_IO_BUFFERS_SIZE).unwrap();
+        let map = MappedMem::map_fd(fd.as_raw_fd(), PWB_IO_BUFFERS_SIZE, true, 0);
+        let mut nd = PwNode {
+            io_mem_fd: Some(fd),
+            io_map: map,
+            ..Default::default()
+        };
+        nd.io_write_all_slots(PWB_STATUS_NEED_DATA, SPA_ID_INVALID);
+
+        // Initial Frame #0 in slot1 (`(cycle + 1) & 1` with cycle=0)
+        nd.io_write_slot(1, PWB_STATUS_HAVE_DATA, 0);
+        assert_eq!(nd.io_take_ready_slot(), Some((1, 0)));
+        assert_eq!(nd.io_read_slot(1), Some((PWB_STATUS_OK, 0)));
+
+        // Coalesced wake with both slots populated (`slot0` first, wrapped to `slot1`)
+        nd.io_write_slot(0, PWB_STATUS_HAVE_DATA, 1);
+        nd.io_write_slot(1, PWB_STATUS_HAVE_DATA, 2);
+        assert_eq!(nd.io_take_ready_slot(), Some((1, 2)));
+        assert_eq!(nd.io_read_slot(0), Some((PWB_STATUS_NEED_DATA, 1)));
+        assert_eq!(nd.io_read_slot(1), Some((PWB_STATUS_OK, 2)));
     }
 }

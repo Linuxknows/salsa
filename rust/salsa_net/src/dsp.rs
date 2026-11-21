@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use crate::c_abi::{
     LwasapiEqConfig, LwasapiMicApoCfg, LwasapiParamEqExt, LwasapiShmRing, SalsaMicCubicState,
     LWASAPI_EQ_BANDS, LWASAPI_FILTER_HIGH_SHELF, LWASAPI_FILTER_LOW_SHELF, LWASAPI_MAX_CHANNELS,
-    LWASAPI_RING_MASK, SALSA_PACK_F32_LE, SALSA_PACK_S16_LE, SALSA_PACK_S24_3LE, SALSA_PACK_S24_LE,
+    LWASAPI_RING_FRAMES, LWASAPI_RING_MASK, SALSA_PACK_F32_LE, SALSA_PACK_S16_LE, SALSA_PACK_S24_3LE, SALSA_PACK_S24_LE,
     SALSA_PACK_S32_LE,
 };
 use crate::state_conf::K_EQ_FREQS;
@@ -444,7 +444,7 @@ impl MicRnnoiseCtx {
                 self.in_count += 1;
                 ph += step_in;
             }
-            self.in_phase = ph - (frames as f64);
+            self.in_phase = (ph - (frames as f64)).max(-1.0);
             self.in_last = mono[frames - 1];
         }
 
@@ -1606,13 +1606,34 @@ pub unsafe extern "C" fn salsa_dsp_consume_session_frames(
     let wf_ptr = unsafe { ptr::addr_of!((*r).write_frame) };
     let rf_ptr = unsafe { ptr::addr_of!((*r).read_frame) };
     let w = unsafe { (*wf_ptr).load(Ordering::Acquire) };
-    let rd = unsafe { (*rf_ptr).load(Ordering::Relaxed) };
+    let mut rd = unsafe { (*rf_ptr).load(Ordering::Relaxed) };
     if w < rd {
+        unsafe { (*rf_ptr).store(w, Ordering::Release) };
         reset_idle();
         return;
     }
 
-    let avail = w - rd;
+    if w <= rd {
+        if unsafe { *io_stream_live } {
+            let last_ns = unsafe { *io_last_audio_ns };
+            if now_ns > last_ns && (now_ns - last_ns) > 500_000_000 {
+                unsafe {
+                    *io_stream_live = false;
+                    *io_underrun_pending = false;
+                }
+            } else {
+                unsafe { *io_underrun_pending = true };
+            }
+        }
+        return;
+    }
+    let mut avail = w - rd;
+    if avail > LWASAPI_RING_FRAMES as u64 {
+        let keep = (out_fr as u64).saturating_mul(2).min(LWASAPI_RING_FRAMES as u64);
+        rd = w.saturating_sub(keep);
+        avail = w - rd;
+        unsafe { (*rf_ptr).store(rd, Ordering::Release) };
+    }
     let min_avail = if client_rate == hw_rate { 1 } else { 2 };
     if avail < min_avail {
         if unsafe { *io_stream_live } {
@@ -1652,7 +1673,8 @@ pub unsafe extern "C" fn salsa_dsp_consume_session_frames(
         for f in 0..to_read {
             let slot = ((rd.wrapping_add(f as u64) as usize) & LWASAPI_RING_MASK) * ch;
             for c in 0..out_ch {
-                let sample = unsafe { pcm_base.add(slot + (c % ch)).read() } * vol;
+                let raw = unsafe { pcm_base.add(slot + (c % ch)).read() };
+                let sample = if raw.is_finite() { raw * vol } else { 0.0 };
                 let dst = &mut mix[f * out_ch + c];
                 if replace_output {
                     *dst = sample;
@@ -1675,8 +1697,10 @@ pub unsafe extern "C" fn salsa_dsp_consume_session_frames(
             let slot1 = ((rd.wrapping_add(i0 + 1) as usize) & LWASAPI_RING_MASK) * ch;
             for c in 0..out_ch {
                 let ch_idx = c % ch;
-                let s0 = unsafe { pcm_base.add(slot0 + ch_idx).read() };
-                let s1 = unsafe { pcm_base.add(slot1 + ch_idx).read() };
+                let s0_raw = unsafe { pcm_base.add(slot0 + ch_idx).read() };
+                let s1_raw = unsafe { pcm_base.add(slot1 + ch_idx).read() };
+                let s0 = if s0_raw.is_finite() { s0_raw } else { 0.0 };
+                let s1 = if s1_raw.is_finite() { s1_raw } else { 0.0 };
                 let sample = (s0 + (s1 - s0) * frac) * vol;
                 let dst = &mut mix[f * out_ch + c];
                 if replace_output {
@@ -1978,5 +2002,70 @@ mod tests {
         assert!(!underrun);
         assert_eq!(ring.xruns.load(Ordering::Relaxed), 1);
         assert_eq!(LWASAPI_RING_FRAMES, 32_768);
+    }
+
+    #[test]
+    fn consume_session_frames_filters_nan_and_recovers_read_ahead() {
+        let mut ring: Box<LwasapiShmRing> = unsafe {
+            let mut u = Box::<LwasapiShmRing>::new_uninit();
+            ptr::write_bytes(u.as_mut_ptr(), 0, 1);
+            u.assume_init()
+        };
+        ring.active.store(1, Ordering::Release);
+        ring.volume_milli.store(1000, Ordering::Release);
+        ring.pcm_data.0[0] = f32::NAN;
+        ring.pcm_data.0[1] = f32::INFINITY;
+        ring.pcm_data.0[2] = f32::NEG_INFINITY;
+        ring.pcm_data.0[3] = 0.25;
+        ring.read_frame.store(0, Ordering::Release);
+        ring.write_frame.store(2, Ordering::Release);
+
+        let mut phase = 0.0;
+        let mut live = false;
+        let mut underrun = false;
+        let mut last_ns = 0u64;
+        let mut mix = vec![0.0f32; 4];
+
+        unsafe {
+            salsa_dsp_consume_session_frames(
+                &mut *ring,
+                &mut phase,
+                48_000,
+                2,
+                &mut live,
+                &mut underrun,
+                &mut last_ns,
+                mix.as_mut_ptr(),
+                2,
+                2,
+                48_000,
+                true,
+                1_000_000_000,
+            );
+        }
+        assert!(mix.iter().all(|v| v.is_finite()));
+        assert!((mix[3] - 0.25).abs() < 1e-5);
+
+        // Corrupt read_frame ahead of write_frame recovers without underflow
+        ring.write_frame.store(10, Ordering::Release);
+        ring.read_frame.store(50, Ordering::Release);
+        unsafe {
+            salsa_dsp_consume_session_frames(
+                &mut *ring,
+                &mut phase,
+                48_000,
+                2,
+                &mut live,
+                &mut underrun,
+                &mut last_ns,
+                mix.as_mut_ptr(),
+                2,
+                2,
+                48_000,
+                true,
+                1_010_000_000,
+            );
+        }
+        assert_eq!(ring.read_frame.load(Ordering::Acquire), 10);
     }
 }

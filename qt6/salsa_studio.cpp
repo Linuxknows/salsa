@@ -35,7 +35,6 @@
 #include <QScrollArea>
 #include <QShortcut>
 #include <QSlider>
-#include <QSocketNotifier>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTableWidget>
@@ -47,92 +46,19 @@
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fcntl.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/un.h>
-#include <unistd.h>
 
 namespace {
 
-QString studioSingleInstanceSockPath() {
-    const QByteArray xdg = qgetenv("XDG_RUNTIME_DIR");
-    if (!xdg.isEmpty()) {
-        const QString dir = QString::fromLocal8Bit(xdg) + QStringLiteral("/lwasapi");
-        ::mkdir(dir.toLocal8Bit().constData(), 0700);
-        ::chmod(dir.toLocal8Bit().constData(), 0700);
-        return dir + QStringLiteral("/salsa-studio.sock");
-    }
-    return QStringLiteral("/tmp/lwasapi-studio-%1.sock").arg(static_cast<qulonglong>(::getuid()));
+inline QString formatBoostDbText(double db) {
+    return QStringLiteral("%1 dB").arg(QStringLiteral("+%1").arg(db, 0, 'f', 1), 5);
 }
 
-int connectStudioSingleInstance(const QString& sockPath) {
-    const QByteArray pBytes = sockPath.toLocal8Bit();
-    if (pBytes.size() >= static_cast<qsizetype>(sizeof(sockaddr_un::sun_path))) {
-        return -1;
-    }
-    const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return -1;
-    sockaddr_un addr{};
-    addr.sun_family = AF_UNIX;
-    std::memcpy(addr.sun_path, pBytes.constData(), static_cast<size_t>(pBytes.size()));
-    if (::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
-        ::close(fd);
-        return -1;
-    }
-    struct ucred cred{};
-    socklen_t clen = sizeof(cred);
-    if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &clen) != 0 || cred.uid != ::getuid()) {
-        ::close(fd);
-        return -1;
-    }
-    return fd;
-}
-
-bool tryActivateExistingStudioInstance(const QString& mode, const QByteArray& rawToken) {
-    const QString sockPath = studioSingleInstanceSockPath();
-    const int fd = connectStudioSingleInstance(sockPath);
-    if (fd < 0) return false;
-    QByteArray cleanTok = rawToken;
-    cleanTok.replace('\n', "");
-    cleanTok.replace('\r', "");
-    cleanTok.replace('\t', "");
-    const QByteArray msg = QByteArray("SHOW ") + mode.toUtf8() + "\t" + cleanTok + "\n";
-    ssize_t off = 0;
-    while (off < msg.size()) {
-        const ssize_t n = ::write(fd, msg.constData() + off, static_cast<size_t>(msg.size() - off));
-        if (n <= 0) break;
-        off += n;
-    }
-    struct pollfd pfd{fd, POLLIN, 0};
-    if (::poll(&pfd, 1, 1000) > 0) {
-        char ack[16]{};
-        const ssize_t _r = ::read(fd, ack, sizeof(ack));
-        (void)_r;
-    }
-    ::close(fd);
-    return true;
-}
-
-QByteArray readSingleLineBounded(int fd, size_t maxBytes = 512) {
-    QByteArray out;
-    out.reserve(128);
-    char ch = 0;
-    struct pollfd pfd{fd, POLLIN, 0};
-    while (static_cast<size_t>(out.size()) < maxBytes) {
-        const int pr = ::poll(&pfd, 1, 50);
-        if (pr <= 0) break;
-        const ssize_t n = ::read(fd, &ch, 1);
-        if (n <= 0 || ch == '\n') break;
-        out.append(ch);
-    }
-    return out;
+inline QString formatPctText(int pct) {
+    return QStringLiteral("%1%").arg(pct, 3);
 }
 
 }  // namespace
@@ -240,11 +166,14 @@ private:
     void onBtResetClicked();
     void onBtCfgChanged();
     void onHwAnalogCfgChanged();
+    void scheduleHwAnalogSend(bool immediate = false);
     void onHwAnalogReset();
 
     void onVolStepChanged();
     void onSpkSliderMoved(int v);
     void onMicSliderMoved(int v);
+    void sendSpkVolNow(int muteOverride = -1);
+    void sendMicVolNow(int muteOverride = -1);
     void onSessionSliderMoved(uint32_t sid, int v);
     void flushSessionVolume(uint32_t sid, int v);
 
@@ -348,11 +277,8 @@ private:
     uint32_t lastBtConnFlags_ = SALSA_BT_STAT_OPTIONAL;
     qint64 lastBtLinkPollMs_ = 0;
     QLabel* lblBtDiag_ = nullptr;
-    int singleInstListenFd_ = -1;
-    QSocketNotifier* singleInstNotifier_ = nullptr;
-    QString singleInstSockPath_;
+    SingleInstanceServer singleInstServer_;
     void setupSingleInstanceServer();
-    void handleSingleInstanceClient();
     void activateExistingWindow(const QString& targetMode, const QByteArray& actToken);
     void syncBtConnectionControls(uint32_t flags, const QString& noteOverride = QString());
     QLabel* lblSpk_ = nullptr;
@@ -415,7 +341,9 @@ private:
     QTimer* graphAnimTimer_ = nullptr;
     QTimer* spkSendTimer_ = nullptr;
     QTimer* micSendTimer_ = nullptr;
+    QTimer* hwSendTimer_ = nullptr;
     QTimer* dbgSnapTimer_ = nullptr;
+    QTimer* settingsSaveTimer_ = nullptr;
     void* studioDbgHandle_ = nullptr;
 };
 
@@ -555,20 +483,25 @@ StudioController::StudioController(bool forceStudio, QObject* parent)
     spkSendTimer_->setSingleShot(true);
     spkSendTimer_->setInterval(40);
     connect(spkSendTimer_, &QTimer::timeout, this, [this]() {
-        spkHoldUntilMs_ = nowMs() + 350;
-        salsa_set_master_volume(sldSpk_->value(), status_.desktop_muted ? 1 : 0);
+        sendSpkVolNow();
     });
 
     micSendTimer_ = new QTimer(this);
     micSendTimer_->setSingleShot(true);
     micSendTimer_->setInterval(40);
     connect(micSendTimer_, &QTimer::timeout, this, [this]() {
-        micHoldUntilMs_ = nowMs() + 350;
-        salsa_set_mic_volume(sldMic_->value(), status_.desktop_mic_muted ? 1 : 0);
+        sendMicVolNow();
+    });
+
+    hwSendTimer_ = new QTimer(this);
+    hwSendTimer_->setSingleShot(true);
+    hwSendTimer_->setInterval(40);
+    connect(hwSendTimer_, &QTimer::timeout, this, [this]() {
+        onHwAnalogCfgChanged();
     });
 
     pollTimer_ = new QTimer(this);
-    pollTimer_->setTimerType(Qt::PreciseTimer);
+    pollTimer_->setTimerType(Qt::CoarseTimer);
     pollTimer_->setInterval(salsaTelemetryIntervalMs(mainWin_, 120));
     connect(pollTimer_, &QTimer::timeout, this, [this]() {
         pollEngine(false);
@@ -577,6 +510,13 @@ StudioController::StudioController(bool forceStudio, QObject* parent)
             lastSettingsPollMs_ = now;
             checkSettingsFileSync();
         }
+    });
+
+    settingsSaveTimer_ = new QTimer(this);
+    settingsSaveTimer_->setSingleShot(true);
+    settingsSaveTimer_->setInterval(250);
+    connect(settingsSaveTimer_, &QTimer::timeout, this, [this]() {
+        saveStudioSettings();
     });
 
     graphAnimTimer_ = new QTimer(this);
@@ -602,6 +542,14 @@ StudioController::~StudioController() {
 
 void StudioController::shutdownAll() {
     closingAll_ = true;
+    if (hwSendTimer_ && hwSendTimer_->isActive()) {
+        hwSendTimer_->stop();
+        onHwAnalogCfgChanged();
+    }
+    if (settingsSaveTimer_ && settingsSaveTimer_->isActive()) {
+        settingsSaveTimer_->stop();
+        saveStudioSettings();
+    }
     if (pollTimer_) pollTimer_->stop();
     if (graphAnimTimer_) graphAnimTimer_->stop();
     if (dbgSnapTimer_) dbgSnapTimer_->stop();
@@ -610,97 +558,19 @@ void StudioController::shutdownAll() {
         studioDbgHandle_ = nullptr;
     }
     if (themeDlg_) { themeDlg_->close(); delete themeDlg_; themeDlg_ = nullptr; }
-    if (singleInstNotifier_) {
-        singleInstNotifier_->setEnabled(false);
-        singleInstNotifier_->deleteLater();
-        singleInstNotifier_ = nullptr;
-    }
-    if (singleInstListenFd_ >= 0) {
-        ::close(singleInstListenFd_);
-        singleInstListenFd_ = -1;
-    }
-    if (!singleInstSockPath_.isEmpty()) {
-        ::unlink(singleInstSockPath_.toLocal8Bit().constData());
-        singleInstSockPath_.clear();
-    }
+    singleInstServer_.stop();
     if (advWin_) { advWin_->close(); }
     if (introWin_) { introWin_->close(); }
     if (mainWin_) { mainWin_->close(); }
 }
 
 void StudioController::setupSingleInstanceServer() {
-    if (singleInstListenFd_ >= 0) return;
-    const QString sockPath = studioSingleInstanceSockPath();
-    const QByteArray pBytes = sockPath.toLocal8Bit();
-    if (pBytes.size() >= static_cast<qsizetype>(sizeof(sockaddr_un::sun_path))) return;
-
-    auto tryBind = [&]() -> int {
-        const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-        if (fd < 0) return -1;
-        sockaddr_un addr{};
-        addr.sun_family = AF_UNIX;
-        std::memcpy(addr.sun_path, pBytes.constData(), static_cast<size_t>(pBytes.size()));
-        if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0) {
-            return fd;
-        }
-        ::close(fd);
-        return -1;
-    };
-
-    int fd = tryBind();
-    if (fd < 0 && errno == EADDRINUSE) {
-        const int probe = connectStudioSingleInstance(sockPath);
-        if (probe >= 0) {
-            ::close(probe);
-            return;
-        }
-        ::unlink(pBytes.constData());
-        fd = tryBind();
-    }
-    if (fd < 0) return;
-    ::chmod(pBytes.constData(), 0600);
-    if (::listen(fd, 8) != 0) {
-        ::close(fd);
-        ::unlink(pBytes.constData());
-        return;
-    }
-    singleInstListenFd_ = fd;
-    singleInstSockPath_ = sockPath;
-    singleInstNotifier_ = new QSocketNotifier(fd, QSocketNotifier::Read, this);
-    connect(singleInstNotifier_, &QSocketNotifier::activated, this, [this](QSocketDescriptor) {
-        handleSingleInstanceClient();
-    });
-}
-
-void StudioController::handleSingleInstanceClient() {
-    if (singleInstListenFd_ < 0) return;
-    for (;;) {
-        const int cfd = ::accept4(singleInstListenFd_, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
-        if (cfd < 0) break;
-        struct ucred cred{};
-        socklen_t clen = sizeof(cred);
-        if (::getsockopt(cfd, SOL_SOCKET, SO_PEERCRED, &cred, &clen) == 0 && cred.uid == ::getuid()) {
-            const QByteArray line = readSingleLineBounded(cfd);
-            const ssize_t _w = ::write(cfd, "OK\n", 3);
-            (void)_w;
-            ::close(cfd);
-            QString mode = QStringLiteral("auto");
-            QByteArray token;
-            if (line.startsWith("SHOW ")) {
-                const QByteArray rest = line.mid(5);
-                const qsizetype tab = rest.indexOf('\t');
-                if (tab >= 0) {
-                    mode = QString::fromUtf8(rest.left(tab)).trimmed();
-                    token = rest.mid(tab + 1).trimmed();
-                } else {
-                    mode = QString::fromUtf8(rest).trimmed();
-                }
-            }
+    singleInstServer_.start(
+        QStringLiteral("salsa-studio.sock"),
+        this,
+        [this](const QString& mode, const QByteArray& token) {
             activateExistingWindow(mode, token);
-        } else {
-            ::close(cfd);
-        }
-    }
+        });
 }
 
 void StudioController::activateExistingWindow(const QString& targetMode, const QByteArray& actToken) {
@@ -735,20 +605,7 @@ void StudioController::activateExistingWindow(const QString& targetMode, const Q
     }
     if (!target) return;
 
-    if (!actToken.isEmpty()) {
-        qputenv("XDG_ACTIVATION_TOKEN", actToken);
-    }
-    const Qt::WindowStates st = target->windowState();
-    if (st & Qt::WindowMinimized) {
-        target->setWindowState((st & ~Qt::WindowMinimized) | Qt::WindowActive);
-    }
-    target->showNormal();
-    target->show();
-    target->raise();
-    target->activateWindow();
-    if (QWindow* wh = target->windowHandle()) {
-        wh->requestActivate();
-    }
+    raiseAndActivateWindow(target, actToken);
     syncGraphTimer();
 }
 
@@ -1280,14 +1137,13 @@ void StudioController::buildMainWindow() {
     sldSpk_->setValue(80);
     sldSpk_->setToolTip(QStringLiteral("Master Speaker Volume — Adjusts global output gain (0–150%, syncs AVRCP on Bluetooth and DAC/PCM mixer cleanly); drag, scroll, or use arrow keys."));
     connect(sldSpk_, &QSlider::valueChanged, this, [this](int v) { if (!updatingUi_) onSpkSliderMoved(v); });
-    connect(sldSpk_, &QSlider::sliderReleased, this, [this]() { spkSendTimer_->start(0); });
+    connect(sldSpk_, &QSlider::sliderReleased, this, [this]() { sendSpkVolNow(); });
     spkRow->addWidget(sldSpk_, 1);
     btnSpkMute_ = new QPushButton(QStringLiteral("Mute Spk"), hwCard);
     btnSpkMute_->setToolTip(QStringLiteral("Mute Master Output — Silences physical speakers/headphones cleanly without disconnecting client audio streams."));
     connect(btnSpkMute_, &QPushButton::clicked, this, [this]() {
         const int nextMute = status_.desktop_muted ? 0 : 1;
-        spkHoldUntilMs_ = nowMs() + 350;
-        salsa_set_master_volume(sldSpk_->value(), nextMute);
+        sendSpkVolNow(nextMute);
         status_.desktop_muted = nextMute;
         btnSpkMute_->setText(nextMute ? QStringLiteral("Unmute Spk") : QStringLiteral("Mute Spk"));
     });
@@ -1303,14 +1159,13 @@ void StudioController::buildMainWindow() {
     sldMic_->setValue(100);
     sldMic_->setToolTip(QStringLiteral("Master Mic Capture Gain — Adjusts software microphone input gain (0–150%) delivered to recording and voice applications."));
     connect(sldMic_, &QSlider::valueChanged, this, [this](int v) { if (!updatingUi_) onMicSliderMoved(v); });
-    connect(sldMic_, &QSlider::sliderReleased, this, [this]() { micSendTimer_->start(0); });
+    connect(sldMic_, &QSlider::sliderReleased, this, [this]() { sendMicVolNow(); });
     micRow->addWidget(sldMic_, 1);
     btnMicMute_ = new QPushButton(QStringLiteral("Mute Mic"), hwCard);
     btnMicMute_->setToolTip(QStringLiteral("Mute Microphone — Silences captured microphone audio across all clients without closing the ALSA capture device."));
     connect(btnMicMute_, &QPushButton::clicked, this, [this]() {
         const int nextMute = status_.desktop_mic_muted ? 0 : 1;
-        micHoldUntilMs_ = nowMs() + 350;
-        salsa_set_mic_volume(sldMic_->value(), nextMute);
+        sendMicVolNow(nextMute);
         status_.desktop_mic_muted = nextMute;
         btnMicMute_->setText(nextMute ? QStringLiteral("Unmute Mic") : QStringLiteral("Mute Mic"));
     });
@@ -1522,6 +1377,10 @@ void StudioController::buildAdvancedWindow() {
     advWin_ = new PopToolWindow(
         QStringLiteral("Salsa — Advanced Options, DSP, Hardware Analog & Diagnostics"),
         [this](QCloseEvent*) {
+            if (hwSendTimer_ && hwSendTimer_->isActive()) {
+                hwSendTimer_->stop();
+                onHwAnalogCfgChanged();
+            }
             if (closingAll_) return true;
             if ((!mainWin_ || !mainWin_->isVisible()) && (!introWin_ || !introWin_->isVisible())) {
                 closingAll_ = true;
@@ -1598,14 +1457,18 @@ void StudioController::buildAdvancedWindow() {
         if (!btnBench->isEnabled()) return;
         btnBench->setEnabled(false);
         btnBench->setText(QStringLiteral("Running Benchmark..."));
+        const QPointer<StudioController> pSelf(this);
         const QPointer<QPushButton> pBtn(btnBench);
         const QPointer<QWidget> pAdv(advWin_);
         const SalsaThemeData themeSnap = currentTheme_;
         const int fontSnap = fontPct_;
-        QThread* thr = QThread::create([this, pBtn, pAdv, themeSnap, fontSnap]() {
+        QThread* thr = QThread::create([pSelf, pBtn, pAdv, themeSnap, fontSnap]() {
             const SalsaStr rep(salsa_run_latency_bench());
             const QString repStr = rep.toQString();
-            QMetaObject::invokeMethod(this, [pBtn, pAdv, repStr, themeSnap, fontSnap]() {
+            QCoreApplication* app = QApplication::instance();
+            if (!app) return;
+            QMetaObject::invokeMethod(app, [pSelf, pBtn, pAdv, repStr, themeSnap, fontSnap]() {
+                if (!pSelf) return;
                 if (pBtn) {
                     pBtn->setEnabled(true);
                     pBtn->setText(QStringLiteral("Run Latency Benchmark"));
@@ -1792,11 +1655,14 @@ void StudioController::buildAdvancedWindow() {
     sldCrossfeed_->setValue(30);
     sldCrossfeed_->setToolTip(QStringLiteral("Crossfeed Blend Level — Sets opposite-channel feed mix (0–100%) when Bauer Crossfeed is enabled."));
     connect(sldCrossfeed_, &QSlider::valueChanged, this, [this](int v) {
-        lblCrossfeed_->setText(QStringLiteral("%1%").arg(v));
+        lblCrossfeed_->setText(formatPctText(v));
         if (!updatingUi_) pushEqToEngine();
     });
     rXf->addWidget(sldCrossfeed_, 1);
-    lblCrossfeed_ = new QLabel(QStringLiteral("30%"), eqAdvCard);
+    lblCrossfeed_ = new QLabel(formatPctText(30), eqAdvCard);
+    lblCrossfeed_->setObjectName(QStringLiteral("ValMonoLabel"));
+    lblCrossfeed_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    lblCrossfeed_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     rXf->addWidget(lblCrossfeed_);
 
     cmbCrossfeedCut_ = new QComboBox(eqAdvCard);
@@ -1906,15 +1772,19 @@ void StudioController::buildAdvancedWindow() {
     haR2->addWidget(new QLabel(QStringLiteral("Analog Drive:"), hwaCard));
     sldHwBoost_ = new QSlider(Qt::Horizontal, hwaCard);
     sldHwBoost_->setRange(0, 24);
+    sldHwBoost_->setSingleStep(1);
+    sldHwBoost_->setPageStep(2);
     sldHwBoost_->setToolTip(QStringLiteral("Analog / Pre-Limiter Drive — Applies +0.0 to +12.0 dB extra analog output drive (safely soft-clipped if Limiter is active)."));
     connect(sldHwBoost_, &QSlider::valueChanged, this, [this](int v) {
-        lblHwBoost_->setText(QStringLiteral("+%1 dB").arg(v * 0.5, 0, 'f', 1));
-        if (!updatingUi_ && !sldHwBoost_->isSliderDown()) onHwAnalogCfgChanged();
+        lblHwBoost_->setText(formatBoostDbText(v * 0.5));
+        if (!updatingUi_) scheduleHwAnalogSend(false);
     });
     connect(sldHwBoost_, &QSlider::sliderReleased, this, [this]() { onHwAnalogCfgChanged(); });
     haR2->addWidget(sldHwBoost_, 1);
-    lblHwBoost_ = new QLabel(QStringLiteral("+0.0 dB"), hwaCard);
-    lblHwBoost_->setMinimumWidth(56);
+    lblHwBoost_ = new QLabel(formatBoostDbText(0.0), hwaCard);
+    lblHwBoost_->setObjectName(QStringLiteral("ValMonoLabel"));
+    lblHwBoost_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    lblHwBoost_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     haR2->addWidget(lblHwBoost_);
     haLay->addLayout(haR2);
 
@@ -1922,15 +1792,19 @@ void StudioController::buildAdvancedWindow() {
     haR3->addWidget(new QLabel(QStringLiteral("Mic HW Boost:"), hwaCard));
     sldHwMicBoost_ = new QSlider(Qt::Horizontal, hwaCard);
     sldHwMicBoost_->setRange(0, 24);
+    sldHwMicBoost_->setSingleStep(1);
+    sldHwMicBoost_->setPageStep(2);
     sldHwMicBoost_->setToolTip(QStringLiteral("Hardware Mic Preamp Boost — Configures supported ALSA capture boost (+0 to +24 dB) for quiet microphones."));
     connect(sldHwMicBoost_, &QSlider::valueChanged, this, [this](int v) {
-        lblHwMicBoost_->setText(QStringLiteral("+%1 dB").arg(static_cast<double>(v), 0, 'f', 1));
-        if (!updatingUi_ && !sldHwMicBoost_->isSliderDown()) onHwAnalogCfgChanged();
+        lblHwMicBoost_->setText(formatBoostDbText(static_cast<double>(v)));
+        if (!updatingUi_) scheduleHwAnalogSend(false);
     });
     connect(sldHwMicBoost_, &QSlider::sliderReleased, this, [this]() { onHwAnalogCfgChanged(); });
     haR3->addWidget(sldHwMicBoost_, 1);
-    lblHwMicBoost_ = new QLabel(QStringLiteral("+0.0 dB"), hwaCard);
-    lblHwMicBoost_->setMinimumWidth(56);
+    lblHwMicBoost_ = new QLabel(formatBoostDbText(0.0), hwaCard);
+    lblHwMicBoost_->setObjectName(QStringLiteral("ValMonoLabel"));
+    lblHwMicBoost_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    lblHwMicBoost_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     haR3->addWidget(lblHwMicBoost_);
 
     auto* btnSafeHw = new QPushButton(QStringLiteral("Safe Defaults"), hwaCard);
@@ -1941,6 +1815,8 @@ void StudioController::buildAdvancedWindow() {
 
     lblHwAnalogDiag_ = new QLabel(QStringLiteral("HW Stage: Probing..."), hwaCard);
     lblHwAnalogDiag_->setObjectName(QStringLiteral("BandDynLabel"));
+    lblHwAnalogDiag_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    lblHwAnalogDiag_->setMinimumWidth(0);
     haLay->addWidget(lblHwAnalogDiag_);
     rightCol->addWidget(hwaCard);
 
@@ -2035,13 +1911,36 @@ void StudioController::applyThemeAndFontAll(bool saveSettings) {
     for (QSlider* bs : bandSliders_) {
         if (bs) bs->setMinimumHeight(scaledPx(112, fontPct_));
     }
-    if (lblSpk_) lblSpk_->setMinimumWidth(scaledPx(140, fontPct_));
-    if (lblMic_) lblMic_->setMinimumWidth(scaledPx(140, fontPct_));
+    auto measureLabelWidth = [&](QLabel* lbl, const QString& sample, int floorPx, int pad) {
+        if (!lbl) return floorPx;
+        lbl->ensurePolished();
+        const QFontMetrics appFm(app ? app->font() : lbl->font());
+        const int textPx = std::max(lbl->fontMetrics().horizontalAdvance(sample),
+                                    appFm.horizontalAdvance(sample));
+        return std::max(floorPx, textPx + pad);
+    };
+    const int masterLblW = std::max(
+        measureLabelWidth(lblSpk_, QStringLiteral("Speaker Vol (150%):"), scaledPx(140, fontPct_), 12),
+        measureLabelWidth(lblMic_, QStringLiteral("Mic Capture (150%):"), scaledPx(140, fontPct_), 12));
+    if (lblSpk_) lblSpk_->setFixedWidth(masterLblW);
+    if (lblMic_) lblMic_->setFixedWidth(masterLblW);
+    if (lblCrossfeed_) {
+        lblCrossfeed_->setFixedWidth(
+            measureLabelWidth(lblCrossfeed_, QStringLiteral("100%"), scaledPx(44, fontPct_), 10));
+    }
+    if (lblHwBoost_) {
+        lblHwBoost_->setFixedWidth(
+            measureLabelWidth(lblHwBoost_, QStringLiteral("+24.0 dB"), scaledPx(76, fontPct_), 14));
+    }
+    if (lblHwMicBoost_) {
+        lblHwMicBoost_->setFixedWidth(
+            measureLabelWidth(lblHwMicBoost_, QStringLiteral("+24.0 dB"), scaledPx(76, fontPct_), 14));
+    }
     if (lblPreamp_ && lblThresh_ && lblRatio_) {
         const QFontMetrics dfm(app ? app->font() : lblPreamp_->font());
-        lblPreamp_->setMinimumWidth(dfm.horizontalAdvance(QStringLiteral("Preamp: -18.0 dB")) + 4);
-        lblThresh_->setMinimumWidth(dfm.horizontalAdvance(QStringLiteral("Dyn Threshold: -48.0 dB")) + 4);
-        lblRatio_->setMinimumWidth(dfm.horizontalAdvance(QStringLiteral("Dyn Ratio: 8.0:1")) + 4);
+        lblPreamp_->setFixedWidth(dfm.horizontalAdvance(QStringLiteral("Preamp: -18.0 dB")) + 10);
+        lblThresh_->setFixedWidth(dfm.horizontalAdvance(QStringLiteral("Dyn Threshold: -48.0 dB")) + 10);
+        lblRatio_->setFixedWidth(dfm.horizontalAdvance(QStringLiteral("Dyn Ratio: 8.0:1")) + 10);
     }
     if (lblPeaks_) {
         QFont pfont(QStringLiteral("Monospace"));
@@ -2267,7 +2166,11 @@ void StudioController::pushEqToEngine() {
 
     salsa_set_parametric_eq(&eqCfg_, &paramExt_);
     updateSpectrumFromState();
-    saveStudioSettings();
+    if (settingsSaveTimer_) {
+        settingsSaveTimer_->start();
+    } else {
+        saveStudioSettings();
+    }
 }
 
 void StudioController::saveStudioSettings() {
@@ -2593,8 +2496,22 @@ void StudioController::onBtCfgChanged() {
     salsa_set_bt_codec_config(&btCfg_);
 }
 
+void StudioController::scheduleHwAnalogSend(bool immediate) {
+    hwHoldUntilMs_ = nowMs() + 1200;
+    if (!hwSendTimer_ || immediate) {
+        onHwAnalogCfgChanged();
+        return;
+    }
+    if (!hwSendTimer_->isActive()) {
+        hwSendTimer_->start(40);
+    }
+}
+
 void StudioController::onHwAnalogCfgChanged() {
-    hwHoldUntilMs_ = nowMs() + 650;
+    if (hwSendTimer_ && hwSendTimer_->isActive()) {
+        hwSendTimer_->stop();
+    }
+    hwHoldUntilMs_ = nowMs() + 1200;
     hwAnalog_.hw_dac_unity_vol = chkHwDacUnity_->isChecked() ? 1 : 0;
     hwAnalog_.hp_amp_tier = static_cast<uint32_t>(cmbHwAmp_->currentData().toInt());
     hwAnalog_.output_route = static_cast<uint32_t>(cmbHwRoute_->currentData().toInt());
@@ -2602,6 +2519,7 @@ void StudioController::onHwAnalogCfgChanged() {
     hwAnalog_.analog_boost_db = sldHwBoost_->value() * 0.5f;
     hwAnalog_.mic_hw_boost_db = static_cast<float>(sldHwMicBoost_->value());
     salsa_set_hw_analog(&hwAnalog_);
+    hwHoldUntilMs_ = nowMs() + 1200;
 }
 
 void StudioController::onHwAnalogReset() {
@@ -2611,9 +2529,9 @@ void StudioController::onHwAnalogReset() {
     cmbHwRoute_->setCurrentIndex(0);
     chkHwRails_->setChecked(false);
     sldHwBoost_->setValue(0);
-    lblHwBoost_->setText(QStringLiteral("+0.0 dB"));
+    lblHwBoost_->setText(formatBoostDbText(0.0));
     sldHwMicBoost_->setValue(0);
-    lblHwMicBoost_->setText(QStringLiteral("+0.0 dB"));
+    lblHwMicBoost_->setText(formatBoostDbText(0.0));
     updatingUi_ = false;
     onHwAnalogCfgChanged();
 }
@@ -2623,15 +2541,31 @@ void StudioController::onVolStepChanged() {
     updateGuiSettingsPatch(QJsonObject{{QStringLiteral("volume_step_pct"), volStepPct_}});
 }
 
+void StudioController::sendSpkVolNow(int muteOverride) {
+    if (spkSendTimer_ && spkSendTimer_->isActive()) spkSendTimer_->stop();
+    const int muted = (muteOverride >= 0) ? (muteOverride != 0 ? 1 : 0) : (status_.desktop_muted ? 1 : 0);
+    spkHoldUntilMs_ = nowMs() + 800;
+    salsa_set_master_volume(sldSpk_->value(), muted);
+    spkHoldUntilMs_ = nowMs() + 800;
+}
+
+void StudioController::sendMicVolNow(int muteOverride) {
+    if (micSendTimer_ && micSendTimer_->isActive()) micSendTimer_->stop();
+    const int muted = (muteOverride >= 0) ? (muteOverride != 0 ? 1 : 0) : (status_.desktop_mic_muted ? 1 : 0);
+    micHoldUntilMs_ = nowMs() + 800;
+    salsa_set_mic_volume(sldMic_->value(), muted);
+    micHoldUntilMs_ = nowMs() + 800;
+}
+
 void StudioController::onSpkSliderMoved(int v) {
     lblSpk_->setText(QStringLiteral("Speaker Vol (%1%):").arg(v));
-    spkHoldUntilMs_ = nowMs() + 350;
+    spkHoldUntilMs_ = nowMs() + 800;
     if (!spkSendTimer_->isActive()) spkSendTimer_->start(40);
 }
 
 void StudioController::onMicSliderMoved(int v) {
     lblMic_->setText(QStringLiteral("Mic Capture (%1%):").arg(v));
-    micHoldUntilMs_ = nowMs() + 350;
+    micHoldUntilMs_ = nowMs() + 800;
     if (!micSendTimer_->isActive()) micSendTimer_->start(40);
 }
 
@@ -2672,18 +2606,14 @@ void StudioController::syncGraphTimer() {
 
 void StudioController::openTopologyWindow() {
     if (!studioDbgHandle_) studioDbgHandle_ = salsa_dbg_create();
-    introWin_->show();
-    introWin_->raise();
-    introWin_->activateWindow();
+    raiseAndActivateWindow(introWin_);
     syncGraphTimer();
     pollEngine(false);
 }
 
 void StudioController::enterStudioFromTopology() {
     studioEntered_ = true;
-    mainWin_->show();
-    mainWin_->raise();
-    mainWin_->activateWindow();
+    raiseAndActivateWindow(mainWin_);
     if (introWin_) introWin_->hide();
     syncGraphTimer();
     pollEngine(false);
@@ -2691,9 +2621,7 @@ void StudioController::enterStudioFromTopology() {
 
 void StudioController::openAdvancedWindow() {
     refreshAdvIntegration();
-    advWin_->show();
-    advWin_->raise();
-    advWin_->activateWindow();
+    raiseAndActivateWindow(advWin_);
 }
 
 void StudioController::openAboutWindow(bool standaloneQuit) {
@@ -2734,7 +2662,9 @@ void StudioController::selectManualChapter(const QString& key) {
 }
 
 void StudioController::openLiveDebuggerWindow() {
-    spawnDetachedWaylandBinary(QStringLiteral("salsa-debug"));
+    QWidget* src = QApplication::activeWindow();
+    if (!src) src = (advWin_ && advWin_->isVisible()) ? static_cast<QWidget*>(advWin_) : static_cast<QWidget*>(mainWin_);
+    spawnDetachedWaylandBinary(QStringLiteral("salsa-debug"), {}, src);
 }
 
 void StudioController::runSystemdRestart(const QString& unit, QPushButton* btn) {
@@ -2823,6 +2753,7 @@ void StudioController::checkSettingsFileSync() {
 }
 
 void StudioController::pollEngine(bool initial) {
+    const qint64 pollStartMs = nowMs();
     SalsaEngineStatus st{};
     const bool gotSt = (salsa_get_engine_status(&st) == 0);
     const qint64 tNow = nowMs();
@@ -2899,12 +2830,18 @@ void StudioController::pollEngine(bool initial) {
     if (int si = cmbSink_->findData(actPbId); si >= 0) cmbSink_->setCurrentIndex(si);
     if (int ci = cmbSource_->findData(actCapId); ci >= 0) cmbSource_->setCurrentIndex(ci);
 
-    if (tNow >= spkHoldUntilMs_) {
+    if (!sldSpk_->isSliderDown()
+        && !(spkSendTimer_ && spkSendTimer_->isActive())
+        && pollStartMs >= spkHoldUntilMs_
+        && tNow >= spkHoldUntilMs_) {
         sldSpk_->setValue(static_cast<int>(st.desktop_volume_pct));
         lblSpk_->setText(QStringLiteral("Speaker Vol (%1%):").arg(st.desktop_volume_pct));
         btnSpkMute_->setText(st.desktop_muted ? QStringLiteral("Unmute Spk") : QStringLiteral("Mute Spk"));
     }
-    if (tNow >= micHoldUntilMs_) {
+    if (!sldMic_->isSliderDown()
+        && !(micSendTimer_ && micSendTimer_->isActive())
+        && pollStartMs >= micHoldUntilMs_
+        && tNow >= micHoldUntilMs_) {
         sldMic_->setValue(static_cast<int>(st.desktop_mic_volume_pct));
         lblMic_->setText(QStringLiteral("Mic Capture (%1%):").arg(st.desktop_mic_volume_pct));
         btnMicMute_->setText(st.desktop_mic_muted ? QStringLiteral("Unmute Mic") : QStringLiteral("Mute Mic"));
@@ -2920,7 +2857,7 @@ void StudioController::pollEngine(bool initial) {
             chkLimiter_->setChecked(eqCfg_.limiter_enabled != 0);
             chkCrossfeed_->setChecked(paramExt_.crossfeed_enabled != 0);
             sldCrossfeed_->setValue(static_cast<int>(std::lround(paramExt_.crossfeed_level * 100.0)));
-            lblCrossfeed_->setText(QStringLiteral("%1%").arg(sldCrossfeed_->value()));
+            lblCrossfeed_->setText(formatPctText(sldCrossfeed_->value()));
             if (int ci = cmbCrossfeedCut_->findData(static_cast<int>(paramExt_.crossfeed_cutoff_hz)); ci >= 0) cmbCrossfeedCut_->setCurrentIndex(ci);
             sldPreamp_->setValue(static_cast<int>(std::lround(eqCfg_.preamp_db * 10.0)));
             sldThresh_->setValue(static_cast<int>(std::lround(eqCfg_.dyn_threshold_db * 10.0)));
@@ -2980,16 +2917,21 @@ void StudioController::pollEngine(bool initial) {
         }
     }
 
-    if (tNow >= hwHoldUntilMs_) {
+    const bool hwBusy = sldHwBoost_->isSliderDown()
+        || sldHwMicBoost_->isSliderDown()
+        || (hwSendTimer_ && hwSendTimer_->isActive())
+        || (cmbHwAmp_->view() && cmbHwAmp_->view()->isVisible())
+        || (cmbHwRoute_->view() && cmbHwRoute_->view()->isVisible());
+    if (!hwBusy && pollStartMs >= hwHoldUntilMs_ && tNow >= hwHoldUntilMs_) {
         hwAnalog_ = st.hw_analog_cfg;
         chkHwDacUnity_->setChecked(hwAnalog_.hw_dac_unity_vol != 0);
         if (int ai = cmbHwAmp_->findData(static_cast<int>(hwAnalog_.hp_amp_tier)); ai >= 0) cmbHwAmp_->setCurrentIndex(ai);
         if (int ri = cmbHwRoute_->findData(static_cast<int>(hwAnalog_.output_route)); ri >= 0) cmbHwRoute_->setCurrentIndex(ri);
         chkHwRails_->setChecked(hwAnalog_.unlock_0db_rails != 0);
         sldHwBoost_->setValue(static_cast<int>(std::lround(hwAnalog_.analog_boost_db * 2.0f)));
-        lblHwBoost_->setText(QStringLiteral("+%1 dB").arg(hwAnalog_.analog_boost_db, 0, 'f', 1));
+        lblHwBoost_->setText(formatBoostDbText(hwAnalog_.analog_boost_db));
         sldHwMicBoost_->setValue(static_cast<int>(std::lround(hwAnalog_.mic_hw_boost_db)));
-        lblHwMicBoost_->setText(QStringLiteral("+%1 dB").arg(hwAnalog_.mic_hw_boost_db, 0, 'f', 1));
+        lblHwMicBoost_->setText(formatBoostDbText(hwAnalog_.mic_hw_boost_db));
     }
     lblHwAnalogDiag_->setText(
         QStringLiteral("HW Stage: %1 | DAC: %2 | %3")
@@ -3239,7 +3181,10 @@ int main(int argc, char** argv) {
                                            : (forceTopology
                                                   ? QStringLiteral("topology")
                                                   : (forceStudio ? QStringLiteral("studio") : QStringLiteral("auto")))));
-    if (tryActivateExistingStudioInstance(mode, qgetenv("XDG_ACTIVATION_TOKEN"))) {
+    if (salsa::tryActivateExistingSingleInstance(
+            QStringLiteral("salsa-studio.sock"),
+            mode,
+            qgetenv("XDG_ACTIVATION_TOKEN"))) {
         return 0;
     }
 

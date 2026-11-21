@@ -13,9 +13,10 @@ use core::mem;
 use core::ptr;
 use std::env;
 use std::ffi::CString;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::fs::{self, DirBuilder};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -33,8 +34,8 @@ use salsa_wire::c_abi::{
     LWASAPI_FMT_FLOAT32, LwasapiEngineStatus, LwasapiIpcReq, LwasapiIpcResp, WaveFormatEx, S_OK,
 };
 use salsa_wire::unix_sys::{
-    audiodg_sock_path, connect_unix_stream_blocking, current_pid, recv_waitall,
-    reset_sigpipe_default, send_all_nosignal,
+    audiodg_sock_path, connect_unix_stream_blocking, current_pid, current_uid,
+    is_safe_owner_dir, recv_waitall, reset_sigpipe_default, send_all_nosignal,
 };
 
 const RTLD_NOW: c_int = 2;
@@ -867,10 +868,23 @@ impl Drop for SandboxGuard {
 }
 
 fn create_private_dir(p: &Path) -> bool {
-    if fs::create_dir_all(p).is_err() {
-        return false;
+    DirBuilder::new().mode(0o700).create(p).is_ok()
+        && fs::set_permissions(p, fs::Permissions::from_mode(0o700)).is_ok()
+}
+
+fn pick_sandbox_base_dir() -> PathBuf {
+    let uid = current_uid();
+    if let Ok(xdg) = env::var("XDG_RUNTIME_DIR") {
+        let p = PathBuf::from(&xdg);
+        if is_safe_owner_dir(&p, uid, true) {
+            return p;
+        }
     }
-    fs::set_permissions(p, fs::Permissions::from_mode(0o700)).is_ok()
+    let run_user = PathBuf::from(format!("/run/user/{uid}"));
+    if is_safe_owner_dir(&run_user, uid, true) {
+        return run_user;
+    }
+    PathBuf::from("/tmp")
 }
 
 fn run_in_virtual_sandbox(exe_dir: &str, forward_args: &[String]) -> Option<i32> {
@@ -882,9 +896,10 @@ fn run_in_virtual_sandbox(exe_dir: &str, forward_args: &[String]) -> Option<i32>
         return None;
     };
 
-    let root = PathBuf::from(format!("/tmp/lwasapi-bench-{}-{}", current_pid(), now_ns()));
-    let home_dir = root.join("home");
-    let run_dir = root.join("run");
+    let base = pick_sandbox_base_dir();
+    let root = base.join(format!("lb-{}-{}", current_pid(), now_ns()));
+    let home_dir = root.join("h");
+    let run_dir = root.join("r");
     let lwasapi_dir = run_dir.join("lwasapi");
     let pulse_dir = run_dir.join("pulse");
     if !create_private_dir(&root)
@@ -902,7 +917,14 @@ fn run_in_virtual_sandbox(exe_dir: &str, forward_args: &[String]) -> Option<i32>
     let dbg_in_sock = lwasapi_dir.join("debug-in.sock");
     let pulse_sock = pulse_dir.join("native");
 
-    let daemon = Command::new(&daemon_bin)
+    extern "C" {
+        fn prctl(option: c_int, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> c_int;
+    }
+    const PR_SET_PDEATHSIG: c_int = 1;
+    const SIGKILL: usize = 9;
+
+    let mut daemon_cmd = Command::new(&daemon_bin);
+    daemon_cmd
         .arg("--virtual")
         .env("HOME", &home_dir)
         .env("XDG_RUNTIME_DIR", &run_dir)
@@ -913,9 +935,16 @@ fn run_in_virtual_sandbox(exe_dir: &str, forward_args: &[String]) -> Option<i32>
         .env_remove("PULSE_SERVER")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    unsafe {
+        daemon_cmd.pre_exec(|| {
+            if prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let daemon = daemon_cmd.spawn().ok()?;
 
     let mut guard = SandboxGuard {
         root: root.clone(),
@@ -1058,6 +1087,10 @@ fn main() {
         if let Some(rc) = run_in_virtual_sandbox(&build_dir, &forward) {
             std::process::exit(rc);
         }
+        eprintln!(
+            "lwasapi-bench: failed to launch isolated virtual sandbox (pass --live to benchmark active daemon)"
+        );
+        std::process::exit(1);
     }
 
     let mut orig_st: LwasapiEngineStatus = unsafe { mem::zeroed() };

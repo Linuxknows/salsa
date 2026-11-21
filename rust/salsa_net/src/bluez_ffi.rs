@@ -703,6 +703,21 @@ pub unsafe fn cptr_to_opt_str<'a>(p: *const c_char) -> Option<&'a str> {
     }
 }
 
+pub fn is_valid_dbus_object_path(path: &str) -> bool {
+    if path == "/" {
+        return true;
+    }
+    if !path.starts_with('/') || path.ends_with('/') {
+        return false;
+    }
+    path[1..].split('/').all(|seg| {
+        !seg.is_empty()
+            && seg
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    })
+}
+
 /// # Safety
 ///
 /// `it` must point to a valid initialized `DBusMessageIter`.
@@ -716,7 +731,11 @@ pub unsafe fn iter_get_str(db: &DBusApi, it: *mut DBusMessageIter) -> Option<Str
     if p.is_null() {
         None
     } else {
-        Some(unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
+        let s = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        if t == DBUS_TYPE_OBJECT_PATH && !is_valid_dbus_object_path(&s) {
+            return None;
+        }
+        Some(s)
     }
 }
 
@@ -845,6 +864,9 @@ pub unsafe fn add_dict_entry_str(db: &DBusApi, dict: *mut DBusMessageIter, k: &s
 ///
 /// `dict` must point to a valid writable array container `DBusMessageIter`.
 pub unsafe fn add_dict_entry_obj_path(db: &DBusApi, dict: *mut DBusMessageIter, k: &str, v: &str) {
+    if !is_valid_dbus_object_path(v) {
+        return;
+    }
     let (Ok(ck), Ok(cv)) = (CString::new(k), CString::new(v)) else {
         return;
     };
@@ -1037,6 +1059,9 @@ pub fn dbus_new_method_call(
     iface: &str,
     method: &str,
 ) -> *mut DBusMessage {
+    if !is_valid_dbus_object_path(path) {
+        return ptr::null_mut();
+    }
     let (Ok(cd), Ok(cp), Ok(ci), Ok(cm)) = (
         CString::new(dest),
         CString::new(path),
@@ -1302,5 +1327,17 @@ mod tests {
         assert_eq!(size_of::<BtVoice>(), 2);
         assert!(load_dbus_library().is_some());
         assert!(load_sbc_library().is_some());
+    }
+
+    #[test]
+    fn dbus_object_path_validation_rejects_malformed() {
+        assert!(is_valid_dbus_object_path("/"));
+        assert!(is_valid_dbus_object_path("/org/bluez/hci0/dev_AA_BB"));
+        assert!(!is_valid_dbus_object_path(""));
+        assert!(!is_valid_dbus_object_path("org/bluez"));
+        assert!(!is_valid_dbus_object_path("/org/bluez/"));
+        assert!(!is_valid_dbus_object_path("/org//bluez"));
+        assert!(!is_valid_dbus_object_path("/org/bad-dash"));
+        assert!(!is_valid_dbus_object_path("/org/\0null"));
     }
 }

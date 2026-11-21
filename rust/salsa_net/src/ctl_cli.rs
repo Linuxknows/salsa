@@ -1634,9 +1634,16 @@ pub fn build_filtered_ld_path(prepend_dir: Option<&str>, cur_ld: Option<&str>) -
             parts.push(seg);
         }
     }
-    let mut out = parts.join(":");
-    if out.len() >= 2048 {
-        out.truncate(out.floor_char_boundary(2047));
+    let mut out = String::new();
+    for seg in parts {
+        let sep = usize::from(!out.is_empty());
+        if out.len() + sep + seg.len() > 2047 {
+            break;
+        }
+        if sep != 0 {
+            out.push(':');
+        }
+        out.push_str(seg);
     }
     out
 }
@@ -1808,12 +1815,27 @@ fn install_steam_wrapper(home: &str, root: &str) {
     let _ = fs::create_dir_all(&apps_dir);
     let _ = fs::create_dir_all(&cfg_dir);
 
+    if root.is_empty() || root.contains(['\0', '\n', '\r']) {
+        return;
+    }
+    let recon_so_path = format!("{root}/build/libsalsa_pa_reconnect.so");
+    let mut recon_quoted = String::with_capacity(recon_so_path.len() + 2);
+    recon_quoted.push('\'');
+    for ch in recon_so_path.chars() {
+        if ch == '\'' {
+            recon_quoted.push_str("'\\''");
+        } else {
+            recon_quoted.push(ch);
+        }
+    }
+    recon_quoted.push('\'');
+
     let wrap_path = format!("{bin_dir}/salsa-steam-launch");
     let script = format!(
         "#!/bin/sh\n\
 # Salsa PulseAudio Reconnect wrapper for Steam (propagates inside pressure-vessel)\n\
 # Revert anytime with: lwasapi-ctl disable-auto\n\
-RECON_SO=\"{root}/build/libsalsa_pa_reconnect.so\"\n\
+RECON_SO={recon_quoted}\n\
 if [ -r \"$RECON_SO\" ]; then\n    \
     case \":${{LD_PRELOAD:-}}:\" in\n        \
         *\":$RECON_SO:\"*) ;;\n        \
@@ -2573,5 +2595,19 @@ mod tests {
             install_root_from_exe("/usr/local/bin/lwasapi-ctl"),
             "/usr/local/bin"
         );
+    }
+
+    #[test]
+    fn filtered_ld_path_truncates_on_colon_boundary() {
+        let mut long_segs = Vec::new();
+        for i in 0..80 {
+            long_segs.push(format!("/opt/custom/lib/segment_{i:03}/extra_padding_dir"));
+        }
+        let joined = long_segs.join(":");
+        assert!(joined.len() > 2048);
+        let out = build_filtered_ld_path(None, Some(&joined));
+        assert!(out.len() <= 2047);
+        assert!(!out.ends_with(':'));
+        assert!(out.split(':').all(|s| s.ends_with("/extra_padding_dir")));
     }
 }

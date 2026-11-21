@@ -31,7 +31,11 @@ pub fn bt_tx_margin_frames(in_rate_raw: u32, packet_in_frames: u64) -> u64 {
 
 #[inline]
 pub fn float_to_s16_clamped(x: f32) -> i16 {
-    let c = x.clamp(-1.0, 1.0);
+    let c = if x.is_finite() {
+        x.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
     (c * 32767.0) as i16
 }
 

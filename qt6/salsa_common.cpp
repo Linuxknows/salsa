@@ -9,8 +9,10 @@
 
 #include <QDialog>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFont>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QKeyEvent>
@@ -18,6 +20,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
+#include <QPointer>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QProxyStyle>
@@ -25,12 +28,22 @@
 #include <QScreen>
 #include <QStandardPaths>
 #include <QTextEdit>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QWindow>
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+#include <cstring>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 namespace salsa {
 
@@ -331,6 +344,7 @@ QString buildSalsaStylesheet(const SalsaThemeData& t, bool mini, int fontPct) {
                " QLabel#LatencyLabel { color: %9; font-weight: 700; }"
                " QCheckBox#EqEnableCheck { font-weight: 800; color: %9; font-size: %10px; }"
                " QLabel#PeaksLabel { font-family: Monospace; font-weight: 700; color: %7; }"
+               " QLabel#ValMonoLabel { font-family: Monospace; font-weight: 600; color: %2; }"
                " QLabel#BandValLabel { font-weight: 700; color: %5; font-size: %11px; }"
                " QLabel#BandDynLabel { color: %12; font-size: %13px; font-family: Monospace; }"
                " QLabel#BandFreqLabel { color: %14; font-weight: 700; font-size: %11px; }"
@@ -462,7 +476,309 @@ QString buildSalsaStylesheet(const SalsaThemeData& t, bool mini, int fontPct) {
     return qss;
 }
 
-void spawnDetachedWaylandBinary(const QString& binName, const QStringList& args) {
+namespace {
+
+struct Kf6WinSysFns {
+    bool tried = false;
+    void (*setXdgToken)(const QString&) = nullptr;
+    void (*activateWin)(QWindow*, long) = nullptr;
+    QObject* (*kweSelf)() = nullptr;
+    quint32 (*lastSerial)(QWindow*) = nullptr;
+    void (*reqToken)(QWindow*, quint32, const QString&) = nullptr;
+};
+
+const Kf6WinSysFns& kf6WinSys() {
+    static Kf6WinSysFns fns;
+    if (!fns.tried) {
+        fns.tried = true;
+        if (void* h = ::dlopen("libKF6WindowSystem.so.6", RTLD_LAZY | RTLD_LOCAL)) {
+            fns.setXdgToken = reinterpret_cast<void (*)(const QString&)>(
+                ::dlsym(h, "_ZN13KWindowSystem28setCurrentXdgActivationTokenERK7QString"));
+            fns.activateWin = reinterpret_cast<void (*)(QWindow*, long)>(
+                ::dlsym(h, "_ZN13KWindowSystem14activateWindowEP7QWindowl"));
+            fns.kweSelf = reinterpret_cast<QObject* (*)()>(
+                ::dlsym(h, "_ZN14KWaylandExtras4selfEv"));
+            fns.lastSerial = reinterpret_cast<quint32 (*)(QWindow*)>(
+                ::dlsym(h, "_ZN14KWaylandExtras15lastInputSerialEP7QWindow"));
+            fns.reqToken = reinterpret_cast<void (*)(QWindow*, quint32, const QString&)>(
+                ::dlsym(h, "_ZN14KWaylandExtras25requestXdgActivationTokenEP7QWindowjRK7QString"));
+        }
+    }
+    return fns;
+}
+
+QByteArray mintWaylandActivationToken(QWidget* sourceWidget, const QString& appId) {
+    if (!QGuiApplication::platformName().contains(QLatin1String("wayland"), Qt::CaseInsensitive)) {
+        return {};
+    }
+    QWidget* srcW = sourceWidget ? sourceWidget->window() : QApplication::activeWindow();
+    if (!srcW) return {};
+    QWindow* wh = srcW->windowHandle();
+    if (!wh) return {};
+    const auto& fns = kf6WinSys();
+    if (!fns.kweSelf || !fns.lastSerial || !fns.reqToken) return {};
+    QObject* kwe = fns.kweSelf();
+    if (!kwe) return {};
+
+    const quint32 serial = fns.lastSerial(wh);
+    if (serial == 0) return {};
+
+    QEventLoop loop;
+    detail::ActivationTokenWaiter waiter(serial, loop);
+    const QMetaObject::Connection conn = QObject::connect(
+        kwe,
+        SIGNAL(xdgActivationTokenArrived(int,QString)),
+        &waiter,
+        SLOT(onToken(int,QString)));
+    QTimer::singleShot(60, &loop, &QEventLoop::quit);
+    fns.reqToken(wh, serial, appId);
+    if (!waiter.received) loop.exec(QEventLoop::ExcludeUserInputEvents);
+    QObject::disconnect(conn);
+    return waiter.token.toUtf8();
+}
+
+int connectSingleInstanceSocket(const QString& sockPath) {
+    const QByteArray pBytes = sockPath.toLocal8Bit();
+    if (pBytes.isEmpty() || pBytes.size() >= static_cast<qsizetype>(sizeof(sockaddr_un::sun_path))) {
+        return -1;
+    }
+    const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    std::memcpy(addr.sun_path, pBytes.constData(), static_cast<size_t>(pBytes.size()));
+    if (::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+        ::close(fd);
+        return -1;
+    }
+    struct ucred cred{};
+    socklen_t clen = sizeof(cred);
+    if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &clen) != 0 || cred.uid != ::getuid()) {
+        ::close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+QByteArray readSingleLineBounded(int fd, size_t maxBytes = 512) {
+    QByteArray out;
+    out.reserve(128);
+    char ch = 0;
+    struct pollfd pfd{fd, POLLIN, 0};
+    while (static_cast<size_t>(out.size()) < maxBytes) {
+        if (::poll(&pfd, 1, 50) <= 0) break;
+        const ssize_t n = ::read(fd, &ch, 1);
+        if (n <= 0 || ch == '\n') break;
+        out.append(ch);
+    }
+    return out;
+}
+
+void applyRaiseAndActivate(QWidget* target, const QByteArray& actToken) {
+    if (!target) return;
+    const Qt::WindowStates st = target->windowState();
+    if (st & Qt::WindowMinimized) {
+        target->setWindowState((st & ~Qt::WindowMinimized) | Qt::WindowActive);
+    }
+    target->showNormal();
+    target->show();
+    target->raise();
+    if (QWindow* wh = target->windowHandle()) {
+        const auto& fns = kf6WinSys();
+        if (!actToken.isEmpty() && fns.setXdgToken) {
+            fns.setXdgToken(QString::fromUtf8(actToken));
+        }
+        if (fns.activateWin) {
+            fns.activateWin(wh, 0);
+        }
+        wh->requestActivate();
+    }
+    target->activateWindow();
+}
+
+}  // namespace
+
+namespace detail {
+void ActivationTokenWaiter::onToken(int sigSerial, const QString& tok) {
+    if (static_cast<quint32>(sigSerial) == targetSerial_) {
+        token = tok;
+        received = true;
+        loop_.quit();
+    }
+}
+}  // namespace detail
+
+QString singleInstanceSockPath(const QString& sockFileName) {
+    const uid_t myUid = ::getuid();
+    auto ensurePrivateDir = [myUid](const QString& dir) -> bool {
+        const QByteArray db = dir.toLocal8Bit();
+        ::mkdir(db.constData(), 0700);
+        struct stat st{};
+        if (::lstat(db.constData(), &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != myUid) {
+            return false;
+        }
+        if ((st.st_mode & 077) != 0 && ::chmod(db.constData(), 0700) != 0) {
+            return false;
+        }
+        return true;
+    };
+    const QByteArray xdg = qgetenv("XDG_RUNTIME_DIR");
+    if (!xdg.isEmpty()) {
+        const QString dir = QString::fromLocal8Bit(xdg) + QStringLiteral("/lwasapi");
+        if (ensurePrivateDir(dir)) return dir + QStringLiteral("/") + sockFileName;
+    }
+    const QString runDir = QStringLiteral("/run/user/%1/lwasapi").arg(static_cast<qulonglong>(myUid));
+    if (ensurePrivateDir(runDir)) return runDir + QStringLiteral("/") + sockFileName;
+    const QString tmpDir = QStringLiteral("/tmp/lwasapi-%1").arg(static_cast<qulonglong>(myUid));
+    if (ensurePrivateDir(tmpDir)) return tmpDir + QStringLiteral("/") + sockFileName;
+    return QString();
+}
+
+bool tryActivateExistingSingleInstance(
+    const QString& sockFileName,
+    const QString& mode,
+    const QByteArray& rawToken) {
+    const QString sockPath = singleInstanceSockPath(sockFileName);
+    const int fd = connectSingleInstanceSocket(sockPath);
+    if (fd < 0) return false;
+    QByteArray cleanTok = rawToken;
+    cleanTok.replace('\n', "");
+    cleanTok.replace('\r', "");
+    cleanTok.replace('\t', "");
+    const QByteArray msg = QByteArray("SHOW ") + mode.toUtf8() + "\t" + cleanTok + "\n";
+    ssize_t off = 0;
+    while (off < msg.size()) {
+        const ssize_t n = ::write(fd, msg.constData() + off, static_cast<size_t>(msg.size() - off));
+        if (n <= 0) break;
+        off += n;
+    }
+    struct pollfd pfd{fd, POLLIN, 0};
+    if (::poll(&pfd, 1, 1000) > 0) {
+        char ack[16]{};
+        const ssize_t _r = ::read(fd, ack, sizeof(ack));
+        (void)_r;
+    }
+    ::close(fd);
+    return true;
+}
+
+void raiseAndActivateWindow(QWidget* target, const QByteArray& actToken) {
+    if (!target) return;
+    static quint64 s_actSeq = 0;
+    const quint64 seq = ++s_actSeq;
+    target->setProperty("_salsaActSeq", static_cast<qulonglong>(seq));
+    applyRaiseAndActivate(target, actToken);
+
+    // If the Wayland compositor ignored unauthenticated activation (only flashing the panel icon),
+    // unmap and remap the toplevel once so it opens visibly in front instead of staying backgrounded.
+    const QPointer<QWidget> pTarget(target);
+    QTimer::singleShot(90, target, [pTarget, seq]() {
+        if (!pTarget) return;
+        if (pTarget->property("_salsaActSeq").toULongLong() != seq) return;
+        if (pTarget->isVisible() && !pTarget->isMinimized() && pTarget->isActiveWindow()) return;
+        const QByteArray geom = pTarget->saveGeometry();
+        pTarget->hide();
+        QTimer::singleShot(25, pTarget, [pTarget, seq, geom]() {
+            if (!pTarget) return;
+            if (pTarget->property("_salsaActSeq").toULongLong() != seq) return;
+            if (!geom.isEmpty()) pTarget->restoreGeometry(geom);
+            applyRaiseAndActivate(pTarget.data(), {});
+        });
+    });
+}
+
+bool SingleInstanceServer::start(
+    const QString& sockFileName,
+    QObject* parent,
+    std::function<void(const QString&, const QByteArray&)> onActivate) {
+    if (listenFd_ >= 0) return true;
+    const QString sockPath = singleInstanceSockPath(sockFileName);
+    const QByteArray pBytes = sockPath.toLocal8Bit();
+    if (pBytes.isEmpty() || pBytes.size() >= static_cast<qsizetype>(sizeof(sockaddr_un::sun_path))) {
+        return false;
+    }
+    auto tryBind = [&]() -> int {
+        const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if (fd < 0) return -1;
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        std::memcpy(addr.sun_path, pBytes.constData(), static_cast<size_t>(pBytes.size()));
+        if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0) {
+            return fd;
+        }
+        ::close(fd);
+        return -1;
+    };
+    int fd = tryBind();
+    if (fd < 0 && errno == EADDRINUSE) {
+        const int probe = connectSingleInstanceSocket(sockPath);
+        if (probe >= 0) {
+            ::close(probe);
+            return false;
+        }
+        ::unlink(pBytes.constData());
+        fd = tryBind();
+    }
+    if (fd < 0) return false;
+    ::chmod(pBytes.constData(), 0600);
+    if (::listen(fd, 8) != 0) {
+        ::close(fd);
+        ::unlink(pBytes.constData());
+        return false;
+    }
+    listenFd_ = fd;
+    sockPath_ = sockPath;
+    notifier_ = new QSocketNotifier(fd, QSocketNotifier::Read, parent);
+    QObject::connect(notifier_, &QSocketNotifier::activated, parent, [this, onActivate = std::move(onActivate)](QSocketDescriptor) {
+        if (listenFd_ < 0) return;
+        for (;;) {
+            const int cfd = ::accept4(listenFd_, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+            if (cfd < 0) break;
+            struct ucred cred{};
+            socklen_t clen = sizeof(cred);
+            if (::getsockopt(cfd, SOL_SOCKET, SO_PEERCRED, &cred, &clen) == 0 && cred.uid == ::getuid()) {
+                const QByteArray line = readSingleLineBounded(cfd);
+                const ssize_t _w = ::write(cfd, "OK\n", 3);
+                (void)_w;
+                ::close(cfd);
+                QString mode = QStringLiteral("auto");
+                QByteArray token;
+                if (line.startsWith("SHOW ")) {
+                    const QByteArray rest = line.mid(5);
+                    const qsizetype tab = rest.indexOf('\t');
+                    if (tab >= 0) {
+                        mode = QString::fromUtf8(rest.left(tab)).trimmed();
+                        token = rest.mid(tab + 1).trimmed();
+                    } else {
+                        mode = QString::fromUtf8(rest).trimmed();
+                    }
+                }
+                if (onActivate) onActivate(mode, token);
+            } else {
+                ::close(cfd);
+            }
+        }
+    });
+    return true;
+}
+
+void SingleInstanceServer::stop() {
+    if (notifier_) {
+        notifier_->setEnabled(false);
+        notifier_->deleteLater();
+        notifier_ = nullptr;
+    }
+    if (listenFd_ >= 0) {
+        ::close(listenFd_);
+        listenFd_ = -1;
+    }
+    if (!sockPath_.isEmpty()) {
+        ::unlink(sockPath_.toLocal8Bit().constData());
+        sockPath_.clear();
+    }
+}
+
+void spawnDetachedWaylandBinary(const QString& binName, const QStringList& args, QWidget* sourceWidget) {
     const QString root = installRootPath();
     QString exePath = QDir(root).filePath(QStringLiteral("build/%1").arg(binName));
     if (!QFile::exists(exePath)) {
@@ -477,6 +793,15 @@ void spawnDetachedWaylandBinary(const QString& binName, const QStringList& args)
     // child Wayland apps must clear QT_QPA_PLATFORM so they connect natively to Wayland.
     env.remove(QStringLiteral("QT_QPA_PLATFORM"));
     env.remove(QStringLiteral("LWASAPI_TRAY_REPLACED"));
+    if (env.value(QStringLiteral("XDG_ACTIVATION_TOKEN")).isEmpty()) {
+        const QString appId = binName == QLatin1String("salsa-debug")
+                                  ? QStringLiteral("salsa-debug")
+                                  : QStringLiteral("salsa-lwasapi");
+        const QByteArray minted = mintWaylandActivationToken(sourceWidget, appId);
+        if (!minted.isEmpty()) {
+            env.insert(QStringLiteral("XDG_ACTIVATION_TOKEN"), QString::fromUtf8(minted));
+        }
+    }
     proc.setProcessEnvironment(env);
     proc.setWorkingDirectory(root);
 

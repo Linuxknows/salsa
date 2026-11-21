@@ -384,6 +384,8 @@ private:
     QList<qint64> scFrameTimesMs_;
     std::chrono::steady_clock::time_point scStartTp_{};
     int64_t scNextDueNs_ = 0;
+    int64_t scLastLiveNs_ = 0;
+    int64_t scLastStatsNs_ = 0;
     int scLastOutHz_ = 0;
     bool scLimitsDirty_ = false;
     bool scPortalAttempted_ = false;

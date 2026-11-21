@@ -48,7 +48,7 @@ use crate::debug_server::{lwasapi_debug_record_rt_period, lwasapi_debug_start, l
 use crate::dsp::{
     salsa_dsp_consume_session_frames, salsa_dsp_get_telem, salsa_dsp_pack_pcm,
     salsa_dsp_process_capture_mic_apo, salsa_dsp_process_dynamic_eq, salsa_dsp_resample_mic_cubic,
-    salsa_dsp_scale_cap_clip,
+    salsa_dsp_scale_cap_clip, shape_hw_analog_sample,
 };
 use crate::failsafe::{record_trip, FS_MANUAL_RESET};
 use crate::hw_analog::{
@@ -190,7 +190,7 @@ use crate::c_abi::{
     lwasapi_bluez_set_mic_volume, lwasapi_bluez_set_optional_mode,
     lwasapi_bluez_set_preferred_target, lwasapi_bluez_set_sco_enabled,
     lwasapi_bluez_set_tx_enabled, lwasapi_bluez_set_volume, lwasapi_bluez_write_period,
-    salsa_audiodg_bt_ptr, salsa_bt_get_snapshot, salsa_bt_rt_master_vol,
+    salsa_audiodg_bt_ptr, salsa_bt_get_snapshot, salsa_bt_is_initialized, salsa_bt_rt_master_vol,
 };
 
 #[derive(Clone, Copy)]
@@ -265,6 +265,9 @@ impl HwState {
 struct EngineSession {
     in_use: bool,
     session_id: u32,
+    client_pid: u32,
+    client_name: [u8; 64],
+    share_mode: u32,
     client_sock: Option<UnixStream>,
     _shm_fd: Option<OwnedFd>,
     event_fd: Option<OwnedFd>,
@@ -284,6 +287,9 @@ impl EngineSession {
         Self {
             in_use: false,
             session_id: 0,
+            client_pid: 0,
+            client_name: [0; 64],
+            share_mode: 0,
             client_sock: None,
             _shm_fd: None,
             event_fd: None,
@@ -1145,13 +1151,13 @@ impl AudiodgEngine {
                     let info = &mut st.sessions[count];
                     count += 1;
                     unsafe {
-                        info.session_id = (*r).session_id;
-                        info.client_pid = (*r).client_pid;
-                        info.is_capture = (*r).is_capture;
-                        info.client_name.copy_from_slice(&*ptr::addr_of!((*r).client_name));
-                        info.share_mode = (*r).share_mode;
-                        info.sample_rate = (*r).sample_rate;
-                        info.channels = (*r).channels;
+                        info.session_id = slot.session_id;
+                        info.client_pid = slot.client_pid;
+                        info.is_capture = u32::from(slot.is_capture);
+                        info.client_name.copy_from_slice(&slot.client_name);
+                        info.share_mode = slot.share_mode;
+                        info.sample_rate = slot.sample_rate;
+                        info.channels = slot.channels;
                         info.active = (*ptr::addr_of!((*r).active)).load(Ordering::Relaxed);
                         info.volume_milli =
                             (*ptr::addr_of!((*r).volume_milli)).load(Ordering::Relaxed);
@@ -1775,10 +1781,15 @@ impl AudiodgEngine {
             &req_name
         };
 
+        let sock_raw = client_sock.as_raw_fd();
+        let auth_pid = socket_peercred(sock_raw)
+            .and_then(|uc| (uc.pid > 0).then_some(uc.pid as u32))
+            .unwrap_or(req.client_pid);
+
         unsafe {
             ptr::addr_of_mut!((*ring).magic).write(LWASAPI_RING_MAGIC);
             ptr::addr_of_mut!((*ring).session_id).write(sid);
-            ptr::addr_of_mut!((*ring).client_pid).write(req.client_pid);
+            ptr::addr_of_mut!((*ring).client_pid).write(auth_pid);
             copy_str_to_c(&mut *ptr::addr_of_mut!((*ring).client_name), s_name_str);
             ptr::addr_of_mut!((*ring).share_mode).write(req.share_mode);
             ptr::addr_of_mut!((*ring).stream_flags).write(req.stream_flags);
@@ -1791,13 +1802,18 @@ impl AudiodgEngine {
             (*ptr::addr_of!((*ring).volume_milli)).store(1000, Ordering::SeqCst);
         }
 
-        let sock_raw = client_sock.as_raw_fd();
         seal_memfd_size(shm_fd.as_raw_fd());
         let fds_to_send = [shm_fd.as_raw_fd(), ev_fd.as_raw_fd()];
+
+        let mut auth_name = [0u8; 64];
+        copy_str_to_c(&mut auth_name, s_name_str);
 
         ss.sessions[slot_idx] = EngineSession {
             in_use: true,
             session_id: sid,
+            client_pid: auth_pid,
+            client_name: auth_name,
+            share_mode: req.share_mode,
             client_sock: Some(client_sock),
             _shm_fd: Some(shm_fd),
             event_fd: Some(ev_fd),
@@ -1823,19 +1839,25 @@ impl AudiodgEngine {
         resp.actual_period_frames = hw_per;
         drop(ss);
 
-        let _ = sendmsg_all_with_fds(sock_raw, as_bytes(&resp), &fds_to_send);
+        if sendmsg_all_with_fds(sock_raw, as_bytes(&resp), &fds_to_send).is_err() {
+            let mut ss = self.sessions_lock.lock().unwrap();
+            if ss.sessions[slot_idx].in_use && ss.sessions[slot_idx].session_id == sid {
+                destroy_session_slot(&mut ss, slot_idx);
+            }
+            return;
+        }
 
         if req.share_mode == AUDCLNT_SHAREMODE_EXCLUSIVE {
             eprintln!(
                 "[LWASAPI-audiodg] Session #{} ('{}', PID {}) acquired WASAPI EXCLUSIVE hardware lock ({} Hz, period={})",
-                sid, s_name_str, req.client_pid, eff_rate, hw_per
+                sid, s_name_str, auth_pid, eff_rate, hw_per
             );
         } else {
             eprintln!(
                 "[LWASAPI-audiodg] Session #{} ('{}', PID {}) initialized in WASAPI {} mode ({} Hz -> {} Hz, {} ch, buf={})",
                 sid,
                 s_name_str,
-                req.client_pid,
+                auth_pid,
                 if is_cap_u32 != 0 { "CAPTURE" } else { "SHARED" },
                 eff_rate,
                 hw_rate,
@@ -2368,7 +2390,7 @@ impl AudiodgEngine {
                     let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
                     return;
                 }
-                let bt_init = snapshot_bt(self.bt()).initialized;
+                let bt_init = unsafe { salsa_bt_is_initialized(self.bt()) };
                 let bt_show = if bt_init {
                     unsafe {
                         lwasapi_bluez_set_sco_enabled(self.bt(), cfg.hfp_sco_enabled != 0);
@@ -2391,9 +2413,20 @@ impl AudiodgEngine {
                     }
                     out_cfg
                 } else {
+                    let mut scfg = cfg;
+                    scfg.preferred_codec = scfg.preferred_codec.min(4);
+                    scfg.ldac_mode = scfg.ldac_mode.min(3);
+                    scfg.wireless_abr_enabled = u32::from(scfg.wireless_abr_enabled != 0);
+                    scfg.hfp_sco_enabled = u32::from(scfg.hfp_sco_enabled != 0);
+                    if let Some(last) = scfg.bt_sco_codec.last_mut() {
+                        *last = 0;
+                    }
+                    if let Some(last) = scfg.neg_reason.last_mut() {
+                        *last = 0;
+                    }
                     let mut sb = self.saved_bt.lock().unwrap();
-                    sb.saved_bt_cfg = cfg;
-                    cfg
+                    sb.saved_bt_cfg = scfg;
+                    scfg
                 };
                 {
                     let _reconf = self.reconf_lock.lock().unwrap();
@@ -2476,22 +2509,24 @@ impl AudiodgEngine {
                         LWASAPI_BT_CONN_DISCONNECT => reeval_disconnect,
                         _ => false,
                     };
-                    let _reconf = self.reconf_lock.lock().unwrap();
-                    if should_reapply {
-                        self.apply_playback_endpoint(
-                            &target_pb,
-                            pref_r,
-                            pref_p,
-                            pref_b,
-                            false,
-                            false,
-                            Some(&dlist),
-                        );
-                    } else if action == LWASAPI_BT_CONN_CONNECT && !hw_is_bt {
-                        // Keep A2DP linked in standby without acquiring L2CAP when pinned to TV/wired/USB.
-                        unsafe { lwasapi_bluez_set_tx_enabled(self.bt(), false) };
+                    {
+                        let _reconf = self.reconf_lock.lock().unwrap();
+                        if should_reapply {
+                            self.apply_playback_endpoint(
+                                &target_pb,
+                                pref_r,
+                                pref_p,
+                                pref_b,
+                                false,
+                                false,
+                                Some(&dlist),
+                            );
+                        } else if action == LWASAPI_BT_CONN_CONNECT && !hw_is_bt {
+                            // Keep A2DP linked in standby without acquiring L2CAP when pinned to TV/wired/USB.
+                            unsafe { lwasapi_bluez_set_tx_enabled(self.bt(), false) };
+                        }
+                        self.save_state();
                     }
-                    self.save_state();
                     let pa = self.pa();
                     if !pa.is_null() {
                         unsafe { lwasapi_pa_server_notify_change(pa) };
@@ -2765,7 +2800,7 @@ impl AudiodgEngine {
                             unsafe {
                                 (*ptr::addr_of!((*r).hw_clock_ns)).store(now_ns, Ordering::Relaxed);
                             }
-                            if !slot.is_capture {
+                            if !slot.is_capture && !slot.is_loopback {
                                 unsafe {
                                     salsa_dsp_consume_session_frames(
                                         r,
@@ -2844,7 +2879,7 @@ impl AudiodgEngine {
                     mic_cfg.enabled != 0 && mic_cfg.sidetone_enabled != 0 && mic_cfg.sidetone_pct > 0;
                 if !need_eng_mic {
                     for slot in &ss.sessions {
-                        if slot.in_use && !slot.ring_ptr().is_null() && !slot.is_loopback {
+                        if slot.in_use && slot.is_capture && !slot.ring_ptr().is_null() && !slot.is_loopback {
                             need_eng_mic = true;
                             break;
                         }
@@ -2865,25 +2900,27 @@ impl AudiodgEngine {
                 for slot in &ss.sessions {
                     let r = slot.ring_ptr();
                     if slot.in_use && !r.is_null() {
-                        let cap_src: &[f32] = if slot.is_loopback {
-                            if monitor_is_pa_stereo {
-                                &pa_stereo[..p_us * 2]
+                        if slot.is_capture || slot.is_loopback {
+                            let cap_src: &[f32] = if slot.is_loopback {
+                                if monitor_is_pa_stereo {
+                                    &pa_stereo[..p_us * 2]
+                                } else {
+                                    &mix_buf[..p_us * 2]
+                                }
                             } else {
-                                &mix_buf[..p_us * 2]
+                                &mic_buf[..p_us * 2]
+                            };
+                            unsafe {
+                                let cwf = &*ptr::addr_of!((*r).cap_write_frame);
+                                let cw = cwf.load(Ordering::Relaxed);
+                                let cap_base = ptr::addr_of_mut!((*r).cap_pcm_data.0) as *mut f32;
+                                for f in 0..p_us {
+                                    let idx = ((cw.wrapping_add(f as u64) as usize) & LWASAPI_RING_MASK) * 2;
+                                    cap_base.add(idx).write(cap_src[f * 2]);
+                                    cap_base.add(idx + 1).write(cap_src[f * 2 + 1]);
+                                }
+                                cwf.store(cw.wrapping_add(period as u64), Ordering::Release);
                             }
-                        } else {
-                            &mic_buf[..p_us * 2]
-                        };
-                        unsafe {
-                            let cwf = &*ptr::addr_of!((*r).cap_write_frame);
-                            let cw = cwf.load(Ordering::Relaxed);
-                            let cap_base = ptr::addr_of_mut!((*r).cap_pcm_data.0) as *mut f32;
-                            for f in 0..p_us {
-                                let idx = ((cw.wrapping_add(f as u64) as usize) & LWASAPI_RING_MASK) * 2;
-                                cap_base.add(idx).write(cap_src[f * 2]);
-                                cap_base.add(idx + 1).write(cap_src[f * 2 + 1]);
-                            }
-                            cwf.store(cw.wrapping_add(period as u64), Ordering::Release);
                         }
                         if let Some(ref efd) = slot.event_fd {
                             crate::unix_sys::eventfd_signal(efd.as_raw_fd());
@@ -2942,10 +2979,19 @@ impl AudiodgEngine {
                     && hw_snap.channels == ch
                     && hw_snap.sample_rate == rate
                 {
-                    if hw_snap.is_bluetooth && snapshot_bt(self.bt()).initialized {
-                        for s in &mut mix_buf[..p_us * ch_us] {
-                            *s = s.clamp(-1.0, 1.0);
-                        }
+                    if hw_snap.is_bluetooth && unsafe { salsa_bt_is_initialized(self.bt()) } {
+                        let hwa = self.hwa();
+                        let (drive_gain, softknee) = if !hwa.is_null() {
+                            unsafe {
+                                (
+                                    lwasapi_hw_analog_get_drive_linear(hwa),
+                                    lwasapi_hw_analog_softknee_active(hwa),
+                                )
+                            }
+                        } else {
+                            (1.0, false)
+                        };
+                        apply_bt_hw_analog_drive(&mut mix_buf[..p_us * ch_us], drive_gain, softknee);
                         unsafe {
                             lwasapi_bluez_write_period(self.bt(), mix_buf.as_ptr(), period, ch);
                         }
@@ -3121,17 +3167,8 @@ fn destroy_session_slot(ss: &mut SessionsState, slot_idx: usize) {
         return;
     }
     let sid = ss.sessions[slot_idx].session_id;
-    let r = ss.sessions[slot_idx].ring_ptr();
-    let (cpid, cname) = if !r.is_null() {
-        unsafe {
-            (
-                (*r).client_pid,
-                c_str_to_string(&*ptr::addr_of!((*r).client_name)),
-            )
-        }
-    } else {
-        (0, String::new())
-    };
+    let cpid = ss.sessions[slot_idx].client_pid;
+    let cname = c_str_to_string(&ss.sessions[slot_idx].client_name);
     let label = if cname.is_empty() {
         "session".to_string()
     } else {
@@ -3343,14 +3380,14 @@ unsafe extern "C" fn dbg_fill_snapshot_cb(ctx: *mut c_void, snap: *mut LwasapiDb
                 let ws = &mut snap_ref.wasapi[wcnt];
                 wcnt += 1;
                 unsafe {
-                    ws.session_id = (*r).session_id;
-                    ws.client_pid = (*r).client_pid;
-                    ws.client_name.copy_from_slice(&*ptr::addr_of!((*r).client_name));
-                    ws.share_mode = (*r).share_mode;
+                    ws.session_id = slot.session_id;
+                    ws.client_pid = slot.client_pid;
+                    ws.client_name.copy_from_slice(&slot.client_name);
+                    ws.share_mode = slot.share_mode;
                     ws.stream_flags = (*r).stream_flags;
-                    ws.is_capture = (*r).is_capture;
-                    ws.sample_rate = (*r).sample_rate;
-                    ws.channels = (*r).channels;
+                    ws.is_capture = u32::from(slot.is_capture);
+                    ws.sample_rate = slot.sample_rate;
+                    ws.channels = slot.channels;
                     ws.active = (*ptr::addr_of!((*r).active)).load(Ordering::Relaxed);
                     ws.muted = (*ptr::addr_of!((*r).muted)).load(Ordering::Relaxed);
                     ws.volume_milli = (*ptr::addr_of!((*r).volume_milli)).load(Ordering::Relaxed);
@@ -3808,17 +3845,8 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                         let slot_idx = slot_map[idx] as usize;
                         let mut ss = engine.sessions_lock.lock().unwrap();
                         if ss.sessions[slot_idx].in_use {
-                            let r = ss.sessions[slot_idx].ring_ptr();
-                            let (cname, cpid) = if !r.is_null() {
-                                unsafe {
-                                    (
-                                        c_str_to_string(&*ptr::addr_of!((*r).client_name)),
-                                        (*r).client_pid,
-                                    )
-                                }
-                            } else {
-                                (String::new(), 0)
-                            };
+                            let cpid = ss.sessions[slot_idx].client_pid;
+                            let cname = c_str_to_string(&ss.sessions[slot_idx].client_name);
                             eprintln!(
                                 "[LWASAPI-audiodg] Session #{} ('{}', PID {}) closed.",
                                 ss.sessions[slot_idx].session_id, cname, cpid
@@ -4581,6 +4609,24 @@ unsafe fn any_usb_matches_bt(dlist: &LwasapiDeviceList, bt: *const c_void) -> bo
     find_matching_usb_pb_idx_for_list(dlist, &snap, &extra).is_some()
 }
 
+/// Applies the active HW Analog amp drive and SoftKnee shaping to Bluetooth A2DP frames
+/// while scrubbing any non-finite samples before encoding.
+#[inline]
+fn apply_bt_hw_analog_drive(samples: &mut [f32], drive_gain: f32, softknee: bool) {
+    let gain = if drive_gain.is_finite() && drive_gain >= 0.0 {
+        drive_gain
+    } else {
+        1.0
+    };
+    for s in samples {
+        *s = if s.is_finite() {
+            shape_hw_analog_sample(*s, gain, softknee)
+        } else {
+            0.0
+        };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4695,5 +4741,22 @@ mod tests {
         assert!(!should_try_bt_on_apply(false, true, true, false, true, true, "68:F2:1F:04:F9:F6"));
         // Boot/Auto with Optional BT and no connected BT stays off BT
         assert!(!should_try_bt_on_apply(false, true, false, true, false, false, ""));
+    }
+
+    #[test]
+    fn bt_hw_analog_drive_amplifies_cleanly_and_scrubs_nonfinite() {
+        let mut buf = [0.25f32, -0.5f32, f32::NAN, f32::INFINITY];
+        // +7.0 dB HP Amp tier ≈ 2.2387x drive with SoftKnee enabled
+        let drive_7db = 10.0f32.powf(7.0 / 20.0);
+        apply_bt_hw_analog_drive(&mut buf, drive_7db, true);
+        assert!((buf[0] - 0.25 * drive_7db).abs() < 1e-5);
+        assert!(buf[1] < -0.72 && buf[1] > -1.0, "softknee should smoothly compress peaks: {}", buf[1]);
+        assert_eq!(buf[2], 0.0);
+        assert_eq!(buf[3], 0.0);
+
+        let mut unity = [0.4f32, -1.5f32];
+        apply_bt_hw_analog_drive(&mut unity, 1.0, false);
+        assert!((unity[0] - 0.4).abs() < 1e-6);
+        assert_eq!(unity[1], -1.0);
     }
 }

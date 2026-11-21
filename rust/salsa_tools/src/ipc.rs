@@ -8,15 +8,18 @@
 use core::ffi::{c_char, c_int};
 use core::mem;
 use std::ffi::CString;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Duration;
 
-use salsa_wire::unix_sys::audiodg_sock_path;
+use salsa_wire::unix_sys::{audiodg_sock_path, current_uid, socket_peercred, O_CLOEXEC, O_NOFOLLOW};
 
-use crate::host::{ensure_dir_0700, read_text_lossy, state_dir, write_atomic_secure};
+use crate::host::{ensure_dir_0700, flock_fd, funlock_fd, read_text_lossy, state_dir, write_atomic_secure};
 use crate::json::JsonValue;
 
 pub use salsa_wire::c_abi::{
@@ -274,13 +277,25 @@ pub fn set_session_control(
     unsafe { lwasapi::LWASAPI_SetSessionControl(session_id, volume_pct, muted, dev_ptr) }
 }
 
+static PROC_COMM_CACHE: OnceLock<String> = OnceLock::new();
+
+fn cached_proc_comm() -> &'static str {
+    PROC_COMM_CACHE
+        .get_or_init(|| {
+            fs::read_to_string("/proc/self/comm")
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default()
+        })
+        .as_str()
+}
+
 fn send_volume_cmd(target_id: u32, pct: i32, mute_mode: i32) -> bool {
     let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
     req.cmd = LWASAPI_CMD_SET_VOLUME;
     req.client_pid = std::process::id();
-    if let Ok(comm) = fs::read_to_string("/proc/self/comm") {
-        let trimmed = comm.trim();
-        let bytes = trimmed.as_bytes();
+    let comm = cached_proc_comm();
+    if !comm.is_empty() {
+        let bytes = comm.as_bytes();
         let n = bytes.len().min(req.client_name.len().saturating_sub(1));
         req.client_name[..n].copy_from_slice(&bytes[..n]);
     }
@@ -296,6 +311,13 @@ fn send_volume_cmd(target_id: u32, pct: i32, mute_mode: i32) -> bool {
     let Ok(mut stream) = UnixStream::connect(&sock_path) else {
         return false;
     };
+    let Some(uc) = socket_peercred(stream.as_raw_fd()) else {
+        return false;
+    };
+    let my_uid = current_uid();
+    if uc.uid != my_uid && uc.uid != 0 {
+        return false;
+    }
     let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(250)));
     let req_bytes = unsafe {
@@ -354,6 +376,64 @@ fn sanitize_eq_device_profiles(val: &JsonValue) -> JsonValue {
     JsonValue::Object(clean)
 }
 
+struct SettingsLockGuard(Option<fs::File>);
+
+impl Drop for SettingsLockGuard {
+    fn drop(&mut self) {
+        if let Some(ref f) = self.0 {
+            funlock_fd(f.as_raw_fd());
+        }
+    }
+}
+
+fn acquire_settings_lock() -> Result<SettingsLockGuard, String> {
+    let dir = config_dir();
+    ensure_dir_0700(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+    let lock_path = dir.join(".gui_settings.lock");
+    let f = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
+        .open(&lock_path)
+        .map_err(|e| format!("open lock {}: {e}", lock_path.display()))?;
+    flock_fd(f.as_raw_fd(), false).map_err(|e| format!("flock {}: {e}", lock_path.display()))?;
+    Ok(SettingsLockGuard(Some(f)))
+}
+
+fn read_nofollow_bounded_utf8(p: &std::path::Path, max_bytes: usize) -> Result<String, std::io::Error> {
+    let f = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
+        .open(p)?;
+    let mut buf = Vec::new();
+    let n = f.take((max_bytes as u64) + 1).read_to_end(&mut buf)?;
+    if n > max_bytes {
+        return Err(std::io::Error::other("settings file exceeds size limit"));
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+fn save_gui_settings_unlocked(data: &JsonValue) -> Result<(), String> {
+    let JsonValue::Object(_) = data else {
+        return Err("gui settings must be a JSON object".into());
+    };
+    let dir = config_dir();
+    ensure_dir_0700(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+    let p = gui_settings_path();
+    if let Ok(meta) = fs::symlink_metadata(&p) {
+        if meta.file_type().is_symlink() {
+            return Err(format!("refusing symlink at {}", p.display()));
+        }
+    }
+    let mut text = data.to_json_pretty(2);
+    text.push('\n');
+    write_atomic_secure(&p, text.as_bytes(), 0o600)
+        .map_err(|e| format!("write {}: {e}", p.display()))
+}
+
 pub fn load_gui_settings() -> JsonValue {
     let p = gui_settings_path();
     let Ok(meta) = fs::symlink_metadata(&p) else {
@@ -362,7 +442,8 @@ pub fn load_gui_settings() -> JsonValue {
     if meta.file_type().is_symlink() {
         return JsonValue::Object(Vec::new());
     }
-    let raw = read_text_lossy(&p, 262_144);
+    let raw = read_nofollow_bounded_utf8(&p, 262_144)
+        .unwrap_or_else(|_| read_text_lossy(&p, 262_144));
     match JsonValue::parse(&raw) {
         Ok(mut obj @ JsonValue::Object(_)) => {
             if let Some(prof) = obj.get("eq_device_profiles").cloned() {
@@ -378,13 +459,14 @@ pub fn save_studio_gui_settings(data: &JsonValue) -> Result<(), String> {
     let Some(new_entries) = data.as_object() else {
         return Err("gui settings must be a JSON object".into());
     };
+    let _lock = acquire_settings_lock()?;
     let p = gui_settings_path();
     let mut merged = match fs::symlink_metadata(&p) {
         Ok(m) if m.file_type().is_symlink() => {
             return Err(format!("refusing symlinked settings file: {}", p.display()));
         }
         Ok(_) => {
-            let raw = read_text_lossy(&p, 262_144);
+            let raw = read_nofollow_bounded_utf8(&p, 262_144).unwrap_or_default();
             match JsonValue::parse(&raw) {
                 Ok(obj @ JsonValue::Object(_)) => obj,
                 _ => JsonValue::Object(Vec::new()),
@@ -409,35 +491,23 @@ pub fn save_studio_gui_settings(data: &JsonValue) -> Result<(), String> {
     if let Some(prof) = merged.get("eq_device_profiles").cloned() {
         merged.set("eq_device_profiles", sanitize_eq_device_profiles(&prof));
     }
-    save_gui_settings(&merged)
+    save_gui_settings_unlocked(&merged)
 }
 
 pub fn save_gui_settings(data: &JsonValue) -> Result<(), String> {
-    let JsonValue::Object(_) = data else {
-        return Err("gui settings must be a JSON object".into());
-    };
-    let dir = config_dir();
-    ensure_dir_0700(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
-    let p = gui_settings_path();
-    if let Ok(meta) = fs::symlink_metadata(&p) {
-        if meta.file_type().is_symlink() {
-            return Err(format!("refusing symlink at {}", p.display()));
-        }
-    }
-    let mut text = data.to_json_pretty(2);
-    text.push('\n');
-    write_atomic_secure(&p, text.as_bytes(), 0o600)
-        .map_err(|e| format!("write {}: {e}", p.display()))
+    let _lock = acquire_settings_lock()?;
+    save_gui_settings_unlocked(data)
 }
 
 pub fn update_gui_settings(updates: &[(&str, JsonValue)]) -> Result<(), String> {
+    let _lock = acquire_settings_lock()?;
     let p = gui_settings_path();
     let mut cur = match fs::symlink_metadata(&p) {
         Ok(m) if m.file_type().is_symlink() => {
             return Err(format!("refusing symlinked settings file: {}", p.display()));
         }
         Ok(_) => {
-            let raw = fs::read_to_string(&p)
+            let raw = read_nofollow_bounded_utf8(&p, 262_144)
                 .map_err(|e| format!("read {}: {e}", p.display()))?;
             let parsed = JsonValue::parse(&raw)
                 .map_err(|e| format!("parse {}: {e}", p.display()))?;
@@ -452,7 +522,7 @@ pub fn update_gui_settings(updates: &[(&str, JsonValue)]) -> Result<(), String> 
     for (k, v) in updates {
         cur.set(*k, v.clone());
     }
-    save_gui_settings(&cur)
+    save_gui_settings_unlocked(&cur)
 }
 
 pub fn load_saved_theme_name() -> String {

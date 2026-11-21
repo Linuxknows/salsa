@@ -668,8 +668,13 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
     connect(cmbScMode_, &QComboBox::currentIndexChanged, this, [this](int idx) {
         lastShmSeq_ = 0;
         lastScImage_ = QImage();
+        scLastLiveNs_ = 0;
+        scLastStatsNs_ = 0;
         scPortalAttempted_ = false;
-        if (idx != 0 && shmCtx_) salsa_dbg_portal_stop(shmCtx_);
+        if (shmCtx_) {
+            salsa_dbg_shm_reset_cache(shmCtx_);
+            if (idx != 0) salsa_dbg_portal_stop(shmCtx_);
+        }
     });
     r1->addWidget(cmbScMode_);
 
@@ -756,6 +761,8 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
             btnScLive_->setText(QStringLiteral("Disable Live Feed (ON)"));
             lastShmSeq_ = 0;
             lastScImage_ = QImage();
+            scLastLiveNs_ = 0;
+            scLastStatsNs_ = 0;
             scFrameTimesMs_.clear();
             scPortalAttempted_ = false;
             refreshScFpsChoices();
@@ -768,6 +775,8 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
         } else {
             btnScLive_->setText(QStringLiteral("Enable Live Feed (OFF)"));
             scTimer_->stop();
+            scLastLiveNs_ = 0;
+            scLastStatsNs_ = 0;
             scPortalAttempted_ = false;
             if (shmCtx_) {
                 salsa_dbg_portal_stop(shmCtx_);
@@ -788,6 +797,8 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
         scPortalAttempted_ = true;
         lastShmSeq_ = 0;
         lastScImage_ = QImage();
+        scLastLiveNs_ = 0;
+        scLastStatsNs_ = 0;
         salsa_dbg_portal_stop(shmCtx_);
         salsa_dbg_portal_start(shmCtx_, true);
     });
@@ -1329,13 +1340,21 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
             scRgbaBuf_.data(), scRgbaBuf_.size(), &meta);
         if (rc > 0 && meta.active_stream) {
             realStreamActive = true;
-            if (meta.width >= 2 && meta.height >= 2 && meta.bytes_written >= static_cast<size_t>(meta.width) * meta.height * 4) {
+            scLastLiveNs_ = nowNs;
+            if (rc == 1 && meta.width >= 2 && meta.height >= 2
+                && meta.bytes_written >= static_cast<size_t>(meta.width) * meta.height * 4) {
                 fw = meta.width;
                 fh = meta.height;
                 if (meta.seq != lastShmSeq_ || lastScImage_.isNull()) {
                     lastShmSeq_ = meta.seq;
                     gotNewFrame = true;
                 }
+            } else if (rc == 2 && !lastScImage_.isNull()) {
+                fw = lastScW_;
+                fh = lastScH_;
+                lastShmSeq_ = meta.seq;
+            } else if (rc == 2 && lastScImage_.isNull()) {
+                salsa_dbg_shm_reset_cache(shmCtx_);
             }
         }
     }
@@ -1370,6 +1389,8 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
             fh = dh;
         }
     } else if (!realStreamActive && allowPortal) {
+        const bool withinLiveGrace =
+            scLastLiveNs_ > 0 && (nowNs - scLastLiveNs_) < 1'500'000'000LL && !lastScImage_.isNull();
         if (scNextDueNs_ > 0 && nowNs < scNextDueNs_) {
             return;
         }
@@ -1400,6 +1421,7 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
                 lblScPreview_->setText(QStringLiteral("ScreenCast authorized — connecting PipeWire video stream to Salsa broker..."));
             }
         } else if (pState == QLatin1String("streaming")) {
+            if (withinLiveGrace) return;
             lblScDmabufBadge_->setText(QStringLiteral("LINKING"));
             lblScStats_->setText(QStringLiteral("Portal PipeWire consumer streaming (node %1) — awaiting first video frame...").arg(nodeId));
             if (lastScImage_.isNull()) {
@@ -1418,11 +1440,15 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
                 lblScPreview_->setText(QStringLiteral("ScreenCast Portal error: %1\nClick 'Choose Screen...' to retry.").arg(pMsg));
             }
         } else {
+            if (withinLiveGrace) return;
             lblScDmabufBadge_->setText(QStringLiteral("WAIT PORTAL"));
             lblScStats_->setText(QStringLiteral("Auto ScreenCast Preview: awaiting portal or external broker stream..."));
         }
         return;
     } else if (!realStreamActive && !forceDry) {
+        if (scLastLiveNs_ > 0 && (nowNs - scLastLiveNs_) < 1'500'000'000LL && !lastScImage_.isNull()) {
+            return;
+        }
         if (scNextDueNs_ > 0 && nowNs < scNextDueNs_) {
             return;
         }
@@ -1469,23 +1495,29 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
         lblScDmabufBadge_->setText(QStringLiteral("TEST PATTERN"));
         lblScStats_->setText(QStringLiteral("Offline Color Bars: %1x%2 @ %3 FPS (Target %4 Hz Output | Local Test Pattern)")
                                  .arg(fw).arg(fh).arg(measFps, 0, 'f', 1).arg(targetHz));
-    } else if (realStreamActive && meta.bytes_written >= static_cast<size_t>(meta.width) * meta.height * 4) {
-        const double brokerFps = meta.actual_fps_x100 / 100.0;
-        const double shownFps = brokerFps > 0.1 ? brokerFps : measFps;
-        updateScProfileBadge(measFps > 0.1 ? measFps : brokerFps, QStringLiteral("%1x%2").arg(meta.width).arg(meta.height));
-        const QString kindTag = meta.is_dmabuf
-                                    ? (meta.dmabuf_mappable ? QStringLiteral("DMA-BUF EGL/SHM") : QStringLiteral("DMA-BUF GPU-Opaque"))
-                                    : QStringLiteral("MemFd SHM");
-        lblScDmabufBadge_->setText(kindTag);
-        lblScStats_->setText(
-            QStringLiteral("Live Portal Cast: %1 (%2) | %3x%4 | Broker FPS=%5 | Feed FPS=%6 | Seq=%7 | Cons=%8")
-                .arg(cFixedStr(meta.prod_name, sizeof(meta.prod_name)),
-                     cFixedStr(meta.format_name, sizeof(meta.format_name)))
-                .arg(meta.width).arg(meta.height)
-                .arg(shownFps, 0, 'f', 1)
-                .arg(measFps, 0, 'f', 1)
-                .arg(meta.seq)
-                .arg(meta.cons_count));
+    } else if (realStreamActive
+               && !(meta.is_dmabuf && !meta.dmabuf_mappable)
+               && (!lastScImage_.isNull()
+                   || meta.bytes_written >= static_cast<size_t>(meta.width) * meta.height * 4)) {
+        if (gotNewFrame || scLastStatsNs_ == 0 || (nowNs - scLastStatsNs_) >= 100'000'000LL) {
+            scLastStatsNs_ = nowNs;
+            const double brokerFps = meta.actual_fps_x100 / 100.0;
+            const double shownFps = brokerFps > 0.1 ? brokerFps : measFps;
+            updateScProfileBadge(measFps > 0.1 ? measFps : brokerFps, QStringLiteral("%1x%2").arg(meta.width).arg(meta.height));
+            const QString kindTag = meta.is_dmabuf
+                                        ? (meta.dmabuf_mappable ? QStringLiteral("DMA-BUF EGL/SHM") : QStringLiteral("DMA-BUF GPU-Opaque"))
+                                        : QStringLiteral("MemFd SHM");
+            lblScDmabufBadge_->setText(kindTag);
+            lblScStats_->setText(
+                QStringLiteral("Live Portal Cast: %1 (%2) | %3x%4 | Broker FPS=%5 | Feed FPS=%6 | Seq=%7 | Cons=%8")
+                    .arg(cFixedStr(meta.prod_name, sizeof(meta.prod_name)),
+                         cFixedStr(meta.format_name, sizeof(meta.format_name)))
+                    .arg(meta.width).arg(meta.height)
+                    .arg(shownFps, 0, 'f', 1)
+                    .arg(measFps, 0, 'f', 1)
+                    .arg(meta.seq)
+                    .arg(meta.cons_count));
+        }
     } else if (allowShm && realStreamActive && meta.is_dmabuf && !meta.dmabuf_mappable) {
         updateScProfileBadge(meta.actual_fps_x100 / 100.0, QStringLiteral("%1x%2").arg(meta.width).arg(meta.height));
         lblScDmabufBadge_->setText(QStringLiteral("DMA-BUF GPU-Opaque"));

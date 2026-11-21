@@ -432,6 +432,7 @@ extern "C" {
     fn free(ptr: *mut c_void);
     fn strdup(s: *const c_char) -> *mut c_char;
     fn strcmp(a: *const c_char, b: *const c_char) -> c_int;
+    fn getuid() -> u32;
     fn gettimeofday(tv: *mut TimeVal, tz: *mut c_void) -> c_int;
     fn pthread_mutexattr_init(attr: *mut PthreadMutexAttr) -> c_int;
     fn pthread_mutexattr_settype(attr: *mut PthreadMutexAttr, kind: c_int) -> c_int;
@@ -683,6 +684,7 @@ define_real_syms! {
     pa_channel_map_init_extend: c"pa_channel_map_init_extend" => unsafe extern "C" fn(*mut pa_channel_map, c_uint, pa_channel_map_def_t) -> *mut pa_channel_map,
     pa_channel_map_init_stereo: c"pa_channel_map_init_stereo" => unsafe extern "C" fn(*mut pa_channel_map) -> *mut pa_channel_map,
     pa_channel_map_valid: c"pa_channel_map_valid" => unsafe extern "C" fn(*const pa_channel_map) -> c_int,
+    pa_rtclock_now: c"pa_rtclock_now" => unsafe extern "C" fn() -> pa_usec_t,
 }
 
 static REAL_SYMS: SyncCell<RealSyms> = SyncCell::new(RealSyms::empty());
@@ -756,6 +758,9 @@ unsafe fn unregister_ml(ml: *mut pa_threaded_mainloop) {
     while !c.is_null() {
         if (*c).tmainloop == ml {
             (*c).tmainloop = ptr::null_mut();
+            (*c).api = ptr::null_mut();
+            (*c).reconnect_timer = ptr::null_mut();
+            (*c).refresh_defer = ptr::null_mut();
         }
         c = (*c).next;
     }
@@ -1311,6 +1316,8 @@ struct Wctx {
     user_connected: bool,
     user_disconnected: bool,
     reconnect_attempts: c_int,
+    prefer_tcp: bool,
+    last_connect_used_tcp: bool,
 
     state_cb: pa_context_notify_cb_t,
     state_ud: *mut c_void,
@@ -1640,7 +1647,9 @@ unsafe extern "C" fn deliver_synth_op_cb(
             }
             pa_context_unref(wctx.cast());
         }
-        (*op).state = PA_OPERATION_DONE;
+        if (*op).state == PA_OPERATION_RUNNING {
+            (*op).state = PA_OPERATION_DONE;
+        }
         if let Some(scb) = (*op).state_cb {
             scb(op.cast(), (*op).state_userdata);
         }
@@ -1945,18 +1954,31 @@ unsafe extern "C" fn internal_ext_stream_restore_sub_cb(rc: *mut pa_context, ud:
     pa_context_unref(wctx.cast());
 }
 
+fn server_string_allows_tcp_fallback(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    trimmed.split_whitespace().all(|tok| {
+        let entry = match (tok.strip_prefix('{'), tok.find('}')) {
+            (Some(rest), Some(_)) => rest.split_once('}').map_or(tok, |(_, after)| after),
+            _ => tok,
+        };
+        entry.starts_with("unix:") || entry.starts_with('/')
+    })
+}
+
 unsafe fn server_allows_tcp_fallback(server: *const c_char, server_set: bool) -> bool {
     if !server_set || server.is_null() {
-        return true;
+        return match std::env::var("PULSE_SERVER") {
+            Ok(env_srv) => server_string_allows_tcp_fallback(&env_srv),
+            Err(_) => true,
+        };
     }
     let Ok(s) = core::ffi::CStr::from_ptr(server).to_str() else {
         return false;
     };
-    let trimmed = s.trim();
-    trimmed.is_empty()
-        || trimmed.starts_with("unix:")
-        || trimmed.starts_with('/')
-        || trimmed.contains("/pulse/native")
+    server_string_allows_tcp_fallback(s)
 }
 
 fn parse_salsa_tcp_port_str(s: &str) -> Option<u16> {
@@ -1964,31 +1986,85 @@ fn parse_salsa_tcp_port_str(s: &str) -> Option<u16> {
     (port > 0).then_some(port)
 }
 
-fn read_salsa_tcp_target() -> Option<(std::ffi::CString, Option<std::ffi::CString>)> {
+fn read_salsa_tcp_target() -> Option<(std::ffi::CString, std::ffi::CString)> {
+    use std::fs::OpenOptions;
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    const SALSA_O_NONBLOCK: c_int = 0x800;
+    const SALSA_O_NOFOLLOW: c_int = 0x20000;
+    const SALSA_O_CLOEXEC: c_int = 0x80000;
+
+    let uid = unsafe { getuid() };
     let home = std::env::var("HOME").ok()?;
-    if !home.starts_with('/') {
+    if !home.starts_with('/') || home == "/tmp" {
         return None;
     }
-    let port_path = format!("{home}/.config/pulse/salsa-tcp-port");
-    let raw = std::fs::read_to_string(&port_path).ok()?;
-    let port = parse_salsa_tcp_port_str(&raw)?;
+    let home_meta = std::fs::symlink_metadata(&home).ok()?;
+    if !home_meta.is_dir() || home_meta.uid() != uid || (home_meta.mode() & 0o022) != 0 {
+        return None;
+    }
+    let pulse_dir = format!("{home}/.config/pulse");
+    let dir_meta = std::fs::symlink_metadata(&pulse_dir).ok()?;
+    if !dir_meta.is_dir() || dir_meta.uid() != uid || (dir_meta.mode() & 0o077) != 0 {
+        return None;
+    }
+
+    let port_path = format!("{pulse_dir}/salsa-tcp-port");
+    let mut pf = OpenOptions::new()
+        .read(true)
+        .custom_flags(SALSA_O_NOFOLLOW | SALSA_O_NONBLOCK | SALSA_O_CLOEXEC)
+        .open(&port_path)
+        .ok()?;
+    let pmeta = pf.metadata().ok()?;
+    if !pmeta.is_file() || pmeta.uid() != uid || (pmeta.mode() & 0o077) != 0 || pmeta.len() > 64 {
+        return None;
+    }
+    let mut pbuf = [0u8; 64];
+    let n = pf.read(&mut pbuf).ok()?;
+    let raw = core::str::from_utf8(&pbuf[..n]).ok()?;
+    let port = parse_salsa_tcp_port_str(raw)?;
     let srv = std::ffi::CString::new(format!("tcp4:127.0.0.1:{port}")).ok()?;
-    let cookie_path = format!("{home}/.config/pulse/cookie");
-    let cookie = std::fs::metadata(&cookie_path)
-        .ok()
-        .filter(|m| m.is_file() && m.len() == 256)
-        .and_then(|_| std::ffi::CString::new(cookie_path).ok());
-    Some((srv, cookie))
+
+    let cookie_path = format!("{pulse_dir}/cookie");
+    let cf = OpenOptions::new()
+        .read(true)
+        .custom_flags(SALSA_O_NOFOLLOW | SALSA_O_NONBLOCK | SALSA_O_CLOEXEC)
+        .open(&cookie_path)
+        .ok()?;
+    let cmeta = cf.metadata().ok()?;
+    if !cmeta.is_file()
+        || cmeta.uid() != uid
+        || (cmeta.mode() & 0o077) != 0
+        || cmeta.len() != 256
+    {
+        return None;
+    }
+    let ck = std::ffi::CString::new(cookie_path).ok()?;
+    Some((srv, ck))
 }
 
+unsafe fn should_try_tcp_fallback_with_pref(
+    reconnect_attempts: c_int,
+    prefer_tcp: bool,
+    server: *const c_char,
+    server_set: bool,
+) -> bool {
+    let want_tcp = if prefer_tcp {
+        reconnect_attempts >= 1 && (reconnect_attempts % 2 == 1)
+    } else {
+        reconnect_attempts >= 2 && (reconnect_attempts % 2 == 0)
+    };
+    want_tcp && server_allows_tcp_fallback(server, server_set)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 unsafe fn should_try_tcp_fallback(
     reconnect_attempts: c_int,
     server: *const c_char,
     server_set: bool,
 ) -> bool {
-    reconnect_attempts >= 2
-        && (reconnect_attempts % 2 == 0)
-        && server_allows_tcp_fallback(server, server_set)
+    should_try_tcp_fallback_with_pref(reconnect_attempts, false, server, server_set)
 }
 
 unsafe extern "C" fn reconnect_timer_cb(
@@ -2032,6 +2108,23 @@ unsafe extern "C" fn reconnect_timer_cb(
         return;
     }
 
+    // Read loopback TCP port/cookie outside (*wctx).lock to avoid stalling audio threads on disk I/O.
+    pthread_mutex_lock(&raw mut (*wctx).lock);
+    let want_tcp_pre = !(*wctx).user_disconnected
+        && (*wctx).reconnecting
+        && should_try_tcp_fallback_with_pref(
+            (*wctx).reconnect_attempts,
+            (*wctx).prefer_tcp,
+            (*wctx).server,
+            (*wctx).server_set,
+        );
+    pthread_mutex_unlock(&raw mut (*wctx).lock);
+    let tcp_fallback = if want_tcp_pre {
+        read_salsa_tcp_target()
+    } else {
+        None
+    };
+
     pthread_mutex_lock(&raw mut (*wctx).lock);
     if (*wctx).user_disconnected || !(*wctx).reconnecting {
         pthread_mutex_unlock(&raw mut (*wctx).lock);
@@ -2045,7 +2138,7 @@ unsafe extern "C" fn reconnect_timer_cb(
             f((*wctx).api, (*wctx).app_name, (*wctx).props)
         });
     if nrc.is_null() {
-        schedule_reconnect_timer(wctx, 200_000);
+        schedule_reconnect_timer(wctx, reconnect_backoff_us((*wctx).reconnect_attempts));
         pthread_mutex_unlock(&raw mut (*wctx).lock);
         pa_context_unref(wctx.cast());
         return;
@@ -2078,22 +2171,17 @@ unsafe extern "C" fn reconnect_timer_cb(
     }
 
     let cflags = (*wctx).flags & !PA_CONTEXT_NOFAIL;
-    let tcp_fallback = if should_try_tcp_fallback(
-        (*wctx).reconnect_attempts,
-        (*wctx).server,
-        (*wctx).server_set,
-    ) {
-        read_salsa_tcp_target()
-    } else {
-        None
-    };
-    if let Some((_, Some(ref ck))) = tcp_fallback {
+    let mut use_tcp = false;
+    if let Some((_, ref ck)) = tcp_fallback {
         if let Some(load_ck) = real().pa_context_load_cookie_from_file {
-            let _ = load_ck(nrc, ck.as_ptr());
+            if load_ck(nrc, ck.as_ptr()) >= 0 {
+                use_tcp = true;
+            }
         }
     }
-    let target_srv = if let Some((ref srv, _)) = tcp_fallback {
-        srv.as_ptr()
+    (*wctx).last_connect_used_tcp = use_tcp;
+    let target_srv = if use_tcp {
+        tcp_fallback.as_ref().map_or(ptr::null(), |(srv, _)| srv.as_ptr())
     } else if (*wctx).server_set {
         (*wctx).server
     } else {
@@ -2115,7 +2203,7 @@ unsafe extern "C" fn reconnect_timer_cb(
         detach_ctx_callbacks(nrc);
         (*wctx).real_ctx = ptr::null_mut();
         (*wctx).reconnect_attempts = (*wctx).reconnect_attempts.saturating_add(1);
-        schedule_reconnect_timer(wctx, 200_000);
+        schedule_reconnect_timer(wctx, reconnect_backoff_us((*wctx).reconnect_attempts));
         pthread_mutex_unlock(&raw mut (*wctx).lock);
         if let Some(f) = real().pa_context_unref {
             f(nrc);
@@ -2126,6 +2214,18 @@ unsafe extern "C" fn reconnect_timer_cb(
     }
     pthread_mutex_unlock(&raw mut (*wctx).lock);
     pa_context_unref(wctx.cast());
+}
+
+#[inline]
+fn reconnect_backoff_us(attempts: c_int) -> u64 {
+    match attempts {
+        0..=1 => 50_000,
+        2 => 150_000,
+        3 => 300_000,
+        4 => 600_000,
+        5 => 1_200_000,
+        _ => 2_000_000,
+    }
 }
 
 unsafe fn schedule_reconnect_timer(wctx: *mut Wctx, delay_us: u64) {
@@ -2142,14 +2242,20 @@ unsafe fn schedule_reconnect_timer(wctx: *mut Wctx, delay_us: u64) {
         (*wctx).reconnect_timer = ptr::null_mut();
     }
     let mut tv = TimeVal::default();
-    gettimeofday(&raw mut tv, ptr::null_mut());
-    tv.tv_usec += (delay_us % 1_000_000) as c_long;
-    tv.tv_sec += (delay_us / 1_000_000) as c_long;
-    if tv.tv_usec >= 1_000_000 {
-        tv.tv_sec += 1;
-        tv.tv_usec -= 1_000_000;
-    }
-    (*wctx).reconnect_timer = time_new((*wctx).api, &raw const tv, Some(reconnect_timer_cb), wctx.cast());
+    let tv_ptr = if let Some(now_fn) = real().pa_rtclock_now {
+        let now_us = now_fn();
+        rttime_to_timeval(now_us.saturating_add(delay_us), &raw mut tv)
+    } else {
+        gettimeofday(&raw mut tv, ptr::null_mut());
+        tv.tv_usec += (delay_us % 1_000_000) as c_long;
+        tv.tv_sec += (delay_us / 1_000_000) as c_long;
+        if tv.tv_usec >= 1_000_000 {
+            tv.tv_sec += 1;
+            tv.tv_usec -= 1_000_000;
+        }
+        &raw const tv
+    };
+    (*wctx).reconnect_timer = time_new((*wctx).api, tv_ptr, Some(reconnect_timer_cb), wctx.cast());
 }
 
 unsafe extern "C" fn internal_ctx_event_cb(
@@ -2203,6 +2309,7 @@ unsafe extern "C" fn internal_ctx_state_cb(rc: *mut pa_context, ud: *mut c_void)
         (*wctx).ever_ready = true;
         (*wctx).reconnecting = false;
         (*wctx).reconnect_attempts = 0;
+        (*wctx).prefer_tcp = (*wctx).last_connect_used_tcp;
         (*wctx).reported_state = PA_CONTEXT_READY;
         (*wctx).last_errno = PA_OK;
 
@@ -2297,7 +2404,7 @@ unsafe extern "C" fn internal_ctx_state_cb(rc: *mut pa_context, ud: *mut c_void)
 
     if st == PA_CONTEXT_FAILED && !(*wctx).user_disconnected {
         (*wctx).last_errno = real().pa_context_errno.map_or(PA_ERR_INVALID, |f| f(rc));
-        (*wctx).reconnect_attempts += 1;
+        (*wctx).reconnect_attempts = (*wctx).reconnect_attempts.saturating_add(1);
 
         let allow_retry = (*wctx).ever_ready
             || ((*wctx).flags & PA_CONTEXT_NOFAIL) != 0
@@ -2320,11 +2427,7 @@ unsafe extern "C" fn internal_ctx_state_cb(rc: *mut pa_context, ud: *mut c_void)
             detach_ctx_callbacks(rc);
             queue_dead_handle(wctx, rc.cast(), true);
 
-            let delay = if (*wctx).reconnect_attempts == 1 {
-                50_000
-            } else {
-                150_000
-            };
+            let delay = reconnect_backoff_us((*wctx).reconnect_attempts);
             schedule_reconnect_timer(wctx, delay);
             let tml = (*wctx).tmainloop;
             pthread_mutex_unlock(&raw mut (*wctx).lock);
@@ -3344,6 +3447,9 @@ pub unsafe extern "C" fn pa_context_rttime_new(
 ) -> *mut pa_time_event {
     ensure_init();
     let wctx = c.cast::<Wctx>();
+    if c.is_null() {
+        return ptr::null_mut();
+    }
     if !is_valid_wctx(wctx) {
         return real()
             .pa_context_rttime_new
@@ -3375,6 +3481,9 @@ pub unsafe extern "C" fn pa_context_rttime_restart(
 ) {
     ensure_init();
     let wctx = c.cast::<Wctx>();
+    if c.is_null() {
+        return;
+    }
     if !is_valid_wctx(wctx) {
         if let Some(f) = real().pa_context_rttime_restart {
             f(c, e, usec);
@@ -6807,6 +6916,8 @@ mod tests {
             assert!(server_allows_tcp_fallback(c"/run/user/1000/pulse/native".as_ptr(), true));
             assert!(!server_allows_tcp_fallback(c"tcp:192.168.1.10".as_ptr(), true));
             assert!(!server_allows_tcp_fallback(c"tcp4:127.0.0.1:4713".as_ptr(), true));
+            assert!(!server_allows_tcp_fallback(c"tcp:attacker.example/pulse/native".as_ptr(), true));
+            assert!(server_allows_tcp_fallback(c"{hostid}unix:/run/user/1000/pulse/native".as_ptr(), true));
 
             assert!(!should_try_tcp_fallback(0, ptr::null(), false));
             assert!(!should_try_tcp_fallback(1, ptr::null(), false));
@@ -6814,6 +6925,8 @@ mod tests {
             assert!(!should_try_tcp_fallback(3, ptr::null(), false));
             assert!(should_try_tcp_fallback(4, c"unix:/run/pressure-vessel/pulse/native".as_ptr(), true));
             assert!(!should_try_tcp_fallback(4, c"tcp:10.0.0.2".as_ptr(), true));
+            assert!(should_try_tcp_fallback_with_pref(1, true, c"unix:/run/pressure-vessel/pulse/native".as_ptr(), true));
+            assert!(!should_try_tcp_fallback_with_pref(2, true, c"unix:/run/pressure-vessel/pulse/native".as_ptr(), true));
         }
         assert_eq!(parse_salsa_tcp_port_str("41235\n"), Some(41235));
         assert_eq!(parse_salsa_tcp_port_str("0"), None);
@@ -6918,5 +7031,14 @@ mod tests {
             }
             pthread_mutex_unlock(G_CTX_LOCK.get());
         }
+    }
+
+    #[test]
+    fn server_string_policy_blocks_remote_tcp_fallback() {
+        assert!(server_string_allows_tcp_fallback(""));
+        assert!(server_string_allows_tcp_fallback("unix:/run/user/1000/pulse/native"));
+        assert!(server_string_allows_tcp_fallback("{tag}unix:/run/user/1000/pulse/native /tmp/p"));
+        assert!(!server_string_allows_tcp_fallback("tcp:host=evil:4713"));
+        assert!(!server_string_allows_tcp_fallback("unix:/tmp/ok tcp4:127.0.0.1:4713"));
     }
 }

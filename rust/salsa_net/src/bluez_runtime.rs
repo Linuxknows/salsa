@@ -2224,11 +2224,7 @@ unsafe extern "C" fn endpoint_message_handler(
             st.has_bluez_transport = true;
             rt.delay_tenths_ms.store(delay, Ordering::Relaxed);
             if has_vol {
-                let cv = vol.min(127);
-                let pct = ((u32::from(cv) * 100 + 63) / 127).min(100);
-                rt.avrcp_volume.store(cv, Ordering::Relaxed);
-                rt.desktop_volume_pct.store(pct, Ordering::Relaxed);
-                rt.avrcp_supported.store(true, Ordering::Relaxed);
+                let _ = apply_peer_avrcp_vol(rt, vol, true);
             }
             (
                 st.codec_id,
@@ -2360,11 +2356,7 @@ unsafe extern "C" fn bluez_signal_filter(
                             unsafe { (db.message_iter_recurse)(&mut entry, &mut var) };
                             if k == "Volume" {
                                 if let Some(v) = unsafe { iter_get_u16(db, &mut var) } {
-                                    let cv = v.min(127);
-                                    let pct = ((u32::from(cv) * 100 + 63) / 127).min(100);
-                                    rt.avrcp_volume.store(cv, Ordering::Relaxed);
-                                    rt.desktop_volume_pct.store(pct, Ordering::Relaxed);
-                                    rt.avrcp_supported.store(true, Ordering::Relaxed);
+                                    let (_cv, pct) = apply_peer_avrcp_vol(rt, v, false);
                                     let alias = rt.state.lock().unwrap().device_alias.clone();
                                     dbg_emit_vals(
                                         LWASAPI_DBG_BLUEZ,
@@ -3909,11 +3901,7 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                     if let Some(cur_v) = unsafe {
                         dbus_get_u16_prop(db, conn, &tp_now, "org.bluez.MediaTransport1", "Volume")
                     } {
-                        let cv = cur_v.min(127);
-                        let pct = ((u32::from(cv) * 100 + 63) / 127).min(100);
-                        rt.avrcp_volume.store(cv, Ordering::Relaxed);
-                        rt.desktop_volume_pct.store(pct, Ordering::Relaxed);
-                        rt.avrcp_supported.store(true, Ordering::Relaxed);
+                        let (cv, pct) = apply_peer_avrcp_vol(&rt, cur_v, true);
                         dbg_emit_vals(
                             LWASAPI_DBG_BLUEZ,
                             LWASAPI_DBG_INFO,
@@ -4476,6 +4464,16 @@ pub fn audiodg_bt_ptr_impl() -> *mut c_void {
 
 /// # Safety
 ///
+/// If non-null, `bt` must be a valid handle returned by `audiodg_bt_ptr_impl`.
+pub unsafe fn bt_is_initialized_impl(bt: *const c_void) -> bool {
+    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
+        return false;
+    };
+    rt.initialized.load(Ordering::Acquire)
+}
+
+/// # Safety
+///
 /// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`, and any
 /// non-null `out_vol_pct` or `out_muted` pointer must be valid for scalar writes.
 pub unsafe fn bt_rt_master_vol_impl(
@@ -4941,8 +4939,12 @@ pub unsafe fn bluez_enumerate_devices_impl(
         let _guard = DBUS_ENUM_LOCK.lock().unwrap();
         if let Some(db) = load_dbus_library() {
             unsafe { (db.threads_init_default)() };
-            let conn = unsafe { (db.bus_get)(DBUS_BUS_SYSTEM, ptr::null_mut()) };
+            let mut err = DBusError::default();
+            unsafe { (db.error_init)(&mut err) };
+            let conn = unsafe { (db.bus_get_private)(DBUS_BUS_SYSTEM, &mut err) };
+            unsafe { (db.error_free)(&mut err) };
             if !conn.is_null() {
+                unsafe { (db.connection_set_exit_on_disconnect)(conn, 0) };
                 if let Some(objs) = fetch_managed_objects(db, conn, 1200) {
                     sync_known_bt_devices(rt, &objs);
                     let (bt_live, bt_mac, bt_codec, sco_en) = if let Some(r) = rt {
@@ -5020,6 +5022,10 @@ pub unsafe fn bluez_enumerate_devices_impl(
                             out.devices[idx] = sc;
                         }
                     }
+                }
+                unsafe {
+                    (db.connection_close)(conn);
+                    (db.connection_unref)(conn);
                 }
             }
         }
@@ -5871,14 +5877,13 @@ pub unsafe fn bluez_connection_ctl_impl(
                 any_connected = false;
                 write_msg("Bluetooth audio already disconnected.");
             } else {
-                for tp in objs.transports.iter().filter(|t| t.state == "active") {
+                if objs.transports.iter().any(|t| t.state == "active") {
                     if let Some(r) = rt {
-                        let cur_tp = r.state.lock().unwrap().transport_path.clone();
-                        if !cur_tp.is_empty() {
+                        let has_tp = !r.state.lock().unwrap().transport_path.is_empty();
+                        if has_tp {
                             release_bluez_transport(db, conn, r);
                         }
                     }
-                    let _ = tp;
                 }
                 for dev in &targets {
                     let dmsg = dbus_new_method_call(
@@ -5941,6 +5946,27 @@ pub unsafe fn bluez_connection_ctl_impl(
         (db.connection_unref)(conn);
     }
     rc
+}
+
+/// Records peer-reported AVRCP Volume (0..=127), preserving Salsa's pending AVRCP sync
+/// or >100% software boost during initial transport setup/acquire when requested.
+fn apply_peer_avrcp_vol(
+    rt: &BluezRuntime,
+    raw_vol: u16,
+    preserve_pending_or_boost: bool,
+) -> (u16, u32) {
+    let cv = raw_vol.min(127);
+    let pct = ((u32::from(cv) * 100 + 63) / 127).min(100);
+    rt.avrcp_volume.store(cv, Ordering::Relaxed);
+    rt.avrcp_supported.store(true, Ordering::Relaxed);
+    let cur_pct = rt.desktop_volume_pct.load(Ordering::Relaxed);
+    let keep_cur = preserve_pending_or_boost
+        && (rt.need_avrcp_sync.load(Ordering::Acquire) || (cv == 127 && cur_pct > 100));
+    if !keep_cur {
+        rt.desktop_volume_pct.store(pct, Ordering::Relaxed);
+    }
+    let shown_pct = if keep_cur { cur_pct } else { pct };
+    (cv, shown_pct)
 }
 
 #[cfg(test)]
@@ -6048,5 +6074,29 @@ mod tests {
         );
         assert_eq!(cn_mt, "A2DP");
         assert_eq!(nm_mt, "Bose QC Ultra 2 HP (A2DP)");
+    }
+
+    #[test]
+    fn peer_avrcp_vol_preserves_pending_sync_and_boost_on_acquire() {
+        let rt = BluezRuntime::new();
+        rt.desktop_volume_pct.store(120, Ordering::Relaxed);
+        rt.need_avrcp_sync.store(true, Ordering::Release);
+        let (cv1, shown1) = apply_peer_avrcp_vol(&rt, 68, true);
+        assert_eq!(cv1, 68);
+        assert_eq!(shown1, 120);
+        assert_eq!(rt.desktop_volume_pct.load(Ordering::Relaxed), 120);
+
+        // Max AVRCP (127) during acquire must not wipe >100% desktop boost
+        rt.need_avrcp_sync.store(false, Ordering::Release);
+        let (cv2, shown2) = apply_peer_avrcp_vol(&rt, 127, true);
+        assert_eq!(cv2, 127);
+        assert_eq!(shown2, 120);
+        assert_eq!(rt.desktop_volume_pct.load(Ordering::Relaxed), 120);
+
+        // Live headset button press updates desktop_volume_pct
+        let (cv3, shown3) = apply_peer_avrcp_vol(&rt, 68, false);
+        assert_eq!(cv3, 68);
+        assert_eq!(shown3, 54);
+        assert_eq!(rt.desktop_volume_pct.load(Ordering::Relaxed), 54);
     }
 }

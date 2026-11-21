@@ -103,6 +103,21 @@ struct ShmOpaque {
     shm_name: String,
     dry_cap: DryRunDesktopCapturer,
     portal: Option<PortalScreenCastPreview>,
+    last_seq: u64,
+    last_w: u32,
+    last_h: u32,
+    last_mw: u32,
+    last_mh: u32,
+    last_prod_id: u32,
+}
+
+fn reset_shm_cache(st: &mut ShmOpaque) {
+    st.last_seq = 0;
+    st.last_w = 0;
+    st.last_h = 0;
+    st.last_mw = 0;
+    st.last_mh = 0;
+    st.last_prod_id = 0;
 }
 
 struct TrayLockOpaque {
@@ -1526,6 +1541,12 @@ pub extern "C" fn salsa_dbg_shm_create() -> *mut c_void {
         shm_name: String::new(),
         dry_cap: DryRunDesktopCapturer::new(640, 360),
         portal: None,
+        last_seq: 0,
+        last_w: 0,
+        last_h: 0,
+        last_mw: 0,
+        last_mh: 0,
+        last_prod_id: 0,
     });
     Box::into_raw(b).cast::<c_void>()
 }
@@ -1537,6 +1558,15 @@ pub extern "C" fn salsa_dbg_shm_destroy(ctx: *mut c_void) {
             let _ = Box::from_raw(ctx.cast::<ShmOpaque>());
         }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_dbg_shm_reset_cache(ctx: *mut c_void) {
+    if ctx.is_null() {
+        return;
+    }
+    let st = unsafe { &mut *ctx.cast::<ShmOpaque>() };
+    reset_shm_cache(st);
 }
 
 #[no_mangle]
@@ -1561,17 +1591,35 @@ pub extern "C" fn salsa_dbg_shm_poll_frame(
         if !nm.is_empty() && (st.reader.is_none() || st.shm_name != nm) {
             st.reader = ScreenCastShmReader::open(&nm).ok();
             st.shm_name = nm;
+            reset_shm_cache(st);
         }
     }
     let Some(ref reader) = st.reader else {
         return 0;
     };
     reader.send_preview_ping(true, max_w, max_h, tfps, cap_fps);
-    let Some(fr) = reader.read_frame() else {
+    let prev_seq =
+        (st.last_seq != 0 && st.last_mw == max_w && st.last_mh == max_h).then_some(st.last_seq);
+    let Some(mut fr) = reader.read_frame_since(prev_seq) else {
         return 0;
     };
     if !fr.active_stream {
+        reset_shm_cache(st);
         return 0;
+    }
+    let same_frame = prev_seq == Some(fr.seq)
+        && fr.width == st.last_w
+        && fr.height == st.last_h
+        && fr.prod_node_id == st.last_prod_id;
+    if fr.rgba.is_empty() && !same_frame && (!fr.is_dmabuf || fr.dmabuf_mappable) {
+        let Some(full) = reader.read_frame() else {
+            return 0;
+        };
+        if !full.active_stream {
+            reset_shm_cache(st);
+            return 0;
+        }
+        fr = full;
     }
     meta.active_stream = 1;
     meta.is_dmabuf = c_int::from(fr.is_dmabuf);
@@ -1592,7 +1640,18 @@ pub extern "C" fn salsa_dbg_shm_poll_frame(
             core::ptr::copy_nonoverlapping(fr.rgba.as_ptr(), rgba_out, copy_n);
         }
         meta.bytes_written = copy_n;
+        st.last_seq = fr.seq;
+        st.last_w = fr.width;
+        st.last_h = fr.height;
+        st.last_mw = max_w;
+        st.last_mh = max_h;
+        st.last_prod_id = fr.prod_node_id;
+        return 1;
     }
+    if same_frame && st.last_w >= 2 && st.last_h >= 2 {
+        return 2;
+    }
+    reset_shm_cache(st);
     1
 }
 
@@ -1602,6 +1661,7 @@ pub extern "C" fn salsa_dbg_shm_stop(ctx: *mut c_void) {
         return;
     }
     let st = unsafe { &mut *ctx.cast::<ShmOpaque>() };
+    reset_shm_cache(st);
     if let Some(mut p) = st.portal.take() {
         p.stop();
     }
@@ -1617,6 +1677,7 @@ pub extern "C" fn salsa_dbg_portal_start(ctx: *mut c_void, force_reselect: bool)
     }
     let st = unsafe { &mut *ctx.cast::<ShmOpaque>() };
     if force_reselect {
+        reset_shm_cache(st);
         if let Some(mut old) = st.portal.take() {
             old.stop();
         }
@@ -1627,6 +1688,7 @@ pub extern "C" fn salsa_dbg_portal_start(ctx: *mut c_void, force_reselect: bool)
     {
         return 0;
     }
+    reset_shm_cache(st);
     st.portal = Some(PortalScreenCastPreview::start(force_reselect));
     0
 }
@@ -1637,6 +1699,7 @@ pub extern "C" fn salsa_dbg_portal_stop(ctx: *mut c_void) {
         return;
     }
     let st = unsafe { &mut *ctx.cast::<ShmOpaque>() };
+    reset_shm_cache(st);
     if let Some(mut p) = st.portal.take() {
         p.stop();
     }

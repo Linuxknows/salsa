@@ -104,10 +104,14 @@ fn systemd_quote(s: &str) -> String {
 }
 
 fn desktop_exec_quote(s: &str) -> String {
-    let needs_quote = s.chars().any(|c| {
+    let clean: String = s
+        .chars()
+        .filter(|&c| !matches!(c, '\r' | '\n' | '\0'))
+        .collect();
+    let needs_quote = clean.chars().any(|c| {
         c.is_whitespace() || matches!(c, '"' | '\'' | '\\' | '$' | '`' | '>' | '<' | '~' | '|' | '&' | ';' | '(' | ')' | '*' | '?' | '#' | '=')
     });
-    let escaped_pct = s.replace('%', "%%");
+    let escaped_pct = clean.replace('%', "%%");
     if !needs_quote {
         return escaped_pct;
     }
@@ -159,7 +163,7 @@ fn force_symlink(target: &Path, link_path: &Path) -> Result<(), String> {
     if let Some(parent) = link_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
-    let tmp = link_path.with_extension("tmp_sym");
+    let tmp = link_path.with_extension(format!("tmp_sym.{}", std::process::id()));
     let _ = fs::remove_file(&tmp);
     symlink(target, &tmp).map_err(|e| format!("symlink {} -> {}: {e}", tmp.display(), target.display()))?;
     fs::rename(&tmp, link_path)
@@ -1240,7 +1244,12 @@ fn do_uninstall(root: &Path) -> ExitCode {
             let Some((osd_k, osd_v)) = line.trim().split_once('=') else {
                 continue;
             };
-            if osd_k.is_empty() {
+            if osd_k.is_empty()
+                || osd_k.starts_with('-')
+                || !osd_k
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.'))
+            {
                 continue;
             }
             if osd_v == "__UNSET__" {
@@ -1288,16 +1297,29 @@ fn do_uninstall(root: &Path) -> ExitCode {
     if fp_file.is_file() && !is_symlink_path(&fp_file) && which("flatpak").is_some() {
         let txt = read_text_lossy(&fp_file, 64 * 1024);
         for line in txt.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let valid_app_id = |id: &str| {
+                !id.is_empty()
+                    && !id.starts_with('-')
+                    && !id.contains('/')
+                    && !id.contains('\0')
+                    && id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            };
             if let Some(app_id) = line.strip_prefix("socket:") {
-                let _ = run_quiet(
-                    "flatpak",
-                    &["override", "--user", "--nosocket=pulseaudio", app_id],
-                );
+                if valid_app_id(app_id) {
+                    let _ = run_quiet(
+                        "flatpak",
+                        &["override", "--user", "--nosocket=pulseaudio", app_id],
+                    );
+                }
             } else if let Some(app_id) = line.strip_prefix("fs:") {
-                let _ = run_quiet(
-                    "flatpak",
-                    &["override", "--user", "--nofilesystem=xdg-run/pipewire-0:ro", app_id],
-                );
+                if valid_app_id(app_id) {
+                    let _ = run_quiet(
+                        "flatpak",
+                        &["override", "--user", "--nofilesystem=xdg-run/pipewire-0:ro", app_id],
+                    );
+                }
             }
         }
         let _ = fs::remove_file(&fp_file);
@@ -1320,28 +1342,37 @@ fn stdin_is_tty() -> bool {
 }
 
 fn run_privileged_self(flag: &str) -> ExitCode {
-    let exe = env::current_exe().unwrap_or_else(|_| PathBuf::from("salsa-installer"));
+    let Ok(raw_exe) = env::current_exe() else {
+        eprintln!("Failed to resolve current executable path.");
+        return ExitCode::from(1);
+    };
+    let Ok(exe) = fs::canonicalize(&raw_exe) else {
+        eprintln!("Failed to canonicalize current executable path.");
+        return ExitCode::from(1);
+    };
+    let pkexec_bin = Path::new("/usr/bin/pkexec");
+    let sudo_bin = Path::new("/usr/bin/sudo");
     let has_gui = env::var_os("DISPLAY").is_some() || env::var_os("WAYLAND_DISPLAY").is_some();
-    if (!stdin_is_tty() || has_gui && which("sudo").is_none()) && which("pkexec").is_some() {
-        if let Ok(st) = Command::new("pkexec").arg(&exe).arg(flag).status() {
+    if (!stdin_is_tty() || has_gui && !sudo_bin.is_file()) && pkexec_bin.is_file() {
+        if let Ok(st) = Command::new(pkexec_bin).arg(&exe).arg(flag).status() {
             if st.success() {
                 return ExitCode::SUCCESS;
             }
         }
     }
-    let st = Command::new("sudo").arg(&exe).arg(flag).status();
-    if st.map(|s| s.success()).unwrap_or(false) {
-        ExitCode::SUCCESS
-    } else if which("pkexec").is_some() {
-        let st2 = Command::new("pkexec").arg(&exe).arg(flag).status();
-        if st2.map(|s| s.success()).unwrap_or(false) {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::from(1)
+    if sudo_bin.is_file() {
+        let st = Command::new(sudo_bin).arg(&exe).arg(flag).status();
+        if st.map(|s| s.success()).unwrap_or(false) {
+            return ExitCode::SUCCESS;
         }
-    } else {
-        ExitCode::from(1)
     }
+    if pkexec_bin.is_file() {
+        let st2 = Command::new(pkexec_bin).arg(&exe).arg(flag).status();
+        if st2.map(|s| s.success()).unwrap_or(false) {
+            return ExitCode::SUCCESS;
+        }
+    }
+    ExitCode::from(1)
 }
 
 fn do_install_pacman_hook() -> ExitCode {
@@ -1365,9 +1396,18 @@ fn do_install_pacman_hook() -> ExitCode {
             let _ = fs::remove_file(legacy);
         }
         let marker_dir = Path::new(AUTOSYNC_MARKER_DIR);
-        let _ = fs::create_dir_all(marker_dir);
-        let _ = fs::set_permissions(marker_dir, Permissions::from_mode(0o755));
-        let _ = write_atomic_secure(Path::new(AUTOSYNC_MARKER_PATH), b"0\n", 0o644);
+        if let Err(e) = fs::create_dir_all(marker_dir) {
+            eprintln!("Failed creating {AUTOSYNC_MARKER_DIR}: {e}");
+            return ExitCode::from(1);
+        }
+        if let Err(e) = fs::set_permissions(marker_dir, Permissions::from_mode(0o755)) {
+            eprintln!("Failed setting permissions on {AUTOSYNC_MARKER_DIR}: {e}");
+            return ExitCode::from(1);
+        }
+        if let Err(e) = write_atomic_secure(Path::new(AUTOSYNC_MARKER_PATH), b"0\n", 0o644) {
+            eprintln!("Failed writing {AUTOSYNC_MARKER_PATH}: {e}");
+            return ExitCode::from(1);
+        }
         println!("[OK] Installed {PACMAN_HOOK_PATH}");
         return ExitCode::SUCCESS;
     }

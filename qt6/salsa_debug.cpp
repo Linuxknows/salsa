@@ -67,8 +67,8 @@ public:
 
         auto* btnStudio = new QPushButton(QStringLiteral("Open Salsa Studio"), topCard);
         btnStudio->setToolTip(QStringLiteral("Open Salsa Studio — Launches the main Salsa mixer, 10-band EQ, and Advanced Options window."));
-        connect(btnStudio, &QPushButton::clicked, this, []() {
-            spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--studio")});
+        connect(btnStudio, &QPushButton::clicked, this, [this]() {
+            spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--studio")}, this);
         });
         topLay->addWidget(btnStudio);
 
@@ -129,6 +129,18 @@ public:
         syncTimer_->start();
 
         applyThemeAndFont();
+
+        singleInstServer_.start(
+            QStringLiteral("salsa-debug.sock"),
+            this,
+            [this](const QString& mode, const QByteArray& token) {
+                if (mode.startsWith(QLatin1String("tab:"))) {
+                    bool ok = false;
+                    const int tab = mode.mid(4).toInt(&ok);
+                    if (ok && dbgWidget_) dbgWidget_->selectTab(std::clamp(tab, 0, 4));
+                }
+                raiseAndActivateWindow(this, token);
+            });
     }
 
     void setScreenCastLive(bool enabled) {
@@ -141,6 +153,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override {
+        singleInstServer_.stop();
         if (syncTimer_) syncTimer_->stop();
         if (dbgWidget_) dbgWidget_->shutdown();
         QMainWindow::closeEvent(event);
@@ -198,6 +211,7 @@ private:
     FontScaleBar* fontBar_ = nullptr;
     SalsaLiveDebuggerWidget* dbgWidget_ = nullptr;
     QTimer* syncTimer_ = nullptr;
+    SingleInstanceServer singleInstServer_;
 };
 
 }  // namespace salsa
@@ -273,6 +287,16 @@ int main(int argc, char** argv) {
 
     if (isCliModeArg(argc, argv)) {
         return salsa_debug_cli_main(argc, argv);
+    }
+
+    const QString dbgMode = (cfgIdx >= 0 || initialTab > 0)
+                                ? QStringLiteral("tab:%1").arg(initialTab)
+                                : QStringLiteral("auto");
+    if (cfgIdx < 0 && salsa::tryActivateExistingSingleInstance(
+                          QStringLiteral("salsa-debug.sock"),
+                          dbgMode,
+                          qgetenv("XDG_ACTIVATION_TOKEN"))) {
+        return 0;
     }
 
     QApplication app(argc, argv);
