@@ -268,6 +268,26 @@ uint64_t salsa_gui_settings_mtime_ns(void);
 char* salsa_load_gui_settings_json(void);
 int salsa_save_studio_settings_json(const char* json_str);
 int salsa_update_gui_settings_json(const char* patch_json);
+char* salsa_settings_path_str(void);
+int salsa_save_config_now(void);
+int salsa_reload_config_now(void);
+int salsa_overwrite_settings_from_ui(
+    uint32_t sample_rate,
+    uint32_t period_frames,
+    uint32_t format_bits,
+    uint32_t cap_sample_rate,
+    const char* playback_id,
+    const char* capture_id,
+    uint32_t master_pct,
+    uint32_t master_muted,
+    uint32_t mic_pct,
+    uint32_t mic_muted,
+    uint32_t bt_optional_mode,
+    const SalsaBtCodecCfg* bt_cfg,
+    const SalsaHwAnalogCfg* hw_analog,
+    const SalsaEqConfig* eq_cfg,
+    const SalsaParamEqExt* param_ext,
+    const char* gui_json);
 int salsa_normalize_font_scale(int pct);
 int salsa_save_font_scale(int pct);
 int salsa_load_font_scale(void);

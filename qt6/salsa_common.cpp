@@ -216,6 +216,32 @@ static QString ensureCheckIconPng(bool darkInk) {
     return QString(path).replace('\\', '/');
 }
 
+static QString ensureDownArrowIconPng(const QColor& ink) {
+    const QColor cleanInk = ink.isValid() ? ink : QColor(QStringLiteral("#cbd5e1"));
+    const QString tag = cleanInk.name(QColor::HexRgb).mid(1);
+    QString baseDir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+    if (baseDir.isEmpty()) baseDir = QDir::tempPath();
+    const QString path = QStringLiteral("%1/salsa_qt_arrow_%2.png").arg(baseDir, tag);
+    if (!QFile::exists(path)) {
+        QImage img(20, 20, QImage::Format_ARGB32);
+        img.fill(Qt::transparent);
+        QPainter p(&img);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QPen pen(cleanInk, 2.3);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        p.setPen(pen);
+        QPainterPath arrow;
+        arrow.moveTo(4.5, 7.5);
+        arrow.lineTo(10.0, 13.0);
+        arrow.lineTo(15.5, 7.5);
+        p.drawPath(arrow);
+        p.end();
+        img.save(path, "PNG");
+    }
+    return QString(path).replace('\\', '/');
+}
+
 QPalette buildSalsaPalette(const SalsaThemeData& t) {
     QPalette pal;
     pal.setColor(QPalette::Window, t.qcolor("bg_main", "#111316"));
@@ -277,8 +303,8 @@ QString buildSalsaStylesheet(const SalsaThemeData& t, bool mini, int fontPct) {
     const int subFs = mini ? 8 : sp(11);
     const int secFs = mini ? 10 : sp(13);
     const int eqChkFs = mini ? 9 : sp(13);
-    const int valFs = mini ? 8 : sp(11);
-    const int dynFs = mini ? 8 : sp(10);
+    const int valFs = mini ? 8 : sp(12);
+    const int dynFs = mini ? 8 : sp(11);
     const int tabFs = mini ? 9 : sp(12);
 
     const QString tabPad = mini ? QStringLiteral("4px 10px")
@@ -301,6 +327,8 @@ QString buildSalsaStylesheet(const SalsaThemeData& t, bool mini, int fontPct) {
 
     const bool useDarkTick = t.qcolor("accent_primary", "#00e676").lightness() > 145;
     const QString chkIconPath = ensureCheckIconPng(useDarkTick);
+    const QString arrowIconPath = ensureDownArrowIconPng(t.qcolor("text_secondary", "#cbd5e1"));
+    const int arrowSz = mini ? 9 : sp(11);
 
     auto c = [&t](const char* key, const char* fb) -> QString {
         return t.color(QString::fromLatin1(key), QString::fromLatin1(fb));
@@ -344,9 +372,10 @@ QString buildSalsaStylesheet(const SalsaThemeData& t, bool mini, int fontPct) {
                " QLabel#LatencyLabel { color: %9; font-weight: 700; }"
                " QCheckBox#EqEnableCheck { font-weight: 800; color: %9; font-size: %10px; }"
                " QLabel#PeaksLabel { font-family: Monospace; font-weight: 700; color: %7; }"
-               " QLabel#ValMonoLabel { font-family: Monospace; font-weight: 600; color: %2; }"
+               " QLabel#ValMonoLabel { font-family: Monospace; font-weight: 700; color: %5; font-size: %11px; }"
                " QLabel#BandValLabel { font-weight: 700; color: %5; font-size: %11px; }"
                " QLabel#BandDynLabel { color: %12; font-size: %13px; font-family: Monospace; }"
+               " QLabel#DiagStatusLabel { color: %12; font-size: %11px; font-family: Monospace; font-weight: 600; }"
                " QLabel#BandFreqLabel { color: %14; font-weight: 700; font-size: %11px; }"
                " QLabel#EndpointsLabel { color: %15; font-size: %11px; }"
                " QLabel#AutoBadgeLabel { color: %7; font-weight: 700; font-size: %11px; }"
@@ -423,6 +452,28 @@ QString buildSalsaStylesheet(const SalsaThemeData& t, bool mini, int fontPct) {
                     c("btn_accent_border", "#fb7185"),
                     c("btn_accent_text", "#ffffff"),
                     c("btn_accent_hover", "#e11d48"));
+
+    qss += QStringLiteral(
+               " QSlider { background-color: transparent; }"
+               " QSlider:horizontal { min-height: 22px; }"
+               " QScrollArea { background-color: transparent; border: none; }"
+               " QScrollArea > QWidget > QWidget { background-color: transparent; }"
+               " QComboBox { padding-right: 22px; }"
+               " QTableWidget QComboBox { padding: 2px 20px 2px 6px; }"
+               " QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right;"
+               " width: 20px; background-color: transparent; border-left: 1px solid %1;"
+               " border-top-right-radius: 5px; border-bottom-right-radius: 5px; }"
+               " QComboBox::drop-down:hover { background-color: %2; }"
+               " QComboBox::down-arrow { image: url(%6); width: %7px; height: %7px; }"
+               " QComboBox:focus, QPushButton:focus, QSlider:focus { outline: none; }"
+               " QToolTip { background-color: %3; color: %4; border: 1px solid %5; border-radius: 5px; padding: 5px 8px; }")
+               .arg(c("border_control", "#334155"),
+                    c("bg_hover", "#262c36"),
+                    c("combo_popup_bg", "#1a1f28"),
+                    c("text_bright", "#f8fafc"),
+                    c("accent_secondary", "#38bdf8"),
+                    arrowIconPath,
+                    QString::number(arrowSz));
 
     qss += QStringLiteral(
                " QSlider::groove:vertical { background: %1; border: 1px solid %2; width: %3px; border-radius: 3px; }"
@@ -1013,7 +1064,7 @@ void showAboutLicenseDialog(
 
     auto* tabRow = new QHBoxLayout();
     tabRow->setSpacing(6);
-    auto* btnSummary = new QPushButton(QStringLiteral("Notice & Summary"), &dlg);
+    auto* btnSummary = new QPushButton(QStringLiteral("Notice && Summary"), &dlg);
     btnSummary->setToolTip(QStringLiteral("Legal Notice & Summary — Shows Salsa copyright, LGPL-3.0-only licensing, no-warranty disclaimer, relinking terms, and optional dlopen disclosure."));
     auto* btnThird = new QPushButton(QStringLiteral("Third-Party / dlopen"), &dlg);
     btnThird->setToolTip(QStringLiteral("Third-Party Libraries — Lists dynamically linked Qt6/audio frameworks and optional runtime dlopen codecs (including libfdk-aac notice)."));

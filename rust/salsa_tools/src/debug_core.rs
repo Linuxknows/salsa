@@ -1281,6 +1281,7 @@ fn scan_configs(base_dir: &Path) -> JsonValue {
 
     let mut state_files = Vec::new();
     for fname in [
+        "salsa_settings.json",
         "gui_settings.json",
         "pipewire_zero_mode",
         "module_versions.state",
@@ -2176,6 +2177,7 @@ impl DiagnosticProbes {
         }
         let st_dir = state_dir();
         for fname in [
+            "salsa_settings.json",
             "gui_settings.json",
             "pipewire_zero_mode",
             "module_versions.state",

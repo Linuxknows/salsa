@@ -315,7 +315,7 @@ fn test_tools_and_settings_security(base_dir: &Path) -> Result<String, String> {
             .map(|o| o.is_empty())
             .unwrap_or(false)
         {
-            return Err("symlinked gui_settings.json was not rejected cleanly".to_string());
+            return Err("symlinked salsa_settings.json was not rejected cleanly".to_string());
         }
     }
 
@@ -1313,7 +1313,7 @@ fn test_live_rev61_studio_apis(base_dir: &Path) -> Result<String, String> {
         }
     }
 
-    for fname in ["salsa_state.bin", "app_volumes.conf"] {
+    for fname in ["salsa_settings.json", "salsa_state.bin", "app_volumes.conf"] {
         let p = state_dir().join(fname);
         if p.exists() {
             let lm = fs::symlink_metadata(&p).map_err(|e| format!("lstat {fname}: {e}"))?;

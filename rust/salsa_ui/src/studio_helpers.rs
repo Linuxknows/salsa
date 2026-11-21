@@ -39,6 +39,7 @@ pub const DEFAULT_SHORTCUTS: &[(&str, &str, &str)] = &[
     ("mic_up", "Mic Gain +Step", "Ctrl+Alt+Up"),
     ("mic_down", "Mic Gain -Step", "Ctrl+Alt+Down"),
     ("bt_reset", "Reset Bluetooth", "Ctrl+Shift+B"),
+    ("save_config", "Save Settings", "Ctrl+S"),
     ("refresh", "Force Poll / Sync UI", "F5"),
     ("quit", "Quit Salsa Studio", "Ctrl+Q"),
 ];

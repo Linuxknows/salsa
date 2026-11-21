@@ -64,6 +64,9 @@ pub const O_EXCL: c_int = 0x80;
 pub const O_NONBLOCK: c_int = 0x800;
 pub const O_NOFOLLOW: c_int = 0x20000;
 pub const O_CLOEXEC: c_int = 0x80000;
+pub const LOCK_EX: c_int = 2;
+pub const LOCK_NB: c_int = 4;
+pub const LOCK_UN: c_int = 8;
 pub const RTLD_LOCAL: c_int = 0;
 pub const RTLD_NOW: c_int = 2;
 
@@ -187,6 +190,184 @@ extern "C" {
     fn pthread_self() -> c_ulong;
     fn pthread_setschedparam(thread: c_ulong, policy: c_int, param: *const SchedParam) -> c_int;
     fn setpriority(which: c_int, who: u32, prio: c_int) -> c_int;
+    fn flock(fd: c_int, operation: c_int) -> c_int;
+}
+
+pub fn flock_fd(fd: RawFd, nonblocking: bool) -> io::Result<()> {
+    let op = if nonblocking { LOCK_EX | LOCK_NB } else { LOCK_EX };
+    let rc = unsafe { flock(fd, op) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+pub fn funlock_fd(fd: RawFd) {
+    unsafe {
+        let _ = flock(fd, LOCK_UN);
+    }
+}
+
+pub fn ensure_dir_0700_safe(path: &Path) -> io::Result<()> {
+    let uid = current_uid();
+    let s = path.to_string_lossy();
+    if ensure_owned_dir_0700(&s, uid) {
+        return Ok(());
+    }
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing unsafe or unowned directory: {}", path.display()),
+        )),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() && parent != Path::new("/") {
+                    match fs::symlink_metadata(parent) {
+                        Ok(pm) => {
+                            if pm.file_type().is_symlink() {
+                                let target_meta = fs::metadata(parent)?;
+                                if !target_meta.is_dir() || (pm.uid() != 0 && pm.uid() != uid) {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::PermissionDenied,
+                                        format!("refusing symlinked parent: {}", parent.display()),
+                                    ));
+                                }
+                            } else if !pm.is_dir() {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    format!("parent is not a directory: {}", parent.display()),
+                                ));
+                            }
+                        }
+                        Err(pe) if pe.kind() == io::ErrorKind::NotFound => {
+                            ensure_dir_0700_safe(parent)?;
+                        }
+                        Err(pe) => return Err(pe),
+                    }
+                }
+            }
+            if ensure_owned_dir_0700(&s, uid) {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("failed to create owned 0700 dir: {}", path.display()),
+                ))
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+pub fn write_atomic_secure_file(path: &Path, data: &[u8], mode: u32) -> io::Result<()> {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    use std::io::Write;
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = std::path::PathBuf::from(format!(
+        "{}.tmp.{}.{}.{}",
+        path.to_string_lossy(),
+        current_pid(),
+        stamp,
+        seq
+    ));
+    let mut f = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
+        .open(&tmp)?;
+    let write_res = (|| -> io::Result<()> {
+        f.write_all(data)?;
+        f.sync_all()?;
+        f.set_permissions(fs::Permissions::from_mode(mode))?;
+        Ok(())
+    })();
+    drop(f);
+    if let Err(e) = write_res {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Reads a bounded UTF-8 regular file safely: rejects symlinks, non-regular files,
+/// wrong-UID ownership, and group/world-writable (or optionally readable) permissions.
+pub fn read_verified_regular_file_utf8(
+    path: &Path,
+    max_bytes: usize,
+    reject_group_world_read: bool,
+) -> io::Result<Option<String>> {
+    use std::io::Read;
+
+    let uid = current_uid();
+    let lmeta = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if lmeta.file_type().is_symlink() || !lmeta.file_type().is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing non-regular or symlinked file: {}", path.display()),
+        ));
+    }
+    if lmeta.uid() != uid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing unowned file: {}", path.display()),
+        ));
+    }
+    let perm_mask = if reject_group_world_read { 0o077 } else { 0o022 };
+    if (lmeta.mode() & perm_mask) != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing unsafe permissions on {}", path.display()),
+        ));
+    }
+
+    let f = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
+        .open(path)?;
+    let fmeta = f.metadata()?;
+    if !fmeta.file_type().is_file() || fmeta.uid() != uid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing changed file metadata on {}", path.display()),
+        ));
+    }
+    if fmeta.len() > max_bytes as u64 {
+        return Err(io::Error::other(format!(
+            "{} exceeds size limit ({max_bytes} bytes)",
+            path.display()
+        )));
+    }
+    let mut buf = Vec::new();
+    let n = f.take((max_bytes as u64) + 1).read_to_end(&mut buf)?;
+    if n > max_bytes {
+        return Err(io::Error::other(format!(
+            "{} exceeds size limit ({max_bytes} bytes)",
+            path.display()
+        )));
+    }
+    String::from_utf8(buf)
+        .map(Some)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("invalid UTF-8: {e}")))
 }
 
 #[inline]

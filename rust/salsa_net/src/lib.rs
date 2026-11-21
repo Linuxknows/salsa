@@ -22,6 +22,7 @@ pub mod dsp;
 pub mod failsafe;
 pub mod ffi;
 pub mod hw_analog;
+pub mod json;
 pub mod legal;
 pub mod midi_hub;
 pub mod pa_server;

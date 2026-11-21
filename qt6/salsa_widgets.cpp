@@ -1219,7 +1219,8 @@ ColorSwatchRow::ColorSwatchRow(
     auto* lblTitle = new QLabel(label, this);
     lblTitle->setStyleSheet(QStringLiteral("font-weight: 600;"));
     auto* lblHint = new QLabel(hint, this);
-    lblHint->setStyleSheet(QStringLiteral("font-size: 10px; opacity: 0.72;"));
+    lblHint->setObjectName(QStringLiteral("EndpointsLabel"));
+    lblHint->setWordWrap(true);
     lblCol->addWidget(lblTitle);
     lblCol->addWidget(lblHint);
     lay->addLayout(lblCol, 1);
@@ -1476,7 +1477,7 @@ void SalsaCustomThemeDialog::buildUi() {
     actRow->addWidget(btnApply);
 
     auto* btnSave = new QPushButton(QStringLiteral("Save && Apply Custom Theme"), this);
-    btnSave->setToolTip(QStringLiteral("Save & Close — Persists the Custom palette to gui_settings.json, applies it to all windows, and closes the dialog."));
+    btnSave->setToolTip(QStringLiteral("Save & Close — Persists the Custom palette to salsa_settings.json, applies it to all windows, and closes the dialog."));
     btnSave->setObjectName(QStringLiteral("PrimaryBtn"));
     connect(btnSave, &QPushButton::clicked, this, [this]() {
         initialSnapshot_ = workingTheme_;

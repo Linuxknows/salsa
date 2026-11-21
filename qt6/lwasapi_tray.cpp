@@ -1823,7 +1823,7 @@ void TrayController::buildPopup() {
     micThemeRow->addWidget(lblTheme);
 
     cmbTrayTheme_ = new QComboBox(dspFrame);
-    cmbTrayTheme_->setToolTip(QStringLiteral("Quick Mixer Theme — Changes the system tray popup color palette and saves it to gui_settings.json."));
+    cmbTrayTheme_->setToolTip(QStringLiteral("Quick Mixer Theme — Changes the system tray popup color palette and saves it to salsa_settings.json."));
     for (const QString& tn : allThemeNames(true)) {
         cmbTrayTheme_->addItem(tn, tn);
     }

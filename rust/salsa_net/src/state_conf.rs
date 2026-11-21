@@ -12,18 +12,26 @@ use core::mem;
 use std::fs::{self, OpenOptions, Permissions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use crate::c_abi::{
-    copy_str_to_c, LwasapiBtCodecCfg, LwasapiEqConfig, LwasapiHwAnalogCfg, LwasapiMicApoCfg,
-    LwasapiParamEqExt, SalsaRuntimeState, LWASAPI_BT_PREF_AUTO, LWASAPI_BT_PREF_SBC,
-    LWASAPI_EQ_BANDS, LWASAPI_FILTER_HIGH_SHELF, LWASAPI_FILTER_PEAK, LWASAPI_LDAC_MODE_330,
-    LWASAPI_LDAC_MODE_ADAPTIVE,
+    c_str_to_string, copy_str_to_c, LwasapiBtCodecCfg, LwasapiEqConfig, LwasapiHwAnalogCfg,
+    LwasapiMicApoCfg, LwasapiParamEqExt, SalsaRuntimeState, LWASAPI_BT_PREF_AUTO,
+    LWASAPI_BT_PREF_SBC, LWASAPI_EQ_BANDS, LWASAPI_FILTER_HIGH_SHELF, LWASAPI_FILTER_PEAK,
+    LWASAPI_LDAC_MODE_330, LWASAPI_LDAC_MODE_ADAPTIVE,
 };
 use crate::hw_analog::{lwasapi_hw_analog_clamp_cfg, lwasapi_hw_analog_default_cfg};
+use crate::json::JsonValue;
 use crate::unix_sys::{
-    current_pid, current_uid, is_safe_owner_dir, user_home_dir, O_CLOEXEC, O_NOFOLLOW,
+    current_pid, current_uid, ensure_dir_0700_safe, flock_fd, funlock_fd, is_safe_owner_dir,
+    read_verified_regular_file_utf8, user_home_dir, write_atomic_secure_file, O_CLOEXEC,
+    O_NOFOLLOW,
 };
+
+pub const SALSA_SETTINGS_FILENAME: &str = "salsa_settings.json";
+pub const SALSA_SETTINGS_SCHEMA_VERSION: i64 = 1;
+const MAX_SETTINGS_JSON_BYTES: usize = 524_288;
 
 pub const K_EQ_FREQS: [f32; LWASAPI_EQ_BANDS] = [
     31.25, 62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
@@ -166,7 +174,7 @@ pub fn clamp_eq_cfg(eq: &mut LwasapiEqConfig) {
 pub fn clamp_param_eq_ext(ext: &mut LwasapiParamEqExt) {
     for i in 0..LWASAPI_EQ_BANDS {
         let f = ext.band_freq_hz[i];
-        if !(20.0..=20_000.0).contains(&f) {
+        if !(15.0..=22_000.0).contains(&f) {
             ext.band_freq_hz[i] = K_EQ_FREQS[i];
         }
         if ext.band_type[i] > LWASAPI_FILTER_HIGH_SHELF {
@@ -174,7 +182,7 @@ pub fn clamp_param_eq_ext(ext: &mut LwasapiParamEqExt) {
         }
     }
     ext.crossfeed_enabled = u32::from(ext.crossfeed_enabled != 0);
-    if !(0.05..=1.0).contains(&ext.crossfeed_level) {
+    if !(0.0..=1.0).contains(&ext.crossfeed_level) {
         ext.crossfeed_level = 0.45;
     }
     if !(300..=1500).contains(&ext.crossfeed_cutoff_hz) {
@@ -483,11 +491,715 @@ pub fn encode_persisted_state_v5(st: &SalsaRuntimeState) -> [u8; PERSISTED_V5_SI
     out
 }
 
+pub fn config_dir_path() -> PathBuf {
+    if let Ok(cfg) = std::env::var("XDG_CONFIG_HOME") {
+        if cfg.starts_with('/') {
+            return PathBuf::from(cfg).join("lwasapi");
+        }
+    }
+    PathBuf::from(user_home_dir()).join(".config").join("lwasapi")
+}
+
+pub fn salsa_settings_file_path() -> PathBuf {
+    config_dir_path().join(SALSA_SETTINGS_FILENAME)
+}
+
 pub fn state_dir_and_file() -> (PathBuf, PathBuf) {
-    let home = user_home_dir();
-    let dir = PathBuf::from(format!("{home}/.config/lwasapi"));
+    let dir = config_dir_path();
     let file = dir.join("salsa_state.bin");
     (dir, file)
+}
+
+struct SettingsLockGuard(Option<fs::File>);
+
+impl Drop for SettingsLockGuard {
+    fn drop(&mut self) {
+        if let Some(ref f) = self.0 {
+            funlock_fd(f.as_raw_fd());
+        }
+    }
+}
+
+fn acquire_settings_lock_in(dir: &Path) -> Result<SettingsLockGuard, String> {
+    ensure_dir_0700_safe(dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+    let lock_path = dir.join(".salsa_settings.lock");
+    if let Ok(meta) = fs::symlink_metadata(&lock_path) {
+        if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+            return Err(format!("refusing unsafe lock file: {}", lock_path.display()));
+        }
+    }
+    let f = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
+        .open(&lock_path)
+        .map_err(|e| format!("open lock {}: {e}", lock_path.display()))?;
+    let _ = f.set_permissions(Permissions::from_mode(0o600));
+    flock_fd(f.as_raw_fd(), false).map_err(|e| format!("flock {}: {e}", lock_path.display()))?;
+    Ok(SettingsLockGuard(Some(f)))
+}
+
+#[inline]
+fn round_decimals(v: f32, scale: f64) -> f64 {
+    if v.is_finite() {
+        (f64::from(v) * scale).round() / scale
+    } else {
+        0.0
+    }
+}
+
+fn sanitize_declarative_str(raw: &str, max_bytes: usize) -> String {
+    let mut out = String::new();
+    for ch in raw.trim().chars() {
+        if ch.is_control() {
+            continue;
+        }
+        if out.len() + ch.len_utf8() > max_bytes {
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn json_bool(val: Option<&JsonValue>, default: bool) -> bool {
+    match val {
+        Some(JsonValue::Bool(b)) => *b,
+        Some(JsonValue::Int(i)) => *i != 0,
+        _ => default,
+    }
+}
+
+/// Serializes an EQ + parametric extension pair to the canonical JSON object format.
+pub fn eq_cfg_to_json_value(cfg: &LwasapiEqConfig, ext: &LwasapiParamEqExt) -> JsonValue {
+    let pname_raw = c_str_to_string(&cfg.preset_name);
+    let pname = if pname_raw.trim().is_empty() {
+        "Custom".to_string()
+    } else {
+        sanitize_declarative_str(&pname_raw, 31)
+    };
+    let gains: Vec<JsonValue> = cfg
+        .band_gains_db
+        .iter()
+        .map(|&g| JsonValue::Float(round_decimals(g, 10.0)))
+        .collect();
+    let qs: Vec<JsonValue> = cfg
+        .band_q
+        .iter()
+        .map(|&q| {
+            let v = if (0.2..=10.0).contains(&q) { q } else { 1.414 };
+            JsonValue::Float(round_decimals(v, 1000.0))
+        })
+        .collect();
+    let freqs: Vec<JsonValue> = ext
+        .band_freq_hz
+        .iter()
+        .enumerate()
+        .map(|(i, &f)| {
+            let v = if (15.0..=22_000.0).contains(&f) {
+                f
+            } else {
+                K_EQ_FREQS[i]
+            };
+            JsonValue::Float(round_decimals(v, 10.0))
+        })
+        .collect();
+    let types: Vec<JsonValue> = ext
+        .band_type
+        .iter()
+        .map(|&t| JsonValue::Int(i64::from(if t <= LWASAPI_FILTER_HIGH_SHELF { t } else { 0 })))
+        .collect();
+    let xf_cut = if (300..=1500).contains(&ext.crossfeed_cutoff_hz) {
+        ext.crossfeed_cutoff_hz
+    } else {
+        700
+    };
+
+    JsonValue::obj(vec![
+        ("enabled", JsonValue::Bool(cfg.enabled != 0)),
+        ("dynamic_mode", JsonValue::Int(i64::from(cfg.dynamic_mode))),
+        ("preamp_db", JsonValue::Float(round_decimals(cfg.preamp_db, 10.0))),
+        ("dyn_threshold_db", JsonValue::Float(round_decimals(cfg.dyn_threshold_db, 10.0))),
+        ("dyn_ratio", JsonValue::Float(round_decimals(cfg.dyn_ratio, 10.0))),
+        ("limiter_enabled", JsonValue::Bool(cfg.limiter_enabled != 0)),
+        ("preset_name", JsonValue::Str(pname)),
+        ("band_gains_db", JsonValue::Array(gains)),
+        ("band_q", JsonValue::Array(qs)),
+        ("band_freq_hz", JsonValue::Array(freqs)),
+        ("band_type", JsonValue::Array(types)),
+        ("crossfeed_enabled", JsonValue::Bool(ext.crossfeed_enabled != 0)),
+        ("crossfeed_level", JsonValue::Float(round_decimals(ext.crossfeed_level, 100.0))),
+        ("crossfeed_cutoff_hz", JsonValue::Int(i64::from(xf_cut))),
+    ])
+}
+
+/// Parses and strictly clamps an EQ + parametric extension JSON object into C structs.
+pub fn apply_json_to_eq_cfg_pair(
+    eq_obj: &JsonValue,
+    cfg: &mut LwasapiEqConfig,
+    ext: &mut LwasapiParamEqExt,
+) {
+    let pname = eq_obj
+        .get("preset_name")
+        .and_then(JsonValue::as_str)
+        .map(|s| sanitize_declarative_str(s, 31))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Custom".to_string());
+    copy_str_to_c(&mut cfg.preset_name, &pname);
+
+    cfg.enabled = u32::from(json_bool(eq_obj.get("enabled"), true));
+    let mode = eq_obj.get("dynamic_mode").and_then(JsonValue::as_u64).unwrap_or(1) as u32;
+    cfg.dynamic_mode = if mode <= 2 { mode } else { 1 };
+    cfg.preamp_db = eq_obj
+        .get("preamp_db")
+        .and_then(JsonValue::as_f64)
+        .map_or(0.0, |v| v as f32);
+    cfg.dyn_threshold_db = eq_obj
+        .get("dyn_threshold_db")
+        .and_then(JsonValue::as_f64)
+        .map_or(-16.0, |v| v as f32);
+    cfg.dyn_ratio = eq_obj
+        .get("dyn_ratio")
+        .and_then(JsonValue::as_f64)
+        .map_or(2.2, |v| v as f32);
+    cfg.limiter_enabled = u32::from(json_bool(eq_obj.get("limiter_enabled"), true));
+
+    if let Some(arr) = eq_obj.get("band_gains_db").and_then(JsonValue::as_array) {
+        if arr.len() == LWASAPI_EQ_BANDS {
+            for (i, v) in arr.iter().enumerate() {
+                cfg.band_gains_db[i] = v.as_f64().map_or(0.0, |x| x as f32);
+            }
+        }
+    }
+    if let Some(arr) = eq_obj.get("band_q").and_then(JsonValue::as_array) {
+        if arr.len() == LWASAPI_EQ_BANDS {
+            for (i, v) in arr.iter().enumerate() {
+                cfg.band_q[i] = v.as_f64().map_or(1.414, |x| x as f32);
+            }
+        }
+    }
+    if let Some(arr) = eq_obj.get("band_freq_hz").and_then(JsonValue::as_array) {
+        if arr.len() == LWASAPI_EQ_BANDS {
+            for (i, v) in arr.iter().enumerate() {
+                ext.band_freq_hz[i] = v.as_f64().map_or(K_EQ_FREQS[i], |x| x as f32);
+            }
+        }
+    } else {
+        ext.band_freq_hz = K_EQ_FREQS;
+    }
+    if let Some(arr) = eq_obj.get("band_type").and_then(JsonValue::as_array) {
+        if arr.len() == LWASAPI_EQ_BANDS {
+            for (i, v) in arr.iter().enumerate() {
+                ext.band_type[i] = v.as_u64().unwrap_or(0) as u32;
+            }
+        }
+    } else {
+        ext.band_type = [LWASAPI_FILTER_PEAK; LWASAPI_EQ_BANDS];
+    }
+
+    ext.crossfeed_enabled = u32::from(json_bool(eq_obj.get("crossfeed_enabled"), false));
+    ext.crossfeed_level = eq_obj
+        .get("crossfeed_level")
+        .and_then(JsonValue::as_f64)
+        .map_or(0.45, |v| v as f32);
+    ext.crossfeed_cutoff_hz = eq_obj
+        .get("crossfeed_cutoff_hz")
+        .and_then(JsonValue::as_u64)
+        .unwrap_or(700) as u32;
+
+    clamp_eq_cfg(cfg);
+    clamp_param_eq_ext(ext);
+}
+
+/// Merges authoritative runtime audio/hardware sections into a unified settings JSON object,
+/// preserving unrelated GUI preference keys (theme, shortcuts, imported AutoEQ presets, etc.).
+pub fn merge_runtime_state_into_json(root: &mut JsonValue, st: &SalsaRuntimeState) {
+    if !matches!(root, JsonValue::Object(_)) {
+        *root = JsonValue::Object(Vec::new());
+    }
+    root.set("schema_version", JsonValue::Int(SALSA_SETTINGS_SCHEMA_VERSION));
+
+    let sr = if (44_100..=192_000).contains(&st.sample_rate) {
+        st.sample_rate
+    } else {
+        48_000
+    };
+    let pf = if (64..=2048).contains(&st.period_frames) {
+        st.period_frames
+    } else {
+        256
+    };
+    let fb = if matches!(st.format_bits, 16 | 24 | 32) {
+        st.format_bits
+    } else {
+        32
+    };
+    let cap_sr = if (44_100..=192_000).contains(&st.cap_sample_rate) {
+        st.cap_sample_rate
+    } else {
+        0
+    };
+    let pb_raw = sanitize_declarative_str(&c_str_to_string(&st.target_playback_id), 63);
+    let cap_raw = sanitize_declarative_str(&c_str_to_string(&st.target_capture_id), 63);
+    let pb_id = if pb_raw.is_empty() { "auto".to_string() } else { pb_raw };
+    let cap_id = if cap_raw.is_empty() { "auto".to_string() } else { cap_raw };
+
+    root.set(
+        "engine",
+        JsonValue::obj(vec![
+            ("sample_rate", JsonValue::Int(i64::from(sr))),
+            ("period_frames", JsonValue::Int(i64::from(pf))),
+            ("format_bits", JsonValue::Int(i64::from(fb))),
+            ("capture_sample_rate", JsonValue::Int(i64::from(cap_sr))),
+            ("target_playback_id", JsonValue::Str(pb_id)),
+            ("target_capture_id", JsonValue::Str(cap_id)),
+        ]),
+    );
+
+    let d_vol = st.desktop_volume_pct.min(150);
+    let m_vol = st.desktop_mic_volume_pct.min(150);
+    let m_gain = st.desktop_mic_gain_ppm.clamp(100_000, 4_000_000);
+    root.set(
+        "volumes",
+        JsonValue::obj(vec![
+            ("master_pct", JsonValue::Int(i64::from(d_vol))),
+            ("master_muted", JsonValue::Bool(st.desktop_muted != 0)),
+            ("mic_pct", JsonValue::Int(i64::from(m_vol))),
+            ("mic_muted", JsonValue::Bool(st.desktop_mic_muted != 0)),
+            ("mic_gain_ppm", JsonValue::Int(i64::from(m_gain))),
+        ]),
+    );
+
+    let mut hwa = st.hw_analog_cfg;
+    unsafe { lwasapi_hw_analog_clamp_cfg(&mut hwa) };
+    root.set(
+        "hw_analog",
+        JsonValue::obj(vec![
+            ("hw_dac_unity_vol", JsonValue::Bool(hwa.hw_dac_unity_vol != 0)),
+            ("hp_amp_tier", JsonValue::Int(i64::from(hwa.hp_amp_tier))),
+            ("output_route", JsonValue::Int(i64::from(hwa.output_route))),
+            ("unlock_0db_rails", JsonValue::Bool(hwa.unlock_0db_rails != 0)),
+            ("analog_boost_db", JsonValue::Float(round_decimals(hwa.analog_boost_db, 10.0))),
+            ("mic_hw_boost_db", JsonValue::Float(round_decimals(hwa.mic_hw_boost_db, 10.0))),
+        ]),
+    );
+
+    let pref_codec = if st.bt_cfg.preferred_codec <= LWASAPI_BT_PREF_SBC {
+        st.bt_cfg.preferred_codec
+    } else {
+        LWASAPI_BT_PREF_AUTO
+    };
+    let ldac_mode = if st.bt_cfg.ldac_mode <= LWASAPI_LDAC_MODE_330 {
+        st.bt_cfg.ldac_mode
+    } else {
+        LWASAPI_LDAC_MODE_ADAPTIVE
+    };
+    root.set(
+        "bluetooth",
+        JsonValue::obj(vec![
+            ("preferred_codec", JsonValue::Int(i64::from(pref_codec))),
+            ("ldac_mode", JsonValue::Int(i64::from(ldac_mode))),
+            ("wireless_abr_enabled", JsonValue::Bool(st.bt_cfg.wireless_abr_enabled != 0)),
+            ("hfp_sco_enabled", JsonValue::Bool(st.bt_cfg.hfp_sco_enabled != 0)),
+            ("optional_mode", JsonValue::Bool(st.bt_optional_mode != 0)),
+        ]),
+    );
+
+    let mut mic = st.mic_apo;
+    clamp_mic_apo_cfg(&mut mic);
+    root.set(
+        "mic_apo",
+        JsonValue::obj(vec![
+            ("enabled", JsonValue::Bool(mic.enabled != 0)),
+            ("hpf_enabled", JsonValue::Bool(mic.hpf_enabled != 0)),
+            ("hpf_hz", JsonValue::Float(round_decimals(mic.hpf_hz, 10.0))),
+            ("gate_enabled", JsonValue::Bool(mic.gate_enabled != 0)),
+            ("gate_thresh_db", JsonValue::Float(round_decimals(mic.gate_thresh_db, 10.0))),
+            ("rnnoise_enabled", JsonValue::Bool(mic.rnnoise_enabled != 0)),
+            ("comp_enabled", JsonValue::Bool(mic.comp_enabled != 0)),
+            ("comp_thresh_db", JsonValue::Float(round_decimals(mic.comp_thresh_db, 10.0))),
+            ("comp_ratio", JsonValue::Float(round_decimals(mic.comp_ratio, 10.0))),
+            ("clarity_db", JsonValue::Float(round_decimals(mic.clarity_db, 10.0))),
+            ("sidetone_enabled", JsonValue::Bool(mic.sidetone_enabled != 0)),
+            ("sidetone_pct", JsonValue::Int(i64::from(mic.sidetone_pct))),
+        ]),
+    );
+
+    let mut eq = st.eq_cfg;
+    let mut ext = st.param_eq;
+    clamp_eq_cfg(&mut eq);
+    clamp_param_eq_ext(&mut ext);
+    root.set("eq", eq_cfg_to_json_value(&eq, &ext));
+
+    // Drop legacy conflicting duplicate keys once migrated into canonical sections.
+    for old_key in [
+        "eq_config",
+        "eq_preset",
+        "eq_dynamic_mode",
+        "rate",
+        "period",
+        "bits",
+        "capture_sample_rate",
+    ] {
+        root.remove(old_key);
+    }
+}
+
+/// Extracts and validates a `SalsaRuntimeState` from the unified JSON object,
+/// clamping every field and falling back safely to defaults on missing or invalid entries.
+pub fn apply_json_to_runtime_state(root: &JsonValue, out: &mut SalsaRuntimeState) {
+    let mut st = default_runtime_state();
+
+    if let Some(eng) = root.get("engine") {
+        if let Some(sr) = eng.get("sample_rate").and_then(JsonValue::as_u64) {
+            let sr = sr as u32;
+            if (44_100..=192_000).contains(&sr) {
+                st.sample_rate = sr;
+            }
+        }
+        if let Some(pf) = eng.get("period_frames").and_then(JsonValue::as_u64) {
+            let pf = pf as u32;
+            if (64..=2048).contains(&pf) {
+                st.period_frames = pf;
+            }
+        }
+        if let Some(fb) = eng.get("format_bits").and_then(JsonValue::as_u64) {
+            let fb = fb as u32;
+            if matches!(fb, 16 | 24 | 32) {
+                st.format_bits = fb;
+            }
+        }
+        if let Some(cs) = eng.get("capture_sample_rate").and_then(JsonValue::as_u64) {
+            let cs = cs as u32;
+            if cs == 0 || (44_100..=192_000).contains(&cs) {
+                st.cap_sample_rate = cs;
+            }
+        }
+        if let Some(pb) = eng.get("target_playback_id").and_then(JsonValue::as_str) {
+            let clean = sanitize_declarative_str(pb, 63);
+            if !clean.is_empty() {
+                copy_str_to_c(&mut st.target_playback_id, &clean);
+            }
+        }
+        if let Some(cap) = eng.get("target_capture_id").and_then(JsonValue::as_str) {
+            let clean = sanitize_declarative_str(cap, 63);
+            if !clean.is_empty() {
+                copy_str_to_c(&mut st.target_capture_id, &clean);
+            }
+        }
+    } else {
+        // Legacy gui_settings.json migration fallback
+        if let Some(sr) = root.get("rate").and_then(JsonValue::as_u64) {
+            let sr = sr as u32;
+            if (44_100..=192_000).contains(&sr) {
+                st.sample_rate = sr;
+            }
+        }
+        if let Some(pf) = root.get("period").and_then(JsonValue::as_u64) {
+            let pf = pf as u32;
+            if (64..=2048).contains(&pf) {
+                st.period_frames = pf;
+            }
+        }
+        if let Some(fb) = root.get("bits").and_then(JsonValue::as_u64) {
+            let fb = fb as u32;
+            if matches!(fb, 16 | 24 | 32) {
+                st.format_bits = fb;
+            }
+        }
+        if let Some(cs) = root.get("capture_sample_rate").and_then(JsonValue::as_u64) {
+            let cs = cs as u32;
+            if cs == 0 || (44_100..=192_000).contains(&cs) {
+                st.cap_sample_rate = cs;
+            }
+        }
+    }
+
+    if let Some(vol) = root.get("volumes") {
+        if let Some(dv) = vol.get("master_pct").and_then(JsonValue::as_u64) {
+            if dv <= 150 {
+                st.desktop_volume_pct = dv as u32;
+            }
+        }
+        st.desktop_muted = u32::from(json_bool(vol.get("master_muted"), false));
+        if let Some(mv) = vol.get("mic_pct").and_then(JsonValue::as_u64) {
+            if mv <= 150 {
+                st.desktop_mic_volume_pct = mv as u32;
+            }
+        }
+        st.desktop_mic_muted = u32::from(json_bool(vol.get("mic_muted"), false));
+        if let Some(mg) = vol.get("mic_gain_ppm").and_then(JsonValue::as_u64) {
+            if (100_000..=4_000_000).contains(&mg) {
+                st.desktop_mic_gain_ppm = mg as u32;
+            }
+        }
+        st.has_saved_vol_state = true;
+    }
+
+    if let Some(hwa) = root.get("hw_analog") {
+        st.hw_analog_cfg.hw_dac_unity_vol = u32::from(json_bool(hwa.get("hw_dac_unity_vol"), true));
+        if let Some(tier) = hwa.get("hp_amp_tier").and_then(JsonValue::as_u64) {
+            st.hw_analog_cfg.hp_amp_tier = tier as u32;
+        }
+        if let Some(route) = hwa.get("output_route").and_then(JsonValue::as_u64) {
+            st.hw_analog_cfg.output_route = route as u32;
+        }
+        st.hw_analog_cfg.unlock_0db_rails = u32::from(json_bool(hwa.get("unlock_0db_rails"), false));
+        if let Some(b) = hwa.get("analog_boost_db").and_then(JsonValue::as_f64) {
+            st.hw_analog_cfg.analog_boost_db = b as f32;
+        }
+        if let Some(mb) = hwa.get("mic_hw_boost_db").and_then(JsonValue::as_f64) {
+            st.hw_analog_cfg.mic_hw_boost_db = mb as f32;
+        }
+        unsafe { lwasapi_hw_analog_clamp_cfg(&mut st.hw_analog_cfg) };
+    }
+
+    if let Some(bt) = root.get("bluetooth") {
+        if let Some(c) = bt.get("preferred_codec").and_then(JsonValue::as_u64) {
+            let c = c as u32;
+            st.bt_cfg.preferred_codec = if c <= LWASAPI_BT_PREF_SBC {
+                c
+            } else {
+                LWASAPI_BT_PREF_AUTO
+            };
+        }
+        if let Some(m) = bt.get("ldac_mode").and_then(JsonValue::as_u64) {
+            let m = m as u32;
+            st.bt_cfg.ldac_mode = if m <= LWASAPI_LDAC_MODE_330 {
+                m
+            } else {
+                LWASAPI_LDAC_MODE_ADAPTIVE
+            };
+        }
+        st.bt_cfg.wireless_abr_enabled = u32::from(json_bool(bt.get("wireless_abr_enabled"), true));
+        st.bt_cfg.hfp_sco_enabled = u32::from(json_bool(bt.get("hfp_sco_enabled"), false));
+        st.bt_optional_mode = u32::from(json_bool(bt.get("optional_mode"), true));
+    }
+
+    if let Some(mic) = root.get("mic_apo") {
+        st.mic_apo.enabled = u32::from(json_bool(mic.get("enabled"), false));
+        st.mic_apo.hpf_enabled = u32::from(json_bool(mic.get("hpf_enabled"), true));
+        if let Some(v) = mic.get("hpf_hz").and_then(JsonValue::as_f64) {
+            st.mic_apo.hpf_hz = v as f32;
+        }
+        st.mic_apo.gate_enabled = u32::from(json_bool(mic.get("gate_enabled"), true));
+        if let Some(v) = mic.get("gate_thresh_db").and_then(JsonValue::as_f64) {
+            st.mic_apo.gate_thresh_db = v as f32;
+        }
+        st.mic_apo.rnnoise_enabled = u32::from(json_bool(mic.get("rnnoise_enabled"), true));
+        st.mic_apo.comp_enabled = u32::from(json_bool(mic.get("comp_enabled"), true));
+        if let Some(v) = mic.get("comp_thresh_db").and_then(JsonValue::as_f64) {
+            st.mic_apo.comp_thresh_db = v as f32;
+        }
+        if let Some(v) = mic.get("comp_ratio").and_then(JsonValue::as_f64) {
+            st.mic_apo.comp_ratio = v as f32;
+        }
+        if let Some(v) = mic.get("clarity_db").and_then(JsonValue::as_f64) {
+            st.mic_apo.clarity_db = v as f32;
+        }
+        st.mic_apo.sidetone_enabled = u32::from(json_bool(mic.get("sidetone_enabled"), false));
+        if let Some(v) = mic.get("sidetone_pct").and_then(JsonValue::as_u64) {
+            st.mic_apo.sidetone_pct = v as u32;
+        }
+        clamp_mic_apo_cfg(&mut st.mic_apo);
+    }
+
+    if let Some(eq_obj) = root.get("eq").or_else(|| root.get("eq_config")) {
+        apply_json_to_eq_cfg_pair(eq_obj, &mut st.eq_cfg, &mut st.param_eq);
+    }
+
+    *out = st;
+}
+
+fn backup_legacy_file_once(src: &Path, bak: &Path) {
+    if fs::symlink_metadata(bak).is_ok() {
+        return;
+    }
+    let Ok(meta) = fs::symlink_metadata(src) else {
+        return;
+    };
+    if meta.file_type().is_symlink() || !meta.file_type().is_file() || meta.len() > MAX_SETTINGS_JSON_BYTES as u64 {
+        return;
+    }
+    let Ok(f) = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
+        .open(src)
+    else {
+        return;
+    };
+    let mut bytes = Vec::new();
+    if f.take((MAX_SETTINGS_JSON_BYTES as u64) + 1).read_to_end(&mut bytes).is_ok()
+        && bytes.len() <= MAX_SETTINGS_JSON_BYTES
+    {
+        let _ = write_atomic_secure_file(bak, &bytes, 0o600);
+    }
+}
+
+fn write_json_settings_unlocked(path: &Path, data: &JsonValue) -> Result<(), String> {
+    let JsonValue::Object(_) = data else {
+        return Err("salsa_settings.json root must be a JSON object".into());
+    };
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            return Err(format!("refusing symlink at {}", path.display()));
+        }
+    }
+    let mut text = data.to_json_pretty(2);
+    text.push('\n');
+    write_atomic_secure_file(path, text.as_bytes(), 0o600)
+        .map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+fn read_or_migrate_settings_unlocked(dir: &Path) -> Result<Option<JsonValue>, String> {
+    let target = dir.join(SALSA_SETTINGS_FILENAME);
+    match fs::symlink_metadata(&target) {
+        Ok(_) => {
+            let Some(raw) = read_verified_regular_file_utf8(&target, MAX_SETTINGS_JSON_BYTES, false)
+                .map_err(|e| format!("read {}: {e}", target.display()))?
+            else {
+                return Ok(None);
+            };
+            let parsed = JsonValue::parse(&raw)
+                .map_err(|e| format!("parse {}: {e}", target.display()))?;
+            if !matches!(parsed, JsonValue::Object(_)) {
+                return Err(format!("{}: expected JSON object", target.display()));
+            }
+            return Ok(Some(parsed));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("stat {}: {e}", target.display())),
+    }
+
+    let legacy_gui = dir.join("gui_settings.json");
+    let legacy_bin = dir.join("salsa_state.bin");
+
+    let gui_obj = read_verified_regular_file_utf8(&legacy_gui, MAX_SETTINGS_JSON_BYTES, false)
+        .ok()
+        .flatten()
+        .and_then(|s| JsonValue::parse(&s).ok())
+        .filter(|v| matches!(v, JsonValue::Object(_)));
+
+    let mut bin_st = default_runtime_state();
+    let has_bin = load_state_from_path(&legacy_bin, &mut bin_st);
+
+    if gui_obj.is_none() && !has_bin {
+        return Ok(None);
+    }
+
+    backup_legacy_file_once(&legacy_gui, &dir.join("gui_settings.json.bak"));
+    backup_legacy_file_once(&legacy_bin, &dir.join("salsa_state.bin.bak"));
+
+    let mut merged = gui_obj.clone().unwrap_or_else(|| JsonValue::Object(Vec::new()));
+    let mut st = default_runtime_state();
+    if let Some(ref gj) = gui_obj {
+        apply_json_to_runtime_state(gj, &mut st);
+    }
+    if has_bin {
+        st = bin_st;
+    }
+    merge_runtime_state_into_json(&mut merged, &st);
+    write_json_settings_unlocked(&target, &merged)?;
+    Ok(Some(merged))
+}
+
+/// Loads the unified `salsa_settings.json` inside `dir` (migrating legacy files if present).
+/// Rejects symlinks, unowned files, or unsafe permissions cleanly by returning an empty object.
+pub fn load_unified_settings_json_in(dir: &Path) -> JsonValue {
+    let target = dir.join(SALSA_SETTINGS_FILENAME);
+    if let Ok(meta) = fs::symlink_metadata(&target) {
+        if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+            return JsonValue::Object(Vec::new());
+        }
+        if let Ok(Some(raw)) = read_verified_regular_file_utf8(&target, MAX_SETTINGS_JSON_BYTES, false) {
+            if let Ok(obj @ JsonValue::Object(_)) = JsonValue::parse(&raw) {
+                return obj;
+            }
+        }
+        return JsonValue::Object(Vec::new());
+    }
+    let Ok(_lock) = acquire_settings_lock_in(dir) else {
+        return JsonValue::Object(Vec::new());
+    };
+    read_or_migrate_settings_unlocked(dir)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| JsonValue::Object(Vec::new()))
+}
+
+pub fn save_unified_settings_json_in(
+    dir: &Path,
+    data: &JsonValue,
+    preserve_existing: bool,
+) -> Result<(), String> {
+    let Some(new_entries) = data.as_object() else {
+        return Err("settings must be a JSON object".into());
+    };
+    let _lock = acquire_settings_lock_in(dir)?;
+    let target = dir.join(SALSA_SETTINGS_FILENAME);
+    let mut out = if preserve_existing {
+        read_or_migrate_settings_unlocked(dir)?.unwrap_or_else(|| JsonValue::Object(Vec::new()))
+    } else {
+        JsonValue::Object(Vec::new())
+    };
+    if preserve_existing {
+        for (k, v) in new_entries {
+            if !k.starts_with("tray_") || out.get(k).is_none() {
+                out.set(k.as_str(), v.clone());
+            }
+        }
+    } else {
+        out = data.clone();
+    }
+    write_json_settings_unlocked(&target, &out)
+}
+
+pub fn update_unified_settings_json_in(
+    dir: &Path,
+    updates: &[(&str, JsonValue)],
+) -> Result<(), String> {
+    let _lock = acquire_settings_lock_in(dir)?;
+    let target = dir.join(SALSA_SETTINGS_FILENAME);
+    let mut cur =
+        read_or_migrate_settings_unlocked(dir)?.unwrap_or_else(|| JsonValue::Object(Vec::new()));
+    for (k, v) in updates {
+        cur.set(*k, v.clone());
+    }
+    write_json_settings_unlocked(&target, &cur)
+}
+
+pub fn load_runtime_state_in_dir(dir: &Path, create_default_if_missing: bool) -> SalsaRuntimeState {
+    let mut st = default_runtime_state();
+    let Ok(_lock) = acquire_settings_lock_in(dir) else {
+        return st;
+    };
+    match read_or_migrate_settings_unlocked(dir) {
+        Ok(Some(json)) => apply_json_to_runtime_state(&json, &mut st),
+        Ok(None) if create_default_if_missing => {
+            let mut doc = JsonValue::Object(Vec::new());
+            merge_runtime_state_into_json(&mut doc, &st);
+            let _ = write_json_settings_unlocked(&dir.join(SALSA_SETTINGS_FILENAME), &doc);
+        }
+        _ => {}
+    }
+    st
+}
+
+pub fn save_runtime_state_in_dir(dir: &Path, st: &SalsaRuntimeState) -> bool {
+    let Ok(_lock) = acquire_settings_lock_in(dir) else {
+        return false;
+    };
+    let target = dir.join(SALSA_SETTINGS_FILENAME);
+    let mut doc = match read_or_migrate_settings_unlocked(dir) {
+        Ok(Some(existing)) => existing,
+        Ok(None) => JsonValue::Object(Vec::new()),
+        Err(_) => return false,
+    };
+    merge_runtime_state_into_json(&mut doc, st);
+    write_json_settings_unlocked(&target, &doc).is_ok()
 }
 
 pub fn load_state_from_path(path: &Path, out: &mut SalsaRuntimeState) -> bool {
@@ -582,8 +1294,8 @@ pub unsafe extern "C" fn salsa_state_load(io_st: *mut SalsaRuntimeState) {
     if io_st.is_null() {
         return;
     }
-    let (_, file) = state_dir_and_file();
-    let _ = load_state_from_path(&file, unsafe { &mut *io_st });
+    let st = load_runtime_state_in_dir(&config_dir_path(), true);
+    unsafe { *io_st = st };
 }
 
 #[no_mangle]
@@ -591,8 +1303,7 @@ pub unsafe extern "C" fn salsa_state_save(st: *const SalsaRuntimeState) {
     if st.is_null() {
         return;
     }
-    let (dir, file) = state_dir_and_file();
-    let _ = save_state_to_path(&dir, &file, unsafe { &*st });
+    let _ = save_runtime_state_in_dir(&config_dir_path(), unsafe { &*st });
 }
 
 #[cfg(test)]
@@ -804,6 +1515,74 @@ mod tests {
         let link = base.join("link.bin");
         symlink(&file, &link).unwrap();
         assert!(!load_state_from_path(&link, &mut loaded));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn unified_settings_json_migration_roundtrip_and_security() {
+        let base = std::env::temp_dir().join(format!("lwasapi_unified_test_{}", current_pid()));
+        let _ = fs::remove_dir_all(&base);
+        ensure_dir_0700_safe(&base).unwrap();
+
+        // Seed legacy salsa_state.bin and gui_settings.json
+        let mut legacy_st = default_runtime_state();
+        legacy_st.sample_rate = 192_000;
+        legacy_st.period_frames = 128;
+        legacy_st.hw_analog_cfg.hw_dac_unity_vol = 0;
+        legacy_st.hw_analog_cfg.hp_amp_tier = 3;
+        legacy_st.hw_analog_cfg.output_route = 2;
+        legacy_st.hw_analog_cfg.analog_boost_db = 3.5;
+        legacy_st.hw_analog_cfg.mic_hw_boost_db = 9.0;
+        assert!(save_state_to_path(&base, &base.join("salsa_state.bin"), &legacy_st));
+
+        let legacy_gui = JsonValue::obj(vec![
+            ("theme", JsonValue::Str("CachyOS Teal Void".into())),
+            ("font_scale_pct", JsonValue::Int(110)),
+            ("eq_preset", JsonValue::Str("Stale".into())),
+            ("rate", JsonValue::Int(48_000)),
+        ]);
+        write_json_settings_unlocked(&base.join("gui_settings.json"), &legacy_gui).unwrap();
+
+        // First load migrates both into salsa_settings.json and creates .bak files
+        let migrated = load_runtime_state_in_dir(&base, true);
+        assert_eq!(migrated.sample_rate, 192_000);
+        assert_eq!(migrated.period_frames, 128);
+        assert_eq!(migrated.hw_analog_cfg.hw_dac_unity_vol, 0);
+        assert_eq!(migrated.hw_analog_cfg.hp_amp_tier, 3);
+        assert_eq!(migrated.hw_analog_cfg.output_route, 2);
+        assert!((migrated.hw_analog_cfg.analog_boost_db - 3.5).abs() < 0.05);
+        assert!((migrated.hw_analog_cfg.mic_hw_boost_db - 9.0).abs() < 0.05);
+        assert!(base.join(SALSA_SETTINGS_FILENAME).is_file());
+        assert!(base.join("salsa_state.bin.bak").is_file());
+        assert!(base.join("gui_settings.json.bak").is_file());
+
+        // GUI keys preserved and stale duplicates stripped
+        let doc = load_unified_settings_json_in(&base);
+        assert_eq!(doc.get("theme").and_then(JsonValue::as_str), Some("CachyOS Teal Void"));
+        assert_eq!(doc.get("font_scale_pct").and_then(JsonValue::as_i64), Some(110));
+        assert!(doc.get("eq_preset").is_none());
+        assert!(doc.get("rate").is_none());
+
+        // Engine save preserves GUI keys
+        let mut updated = migrated;
+        updated.hw_analog_cfg.hw_dac_unity_vol = 1;
+        updated.hw_analog_cfg.analog_boost_db = 6.0;
+        assert!(save_runtime_state_in_dir(&base, &updated));
+        let doc2 = load_unified_settings_json_in(&base);
+        assert_eq!(doc2.get("theme").and_then(JsonValue::as_str), Some("CachyOS Teal Void"));
+        let reloaded = load_runtime_state_in_dir(&base, true);
+        assert_eq!(reloaded.hw_analog_cfg.hw_dac_unity_vol, 1);
+        assert!((reloaded.hw_analog_cfg.analog_boost_db - 6.0).abs() < 0.05);
+
+        // Security: reject group/world-writable or symlinked salsa_settings.json
+        let sfile = base.join(SALSA_SETTINGS_FILENAME);
+        fs::set_permissions(&sfile, Permissions::from_mode(0o666)).unwrap();
+        assert!(load_unified_settings_json_in(&base).as_object().unwrap().is_empty());
+
+        fs::remove_file(&sfile).unwrap();
+        symlink("/etc/passwd", &sfile).unwrap();
+        assert!(load_unified_settings_json_in(&base).as_object().unwrap().is_empty());
 
         let _ = fs::remove_dir_all(&base);
     }

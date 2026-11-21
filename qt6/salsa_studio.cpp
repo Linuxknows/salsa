@@ -13,10 +13,12 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGuiApplication>
@@ -29,6 +31,7 @@
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QMetaObject>
+#include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
 #include <QScreen>
@@ -41,6 +44,7 @@
 #include <QTextBrowser>
 #include <QThread>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWindow>
 
@@ -123,6 +127,7 @@ public:
         bool forceAdvanced = false,
         bool forceThemeStudio = false,
         bool forceAbout = false);
+    void dumpAuditPngs(const QString& outDir);
     void shutdownAll();
 
 private:
@@ -142,6 +147,11 @@ private:
 
     void pushEqToEngine();
     void saveStudioSettings();
+    void applyGuiSettingsJsonToUi(bool isReload);
+    void flashSaveFeedback(const QString& statusMsg, bool ok);
+    void onSaveOverwriteConfigClicked();
+    void onReloadConfigClicked();
+    void onOpenConfigFileClicked();
     void updateSpectrumFromState();
     void updateBandParamTable();
     void refreshAdvIntegration();
@@ -210,6 +220,8 @@ private:
     SalsaHwAnalogCfg hwAnalog_{};
     bool hasStatus_ = false;
     QString lastSinkId_;
+    QString targetPbId_ = QStringLiteral("auto");
+    QString targetCapId_ = QStringLiteral("auto");
     QString lastDevSig_;
     QString currentManualKey_ = QStringLiteral("overview");
 
@@ -231,6 +243,7 @@ private:
     QLabel* lblTitle_ = nullptr;
     QLabel* lblVerPill_ = nullptr;
     QLabel* lblSubtitle_ = nullptr;
+    QPushButton* btnSaveCfgMain_ = nullptr;
     QLabel* lblClockSrc_ = nullptr;
     QLabel* lblLatency_ = nullptr;
     QComboBox* cmbRate_ = nullptr;
@@ -332,7 +345,12 @@ private:
     QLabel* lblHwBoost_ = nullptr;
     QSlider* sldHwMicBoost_ = nullptr;
     QLabel* lblHwMicBoost_ = nullptr;
+    QPushButton* btnSaveHw_ = nullptr;
     QLabel* lblHwAnalogDiag_ = nullptr;
+    QPushButton* btnSaveCfgAdv_ = nullptr;
+    QPushButton* btnReloadCfg_ = nullptr;
+    QPushButton* btnOpenCfgAdv_ = nullptr;
+    QLabel* lblCfgSaveStatus_ = nullptr;
     QMap<QString, ShortcutCaptureEdit*> shortcutEdits_;
     std::vector<QShortcut*> activeShortcuts_;
 
@@ -441,40 +459,8 @@ StudioController::StudioController(bool forceStudio, QObject* parent)
     buildTopologyWindow();
     buildAdvancedWindow();
 
-    // Restore persisted EQ & dynamic_mode immediately
-    if (guiSettings_.contains(QStringLiteral("eq"))) {
-        const QByteArray eqJs = jsonCompact(guiSettings_.value(QStringLiteral("eq")).toObject()).toUtf8();
-        salsa_json_to_eq_cfg(eqJs.constData(), &eqCfg_, &paramExt_);
-    }
-
-    // Apply initial EQ controls from restored eqCfg_/paramExt_
-    updatingUi_ = true;
-    chkEqEnable_->setChecked(eqCfg_.enabled != 0);
-    if (int di = cmbDynMode_->findData(static_cast<int>(eqCfg_.dynamic_mode)); di >= 0) {
-        cmbDynMode_->setCurrentIndex(di);
-    }
-    lblSavedDynMode_->setText(dynModeSavedLabel(eqCfg_.dynamic_mode));
-    sldPreamp_->setValue(static_cast<int>(std::lround(eqCfg_.preamp_db * 10.0)));
-    sldThresh_->setValue(static_cast<int>(std::lround(eqCfg_.dyn_threshold_db * 10.0)));
-    sldRatio_->setValue(static_cast<int>(std::lround(eqCfg_.dyn_ratio * 10.0)));
-    chkLimiter_->setChecked(eqCfg_.limiter_enabled != 0);
-    chkCrossfeed_->setChecked(paramExt_.crossfeed_enabled != 0);
-    sldCrossfeed_->setValue(static_cast<int>(std::lround(paramExt_.crossfeed_level * 100.0)));
-    if (int ci = cmbCrossfeedCut_->findData(static_cast<int>(paramExt_.crossfeed_cutoff_hz)); ci >= 0) {
-        cmbCrossfeedCut_->setCurrentIndex(ci);
-    }
-    for (int i = 0; i < SALSA_EQ_BANDS; ++i) {
-        bandSliders_[i]->setValue(static_cast<int>(std::lround(eqCfg_.band_gains_db[i] * 10.0)));
-        bandValLbls_[i]->setText(QStringLiteral("%1%2 dB").arg(eqCfg_.band_gains_db[i] >= 0 ? QStringLiteral("+") : QString()).arg(eqCfg_.band_gains_db[i], 0, 'f', 1));
-        bandFreqLbls_[i]->setText(fmtFreqHz(paramExt_.band_freq_hz[i]));
-    }
-    populatePresetDropdown(cFixedStr(eqCfg_.preset_name, sizeof(eqCfg_.preset_name)));
-    lblSavedPreset_->setText(QStringLiteral("Saved: %1").arg(cFixedStr(eqCfg_.preset_name, sizeof(eqCfg_.preset_name))));
-    lblPreamp_->setText(QStringLiteral("Preamp: %1%2 dB").arg(eqCfg_.preamp_db >= 0 ? QStringLiteral("+") : QString()).arg(eqCfg_.preamp_db, 0, 'f', 1));
-    lblThresh_->setText(QStringLiteral("Dyn Threshold: %1 dB").arg(eqCfg_.dyn_threshold_db, 0, 'f', 1));
-    lblRatio_->setText(QStringLiteral("Dyn Ratio: %1:1").arg(eqCfg_.dyn_ratio, 0, 'f', 1));
-    updateBandParamTable();
-    updatingUi_ = false;
+    // Restore persisted settings (EQ, engine clock, volumes, HW analog, BT) immediately
+    applyGuiSettingsJsonToUi(false);
 
     applyThemeAndFontAll(false);
     applyDynamicShortcuts();
@@ -723,6 +709,7 @@ void StudioController::buildMainWindow() {
         topCard);
     lblSubtitle_->setObjectName(QStringLiteral("SubBanner"));
     lblSubtitle_->setWordWrap(true);
+    lblSubtitle_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
     titleCol->addWidget(lblSubtitle_);
     titleCol->addStretch(1);
     topLay->addLayout(titleCol, 2);
@@ -739,7 +726,7 @@ void StudioController::buildMainWindow() {
     connect(cmbRate_, &QComboBox::currentIndexChanged, this, [this]() { onClockChanged(); });
     rateCol->addWidget(cmbRate_);
     lblClockSrc_ = new QLabel(QStringLiteral("Clock: 48kHz / 32-bit"), topCard);
-    lblClockSrc_->setObjectName(QStringLiteral("BandDynLabel"));
+    lblClockSrc_->setObjectName(QStringLiteral("DiagStatusLabel"));
     rateCol->addWidget(lblClockSrc_);
     rateCol->addStretch(1);
     topLay->addLayout(rateCol);
@@ -797,23 +784,29 @@ void StudioController::buildMainWindow() {
     engTopRow->addWidget(fontBarMain_);
     engCol->addLayout(engTopRow);
 
-    auto* hdrBtns = new QHBoxLayout();
-    hdrBtns->setSpacing(6);
+    auto* hdrBtns = new QGridLayout();
+    hdrBtns->setHorizontalSpacing(6);
+    hdrBtns->setVerticalSpacing(4);
     auto* btnTopo = new QPushButton(QStringLiteral("Topology (F1)"), topCard);
     btnTopo->setToolTip(QStringLiteral("Topology Graph & Manual (F1) — Opens the live interactive signal-flow map and Owner's Manual chapters."));
     connect(btnTopo, &QPushButton::clicked, this, [this]() { openTopologyWindow(); });
-    hdrBtns->addWidget(btnTopo);
+    hdrBtns->addWidget(btnTopo, 0, 0);
     auto* btnAdv = new QPushButton(QStringLiteral("Advanced Options (Ctrl+,)"), topCard);
     btnAdv->setObjectName(QStringLiteral("PrimaryBtn"));
     btnAdv->setToolTip(QStringLiteral("Advanced Options (Ctrl+,) — Opens parametric EQ table, crossfeed, discrete analog stages, shortcuts, and diagnostics."));
     connect(btnAdv, &QPushButton::clicked, this, [this]() { openAdvancedWindow(); });
-    hdrBtns->addWidget(btnAdv);
+    hdrBtns->addWidget(btnAdv, 0, 1);
+    btnSaveCfgMain_ = new QPushButton(QStringLiteral("Save Settings (Ctrl+S)"), topCard);
+    btnSaveCfgMain_->setObjectName(QStringLiteral("CompactBtn"));
+    btnSaveCfgMain_->setToolTip(QStringLiteral("Save Settings (Ctrl+S) — Validates and saves all current engine, analog, BT, EQ, volume, and GUI settings to ~/.config/lwasapi/salsa_settings.json."));
+    connect(btnSaveCfgMain_, &QPushButton::clicked, this, [this]() { onSaveOverwriteConfigClicked(); });
+    hdrBtns->addWidget(btnSaveCfgMain_, 1, 0);
     auto* btnAboutMain = new QPushButton(QStringLiteral("About / LGPL-3.0"), topCard);
     btnAboutMain->setToolTip(QStringLiteral("About & LGPL-3.0 License — Displays Salsa copyright, no-warranty disclaimer, relinking/source terms, third-party dlopen disclosures, and full COPYING/COPYING.LESSER texts."));
     connect(btnAboutMain, &QPushButton::clicked, this, [this]() {
         showAboutLicenseDialog(mainWin_, QStringLiteral("Salsa Studio"), currentTheme_, fontPct_);
     });
-    hdrBtns->addWidget(btnAboutMain);
+    hdrBtns->addWidget(btnAboutMain, 1, 1);
     engCol->addLayout(hdrBtns);
     topLay->addLayout(engCol);
     root->addWidget(topCard);
@@ -1024,7 +1017,8 @@ void StudioController::buildMainWindow() {
 
     lblEndpoints_ = new QLabel(QStringLiteral("Sink: Detecting... | Mic: Detecting... | PA v35: Initializing..."), hwCard);
     lblEndpoints_->setObjectName(QStringLiteral("EndpointsLabel"));
-    lblEndpoints_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    lblEndpoints_->setWordWrap(true);
+    lblEndpoints_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
     hwCol->addWidget(lblEndpoints_);
 
     auto* devRow = new QHBoxLayout();
@@ -1121,12 +1115,14 @@ void StudioController::buildMainWindow() {
         lastBtLinkPollMs_ = 0;
     });
     btRow->addWidget(btnBtLink_);
+    btRow->addStretch(1);
+    hwCol->addLayout(btRow);
 
     lblBtDiag_ = new QLabel(QStringLiteral("BT: Standby"), hwCard);
-    lblBtDiag_->setObjectName(QStringLiteral("BandDynLabel"));
-    lblBtDiag_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    btRow->addWidget(lblBtDiag_, 1);
-    hwCol->addLayout(btRow);
+    lblBtDiag_->setObjectName(QStringLiteral("DiagStatusLabel"));
+    lblBtDiag_->setWordWrap(true);
+    lblBtDiag_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
+    hwCol->addWidget(lblBtDiag_);
 
     auto* spkRow = new QHBoxLayout();
     lblSpk_ = new QLabel(QStringLiteral("Speaker Vol (80%):"), hwCard);
@@ -1173,7 +1169,8 @@ void StudioController::buildMainWindow() {
     hwCol->addLayout(micRow);
 
     lblMidiStatus_ = new QLabel(QStringLiteral("DAW MIDI Hub: Auto-Detecting (0 key presses)"), hwCard);
-    lblMidiStatus_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    lblMidiStatus_->setWordWrap(true);
+    lblMidiStatus_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
     hwCol->addWidget(lblMidiStatus_);
     botLay->addWidget(hwCard, 5);
 
@@ -1600,6 +1597,34 @@ void StudioController::buildAdvancedWindow() {
     });
     rowApp->addWidget(btnResetSafe);
     ecLay->addLayout(rowApp);
+
+    auto* rowCfg = new QHBoxLayout();
+    btnSaveCfgAdv_ = new QPushButton(QStringLiteral("Save Settings"), engCard);
+    btnSaveCfgAdv_->setObjectName(QStringLiteral("PrimaryBtn"));
+    btnSaveCfgAdv_->setToolTip(QStringLiteral("Save & Overwrite Settings (Ctrl+S) — Validates and overwrites ~/.config/lwasapi/salsa_settings.json with all current engine, BT, analog, EQ, volume, and GUI settings."));
+    connect(btnSaveCfgAdv_, &QPushButton::clicked, this, [this]() { onSaveOverwriteConfigClicked(); });
+    rowCfg->addWidget(btnSaveCfgAdv_, 1);
+
+    btnReloadCfg_ = new QPushButton(QStringLiteral("Reload Saved Config"), engCard);
+    btnReloadCfg_->setObjectName(QStringLiteral("CompactBtn"));
+    btnReloadCfg_->setToolTip(QStringLiteral("Reload Saved Config — Re-reads ~/.config/lwasapi/salsa_settings.json and reapplies saved settings to the daemon and Studio UI."));
+    connect(btnReloadCfg_, &QPushButton::clicked, this, [this]() { onReloadConfigClicked(); });
+    rowCfg->addWidget(btnReloadCfg_);
+
+    btnOpenCfgAdv_ = new QPushButton(QStringLiteral("Open Config File"), engCard);
+    btnOpenCfgAdv_->setObjectName(QStringLiteral("CompactBtn"));
+    btnOpenCfgAdv_->setToolTip(QStringLiteral("Open Config File — Opens ~/.config/lwasapi/salsa_settings.json in your system editor; click Reload Saved Config after making manual edits."));
+    connect(btnOpenCfgAdv_, &QPushButton::clicked, this, [this]() { onOpenConfigFileClicked(); });
+    rowCfg->addWidget(btnOpenCfgAdv_);
+    ecLay->addLayout(rowCfg);
+
+    lblCfgSaveStatus_ = new QLabel(
+        QStringLiteral("Config: %1").arg(SalsaStr(salsa_settings_path_str()).toQString()), engCard);
+    lblCfgSaveStatus_->setObjectName(QStringLiteral("DiagStatusLabel"));
+    lblCfgSaveStatus_->setWordWrap(true);
+    lblCfgSaveStatus_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
+    ecLay->addWidget(lblCfgSaveStatus_);
+
     leftCol->addWidget(engCard);
 
     // R1: Advanced EQ, Crossfeed & Per-Band Parametric Table
@@ -1811,11 +1836,18 @@ void StudioController::buildAdvancedWindow() {
     btnSafeHw->setToolTip(QStringLiteral("Safe Hardware Defaults — Reverts all analog amp, route, rail, and boost settings to Auto-Preserve."));
     connect(btnSafeHw, &QPushButton::clicked, this, [this]() { onHwAnalogReset(); });
     haR3->addWidget(btnSafeHw);
+
+    btnSaveHw_ = new QPushButton(QStringLiteral("Save Settings"), hwaCard);
+    btnSaveHw_->setObjectName(QStringLiteral("PrimaryBtn"));
+    btnSaveHw_->setToolTip(QStringLiteral("Save & Overwrite Settings (Ctrl+S) — Pushes Hardware Analog Stage and all Studio settings directly into ~/.config/lwasapi/salsa_settings.json."));
+    connect(btnSaveHw_, &QPushButton::clicked, this, [this]() { onSaveOverwriteConfigClicked(); });
+    haR3->addWidget(btnSaveHw_);
     haLay->addLayout(haR3);
 
     lblHwAnalogDiag_ = new QLabel(QStringLiteral("HW Stage: Probing..."), hwaCard);
-    lblHwAnalogDiag_->setObjectName(QStringLiteral("BandDynLabel"));
-    lblHwAnalogDiag_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    lblHwAnalogDiag_->setObjectName(QStringLiteral("DiagStatusLabel"));
+    lblHwAnalogDiag_->setWordWrap(true);
+    lblHwAnalogDiag_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
     lblHwAnalogDiag_->setMinimumWidth(0);
     haLay->addWidget(lblHwAnalogDiag_);
     rightCol->addWidget(hwaCard);
@@ -2027,6 +2059,7 @@ void StudioController::applyDynamicShortcuts() {
     addSc(QStringLiteral("mute_mic"), [this]() { if (btnMicMute_) btnMicMute_->click(); });
     addSc(QStringLiteral("toggle_eq"), [this]() { if (chkEqEnable_) chkEqEnable_->toggle(); });
     addSc(QStringLiteral("bt_reset"), [this]() { onBtResetClicked(); });
+    addSc(QStringLiteral("save_config"), [this]() { onSaveOverwriteConfigClicked(); });
     addSc(QStringLiteral("refresh"), [this]() { pollEngine(false); });
     addSc(QStringLiteral("quit"), [this]() { shutdownAll(); });
     addSc(QStringLiteral("reset_flat"), [this]() { onResetFlatClicked(); });
@@ -2176,20 +2209,410 @@ void StudioController::pushEqToEngine() {
 void StudioController::saveStudioSettings() {
     const QJsonObject eqObj = parseJsonObj(SalsaStr(salsa_eq_cfg_to_json(&eqCfg_, &paramExt_)).toQString());
     QJsonObject payload;
-    payload.insert(QStringLiteral("rate"), qvarInt(cmbRate_->currentData(), 48000));
-    payload.insert(QStringLiteral("period"), qvarInt(cmbPeriod_->currentData(), 256));
-    payload.insert(QStringLiteral("bits"), qvarInt(cmbBits_->currentData(), 32));
-    payload.insert(QStringLiteral("capture_sample_rate"), qvarInt(cmbCapRate_->currentData(), 0));
     payload.insert(QStringLiteral("eq"), eqObj);
     payload.insert(QStringLiteral("imported_eq_presets"), savedAutoEq_);
     payload.insert(QStringLiteral("eq_per_device"), chkEqPerDev_->isChecked());
     payload.insert(QStringLiteral("theme"), currentThemeName_);
     payload.insert(QStringLiteral("font_scale_pct"), fontPct_);
     payload.insert(QStringLiteral("volume_step_pct"), volStepPct_);
+    for (auto it = payload.constBegin(); it != payload.constEnd(); ++it) {
+        guiSettings_.insert(it.key(), it.value());
+    }
     if (chkEqPerDev_->isChecked() && !lastSinkId_.isEmpty()) {
         savePerDeviceEqForSink(lastSinkId_);
     }
     salsa_save_studio_settings_json(jsonCompact(payload).toUtf8().constData());
+    lastSettingsMtimeNs_ = salsa_gui_settings_mtime_ns();
+}
+
+void StudioController::applyGuiSettingsJsonToUi(bool isReload) {
+    updatingUi_ = true;
+
+    if (isReload) {
+        fontPct_ = normalizeFontScalePct(salsa_load_font_scale());
+        volStepPct_ = normalizeVolStepPct(guiSettings_.value(QStringLiteral("volume_step_pct")).toInt(5));
+        if (cmbVolStep_) {
+            if (int si = cmbVolStep_->findData(volStepPct_); si >= 0) cmbVolStep_->setCurrentIndex(si);
+        }
+        syncFontScaleBars();
+        savedAutoEq_ = parseJsonArr(SalsaStr(salsa_saved_autoeq_list_json()).toQString());
+        if (chkEqPerDev_) {
+            chkEqPerDev_->setChecked(guiSettings_.value(QStringLiteral("eq_per_device")).toBool(false));
+        }
+        const bool showIntro = guiSettings_.value(QStringLiteral("show_topology_intro")).toBool(true);
+        if (chkShowIntroAdv_) chkShowIntroAdv_->setChecked(showIntro);
+        if (chkHideIntroStartup_) chkHideIntroStartup_->setChecked(!showIntro);
+
+        const SalsaThemeData diskTheme = loadThemeForApp(false);
+        const QString diskThemeName = !diskTheme.name.isEmpty()
+            ? diskTheme.name
+            : guiSettings_.value(QStringLiteral("theme")).toString(currentThemeName_);
+        currentTheme_ = diskTheme;
+        currentThemeName_ = diskThemeName;
+        if (cmbTheme_) cmbTheme_->setCurrentText(currentThemeName_);
+
+        const QJsonArray defSc = parseJsonArr(SalsaStr(salsa_default_shortcuts_json()).toQString());
+        const QJsonObject savedSc = guiSettings_.value(QStringLiteral("shortcuts")).toObject();
+        shortcutsMap_.clear();
+        for (const QJsonValue& v : defSc) {
+            const QJsonObject o = v.toObject();
+            const QString k = o.value(QStringLiteral("key")).toString();
+            const QString defSeq = o.value(QStringLiteral("default_seq")).toString();
+            if (!k.isEmpty()) shortcutsMap_.insert(k, savedSc.value(k).toString(defSeq));
+        }
+    }
+
+    // Restore Engine clock/capture/targets from unified "engine" object (with legacy fallback)
+    const QJsonObject eng = guiSettings_.value(QStringLiteral("engine")).toObject();
+    const int sr = eng.contains(QStringLiteral("sample_rate"))
+        ? eng.value(QStringLiteral("sample_rate")).toInt(48000)
+        : guiSettings_.value(QStringLiteral("rate")).toInt(48000);
+    const int pf = eng.contains(QStringLiteral("period_frames"))
+        ? eng.value(QStringLiteral("period_frames")).toInt(256)
+        : guiSettings_.value(QStringLiteral("period")).toInt(256);
+    const int fb = eng.contains(QStringLiteral("format_bits"))
+        ? eng.value(QStringLiteral("format_bits")).toInt(32)
+        : guiSettings_.value(QStringLiteral("bits")).toInt(32);
+    const int csr = eng.contains(QStringLiteral("capture_sample_rate"))
+        ? eng.value(QStringLiteral("capture_sample_rate")).toInt(0)
+        : guiSettings_.value(QStringLiteral("capture_sample_rate")).toInt(0);
+    const QString savedPb = eng.value(QStringLiteral("target_playback_id")).toString(QStringLiteral("auto")).trimmed();
+    const QString savedCap = eng.value(QStringLiteral("target_capture_id")).toString(QStringLiteral("auto")).trimmed();
+    targetPbId_ = savedPb.isEmpty() ? QStringLiteral("auto") : savedPb;
+    targetCapId_ = savedCap.isEmpty() ? QStringLiteral("auto") : savedCap;
+    if (cmbRate_) {
+        if (int ri = cmbRate_->findData(sr); ri >= 0) cmbRate_->setCurrentIndex(ri);
+    }
+    if (cmbPeriod_) {
+        if (int pi = cmbPeriod_->findData(pf); pi >= 0) cmbPeriod_->setCurrentIndex(pi);
+    }
+    if (cmbBits_) {
+        if (int bi = cmbBits_->findData(fb); bi >= 0) cmbBits_->setCurrentIndex(bi);
+    }
+    if (cmbCapRate_) {
+        if (int ci = cmbCapRate_->findData(csr); ci >= 0) cmbCapRate_->setCurrentIndex(ci);
+    }
+    if (cmbSink_) {
+        if (int si = cmbSink_->findData(targetPbId_); si >= 0) cmbSink_->setCurrentIndex(si);
+    }
+    if (cmbSource_) {
+        if (int si = cmbSource_->findData(targetCapId_); si >= 0) cmbSource_->setCurrentIndex(si);
+    }
+
+    // Restore Volumes
+    if (guiSettings_.contains(QStringLiteral("volumes"))) {
+        const QJsonObject vol = guiSettings_.value(QStringLiteral("volumes")).toObject();
+        const int mp = std::clamp(vol.value(QStringLiteral("master_pct")).toInt(100), 0, 150);
+        const bool mm = vol.value(QStringLiteral("master_muted")).toBool(false);
+        const int micp = std::clamp(vol.value(QStringLiteral("mic_pct")).toInt(100), 0, 150);
+        const bool micm = vol.value(QStringLiteral("mic_muted")).toBool(false);
+        if (sldSpk_) sldSpk_->setValue(mp);
+        if (lblSpk_) lblSpk_->setText(QStringLiteral("Speaker Vol (%1%):").arg(mp));
+        if (btnSpkMute_) btnSpkMute_->setText(mm ? QStringLiteral("Unmute Spk") : QStringLiteral("Mute Spk"));
+        if (sldMic_) sldMic_->setValue(micp);
+        if (lblMic_) lblMic_->setText(QStringLiteral("Mic Capture (%1%):").arg(micp));
+        if (btnMicMute_) btnMicMute_->setText(micm ? QStringLiteral("Unmute Mic") : QStringLiteral("Mute Mic"));
+    }
+
+    // Restore Bluetooth preferences
+    if (guiSettings_.contains(QStringLiteral("bluetooth"))) {
+        const QJsonObject bt = guiSettings_.value(QStringLiteral("bluetooth")).toObject();
+        btCfg_.preferred_codec = static_cast<uint32_t>(std::clamp(bt.value(QStringLiteral("preferred_codec")).toInt(0), 0, 5));
+        btCfg_.ldac_mode = static_cast<uint32_t>(std::clamp(bt.value(QStringLiteral("ldac_mode")).toInt(0), 0, 3));
+        btCfg_.wireless_abr_enabled = bt.value(QStringLiteral("wireless_abr_enabled")).toBool(true) ? 1 : 0;
+        btCfg_.hfp_sco_enabled = bt.value(QStringLiteral("hfp_sco_enabled")).toBool(false) ? 1 : 0;
+        if (cmbBtCodec_) {
+            if (int ci = cmbBtCodec_->findData(static_cast<int>(btCfg_.preferred_codec)); ci >= 0) cmbBtCodec_->setCurrentIndex(ci);
+        }
+        if (cmbBtLdac_) {
+            if (int li = cmbBtLdac_->findData(static_cast<int>(btCfg_.ldac_mode)); li >= 0) cmbBtLdac_->setCurrentIndex(li);
+        }
+        if (chkBtAbr_) chkBtAbr_->setChecked(btCfg_.wireless_abr_enabled != 0);
+        if (chkBtSco_) chkBtSco_->setChecked(btCfg_.hfp_sco_enabled != 0);
+        if (chkBtOptional_) chkBtOptional_->setChecked(bt.value(QStringLiteral("optional_mode")).toBool(true));
+    }
+
+    // Restore Hardware Analog Stage preferences
+    if (guiSettings_.contains(QStringLiteral("hw_analog"))) {
+        const QJsonObject hwa = guiSettings_.value(QStringLiteral("hw_analog")).toObject();
+        hwAnalog_.hw_dac_unity_vol = hwa.value(QStringLiteral("hw_dac_unity_vol")).toBool(true) ? 1 : 0;
+        hwAnalog_.hp_amp_tier = static_cast<uint32_t>(std::clamp(hwa.value(QStringLiteral("hp_amp_tier")).toInt(0), 0, 3));
+        hwAnalog_.output_route = static_cast<uint32_t>(std::clamp(hwa.value(QStringLiteral("output_route")).toInt(0), 0, 2));
+        hwAnalog_.unlock_0db_rails = hwa.value(QStringLiteral("unlock_0db_rails")).toBool(false) ? 1 : 0;
+        hwAnalog_.analog_boost_db = static_cast<float>(std::clamp(hwa.value(QStringLiteral("analog_boost_db")).toDouble(0.0), 0.0, 24.0));
+        hwAnalog_.mic_hw_boost_db = static_cast<float>(std::clamp(hwa.value(QStringLiteral("mic_hw_boost_db")).toDouble(0.0), 0.0, 24.0));
+        if (chkHwDacUnity_) chkHwDacUnity_->setChecked(hwAnalog_.hw_dac_unity_vol != 0);
+        if (cmbHwAmp_) {
+            if (int ai = cmbHwAmp_->findData(static_cast<int>(hwAnalog_.hp_amp_tier)); ai >= 0) cmbHwAmp_->setCurrentIndex(ai);
+        }
+        if (cmbHwRoute_) {
+            if (int ri = cmbHwRoute_->findData(static_cast<int>(hwAnalog_.output_route)); ri >= 0) cmbHwRoute_->setCurrentIndex(ri);
+        }
+        if (chkHwRails_) chkHwRails_->setChecked(hwAnalog_.unlock_0db_rails != 0);
+        if (sldHwBoost_) sldHwBoost_->setValue(static_cast<int>(std::lround(hwAnalog_.analog_boost_db * 2.0f)));
+        if (lblHwBoost_) lblHwBoost_->setText(formatBoostDbText(hwAnalog_.analog_boost_db));
+        if (sldHwMicBoost_) sldHwMicBoost_->setValue(static_cast<int>(std::lround(hwAnalog_.mic_hw_boost_db)));
+        if (lblHwMicBoost_) lblHwMicBoost_->setText(formatBoostDbText(hwAnalog_.mic_hw_boost_db));
+    }
+
+    // Restore EQ & parametric bands
+    if (guiSettings_.contains(QStringLiteral("eq")) || guiSettings_.contains(QStringLiteral("eq_config"))) {
+        const QString key = guiSettings_.contains(QStringLiteral("eq"))
+            ? QStringLiteral("eq")
+            : QStringLiteral("eq_config");
+        const QByteArray eqJs = jsonCompact(guiSettings_.value(key).toObject()).toUtf8();
+        salsa_json_to_eq_cfg(eqJs.constData(), &eqCfg_, &paramExt_);
+    }
+
+    chkEqEnable_->setChecked(eqCfg_.enabled != 0);
+    if (int di = cmbDynMode_->findData(static_cast<int>(eqCfg_.dynamic_mode)); di >= 0) {
+        cmbDynMode_->setCurrentIndex(di);
+    }
+    lblSavedDynMode_->setText(dynModeSavedLabel(eqCfg_.dynamic_mode));
+    sldPreamp_->setValue(static_cast<int>(std::lround(eqCfg_.preamp_db * 10.0)));
+    sldThresh_->setValue(static_cast<int>(std::lround(eqCfg_.dyn_threshold_db * 10.0)));
+    sldRatio_->setValue(static_cast<int>(std::lround(eqCfg_.dyn_ratio * 10.0)));
+    chkLimiter_->setChecked(eqCfg_.limiter_enabled != 0);
+    chkCrossfeed_->setChecked(paramExt_.crossfeed_enabled != 0);
+    sldCrossfeed_->setValue(static_cast<int>(std::lround(paramExt_.crossfeed_level * 100.0)));
+    if (lblCrossfeed_) lblCrossfeed_->setText(formatPctText(sldCrossfeed_->value()));
+    if (int ci = cmbCrossfeedCut_->findData(static_cast<int>(paramExt_.crossfeed_cutoff_hz)); ci >= 0) {
+        cmbCrossfeedCut_->setCurrentIndex(ci);
+    }
+    for (int i = 0; i < SALSA_EQ_BANDS; ++i) {
+        bandSliders_[i]->setValue(static_cast<int>(std::lround(eqCfg_.band_gains_db[i] * 10.0)));
+        bandValLbls_[i]->setText(QStringLiteral("%1%2 dB").arg(eqCfg_.band_gains_db[i] >= 0 ? QStringLiteral("+") : QString()).arg(eqCfg_.band_gains_db[i], 0, 'f', 1));
+        bandFreqLbls_[i]->setText(fmtFreqHz(paramExt_.band_freq_hz[i]));
+    }
+    populatePresetDropdown(cFixedStr(eqCfg_.preset_name, sizeof(eqCfg_.preset_name)));
+    lblSavedPreset_->setText(QStringLiteral("Saved: %1").arg(cFixedStr(eqCfg_.preset_name, sizeof(eqCfg_.preset_name))));
+    lblPreamp_->setText(QStringLiteral("Preamp: %1%2 dB").arg(eqCfg_.preamp_db >= 0 ? QStringLiteral("+") : QString()).arg(eqCfg_.preamp_db, 0, 'f', 1));
+    lblThresh_->setText(QStringLiteral("Dyn Threshold: %1 dB").arg(eqCfg_.dyn_threshold_db, 0, 'f', 1));
+    lblRatio_->setText(QStringLiteral("Dyn Ratio: %1:1").arg(eqCfg_.dyn_ratio, 0, 'f', 1));
+    updateBandParamTable();
+    updatingUi_ = false;
+    updateSpectrumFromState();
+
+    if (isReload) {
+        applyThemeAndFontAll(false);
+        applyDynamicShortcuts();
+    }
+}
+
+void StudioController::flashSaveFeedback(const QString& statusMsg, bool ok) {
+    if (lblCfgSaveStatus_) {
+        lblCfgSaveStatus_->setText(statusMsg);
+        lblCfgSaveStatus_->setToolTip(statusMsg);
+    }
+    const QString flashLabel = ok ? QStringLiteral("Saved \u2713") : QStringLiteral("Save Failed");
+    auto flashBtn = [this, &flashLabel](QPushButton* btn, const QString& restoreText) {
+        if (!btn) return;
+        const int prevMinW = btn->minimumWidth();
+        const int holdW = std::max(btn->width(), btn->sizeHint().width());
+        if (holdW > 0) btn->setMinimumWidth(holdW);
+        btn->setText(flashLabel);
+        QPointer<QPushButton> pBtn(btn);
+        QTimer::singleShot(1800, this, [pBtn, restoreText, prevMinW]() {
+            if (!pBtn) return;
+            pBtn->setText(restoreText);
+            pBtn->setMinimumWidth(prevMinW);
+        });
+    };
+    flashBtn(btnSaveCfgMain_, QStringLiteral("Save Settings (Ctrl+S)"));
+    flashBtn(btnSaveCfgAdv_, QStringLiteral("Save Settings"));
+    flashBtn(btnSaveHw_, QStringLiteral("Save Settings"));
+}
+
+void StudioController::onSaveOverwriteConfigClicked() {
+    if (settingsSaveTimer_ && settingsSaveTimer_->isActive()) settingsSaveTimer_->stop();
+    if (hwSendTimer_ && hwSendTimer_->isActive()) hwSendTimer_->stop();
+    if (spkSendTimer_ && spkSendTimer_->isActive()) spkSendTimer_->stop();
+    if (micSendTimer_ && micSendTimer_->isActive()) micSendTimer_->stop();
+
+    const qint64 holdUntil = nowMs() + 1400;
+    eqHoldUntilMs_ = holdUntil;
+    btHoldUntilMs_ = holdUntil;
+    hwHoldUntilMs_ = holdUntil;
+    spkHoldUntilMs_ = holdUntil;
+    micHoldUntilMs_ = holdUntil;
+
+    const uint32_t rate = static_cast<uint32_t>(qvarInt(cmbRate_->currentData(), 48000));
+    const uint32_t period = static_cast<uint32_t>(qvarInt(cmbPeriod_->currentData(), 256));
+    const uint32_t bits = static_cast<uint32_t>(qvarInt(cmbBits_->currentData(), 32));
+    const uint32_t capRate = static_cast<uint32_t>(qvarInt(cmbCapRate_->currentData(), 0));
+    const uint32_t masterPct = static_cast<uint32_t>(std::clamp(sldSpk_->value(), 0, 150));
+    const uint32_t masterMuted = btnSpkMute_->text().startsWith(QStringLiteral("Unmute")) ? 1U : 0U;
+    const uint32_t micPct = static_cast<uint32_t>(std::clamp(sldMic_->value(), 0, 150));
+    const uint32_t micMuted = btnMicMute_->text().startsWith(QStringLiteral("Unmute")) ? 1U : 0U;
+    const uint32_t btOpt = (chkBtOptional_ && chkBtOptional_->isChecked()) ? 1U : 0U;
+
+    btCfg_.preferred_codec = static_cast<uint32_t>(cmbBtCodec_->currentData().toInt());
+    btCfg_.ldac_mode = static_cast<uint32_t>(cmbBtLdac_->currentData().toInt());
+    btCfg_.wireless_abr_enabled = chkBtAbr_->isChecked() ? 1 : 0;
+    btCfg_.hfp_sco_enabled = chkBtSco_->isChecked() ? 1 : 0;
+
+    hwAnalog_.hw_dac_unity_vol = chkHwDacUnity_->isChecked() ? 1 : 0;
+    hwAnalog_.hp_amp_tier = static_cast<uint32_t>(cmbHwAmp_->currentData().toInt());
+    hwAnalog_.output_route = static_cast<uint32_t>(cmbHwRoute_->currentData().toInt());
+    hwAnalog_.unlock_0db_rails = chkHwRails_->isChecked() ? 1 : 0;
+    hwAnalog_.analog_boost_db = sldHwBoost_->value() * 0.5f;
+    hwAnalog_.mic_hw_boost_db = static_cast<float>(sldHwMicBoost_->value());
+
+    eqCfg_.enabled = chkEqEnable_->isChecked() ? 1 : 0;
+    eqCfg_.limiter_enabled = chkLimiter_->isChecked() ? 1 : 0;
+    paramExt_.crossfeed_enabled = chkCrossfeed_->isChecked() ? 1 : 0;
+
+    if (chkEqPerDev_->isChecked() && !lastSinkId_.isEmpty()) {
+        savePerDeviceEqForSink(lastSinkId_);
+    }
+
+    // Push live changes to daemon if online so both in-memory engine and disk config match
+    SalsaEngineStatus curSt{};
+    const bool daemonOnline = (salsa_get_engine_status(&curSt) == 0);
+    if (daemonOnline) {
+        if (rate != curSt.hw_sample_rate || period != curSt.hw_period_frames || bits != curSt.hw_format_bits) {
+            salsa_set_engine_config(rate, period, bits);
+        }
+        salsa_set_capture_sample_rate(capRate);
+        salsa_set_master_volume(masterPct, masterMuted);
+        salsa_set_mic_volume(micPct, micMuted);
+        salsa_set_bt_codec_config(&btCfg_);
+        uint32_t flagsOut = 0;
+        salsa_bt_connection_ctl(btOpt ? SALSA_BT_CONN_SET_OPTIONAL : SALSA_BT_CONN_SET_AUTOCONN, "", &flagsOut);
+        salsa_set_hw_analog(&hwAnalog_);
+        salsa_set_parametric_eq(&eqCfg_, &paramExt_);
+        salsa_save_config_now();
+    }
+
+    QJsonObject guiPayload;
+    guiPayload.insert(QStringLiteral("imported_eq_presets"), savedAutoEq_);
+    guiPayload.insert(QStringLiteral("eq_per_device"), chkEqPerDev_->isChecked());
+    if (chkShowIntroAdv_) {
+        guiPayload.insert(QStringLiteral("show_topology_intro"), chkShowIntroAdv_->isChecked());
+    }
+    guiPayload.insert(QStringLiteral("theme"), currentThemeName_);
+    guiPayload.insert(QStringLiteral("font_scale_pct"), fontPct_);
+    guiPayload.insert(QStringLiteral("volume_step_pct"), volStepPct_);
+    if (guiSettings_.contains(QStringLiteral("per_device_eq"))) {
+        guiPayload.insert(QStringLiteral("per_device_eq"), guiSettings_.value(QStringLiteral("per_device_eq")));
+    }
+
+    const QByteArray pbBytes = targetPbId_.toUtf8();
+    const QByteArray capBytes = targetCapId_.toUtf8();
+    const QByteArray guiBytes = jsonCompact(guiPayload).toUtf8();
+    const int rc = salsa_overwrite_settings_from_ui(
+        rate,
+        period,
+        bits,
+        capRate,
+        pbBytes.constData(),
+        capBytes.constData(),
+        masterPct,
+        masterMuted,
+        micPct,
+        micMuted,
+        btOpt,
+        &btCfg_,
+        &hwAnalog_,
+        &eqCfg_,
+        &paramExt_,
+        guiBytes.constData());
+
+    if (rc == 0) {
+        guiSettings_ = loadGuiSettings();
+        lastSettingsMtimeNs_ = salsa_gui_settings_mtime_ns();
+        const QString path = SalsaStr(salsa_settings_path_str()).toQString();
+        const QString msg = daemonOnline
+            ? QStringLiteral("Saved (%2): %1")
+                  .arg(path, QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")))
+            : QStringLiteral("Saved offline (%2): %1")
+                  .arg(path, QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")));
+        flashSaveFeedback(msg, true);
+    } else {
+        flashSaveFeedback(QStringLiteral("Error: could not write settings (check 0700/0600 ownership & permissions)"), false);
+    }
+}
+
+void StudioController::onReloadConfigClicked() {
+    if (settingsSaveTimer_ && settingsSaveTimer_->isActive()) settingsSaveTimer_->stop();
+    if (hwSendTimer_ && hwSendTimer_->isActive()) hwSendTimer_->stop();
+    if (spkSendTimer_ && spkSendTimer_->isActive()) spkSendTimer_->stop();
+    if (micSendTimer_ && micSendTimer_->isActive()) micSendTimer_->stop();
+
+    eqHoldUntilMs_ = 0;
+    btHoldUntilMs_ = 0;
+    hwHoldUntilMs_ = 0;
+    spkHoldUntilMs_ = 0;
+    micHoldUntilMs_ = 0;
+
+    const int engineRc = salsa_reload_config_now();
+    guiSettings_ = loadGuiSettings();
+    lastSettingsMtimeNs_ = salsa_gui_settings_mtime_ns();
+    applyGuiSettingsJsonToUi(true);
+    pollEngine(true);
+
+    const QString path = SalsaStr(salsa_settings_path_str()).toQString();
+    if (lblCfgSaveStatus_) {
+        const QString msg = (engineRc == 0)
+            ? QStringLiteral("Reloaded daemon + UI from %1 (%2)")
+                  .arg(path, QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")))
+            : QStringLiteral("Reloaded UI from %1 (engine offline)")
+                  .arg(path);
+        lblCfgSaveStatus_->setText(msg);
+        lblCfgSaveStatus_->setToolTip(msg);
+    }
+}
+
+void StudioController::onOpenConfigFileClicked() {
+    const QString cfgPath = SalsaStr(salsa_settings_path_str()).toQString();
+    QFileInfo fi(cfgPath);
+    if (!fi.exists()) {
+        saveStudioSettings();
+        fi.refresh();
+    }
+    if (fi.isSymLink()) {
+        if (lblCfgSaveStatus_) {
+            lblCfgSaveStatus_->setText(QStringLiteral("Blocked opening symlinked config path: %1").arg(cfgPath));
+        }
+        return;
+    }
+
+    if (fi.exists() && QDesktopServices::openUrl(QUrl::fromLocalFile(cfgPath))) {
+        if (lblCfgSaveStatus_) {
+            const QString msg = QStringLiteral("Opened %1 (click Reload Saved Config after external edits)").arg(cfgPath);
+            lblCfgSaveStatus_->setText(msg);
+            lblCfgSaveStatus_->setToolTip(msg);
+        }
+        return;
+    }
+
+    QDialog dlg(advWin_ ? advWin_ : static_cast<QWidget*>(mainWin_));
+    dlg.setWindowTitle(QStringLiteral("Salsa Config — ") + cfgPath);
+    dlg.setMinimumSize(680, 520);
+    auto* lay = new QVBoxLayout(&dlg);
+    auto* pathLbl = new QLabel(QStringLiteral("Config File: %1").arg(cfgPath), &dlg);
+    pathLbl->setWordWrap(true);
+    pathLbl->setObjectName(QStringLiteral("DiagStatusLabel"));
+    lay->addWidget(pathLbl);
+
+    auto* txt = new QPlainTextEdit(&dlg);
+    txt->setReadOnly(true);
+    txt->setPlainText(QString::fromUtf8(QJsonDocument(loadGuiSettings()).toJson(QJsonDocument::Indented)));
+    lay->addWidget(txt, 1);
+
+    auto* btnRow = new QHBoxLayout();
+    auto* btnDir = new QPushButton(QStringLiteral("Open Folder"), &dlg);
+    connect(btnDir, &QPushButton::clicked, &dlg, [&fi]() {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(fi.absolutePath()));
+    });
+    btnRow->addWidget(btnDir);
+    btnRow->addStretch(1);
+    auto* btnClose = new QPushButton(QStringLiteral("Close"), &dlg);
+    connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::accept);
+    btnRow->addWidget(btnClose);
+    lay->addLayout(btnRow);
+    dlg.setStyleSheet(buildSalsaStylesheet(currentTheme_, false, fontPct_));
+    dlg.exec();
 }
 
 void StudioController::updateSpectrumFromState() {
@@ -2469,6 +2892,7 @@ void StudioController::onCapRateChanged() {
 
 void StudioController::onSinkActivated(int idx) {
     const QString targetId = cmbSink_->itemData(idx).toString();
+    targetPbId_ = targetId.isEmpty() ? QStringLiteral("auto") : targetId;
     if (chkEqPerDev_->isChecked() && !lastSinkId_.isEmpty()) savePerDeviceEqForSink(lastSinkId_);
     salsa_set_devices(targetId.toUtf8().constData(), nullptr);
     lastSinkId_ = targetId;
@@ -2477,6 +2901,7 @@ void StudioController::onSinkActivated(int idx) {
 
 void StudioController::onSourceActivated(int idx) {
     const QString targetId = cmbSource_->itemData(idx).toString();
+    targetCapId_ = targetId.isEmpty() ? QStringLiteral("auto") : targetId;
     salsa_set_devices(nullptr, targetId.toUtf8().constData());
 }
 
@@ -3128,6 +3553,46 @@ void StudioController::pollEngine(bool initial) {
     }
 }
 
+void StudioController::dumpAuditPngs(const QString& outDir) {
+    QDir().mkpath(outDir);
+    pollEngine(true);
+    if (mainWin_) {
+        mainWin_->show();
+        QApplication::processEvents();
+        QApplication::processEvents();
+    }
+    if (advWin_) {
+        advWin_->show();
+        QApplication::processEvents();
+        QApplication::processEvents();
+    }
+    const QSize mainMin = mainWin_ ? mainWin_->minimumSizeHint() : QSize();
+    const QSize advMin = advWin_ ? advWin_->minimumSizeHint() : QSize();
+    const QSize mainBefore = mainWin_ ? mainWin_->size() : QSize();
+    const QSize advBefore = advWin_ ? advWin_->size() : QSize();
+    flashSaveFeedback(
+        QStringLiteral("Saved (16:10:00): %1").arg(SalsaStr(salsa_settings_path_str()).toQString()),
+        true);
+    QApplication::processEvents();
+    QApplication::processEvents();
+    const QSize mainAfter = mainWin_ ? mainWin_->size() : QSize();
+    const QSize advAfter = advWin_ ? advWin_->size() : QSize();
+    std::printf(
+        "AUDIT_SIZE main=%dx%d->%dx%d (min=%dx%d) adv=%dx%d->%dx%d (min=%dx%d)\n",
+        mainBefore.width(), mainBefore.height(), mainAfter.width(), mainAfter.height(),
+        mainMin.width(), mainMin.height(),
+        advBefore.width(), advBefore.height(), advAfter.width(), advAfter.height(),
+        advMin.width(), advMin.height());
+    if (mainWin_) mainWin_->grab().save(outDir + QStringLiteral("/main.png"));
+    if (advWin_) advWin_->grab().save(outDir + QStringLiteral("/advanced.png"));
+    if (introWin_) {
+        introWin_->show();
+        QApplication::processEvents();
+        QApplication::processEvents();
+        introWin_->grab().save(outDir + QStringLiteral("/topology.png"));
+    }
+}
+
 }  // namespace salsa
 
 #include "salsa_studio.moc"
@@ -3138,6 +3603,7 @@ int main(int argc, char** argv) {
         return cliRc;
     }
     bool selfTest = false;
+    QString renderAuditDir;
     bool forceStudio = false;
     bool forceTopology = false;
     bool forceAdvanced = false;
@@ -3146,6 +3612,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const QString arg = QString::fromUtf8(argv[i]);
         if (arg == QLatin1String("--self-test")) selfTest = true;
+        else if (arg == QLatin1String("--render-audit") && i + 1 < argc) renderAuditDir = QString::fromUtf8(argv[++i]);
         else if (arg == QLatin1String("--studio")) forceStudio = true;
         else if (arg == QLatin1String("--topology") || arg == QLatin1String("--graph")) forceTopology = true;
         else if (arg == QLatin1String("--advanced")) forceAdvanced = true;
@@ -3169,6 +3636,14 @@ int main(int argc, char** argv) {
         }
         salsa::StudioController ctrl(true);
         std::printf("%s\n", res.toUtf8().constData());
+        return 0;
+    }
+
+    if (!renderAuditDir.isEmpty()) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+        QApplication app(argc, argv);
+        salsa::StudioController ctrl(true);
+        ctrl.dumpAuditPngs(renderAuditDir);
         return 0;
     }
 

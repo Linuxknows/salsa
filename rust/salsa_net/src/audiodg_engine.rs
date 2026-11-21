@@ -34,7 +34,8 @@ use crate::c_abi::{
     LWASAPI_BT_STAT_OPTIONAL, LWASAPI_BT_STAT_TRANSPORT, LWASAPI_BT_STAT_USB_MATCHES_BT,
     LWASAPI_CFG_FLAG_CAPTURE_RATE, LWASAPI_CMD_BT_CONNECTION, LWASAPI_CMD_CREATE_SESSION,
     LWASAPI_CMD_GET_STATUS, LWASAPI_CMD_INJECT_MIDI, LWASAPI_CMD_LIST_DEVICES,
-    LWASAPI_CMD_SET_BT_CODEC, LWASAPI_CMD_SET_DEVICES, LWASAPI_CMD_SET_ENGINE_CONFIG,
+    LWASAPI_CMD_RELOAD_CONFIG, LWASAPI_CMD_SAVE_CONFIG, LWASAPI_CMD_SET_BT_CODEC,
+    LWASAPI_CMD_SET_DEVICES, LWASAPI_CMD_SET_ENGINE_CONFIG,
     LWASAPI_CMD_SET_EQ, LWASAPI_CMD_SET_HW_ANALOG, LWASAPI_CMD_SET_MIC_APO,
     LWASAPI_CMD_SET_PARAM_EQ, LWASAPI_CMD_SET_SESSION_CONTROL, LWASAPI_CMD_SET_VOLUME,
     LWASAPI_DBG_ALSA, LWASAPI_DBG_BLUEZ, LWASAPI_DBG_ENGINE, LWASAPI_DBG_ERR, LWASAPI_DBG_INFO,
@@ -2610,6 +2611,132 @@ impl AudiodgEngine {
                         cfg.analog_boost_db,
                         cfg.mic_hw_boost_db
                     ),
+                );
+                resp.hr = S_OK;
+                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
+            }
+            LWASAPI_CMD_SAVE_CONFIG => {
+                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+                {
+                    let _reconf = self.reconf_lock.lock().unwrap_or_else(|e| e.into_inner());
+                    self.save_state();
+                }
+                dbg_emit(
+                    LWASAPI_DBG_ENGINE,
+                    LWASAPI_DBG_INFO,
+                    req.client_pid,
+                    0,
+                    "CFG_SAVE",
+                    "salsa_settings.json",
+                    "overwrote unified settings config",
+                );
+                resp.hr = S_OK;
+                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
+            }
+            LWASAPI_CMD_RELOAD_CONFIG => {
+                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+                let mut rt = default_runtime_state();
+                unsafe {
+                    salsa_state_init_defaults(&mut rt);
+                    salsa_state_load(&mut rt);
+                }
+                clamp_eq_cfg(&mut rt.eq_cfg);
+                unsafe {
+                    salsa_dsp_clamp_param_eq_ext(&mut rt.param_eq);
+                    salsa_dsp_clamp_mic_apo_cfg(&mut rt.mic_apo);
+                    lwasapi_hw_analog_clamp_cfg(&mut rt.hw_analog_cfg);
+                }
+
+                {
+                    let mut ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
+                    ss.eq_cfg = rt.eq_cfg;
+                    ss.param_eq = rt.param_eq;
+                    ss.mic_apo = rt.mic_apo;
+                    ss.hw_analog_cfg = rt.hw_analog_cfg;
+                }
+
+                let bt_init = unsafe { salsa_bt_is_initialized(self.bt()) };
+                {
+                    let mut sb = self.saved_bt.lock().unwrap_or_else(|e| e.into_inner());
+                    sb.saved_bt_cfg = rt.bt_cfg;
+                    sb.bt_optional_mode = rt.bt_optional_mode;
+                    if rt.has_saved_vol_state {
+                        sb.saved_desktop_vol_pct = rt.desktop_volume_pct;
+                        sb.saved_desktop_muted = rt.desktop_muted;
+                        sb.saved_mic_vol_pct = rt.desktop_mic_volume_pct;
+                        sb.saved_mic_muted = rt.desktop_mic_muted;
+                        sb.saved_mic_gain_ppm = rt.desktop_mic_gain_ppm;
+                        sb.has_saved_vol_state = true;
+                    }
+                }
+                if bt_init {
+                    unsafe {
+                        lwasapi_bluez_set_optional_mode(self.bt(), rt.bt_optional_mode != 0);
+                        lwasapi_bluez_set_sco_enabled(self.bt(), rt.bt_cfg.hfp_sco_enabled != 0);
+                        lwasapi_bluez_set_codec_config(self.bt(), &rt.bt_cfg);
+                        if rt.has_saved_vol_state {
+                            lwasapi_bluez_set_volume(
+                                self.bt(),
+                                rt.desktop_volume_pct as c_int,
+                                if rt.desktop_muted != 0 { 1 } else { 0 },
+                            );
+                            lwasapi_bluez_set_mic_gain_ppm(
+                                self.bt(),
+                                rt.desktop_mic_gain_ppm,
+                                rt.desktop_mic_volume_pct as c_int,
+                                if rt.desktop_mic_muted != 0 { 1 } else { 0 },
+                            );
+                        }
+                    }
+                }
+
+                let (cur_r, cur_p, cur_b, cur_cap_r, cur_pb, cur_cap) = {
+                    let hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
+                    (
+                        if hws.pref_sample_rate != 0 { hws.pref_sample_rate } else { hws.hw.sample_rate },
+                        if hws.pref_period_frames != 0 { hws.pref_period_frames } else { hws.hw.period_frames },
+                        if hws.pref_format_bits != 0 { hws.pref_format_bits } else { hws.hw.format_bits },
+                        hws.pref_cap_sample_rate,
+                        c_str_to_string(&hws.target_playback_id),
+                        c_str_to_string(&hws.target_capture_id),
+                    )
+                };
+                let new_pb = c_str_to_string(&rt.target_playback_id);
+                let new_cap = c_str_to_string(&rt.target_capture_id);
+                if new_pb != cur_pb || new_cap != cur_cap {
+                    self.switch_engine_devices_impl(
+                        (!new_pb.is_empty()).then_some(new_pb.as_str()),
+                        (!new_cap.is_empty()).then_some(new_cap.as_str()),
+                        false,
+                    );
+                }
+                if rt.sample_rate != cur_r || rt.period_frames != cur_p || rt.format_bits != cur_b {
+                    let _ = self.reconfigure_engine_rate_impl(
+                        rt.sample_rate,
+                        rt.period_frames,
+                        rt.format_bits,
+                        true,
+                    );
+                }
+                if rt.cap_sample_rate != cur_cap_r {
+                    let _ = self.reconfigure_capture_rate_impl(rt.cap_sample_rate);
+                }
+                self.hw_analog_probe_and_sync(true);
+                let pa = self.pa();
+                if !pa.is_null() {
+                    unsafe {
+                        lwasapi_pa_server_notify_change(pa);
+                        lwasapi_pa_server_notify_volume(pa, false);
+                    }
+                }
+                dbg_emit(
+                    LWASAPI_DBG_ENGINE,
+                    LWASAPI_DBG_INFO,
+                    req.client_pid,
+                    0,
+                    "CFG_RELOAD",
+                    "salsa_settings.json",
+                    "reloaded unified settings config",
                 );
                 resp.hr = S_OK;
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));

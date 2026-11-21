@@ -8,19 +8,20 @@
 use core::cmp::Ordering;
 use core::ffi::c_int;
 use std::env;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::net::Shutdown;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use salsa_wire::unix_sys::{
-    current_pid, current_uid, ensure_owned_dir_0700, ensure_private_dir, socket_peercred,
-    user_home_dir, O_CLOEXEC, O_NOFOLLOW,
+    current_pid, current_uid, ensure_dir_0700_safe, ensure_owned_dir_0700, ensure_private_dir,
+    flock_fd as unix_flock_fd, funlock_fd as unix_funlock_fd, socket_peercred, user_home_dir,
+    write_atomic_secure_file,
 };
 
 pub const LOCK_EX: c_int = 2;
@@ -29,24 +30,12 @@ pub const LOCK_UN: c_int = 8;
 pub const S_IFMT: u32 = 0o170000;
 pub const S_IFSOCK: u32 = 0o140000;
 
-extern "C" {
-    fn flock(fd: c_int, operation: c_int) -> c_int;
-}
-
 pub fn flock_fd(fd: RawFd, nonblocking: bool) -> io::Result<()> {
-    let op = if nonblocking { LOCK_EX | LOCK_NB } else { LOCK_EX };
-    let rc = unsafe { flock(fd, op) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
+    unix_flock_fd(fd, nonblocking)
 }
 
 pub fn funlock_fd(fd: RawFd) {
-    unsafe {
-        let _ = flock(fd, LOCK_UN);
-    }
+    unix_funlock_fd(fd);
 }
 
 pub fn getuid() -> u32 {
@@ -123,100 +112,11 @@ pub fn home_dir() -> PathBuf {
 }
 
 pub fn ensure_dir_0700(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::MetadataExt;
-
-    let uid = getuid();
-    let s = path.to_string_lossy();
-    if ensure_owned_dir_0700(&s, uid) {
-        return Ok(());
-    }
-    match fs::symlink_metadata(path) {
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("refusing unsafe or unowned directory: {}", path.display()),
-        )),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() && parent != Path::new("/") {
-                    match fs::symlink_metadata(parent) {
-                        Ok(pm) => {
-                            if pm.file_type().is_symlink() {
-                                let target_meta = fs::metadata(parent)?;
-                                if !target_meta.is_dir() || (pm.uid() != 0 && pm.uid() != uid) {
-                                    return Err(io::Error::new(
-                                        io::ErrorKind::PermissionDenied,
-                                        format!("refusing symlinked parent: {}", parent.display()),
-                                    ));
-                                }
-                            } else if !pm.is_dir() {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::InvalidInput,
-                                    format!("parent is not a directory: {}", parent.display()),
-                                ));
-                            }
-                        }
-                        Err(pe) if pe.kind() == io::ErrorKind::NotFound => {
-                            ensure_dir_0700(parent)?;
-                        }
-                        Err(pe) => return Err(pe),
-                    }
-                }
-            }
-            if ensure_owned_dir_0700(&s, uid) {
-                Ok(())
-            } else {
-                Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!("failed to create owned 0700 dir: {}", path.display()),
-                ))
-            }
-        }
-        Err(e) => Err(e),
-    }
+    ensure_dir_0700_safe(path)
 }
 
 pub fn write_atomic_secure(path: &Path, data: &[u8], mode: u32) -> io::Result<()> {
-    use core::sync::atomic::{AtomicU64, Ordering};
-    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
-    }
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = PathBuf::from(format!(
-        "{}.tmp.{}.{}.{}",
-        path.to_string_lossy(),
-        getpid(),
-        stamp,
-        seq
-    ));
-    let mut f = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
-        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
-        .open(&tmp)?;
-    let write_res = (|| -> io::Result<()> {
-        f.write_all(data)?;
-        f.sync_all()?;
-        f.set_permissions(fs::Permissions::from_mode(mode))?;
-        Ok(())
-    })();
-    drop(f);
-    if let Err(e) = write_res {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
-    if let Err(e) = fs::rename(&tmp, path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
-    Ok(())
+    write_atomic_secure_file(path, data, mode)
 }
 
 pub fn which(cmd: &str) -> Option<PathBuf> {

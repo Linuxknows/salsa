@@ -36,8 +36,8 @@ use crate::c_abi::{
     LWASAPI_BT_STAT_CONNECTED, LWASAPI_BT_STAT_OPTIONAL, LWASAPI_BT_STAT_TRANSPORT,
     LWASAPI_BT_STAT_USB_MATCHES_BT, LWASAPI_CFG_FLAG_CAPTURE_RATE, LWASAPI_CMD_BT_CONNECTION,
     LWASAPI_CMD_GET_STATUS, LWASAPI_CMD_INJECT_MIDI, LWASAPI_CMD_LIST_DEVICES,
-    LWASAPI_CMD_SET_BT_CODEC, LWASAPI_CMD_SET_DEVICES,
-    LWASAPI_CMD_SET_ENGINE_CONFIG, LWASAPI_CMD_SET_EQ, LWASAPI_CMD_SET_HW_ANALOG,
+    LWASAPI_CMD_RELOAD_CONFIG, LWASAPI_CMD_SAVE_CONFIG, LWASAPI_CMD_SET_BT_CODEC,
+    LWASAPI_CMD_SET_DEVICES, LWASAPI_CMD_SET_ENGINE_CONFIG, LWASAPI_CMD_SET_EQ, LWASAPI_CMD_SET_HW_ANALOG,
     LWASAPI_CMD_SET_MIC_APO, LWASAPI_CMD_SET_PARAM_EQ, LWASAPI_CMD_SET_SESSION_CONTROL,
     LWASAPI_CMD_SET_VOLUME, LWASAPI_EQ_BANDS, LWASAPI_FILTER_HIGH_SHELF, LWASAPI_FILTER_LOW_SHELF,
     LWASAPI_FILTER_PEAK, LWASAPI_LDAC_MODE_330, LWASAPI_LDAC_MODE_660, LWASAPI_LDAC_MODE_990,
@@ -2336,6 +2336,8 @@ fn print_usage(prog: &str) {
   mic-mute <0|1|toggle>                     Set or toggle Salsa microphone mute\n\
   midi-send <note> [velocity]               Inject a MIDI Note-On into the LWASAPI DAW MIDI Hub\n\
   pw-self-test                              Run PipeWire ScreenCast broker live self-test via debug socket\n\
+  save-config                               Overwrite ~/.config/lwasapi/salsa_settings.json with live engine state\n\
+  reload-config                             Reload ~/.config/lwasapi/salsa_settings.json into live engine\n\
   enable-auto                               Enable Zero-PipeWire Salsa mode (Video Broker, Steam/ALSA/PA direct)\n\
   disable-auto                              Restore upstream PipeWire, PipeWire-Pulse & WirePlumber cleanly\n\
   license                                   Show Salsa Copyright, No-Warranty Notice & full LGPL-3.0 / GPL-3.0 terms\n\
@@ -2513,6 +2515,24 @@ pub fn run_ctl(args: &[String]) -> i32 {
             return cmd_eq_mode(&args[2], thresh, ratio);
         }
         "pw-self-test" => return cmd_pw_self_test(),
+        "save-config" => {
+            let (rc, resp) = send_payload_cmd(LWASAPI_CMD_SAVE_CONFIG, &[]);
+            println!(
+                "Saved & overwrote {} (HRESULT=0x{:08x})",
+                crate::state_conf::salsa_settings_file_path().display(),
+                resp.hr as u32
+            );
+            return rc;
+        }
+        "reload-config" => {
+            let (rc, resp) = send_payload_cmd(LWASAPI_CMD_RELOAD_CONFIG, &[]);
+            println!(
+                "Reloaded {} into live engine (HRESULT=0x{:08x})",
+                crate::state_conf::salsa_settings_file_path().display(),
+                resp.hr as u32
+            );
+            return rc;
+        }
         "enable-auto" => return cmd_enable_auto(),
         "disable" | "disable-auto" => return cmd_disable_auto(),
         "bench" | "benchmark" => {

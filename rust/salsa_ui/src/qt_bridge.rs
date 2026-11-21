@@ -29,16 +29,21 @@ use salsa_tools::host::{
 };
 use salsa_tools::ipc::{
     bt_connection_ctl, get_engine_status, gui_settings_path, list_devices, load_gui_settings,
-    load_screencast_prefs, save_screencast_prefs, save_studio_gui_settings, set_bt_codec_config,
-    set_capture_sample_rate, set_devices, set_dynamic_eq, set_engine_config, set_hw_analog,
-    set_master_volume, set_mic_apo, set_mic_volume, set_parametric_eq, set_session_control,
-    update_gui_settings, ScreenCastPrefs, EQ_PRESETS, MIC_APO_PRESETS,
+    load_screencast_prefs, reload_config_now, save_config_now, save_screencast_prefs,
+    save_studio_gui_settings, set_bt_codec_config, set_capture_sample_rate, set_devices,
+    set_dynamic_eq, set_engine_config, set_hw_analog, set_master_volume, set_mic_apo,
+    set_mic_volume, set_parametric_eq, set_session_control, update_gui_settings, ScreenCastPrefs,
+    EQ_PRESETS, MIC_APO_PRESETS,
 };
 use salsa_tools::json::JsonValue;
 use salsa_tools::zlib_png::{decode_png_rgba, encode_png_rgba, RgbaImage};
 use salsa_wire::c_abi::{
     c_str_to_string, LwasapiBtCodecCfg, LwasapiDeviceList, LwasapiEngineStatus, LwasapiEqConfig,
     LwasapiHwAnalogCfg, LwasapiMicApoCfg, LwasapiParamEqExt,
+};
+use salsa_wire::state_conf::{
+    config_dir_path, load_runtime_state_in_dir, salsa_settings_file_path,
+    save_runtime_state_in_dir,
 };
 use salsa_wire::legal::{
     full_license_bundle, handle_common_cli_flag, salsa_version, short_legal_notice, COPY_TEXT,
@@ -564,6 +569,105 @@ pub extern "C" fn salsa_update_gui_settings_json(patch_json: *const c_char) -> c
     };
     let pairs: Vec<(&str, JsonValue)> = entries.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
     if update_gui_settings(&pairs).is_ok() {
+        0
+    } else {
+        -1
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_settings_path_str() -> *mut c_char {
+    to_c_string(salsa_settings_file_path().to_string_lossy().into_owned())
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_save_config_now() -> c_int {
+    save_config_now() as c_int
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_reload_config_now() -> c_int {
+    reload_config_now() as c_int
+}
+
+fn sanitize_ui_dev_id(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .filter(|&ch| !ch.is_control())
+        .collect();
+    cleaned.trim().to_string()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn salsa_overwrite_settings_from_ui(
+    sample_rate: u32,
+    period_frames: u32,
+    format_bits: u32,
+    cap_sample_rate: u32,
+    playback_id: *const c_char,
+    capture_id: *const c_char,
+    master_pct: u32,
+    master_muted: u32,
+    mic_pct: u32,
+    mic_muted: u32,
+    bt_optional_mode: u32,
+    bt_cfg: *const LwasapiBtCodecCfg,
+    hw_analog: *const LwasapiHwAnalogCfg,
+    eq_cfg: *const LwasapiEqConfig,
+    param_ext: *const LwasapiParamEqExt,
+    gui_json: *const c_char,
+) -> c_int {
+    if let Some(s) = cstr_to_string(gui_json) {
+        if let Ok(val @ JsonValue::Object(_)) = JsonValue::parse(&s) {
+            if save_studio_gui_settings(&val).is_err() {
+                return -1;
+            }
+        } else {
+            return -1;
+        }
+    }
+
+    let dir = config_dir_path();
+    let mut st = load_runtime_state_in_dir(&dir, false);
+    if (44_100..=192_000).contains(&sample_rate) {
+        st.sample_rate = sample_rate;
+    }
+    if (64..=2048).contains(&period_frames) {
+        st.period_frames = period_frames;
+    }
+    if matches!(format_bits, 16 | 24 | 32) {
+        st.format_bits = format_bits;
+    }
+    if cap_sample_rate == 0 || (44_100..=192_000).contains(&cap_sample_rate) {
+        st.cap_sample_rate = cap_sample_rate;
+    }
+    if let Some(pb) = cstr_to_string(playback_id) {
+        let clean = sanitize_ui_dev_id(&pb);
+        set_c_bytes(&mut st.target_playback_id, &clean);
+    }
+    if let Some(cap) = cstr_to_string(capture_id) {
+        let clean = sanitize_ui_dev_id(&cap);
+        set_c_bytes(&mut st.target_capture_id, &clean);
+    }
+    st.desktop_volume_pct = master_pct.min(150);
+    st.desktop_muted = u32::from(master_muted != 0);
+    st.desktop_mic_volume_pct = mic_pct.min(150);
+    st.desktop_mic_muted = u32::from(mic_muted != 0);
+    st.has_saved_vol_state = true;
+    st.bt_optional_mode = u32::from(bt_optional_mode != 0);
+    if !bt_cfg.is_null() {
+        st.bt_cfg = *bt_cfg;
+    }
+    if !hw_analog.is_null() {
+        st.hw_analog_cfg = *hw_analog;
+    }
+    if !eq_cfg.is_null() {
+        st.eq_cfg = *eq_cfg;
+    }
+    if !param_ext.is_null() {
+        st.param_eq = *param_ext;
+    }
+    if save_runtime_state_in_dir(&dir, &st) {
         0
     } else {
         -1
