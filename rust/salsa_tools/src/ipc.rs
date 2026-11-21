@@ -277,6 +277,13 @@ pub fn set_session_control(
 fn send_volume_cmd(target_id: u32, pct: i32, mute_mode: i32) -> bool {
     let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
     req.cmd = LWASAPI_CMD_SET_VOLUME;
+    req.client_pid = std::process::id();
+    if let Ok(comm) = fs::read_to_string("/proc/self/comm") {
+        let trimmed = comm.trim();
+        let bytes = trimmed.as_bytes();
+        let n = bytes.len().min(req.client_name.len().saturating_sub(1));
+        req.client_name[..n].copy_from_slice(&bytes[..n]);
+    }
     req.share_mode = (mute_mode + 1).clamp(0, 3) as u32;
     req.target_session_id = target_id;
     req.volume_milli = if pct >= 0 {

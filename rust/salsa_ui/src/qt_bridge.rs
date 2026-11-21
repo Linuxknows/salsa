@@ -25,7 +25,7 @@ use salsa_tools::debug_core::{
 };
 use salsa_tools::host::{
     ensure_dir_0700, flock_fd, getpid, home_dir, install_root, private_runtime_dir,
-    read_text_lossy, state_dir, which,
+    read_text_lossy, state_dir,
 };
 use salsa_tools::ipc::{
     bt_connection_ctl, get_engine_status, gui_settings_path, list_devices, load_gui_settings,
@@ -37,8 +37,8 @@ use salsa_tools::ipc::{
 use salsa_tools::json::JsonValue;
 use salsa_tools::zlib_png::{decode_png_rgba, encode_png_rgba, RgbaImage};
 use salsa_wire::c_abi::{
-    LwasapiBtCodecCfg, LwasapiDeviceList, LwasapiEngineStatus, LwasapiEqConfig, LwasapiHwAnalogCfg,
-    LwasapiMicApoCfg, LwasapiParamEqExt,
+    c_str_to_string, LwasapiBtCodecCfg, LwasapiDeviceList, LwasapiEngineStatus, LwasapiEqConfig,
+    LwasapiHwAnalogCfg, LwasapiMicApoCfg, LwasapiParamEqExt,
 };
 use salsa_wire::legal::{
     full_license_bundle, handle_common_cli_flag, salsa_version, short_legal_notice, COPY_TEXT,
@@ -152,32 +152,6 @@ fn run_cmd_bounded(bin: &str, args: &[&str], timeout: Duration) -> Option<Output
             Err(_) => return None,
         }
     }
-}
-
-fn active_bt_addr() -> String {
-    if which("bluetoothctl").is_none() {
-        return String::new();
-    }
-    let Some(out) = run_cmd_bounded("bluetoothctl", &["devices", "Connected"], Duration::from_secs(3))
-    else {
-        return String::new();
-    };
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        for tok in line.split_whitespace() {
-            if tok.len() == 17
-                && tok.chars().enumerate().all(|(i, c)| {
-                    if i % 3 == 2 {
-                        c == ':'
-                    } else {
-                        c.is_ascii_hexdigit()
-                    }
-                })
-            {
-                return tok.to_string();
-            }
-        }
-    }
-    String::new()
 }
 
 fn saved_autoeq_from_json_val(v: &JsonValue) -> Option<SavedAutoEqPreset> {
@@ -1133,18 +1107,32 @@ pub extern "C" fn salsa_run_health_audit_json() -> *mut c_char {
 
 #[no_mangle]
 pub extern "C" fn salsa_bt_reset_sync() -> *mut c_char {
-    let addr = active_bt_addr();
-    if which("bluetoothctl").is_none() || addr.is_empty() {
-        return to_c_string("BT Reset: No active Bluetooth A2DP sink found.".into());
+    let mut hint = String::new();
+    if let Some(st) = get_engine_status() {
+        let pb = c_str_to_string(&st.active_playback_id);
+        if pb.len() >= 6 && pb[..6].eq_ignore_ascii_case("bluez:") {
+            hint = pb;
+        }
     }
-    let _ = run_cmd_bounded("bluetoothctl", &["disconnect", &addr], Duration::from_secs(4));
-    std::thread::sleep(Duration::from_millis(650));
-    let ok = run_cmd_bounded("bluetoothctl", &["connect", &addr], Duration::from_secs(7))
-        .is_some_and(|o| o.status.success());
-    to_c_string(if ok {
-        format!("Reconnected BT {addr}")
+    let Ok(c_hint) = std::ffi::CString::new(hint.as_str()) else {
+        return to_c_string("BT Reset: Invalid Bluetooth address.".into());
+    };
+    let mut msg_buf = [0u8; 256];
+    let rc = unsafe {
+        salsa_wire::bluez_runtime::bluez_reset_device_impl(
+            c_hint.as_ptr(),
+            msg_buf.as_mut_ptr().cast::<c_char>(),
+            msg_buf.len(),
+        )
+    };
+    let msg = c_str_to_string(&msg_buf);
+    let _ = bt_connection_ctl(0, None);
+    to_c_string(if !msg.is_empty() {
+        msg
+    } else if rc == 0 {
+        "Bluetooth audio reset completed.".into()
     } else {
-        format!("Attempted BT reconnect ({addr})")
+        "BT Reset: No paired Bluetooth A2DP sink found.".into()
     })
 }
 

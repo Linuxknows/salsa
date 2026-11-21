@@ -2495,7 +2495,10 @@ pub fn run_ctl(args: &[String]) -> i32 {
         "disable" | "disable-auto" => return cmd_disable_auto(),
         "bench" | "benchmark" => {
             let bpath = format!("{}/build/lwasapi-bench", get_install_root());
-            let err = Command::new(&bpath).arg0("lwasapi-bench").exec();
+            let err = Command::new(&bpath)
+                .arg0("lwasapi-bench")
+                .args(&args[2..])
+                .exec();
             eprintln!("execl lwasapi-bench: {err}");
             return 1;
         }

@@ -38,7 +38,7 @@ use crate::c_abi::{
     LWASAPI_CMD_SET_EQ, LWASAPI_CMD_SET_HW_ANALOG, LWASAPI_CMD_SET_MIC_APO,
     LWASAPI_CMD_SET_PARAM_EQ, LWASAPI_CMD_SET_SESSION_CONTROL, LWASAPI_CMD_SET_VOLUME,
     LWASAPI_DBG_ALSA, LWASAPI_DBG_BLUEZ, LWASAPI_DBG_ENGINE, LWASAPI_DBG_ERR, LWASAPI_DBG_INFO,
-    LWASAPI_DBG_MIDI, LWASAPI_DBG_WARN, LWASAPI_DBG_WASAPI, LWASAPI_FMT_FLOAT32,
+    LWASAPI_DBG_MIDI, LWASAPI_DBG_PA, LWASAPI_DBG_WARN, LWASAPI_DBG_WASAPI, LWASAPI_FMT_FLOAT32,
     LWASAPI_MAX_CHANNELS, LWASAPI_MAX_DEVICES, LWASAPI_MAX_PERIOD, LWASAPI_MAX_SESSIONS,
     LWASAPI_RING_FRAMES, LWASAPI_RING_MASK, LWASAPI_RING_MAGIC, LWASAPI_SOCKET_DEFAULT,
     SALSA_PACK_F32_LE, SALSA_PACK_S16_LE, SALSA_PACK_S24_3LE, SALSA_PACK_S24_LE,
@@ -684,6 +684,8 @@ impl AudiodgEngine {
             }
         }
 
+        let any_bt_in_list = dlp.is_some_and(|d| device_list_has_type(d, "bluetooth", 0));
+        let mut auto_want_bt = false;
         if !force_virtual && !skip_bt_for_matching_usb && (want_bt || auto_mode) {
             let bt_opt = unsafe { lwasapi_bluez_is_optional_mode(self.bt()) };
             let mut bt_ready =
@@ -701,17 +703,31 @@ impl AudiodgEngine {
                 }
             };
 
-            if !bt_ready
-                && req_mac_ok(&bt_mac)
-                && (want_bt || (auto_mode && !bt_opt && !bt_mac.is_empty()))
-            {
+            auto_want_bt = should_try_bt_on_apply(
+                false,
+                auto_mode,
+                skip_bt_for_matching_usb,
+                bt_opt,
+                bt_snap.has_bluez_transport,
+                any_bt_in_list,
+                &bt_mac,
+            );
+
+            if bt_ready && !req_mac_ok(&bt_mac) {
+                unsafe { lwasapi_bluez_set_tx_enabled(self.bt(), false) };
+                bt_ready = false;
+            }
+
+            if !bt_ready && (want_bt || auto_want_bt) {
                 unsafe { lwasapi_bluez_set_tx_enabled(self.bt(), true) };
-                for _ in 0..24 {
+                for _ in 0..140 {
                     std::thread::sleep(Duration::from_millis(25));
                     bt_snap = snapshot_bt(self.bt());
+                    let mac_now = c_str_to_string(&bt_snap.mac_address);
                     if bt_snap.has_bluez_transport
                         && bt_snap.direct_socket_mode
                         && bt_snap.bt_fd >= 0
+                        && req_mac_ok(&mac_now)
                     {
                         break;
                     }
@@ -777,7 +793,11 @@ impl AudiodgEngine {
             }
         }
 
-        unsafe { lwasapi_bluez_set_tx_enabled(self.bt(), false) };
+        // Preserve tx_paused=false when falling back transiently on explicit BT / connected-BT Auto so
+        // an in-flight Acquire/ConnectProfile completes and sync_hotplug_topology restores BT automatically.
+        if should_disable_bt_tx_on_fallback(want_bt, auto_want_bt) {
+            unsafe { lwasapi_bluez_set_tx_enabled(self.bt(), false) };
+        }
 
         if !force_virtual && !auto_mode && !want_bt && req != "virtual" {
             let dev_path = resolve_dev_id_to_path(req);
@@ -983,6 +1003,18 @@ impl AudiodgEngine {
                         self.bt(),
                         d_vol as c_int,
                         if d_muted != 0 { 1 } else { 0 },
+                    );
+                    dbg_emit_vals(
+                        LWASAPI_DBG_ENGINE,
+                        LWASAPI_DBG_INFO,
+                        0,
+                        0,
+                        d_vol as i32,
+                        i32::from(d_muted != 0),
+                        0,
+                        "INIT_HW_VOL",
+                        "master_out",
+                        &format!("restored vol={d_vol}% muted={}", i32::from(d_muted != 0)),
                     );
                     lwasapi_bluez_set_mic_volume(
                         self.bt(),
@@ -1907,6 +1939,8 @@ impl AudiodgEngine {
                     }
                     self.mark_state_dirty();
                     resp.hr = S_OK;
+                    let cname = c_str_to_string(&req.client_name);
+                    let src = if cname.is_empty() { "master_out" } else { &cname };
                     dbg_emit_vals(
                         LWASAPI_DBG_ENGINE,
                         LWASAPI_DBG_INFO,
@@ -1916,8 +1950,8 @@ impl AudiodgEngine {
                         mute_flag,
                         resp.hr,
                         "VOL_CHG",
-                        "master_out",
-                        &format!("vol={vol_pct}% mute={mute_flag}"),
+                        src,
+                        &format!("master_out vol={vol_pct}% mute={mute_flag}"),
                     );
                 } else if req.target_session_id == 0xFFFF_FFFE {
                     let vol_pct = if req.volume_milli <= 1500 {
@@ -2453,6 +2487,9 @@ impl AudiodgEngine {
                             false,
                             Some(&dlist),
                         );
+                    } else if action == LWASAPI_BT_CONN_CONNECT && !hw_is_bt {
+                        // Keep A2DP linked in standby without acquiring L2CAP when pinned to TV/wired/USB.
+                        unsafe { lwasapi_bluez_set_tx_enabled(self.bt(), false) };
                     }
                     self.save_state();
                     let pa = self.pa();
@@ -2477,18 +2514,20 @@ impl AudiodgEngine {
                         flags |= LWASAPI_BT_STAT_USB_MATCHES_BT;
                     }
                 }
-                dbg_emit_vals(
-                    LWASAPI_DBG_BLUEZ,
-                    if rc >= 0 { LWASAPI_DBG_INFO } else { LWASAPI_DBG_WARN },
-                    0,
-                    0,
-                    action as i32,
-                    flags as i32,
-                    rc,
-                    "BT_CONN_CTL",
-                    if mac.is_empty() { "bluetooth" } else { &mac },
-                    &c_str_to_string(&msg_buf),
-                );
+                if action != LWASAPI_BT_CONN_QUERY || rc < 0 {
+                    dbg_emit_vals(
+                        LWASAPI_DBG_BLUEZ,
+                        if rc >= 0 { LWASAPI_DBG_INFO } else { LWASAPI_DBG_WARN },
+                        0,
+                        0,
+                        action as i32,
+                        flags as i32,
+                        rc,
+                        "BT_CONN_CTL",
+                        if mac.is_empty() { "bluetooth" } else { &mac },
+                        &c_str_to_string(&msg_buf),
+                    );
+                }
                 resp.hr = if rc >= 0 { S_OK } else { E_FAIL };
                 resp.session_id = flags;
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
@@ -3173,6 +3212,18 @@ unsafe extern "C" fn pa_cb_set_master_volume(
             lwasapi_bluez_set_volume(eng.bt(), vol_pct, mute_flag)
         }
     };
+    dbg_emit_vals(
+        LWASAPI_DBG_PA,
+        LWASAPI_DBG_INFO,
+        0,
+        is_capture as u32,
+        vol_pct,
+        mute_flag,
+        rc,
+        "PA_MASTER_VOL",
+        if is_capture != 0 { "master_mic" } else { "master_out" },
+        &format!("vol={vol_pct}% mute={mute_flag}"),
+    );
     eng.hw_analog_probe_and_sync(false);
     if rc == 0 {
         eng.mark_state_dirty();
@@ -3519,9 +3570,6 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     }
 
     let mut sock_path = resolve_sock_path_common("LWASAPI_SOCKET", "audiodg.sock", LWASAPI_SOCKET_DEFAULT);
-    if sock_path != LWASAPI_SOCKET_DEFAULT {
-        let _ = fs::remove_file(LWASAPI_SOCKET_DEFAULT);
-    }
 
     let mut rt = default_runtime_state();
     unsafe {
@@ -3589,6 +3637,10 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         };
     }
 
+    if !force_virtual && sock_path != LWASAPI_SOCKET_DEFAULT {
+        let _ = fs::remove_file(LWASAPI_SOCKET_DEFAULT);
+    }
+
     install_term_signals();
     rt.sample_rate = rate_arg;
     rt.period_frames = period_arg;
@@ -3608,7 +3660,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         force_bt,
     );
 
-    {
+    if !(force_virtual && std::env::var("LWASAPI_VIRTUAL_NO_MIDI").as_deref() == Ok("1")) {
         let mut mh = engine.midi_hub.lock().unwrap();
         let _ = unsafe { lwasapi_midi_init(&mut *mh.0) };
         let mut mm = engine.midi_meta.lock().unwrap();
@@ -3899,6 +3951,18 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                         mute_op,
                     );
                 }
+                dbg_emit_vals(
+                    LWASAPI_DBG_ENGINE,
+                    LWASAPI_DBG_INFO,
+                    0,
+                    0,
+                    if hid_delta != 0 { new_v } else { -1 },
+                    mute_op,
+                    hid_delta,
+                    "HID_VOL",
+                    "master_out",
+                    &format!("hid_delta={hid_delta} vol={new_v}% mute={mute_op}"),
+                );
                 engine.hw_analog_probe_and_sync(false);
                 let pa = engine.pa();
                 if !pa.is_null() {
@@ -4440,6 +4504,27 @@ pub(crate) fn usb_device_matches_bt_name(usb_name: &str, bt_name: &str) -> bool 
     shorter_joined >= 8 && (usb_joined.contains(&bt_joined) || bt_joined.contains(&usb_joined))
 }
 
+/// Returns whether `apply_playback_endpoint` should attempt to activate BlueZ A2DP TX.
+fn should_try_bt_on_apply(
+    want_bt: bool,
+    auto_mode: bool,
+    skip_bt_for_matching_usb: bool,
+    bt_opt: bool,
+    has_transport: bool,
+    any_bt_in_list: bool,
+    bt_mac: &str,
+) -> bool {
+    if skip_bt_for_matching_usb {
+        return false;
+    }
+    want_bt || (auto_mode && (has_transport || any_bt_in_list || (!bt_opt && !bt_mac.is_empty())))
+}
+
+/// Returns whether falling back to a kernel/virtual sink should pause BlueZ A2DP TX.
+fn should_disable_bt_tx_on_fallback(want_bt: bool, auto_want_bt: bool) -> bool {
+    !want_bt && !auto_want_bt
+}
+
 fn find_matching_usb_pb_idx_for_list(
     dlist: &LwasapiDeviceList,
     bt_alias: &str,
@@ -4594,5 +4679,21 @@ mod tests {
         };
         assert!(midi_is_key_press(&note_on));
         assert!(!midi_is_key_press(&note_off_vel0));
+    }
+
+    #[test]
+    fn bt_apply_fallback_and_auto_reconnect_policies_work() {
+        // Explicit BT switch or Auto-Priority with a connected headset never sabotages tx_paused
+        assert!(!should_disable_bt_tx_on_fallback(true, false));
+        assert!(!should_disable_bt_tx_on_fallback(false, true));
+        // Switching to TV / wired / matching USB pauses BT TX
+        assert!(should_disable_bt_tx_on_fallback(false, false));
+
+        // Optional BT enabled still unpauses connected BT when switching back to Auto-Priority
+        assert!(should_try_bt_on_apply(false, true, false, true, false, true, ""));
+        // USB cable matching headset overrides BT even when connected
+        assert!(!should_try_bt_on_apply(false, true, true, false, true, true, "68:F2:1F:04:F9:F6"));
+        // Boot/Auto with Optional BT and no connected BT stays off BT
+        assert!(!should_try_bt_on_apply(false, true, false, true, false, false, ""));
     }
 }

@@ -14,7 +14,10 @@ use core::ptr;
 use std::env;
 use std::ffi::CString;
 use std::fs;
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -26,10 +29,13 @@ use lwasapi::{
     LWASAPI_GetEngineStatus, LWASAPI_SetEngineConfig,
 };
 use salsa_wire::c_abi::{
-    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, LWASAPI_FMT_FLOAT32,
-    LwasapiEngineStatus, WaveFormatEx, S_OK,
+    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, LWASAPI_CMD_SET_VOLUME,
+    LWASAPI_FMT_FLOAT32, LwasapiEngineStatus, LwasapiIpcReq, LwasapiIpcResp, WaveFormatEx, S_OK,
 };
-use salsa_wire::unix_sys::reset_sigpipe_default;
+use salsa_wire::unix_sys::{
+    audiodg_sock_path, connect_unix_stream_blocking, current_pid, recv_waitall,
+    reset_sigpipe_default, send_all_nosignal,
+};
 
 const RTLD_NOW: c_int = 2;
 const RTLD_LOCAL: c_int = 0;
@@ -845,12 +851,222 @@ fn bench_roundtrip_stock_pulse() -> f64 {
     }
 }
 
+struct SandboxGuard {
+    root: PathBuf,
+    daemon: Option<Child>,
+}
+
+impl Drop for SandboxGuard {
+    fn drop(&mut self) {
+        if let Some(ref mut ch) = self.daemon {
+            let _ = ch.kill();
+            let _ = ch.wait();
+        }
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn create_private_dir(p: &Path) -> bool {
+    if fs::create_dir_all(p).is_err() {
+        return false;
+    }
+    fs::set_permissions(p, fs::Permissions::from_mode(0o700)).is_ok()
+}
+
+fn run_in_virtual_sandbox(exe_dir: &str, forward_args: &[String]) -> Option<i32> {
+    let daemon_bin = Path::new(exe_dir).join("lwasapi-audiodg");
+    if !daemon_bin.is_file() {
+        return None;
+    }
+    let Ok(cur_exe) = env::current_exe() else {
+        return None;
+    };
+
+    let root = PathBuf::from(format!("/tmp/lwasapi-bench-{}-{}", current_pid(), now_ns()));
+    let home_dir = root.join("home");
+    let run_dir = root.join("run");
+    let lwasapi_dir = run_dir.join("lwasapi");
+    let pulse_dir = run_dir.join("pulse");
+    if !create_private_dir(&root)
+        || !create_private_dir(&home_dir)
+        || !create_private_dir(&run_dir)
+        || !create_private_dir(&lwasapi_dir)
+        || !create_private_dir(&pulse_dir)
+    {
+        let _ = fs::remove_dir_all(&root);
+        return None;
+    }
+
+    let audiodg_sock = lwasapi_dir.join("audiodg.sock");
+    let dbg_sock = lwasapi_dir.join("debug.sock");
+    let dbg_in_sock = lwasapi_dir.join("debug-in.sock");
+    let pulse_sock = pulse_dir.join("native");
+
+    let daemon = Command::new(&daemon_bin)
+        .arg("--virtual")
+        .env("HOME", &home_dir)
+        .env("XDG_RUNTIME_DIR", &run_dir)
+        .env("LWASAPI_SOCKET", &audiodg_sock)
+        .env("LWASAPI_DEBUG_SOCK", &dbg_sock)
+        .env("LWASAPI_DEBUG_IN_SOCK", &dbg_in_sock)
+        .env("LWASAPI_VIRTUAL_NO_MIDI", "1")
+        .env_remove("PULSE_SERVER")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let mut guard = SandboxGuard {
+        root: root.clone(),
+        daemon: Some(daemon),
+    };
+
+    let mut ready = false;
+    for _ in 0..200 {
+        if audiodg_sock.exists() && pulse_sock.exists() {
+            ready = true;
+            break;
+        }
+        if let Some(ref mut ch) = guard.daemon {
+            if let Ok(Some(_)) = ch.try_wait() {
+                return None;
+            }
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+    if !ready {
+        return None;
+    }
+
+    let pulse_uri = format!("unix:{}", pulse_sock.display());
+    let status = Command::new(cur_exe)
+        .args(forward_args)
+        .env("LWASAPI_BENCH_SANDBOXED", "1")
+        .env("HOME", &home_dir)
+        .env("XDG_RUNTIME_DIR", &run_dir)
+        .env("LWASAPI_SOCKET", &audiodg_sock)
+        .env("LWASAPI_DEBUG_SOCK", &dbg_sock)
+        .env("LWASAPI_DEBUG_IN_SOCK", &dbg_in_sock)
+        .env("PULSE_SERVER", &pulse_uri)
+        .status()
+        .ok()?;
+
+    Some(status.code().unwrap_or(1))
+}
+
+fn send_master_volume_restore_ipc(target_session_id: u32, vol_pct: u32, muted: u32) {
+    let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
+        return;
+    };
+    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
+    req.cmd = LWASAPI_CMD_SET_VOLUME;
+    req.client_pid = current_pid();
+    let tag = b"lwasapi-bench";
+    req.client_name[..tag.len()].copy_from_slice(tag);
+    req.target_session_id = target_session_id;
+    req.volume_milli = vol_pct.clamp(0, 150) * 10;
+    req.share_mode = if muted != 0 { 2 } else { 1 };
+    if unsafe { send_all_nosignal(sock.as_raw_fd(), as_bytes_raw(&req)) }.is_err() {
+        return;
+    }
+    let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+    let _ = unsafe { recv_waitall(sock.as_raw_fd(), as_bytes_mut_raw(&mut resp)) };
+}
+
+unsafe fn as_bytes_raw<T>(v: &T) -> &[u8] {
+    core::slice::from_raw_parts((v as *const T).cast::<u8>(), mem::size_of::<T>())
+}
+
+unsafe fn as_bytes_mut_raw<T>(v: &mut T) -> &mut [u8] {
+    core::slice::from_raw_parts_mut((v as *mut T).cast::<u8>(), mem::size_of::<T>())
+}
+
+struct LiveStateRestoreGuard {
+    active: bool,
+    orig: LwasapiEngineStatus,
+}
+
+impl LiveStateRestoreGuard {
+    fn restore_volumes_if_drifted(&self) {
+        if !self.active {
+            return;
+        }
+        let mut cur: LwasapiEngineStatus = unsafe { mem::zeroed() };
+        if unsafe { LWASAPI_GetEngineStatus(&mut cur) } != S_OK {
+            return;
+        }
+        if cur.desktop_volume_pct != self.orig.desktop_volume_pct
+            || cur.desktop_muted != self.orig.desktop_muted
+        {
+            send_master_volume_restore_ipc(
+                0xFFFF_FFFF,
+                self.orig.desktop_volume_pct,
+                self.orig.desktop_muted,
+            );
+        }
+        if cur.desktop_mic_volume_pct != self.orig.desktop_mic_volume_pct
+            || cur.desktop_mic_muted != self.orig.desktop_mic_muted
+        {
+            send_master_volume_restore_ipc(
+                0xFFFF_FFFE,
+                self.orig.desktop_mic_volume_pct,
+                self.orig.desktop_mic_muted,
+            );
+        }
+    }
+}
+
+impl Drop for LiveStateRestoreGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if self.orig.hw_sample_rate > 0 {
+            LWASAPI_SetEngineConfig(
+                self.orig.hw_sample_rate,
+                self.orig.hw_period_frames,
+                self.orig.hw_format_bits,
+            );
+        }
+        self.restore_volumes_if_drifted();
+    }
+}
+
 fn main() {
     reset_sigpipe_default();
+    let args: Vec<String> = env::args().collect();
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!("Usage: lwasapi-bench [--sandbox|--live]");
+        println!("  --sandbox  Run in an isolated virtual audiodg sandbox (default; preserves live volume/audio)");
+        println!("  --live     Run directly against the active system engine (restores clock & volume afterward)");
+        return;
+    }
+
+    let force_live =
+        args.iter().any(|a| a == "--live") || env::var("LWASAPI_BENCH_LIVE").as_deref() == Ok("1");
+    let already_sandboxed = env::var("LWASAPI_BENCH_SANDBOXED").as_deref() == Ok("1");
+    let build_dir = get_exe_dir();
+
+    if !force_live && !already_sandboxed {
+        let forward: Vec<String> = args
+            .iter()
+            .skip(1)
+            .filter(|a| a.as_str() != "--sandbox")
+            .cloned()
+            .collect();
+        if let Some(rc) = run_in_virtual_sandbox(&build_dir, &forward) {
+            std::process::exit(rc);
+        }
+    }
+
     let mut orig_st: LwasapiEngineStatus = unsafe { mem::zeroed() };
     let have_orig = unsafe { LWASAPI_GetEngineStatus(&mut orig_st) } == S_OK;
+    let live_guard = LiveStateRestoreGuard {
+        active: have_orig && !already_sandboxed,
+        orig: orig_st,
+    };
 
-    let build_dir = get_exe_dir();
     let shim_pulse = format!("{build_dir}/shims/libpulse-simple.so.0");
     let shim_alsa = format!("{build_dir}/shims/libasound.so.2");
     let sys_pulse = find_system_lib("libpulse-simple.so.0");
@@ -861,13 +1077,22 @@ fn main() {
     println!("========================================================================================");
     println!(" SALSA — LINUX WASAPI vs. LINUX AUDIO STACKS REAL-TIME LATENCY BENCHMARK");
     println!(" System: {cpu_name} | {os_name} | SCHED_FIFO Real-Time Audio Engine");
+    if already_sandboxed {
+        println!(" Mode  : Isolated Virtual Sandbox (Live Volume, DAC & Active Audio Untouched)");
+    } else {
+        println!(" Mode  : Live Active Engine (Volume & Clock Guard Armed)");
+    }
     println!("========================================================================================\n");
 
     let init_lwasapi = bench_init_lwasapi_native();
     let init_shim_pulse = bench_init_pulse_lib(&shim_pulse);
     let init_shim_alsa = bench_init_alsa_lib(&shim_alsa, "default");
     let init_stock_pulse = bench_init_pulse_lib(&sys_pulse);
-    let init_stock_alsa = bench_init_alsa_lib(&sys_alsa, "sysdefault");
+    let init_stock_alsa = if already_sandboxed {
+        -1.0
+    } else {
+        bench_init_alsa_lib(&sys_alsa, "sysdefault")
+    };
 
     let salsa_pa_active = have_orig && orig_st.pa_server_running != 0;
     let pa_init_lbl = if salsa_pa_active {
@@ -985,6 +1210,7 @@ fn main() {
             orig_st.hw_format_bits,
         );
     }
+    live_guard.restore_volumes_if_drifted();
 
     let lbl_r1 = format!(
         "Salsa LWASAPI Ultra-HD ({:3} kHz / {:3} frames)",

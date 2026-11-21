@@ -28,6 +28,8 @@
 #include <QLineEdit>
 #include <QMainWindow>
 #include <QMessageBox>
+#include <QMetaObject>
+#include <QPointer>
 #include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
@@ -38,6 +40,7 @@
 #include <QSplitter>
 #include <QTableWidget>
 #include <QTextBrowser>
+#include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWindow>
@@ -1556,10 +1559,28 @@ void StudioController::buildAdvancedWindow() {
     gDiag->addWidget(btnOpenDbg, 0, 0, 1, 2);
 
     auto* btnBench = new QPushButton(QStringLiteral("Run Latency Benchmark"), diagCard);
-    btnBench->setToolTip(QStringLiteral("Latency Benchmark — Runs a silent timing and ultrasonic loopback test comparing Native WASAPI, Pulse, and ALSA shims."));
-    connect(btnBench, &QPushButton::clicked, this, [this]() {
-        const SalsaStr rep(salsa_run_latency_bench());
-        showReportDialog(advWin_, QStringLiteral("Salsa Latency Benchmark"), rep.toQString(), currentTheme_, fontPct_);
+    btnBench->setToolTip(QStringLiteral("Latency Benchmark — Runs an isolated virtual timing & loopback benchmark comparing Native WASAPI, Pulse, and ALSA shims without altering your live volume or interrupting playback."));
+    connect(btnBench, &QPushButton::clicked, this, [this, btnBench]() {
+        if (!btnBench->isEnabled()) return;
+        btnBench->setEnabled(false);
+        btnBench->setText(QStringLiteral("Running Benchmark..."));
+        const QPointer<QPushButton> pBtn(btnBench);
+        const QPointer<QWidget> pAdv(advWin_);
+        const SalsaThemeData themeSnap = currentTheme_;
+        const int fontSnap = fontPct_;
+        QThread* thr = QThread::create([this, pBtn, pAdv, themeSnap, fontSnap]() {
+            const SalsaStr rep(salsa_run_latency_bench());
+            const QString repStr = rep.toQString();
+            QMetaObject::invokeMethod(this, [pBtn, pAdv, repStr, themeSnap, fontSnap]() {
+                if (pBtn) {
+                    pBtn->setEnabled(true);
+                    pBtn->setText(QStringLiteral("Run Latency Benchmark"));
+                }
+                showReportDialog(pAdv ? pAdv.data() : nullptr, QStringLiteral("Salsa Latency Benchmark"), repStr, themeSnap, fontSnap);
+            }, Qt::QueuedConnection);
+        });
+        connect(thr, &QThread::finished, thr, &QObject::deleteLater);
+        thr->start();
     });
     gDiag->addWidget(btnBench, 1, 0);
 
@@ -2759,7 +2780,7 @@ void StudioController::pollEngine(bool initial) {
             sig += cFixedStr(dl.devices[i].id, sizeof(dl.devices[i].id)) + QChar(',')
                    + cFixedStr(dl.devices[i].name, sizeof(dl.devices[i].name)) + QChar('|');
         }
-        if (sig != lastDevSig_) {
+        if (sig != lastDevSig_ && !cmbSink_->view()->isVisible() && !cmbSource_->view()->isVisible()) {
             lastDevSig_ = sig;
             updatingUi_ = true;
             cmbSink_->clear();

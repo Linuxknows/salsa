@@ -2192,6 +2192,23 @@ impl PaState {
                         .resolve_sink_idx_and_name(idx, nm.as_deref())
                         .map(|(ti, _)| ti)
                         .unwrap_or_else(|| self.find_active_sink_idx());
+                    let cname = if self.clients[ci].name.is_empty() {
+                        "pa-client"
+                    } else {
+                        &self.clients[ci].name
+                    };
+                    dbg_emit_vals(
+                        LWASAPI_DBG_PA,
+                        LWASAPI_DBG_INFO,
+                        self.clients[ci].pid,
+                        tgt_idx,
+                        pct,
+                        avg_pv as i32,
+                        0,
+                        "PA_SET_SINK_VOL",
+                        cname,
+                        &format!("sink=#{tgt_idx} pct={pct}% avg_pv={avg_pv} ch={ch}"),
+                    );
                     self.sink_pa_vol = avg_pv;
                     self.sink_pa_vol_valid = true;
                     if let Some(f) = self.cbs.set_master_volume {
