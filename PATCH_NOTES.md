@@ -4,7 +4,20 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.19.9 — Current (`2026-11-19`)
+## V1.21.10 — Current (`2026-11-21`)
+
+### 1. Bluetooth A2DP Sink Preservation & Reconnect Reliability Across TV / Wired Switches
+- Fixed premature Bluetooth transport teardown when reconnecting from TV/HDMI or wired outputs in [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) (`apply_playback_endpoint()`, `should_try_bt_on_apply()`, `should_disable_bt_tx_on_fallback()`): widened the `MediaTransport1.Acquire` readiness poll window from `600 ms` to `3.5 s` (`140 * 25 ms`, returning early on ready socket), stopped forcing `lwasapi_bluez_set_tx_enabled(false)` during transient fallback on explicit Bluetooth or `Auto-Priority` targets so hotplug finishes restoring Bluetooth cleanly, allowed `Auto-Priority` to resume connected Bluetooth headsets even when `Optional BT` mode is enabled, and put Bluetooth TX into standby when `LWASAPI_CMD_BT_CONNECTION` connects while pinned to a non-Bluetooth sink.
+- Fixed Bluetooth endpoint disappearance during `MediaTransport1` standby in [`bluez_runtime.rs`](rust/salsa_net/src/bluez_runtime.rs) (`bluez_enumerate_devices_impl()`, `should_enumerate_bt_a2dp_device()`, `format_bt_enum_entry_name()`, `activate_bluez_target()`, `classify_tx_enable_action()`, `pick_best_paired_a2dp_device()`, `dbus_poll_device_connected()`): connected paired A2DP audio sinks remain listed in Salsa (`Bose QC Ultra 2 HP (A2DP Standby)`) after transport release, re-arm BR/EDR `PreferredBearer` and `A2DP_SINK_UUID` activation automatically via `need_activate` (including after `UnknownObject`), filter BT reset/connection operations strictly to paired A2DP audio sinks instead of unrelated LE peripherals, and share `Connected` polling across connect/disconnect/reset flows.
+- Updated `salsa_bt_reset_sync()` in [`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs) to call `bluez_reset_device_impl()` directly rather than picking the first MAC from `bluetoothctl devices Connected`, and guarded `cmbSink_` / `cmbSource_` refreshes in [`salsa_studio.cpp`](qt6/salsa_studio.cpp) while either dropdown popup is open.
+
+### 2. Isolated Virtual Sandbox Latency Benchmark & Volume Telemetry
+- Updated [`lwasapi_bench.rs`](rust/lwasapi_client/src/bin/lwasapi_bench.rs) (`run_in_virtual_sandbox()`, `SandboxGuard`, `LiveStateRestoreGuard`) so `lwasapi-bench` runs by default inside an isolated virtual `lwasapi-audiodg --virtual` sandbox without altering live system volume, hardware clock settings, or active playback (`--live` remains opt-in with state restoration), forwarded CLI options from `lwasapi-ctl bench` in [`ctl_cli.rs`](rust/salsa_net/src/ctl_cli.rs), and ran Studio's `Run Latency Benchmark` asynchronously via `QThread` in [`salsa_studio.cpp`](qt6/salsa_studio.cpp).
+- Added `PA_SET_SINK_VOL` volume telemetry in [`pa_server.rs`](rust/salsa_net/src/pa_server.rs) and `client_pid` / `client_name` attribution in [`ipc.rs`](rust/salsa_tools/src/ipc.rs) (`send_volume_cmd()`).
+
+---
+
+## V1.19.9 (`2026-11-19`)
 
 ### 1. Dual USB+BT Device Priority, Optional Bluetooth Link Policy & Radio Contention Fix
 - Added automatic **USB-over-Bluetooth priority** in [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) (`usb_device_matches_bt_name()`, `find_matching_usb_pb_idx_for_list()`, `any_usb_matches_bt()`): when a plugged USB DAC/headset shares hardware naming with a paired or connected BlueZ A2DP device (such as `Bose Corporation Bose QC Ultra 2 HP - USB Audio` paired alongside `Bose QC Ultra 2 HP`), `Auto-Priority` adds a `+50,000` card priority boost to that USB interface, automatically upgrades from Bluetooth to USB on plug-in (`auto_upgrade_matching_usb`), avoids re-switching to Bluetooth while USB is plugged, and pauses/releases BlueZ `MediaTransport1` TX so idle AVDTP/L2CAP traffic cannot destabilize shared USB Bluetooth controllers (`btusb`) or Bluetooth LE mice.
