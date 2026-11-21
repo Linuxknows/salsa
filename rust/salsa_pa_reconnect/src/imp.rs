@@ -1945,6 +1945,52 @@ unsafe extern "C" fn internal_ext_stream_restore_sub_cb(rc: *mut pa_context, ud:
     pa_context_unref(wctx.cast());
 }
 
+unsafe fn server_allows_tcp_fallback(server: *const c_char, server_set: bool) -> bool {
+    if !server_set || server.is_null() {
+        return true;
+    }
+    let Ok(s) = core::ffi::CStr::from_ptr(server).to_str() else {
+        return false;
+    };
+    let trimmed = s.trim();
+    trimmed.is_empty()
+        || trimmed.starts_with("unix:")
+        || trimmed.starts_with('/')
+        || trimmed.contains("/pulse/native")
+}
+
+fn parse_salsa_tcp_port_str(s: &str) -> Option<u16> {
+    let port: u16 = s.trim().parse().ok()?;
+    (port > 0).then_some(port)
+}
+
+fn read_salsa_tcp_target() -> Option<(std::ffi::CString, Option<std::ffi::CString>)> {
+    let home = std::env::var("HOME").ok()?;
+    if !home.starts_with('/') {
+        return None;
+    }
+    let port_path = format!("{home}/.config/pulse/salsa-tcp-port");
+    let raw = std::fs::read_to_string(&port_path).ok()?;
+    let port = parse_salsa_tcp_port_str(&raw)?;
+    let srv = std::ffi::CString::new(format!("tcp4:127.0.0.1:{port}")).ok()?;
+    let cookie_path = format!("{home}/.config/pulse/cookie");
+    let cookie = std::fs::metadata(&cookie_path)
+        .ok()
+        .filter(|m| m.is_file() && m.len() == 256)
+        .and_then(|_| std::ffi::CString::new(cookie_path).ok());
+    Some((srv, cookie))
+}
+
+unsafe fn should_try_tcp_fallback(
+    reconnect_attempts: c_int,
+    server: *const c_char,
+    server_set: bool,
+) -> bool {
+    reconnect_attempts >= 2
+        && (reconnect_attempts % 2 == 0)
+        && server_allows_tcp_fallback(server, server_set)
+}
+
 unsafe extern "C" fn reconnect_timer_cb(
     a: *mut pa_mainloop_api,
     e: *mut pa_time_event,
@@ -2032,14 +2078,31 @@ unsafe extern "C" fn reconnect_timer_cb(
     }
 
     let cflags = (*wctx).flags & !PA_CONTEXT_NOFAIL;
+    let tcp_fallback = if should_try_tcp_fallback(
+        (*wctx).reconnect_attempts,
+        (*wctx).server,
+        (*wctx).server_set,
+    ) {
+        read_salsa_tcp_target()
+    } else {
+        None
+    };
+    if let Some((_, Some(ref ck))) = tcp_fallback {
+        if let Some(load_ck) = real().pa_context_load_cookie_from_file {
+            let _ = load_ck(nrc, ck.as_ptr());
+        }
+    }
+    let target_srv = if let Some((ref srv, _)) = tcp_fallback {
+        srv.as_ptr()
+    } else if (*wctx).server_set {
+        (*wctx).server
+    } else {
+        ptr::null()
+    };
     let conn_rc = real().pa_context_connect.map_or(-1, |f| {
         f(
             nrc,
-            if (*wctx).server_set {
-                (*wctx).server
-            } else {
-                ptr::null()
-            },
+            target_srv,
             cflags,
             if (*wctx).has_spawn_api {
                 &raw const (*wctx).spawn_api
@@ -2051,6 +2114,7 @@ unsafe extern "C" fn reconnect_timer_cb(
     if conn_rc < 0 && (*wctx).real_ctx == nrc {
         detach_ctx_callbacks(nrc);
         (*wctx).real_ctx = ptr::null_mut();
+        (*wctx).reconnect_attempts = (*wctx).reconnect_attempts.saturating_add(1);
         schedule_reconnect_timer(wctx, 200_000);
         pthread_mutex_unlock(&raw mut (*wctx).lock);
         if let Some(f) = real().pa_context_unref {
@@ -3134,6 +3198,7 @@ pub unsafe extern "C" fn pa_context_connect(
             f((*wctx).real_ctx, server, flags & !PA_CONTEXT_NOFAIL, api)
         });
         if rc < 0 {
+            (*wctx).reconnect_attempts = 1;
             (*wctx).reconnecting = true;
             schedule_reconnect_timer(wctx, 150_000);
             rc = 0;
@@ -6677,5 +6742,27 @@ mod tests {
             assert!(!check_fallback(false, true, true, false));
             assert!(!check_fallback(true, true, true, true));
         }
+    }
+
+    #[test]
+    fn tcp_fallback_targets_local_unix_on_even_retries() {
+        unsafe {
+            assert!(server_allows_tcp_fallback(ptr::null(), false));
+            assert!(server_allows_tcp_fallback(c"".as_ptr(), true));
+            assert!(server_allows_tcp_fallback(c"unix:/run/pressure-vessel/pulse/native".as_ptr(), true));
+            assert!(server_allows_tcp_fallback(c"/run/user/1000/pulse/native".as_ptr(), true));
+            assert!(!server_allows_tcp_fallback(c"tcp:192.168.1.10".as_ptr(), true));
+            assert!(!server_allows_tcp_fallback(c"tcp4:127.0.0.1:4713".as_ptr(), true));
+
+            assert!(!should_try_tcp_fallback(0, ptr::null(), false));
+            assert!(!should_try_tcp_fallback(1, ptr::null(), false));
+            assert!(should_try_tcp_fallback(2, ptr::null(), false));
+            assert!(!should_try_tcp_fallback(3, ptr::null(), false));
+            assert!(should_try_tcp_fallback(4, c"unix:/run/pressure-vessel/pulse/native".as_ptr(), true));
+            assert!(!should_try_tcp_fallback(4, c"tcp:10.0.0.2".as_ptr(), true));
+        }
+        assert_eq!(parse_salsa_tcp_port_str("41235\n"), Some(41235));
+        assert_eq!(parse_salsa_tcp_port_str("0"), None);
+        assert_eq!(parse_salsa_tcp_port_str("abc"), None);
     }
 }

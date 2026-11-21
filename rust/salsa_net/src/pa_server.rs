@@ -16,6 +16,7 @@ use std::collections::VecDeque;
 use std::ffi::CStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixListener;
@@ -614,6 +615,14 @@ impl PaState {
         ensure_pulse_cookie(&mut st.cookie, &mut st.cookie_valid);
         st.load_app_volumes_from_disk();
         st
+    }
+
+    fn accept_client_fd(&mut self, owned: OwnedFd, uid_opt: Option<(u32, u32)>) {
+        if let Some(slot) = self.clients.iter().position(|c| !c.in_use) {
+            let idx = self.next_client_idx;
+            self.next_client_idx += 1;
+            self.clients[slot].reset_slot(idx, owned, uid_opt);
+        }
     }
 
     fn stable_pa_idx(&mut self, fac: u32, key: &str) -> u32 {
@@ -3374,6 +3383,8 @@ pub struct PaServerHandle {
     wake_efd: OwnedFd,
     sock_path: String,
     pid_path: String,
+    tcp_port: Option<u16>,
+    tcp_port_path: Option<String>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -3458,6 +3469,7 @@ fn emit_facility_diff(
 
 fn server_thread_main(
     listener: UnixListener,
+    tcp_listener: Option<TcpListener>,
     wake_fd: RawFd,
     running: Arc<AtomicBool>,
     state: Arc<Mutex<PaState>>,
@@ -3466,10 +3478,11 @@ fn server_thread_main(
 ) {
     enable_realtime(60, -15);
     let listen_fd = listener.as_raw_fd();
+    let tcp_listen_fd = tcp_listener.as_ref().map(|l| l.as_raw_fd());
 
     while running.load(Ordering::Relaxed) {
-        let mut pfds = Vec::with_capacity(PA_MAX_CLIENTS + 2);
-        let mut cmap: Vec<usize> = Vec::with_capacity(PA_MAX_CLIENTS + 2);
+        let mut pfds = Vec::with_capacity(PA_MAX_CLIENTS + 3);
+        let mut cmap: Vec<usize> = Vec::with_capacity(PA_MAX_CLIENTS + 3);
         pfds.push(PollFd {
             fd: listen_fd,
             events: POLLIN,
@@ -3482,6 +3495,19 @@ fn server_thread_main(
             revents: 0,
         });
         cmap.push(usize::MAX);
+        let tcp_pfd_idx = if let Some(tfd) = tcp_listen_fd {
+            let idx = pfds.len();
+            pfds.push(PollFd {
+                fd: tfd,
+                events: POLLIN,
+                revents: 0,
+            });
+            cmap.push(usize::MAX);
+            Some(idx)
+        } else {
+            None
+        };
+        let client_pfd_start = pfds.len();
 
         {
             let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
@@ -3527,22 +3553,35 @@ fn server_thread_main(
                                 continue;
                             }
                         }
-                        if let Some(slot) = st.clients.iter().position(|c| !c.in_use) {
-                            let idx = st.next_client_idx;
-                            st.next_client_idx += 1;
-                            let uid_pair = cred.map(|uc| {
-                                (uc.uid, if uc.pid > 0 { uc.pid as u32 } else { 0 })
-                            });
-                            st.clients[slot].reset_slot(idx, owned, uid_pair);
-                        }
+                        let uid_pair = cred.map(|uc| {
+                            (uc.uid, if uc.pid > 0 { uc.pid as u32 } else { 0 })
+                        });
+                        st.accept_client_fd(owned, uid_pair);
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(_) => break,
                 }
             }
         }
+        if let (Some(ref tl), Some(tidx)) = (&tcp_listener, tcp_pfd_idx) {
+            if (pfds[tidx].revents & POLLIN) != 0 {
+                loop {
+                    match tl.accept() {
+                        Ok((stream, addr)) if addr.ip().is_loopback() => {
+                            let _ = stream.set_nodelay(true);
+                            let _ = stream.set_nonblocking(true);
+                            let owned: OwnedFd = stream.into();
+                            st.accept_client_fd(owned, None);
+                        }
+                        Ok(_) => {}
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
 
-        for i in 2..pfds.len() {
+        for i in client_pfd_start..pfds.len() {
             let rev = pfds[i].revents;
             let ci = cmap[i];
             if rev != 0 && ci < PA_MAX_CLIENTS && st.clients[ci].in_use {
@@ -4451,6 +4490,52 @@ fn emit_fade_out(
 // C ABI Exports matching salsa_net::c_abi
 // ----------------------------------------------------------------------------
 
+fn bind_loopback_tcp_and_write_port(
+    cookie_valid: bool,
+) -> (Option<TcpListener>, Option<u16>, Option<String>) {
+    if !cookie_valid {
+        return (None, None, None);
+    }
+    let Ok(tcp) = TcpListener::bind(("127.0.0.1", 0)) else {
+        return (None, None, None);
+    };
+    if tcp.set_nonblocking(true).is_err() {
+        return (None, None, None);
+    }
+    let Ok(addr) = tcp.local_addr() else {
+        return (None, None, None);
+    };
+    let port = addr.port();
+    if port == 0 {
+        return (None, None, None);
+    }
+    let home = user_home_dir();
+    let cfg_dir = format!("{home}/.config/pulse");
+    if !ensure_owned_dir_0700(&cfg_dir, current_uid()) {
+        return (None, None, None);
+    }
+    let port_path = format!("{cfg_dir}/salsa-tcp-port");
+    let tmp_path = format!("{port_path}.{}.tmp", current_pid());
+    let mut wrote = false;
+    if let Ok(mut f) = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(unix_sys::O_NOFOLLOW | unix_sys::O_CLOEXEC)
+        .open(&tmp_path)
+    {
+        if writeln!(f, "{port}").is_ok() && fs::rename(&tmp_path, &port_path).is_ok() {
+            wrote = true;
+        }
+    }
+    if !wrote {
+        let _ = fs::remove_file(&tmp_path);
+        return (None, None, None);
+    }
+    (Some(tcp), Some(port), Some(port_path))
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn lwasapi_pa_server_start(
     out_srv: *mut *mut PaServerHandle,
@@ -4488,6 +4573,8 @@ pub unsafe extern "C" fn lwasapi_pa_server_start(
     let wake_raw = wake_efd.as_raw_fd();
     let rt = Arc::new(PaRtShared::new(wake_raw));
     let mut state_val = PaState::new(cbs, sock_path.clone(), pid_path.clone());
+    let (tcp_listener, tcp_port, tcp_port_path) =
+        bind_loopback_tcp_and_write_port(state_val.cookie_valid);
     state_val.refresh_device_cache_force();
     {
         let dl = state_val.cached_devices;
@@ -4511,12 +4598,21 @@ pub unsafe extern "C" fn lwasapi_pa_server_start(
     let t_vl = vol_lock.clone();
     let Ok(thread) = thread::Builder::new()
         .name("salsa-pa-srv".to_string())
-        .spawn(move || server_thread_main(listener, wake_raw, t_run, t_st, t_rt, t_vl))
+        .spawn(move || server_thread_main(listener, tcp_listener, wake_raw, t_run, t_st, t_rt, t_vl))
     else {
+        if let Some(ref p) = tcp_port_path {
+            let _ = fs::remove_file(p);
+        }
         return -1;
     };
 
-    println!("[Salsa-PA] Native PulseAudio v35 Rust server bound at {sock_path}");
+    if let Some(port) = tcp_port {
+        println!(
+            "[Salsa-PA] Native PulseAudio v35 Rust server bound at {sock_path} (+ loopback tcp4:127.0.0.1:{port})"
+        );
+    } else {
+        println!("[Salsa-PA] Native PulseAudio v35 Rust server bound at {sock_path}");
+    }
     let handle = Box::new(PaServerHandle {
         state,
         rt,
@@ -4525,6 +4621,8 @@ pub unsafe extern "C" fn lwasapi_pa_server_start(
         wake_efd,
         sock_path,
         pid_path,
+        tcp_port,
+        tcp_port_path,
         thread: Some(thread),
     });
     unsafe { *out_srv = Box::into_raw(handle) };
@@ -4552,6 +4650,15 @@ pub unsafe extern "C" fn lwasapi_pa_server_stop(srv: *mut PaServerHandle) {
     }
     let _ = fs::remove_file(&handle.sock_path);
     let _ = fs::remove_file(&handle.pid_path);
+    if let (Some(port), Some(ref ppath)) = (handle.tcp_port, &handle.tcp_port_path) {
+        if fs::read_to_string(ppath)
+            .ok()
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            == Some(port)
+        {
+            let _ = fs::remove_file(ppath);
+        }
+    }
 }
 
 #[no_mangle]
@@ -5487,5 +5594,42 @@ mod tests {
             resolved_mon.as_ref().map(|(_, nm, mon)| (nm.as_str(), *mon)),
             Some(("salsa_out.bt_AA_BB.monitor", true))
         );
+    }
+
+    #[test]
+    fn tcp_auth_requires_matching_cookie_without_peercred() {
+        use std::os::unix::net::UnixStream;
+
+        let mut st = PaState::new(empty_pa_callbacks(), String::new(), String::new());
+        st.cookie = [0xA5u8; PA_NATIVE_COOKIE_LEN];
+        st.cookie_valid = true;
+
+        let Ok((sock_a, _sock_b)) = UnixStream::pair() else {
+            panic!("UnixStream::pair failed");
+        };
+        let owned: OwnedFd = sock_a.into();
+        st.accept_client_fd(owned, None);
+        assert!(st.clients[0].in_use);
+        assert!(!st.clients[0].uid_valid);
+        assert!(!st.clients[0].authed);
+
+        let rt = Arc::new(PaRtShared::new(-1));
+        let vol_lock = Mutex::new(());
+
+        let mut bad_tb = TagBuilder::new(320);
+        bad_tb.put_u32(PA_TAG_U32, CMD_AUTH);
+        bad_tb.put_u32(PA_TAG_U32, 1);
+        bad_tb.put_u32(PA_TAG_U32, PA_PROTO_VERSION);
+        bad_tb.put_arbitrary(&[0x5Au8; PA_NATIVE_COOKIE_LEN]);
+        st.handle_control_packet(0, &bad_tb.into_vec(), &rt, &vol_lock);
+        assert!(!st.clients[0].authed);
+
+        let mut good_tb = TagBuilder::new(320);
+        good_tb.put_u32(PA_TAG_U32, CMD_AUTH);
+        good_tb.put_u32(PA_TAG_U32, 2);
+        good_tb.put_u32(PA_TAG_U32, PA_PROTO_VERSION);
+        good_tb.put_arbitrary(&st.cookie.clone());
+        st.handle_control_packet(0, &good_tb.into_vec(), &rt, &vol_lock);
+        assert!(st.clients[0].authed);
     }
 }
