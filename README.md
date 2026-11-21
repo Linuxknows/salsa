@@ -2,6 +2,7 @@
 
 <p align="center">
   <strong>📖 Overview</strong> &nbsp;|&nbsp;
+  <a href="#screenshots">🖼️ Screenshots</a> &nbsp;|&nbsp;
   <a href="SALSA%20Architecture%20Breakdown.md">📐 Architecture Breakdown</a> &nbsp;|&nbsp;
   <a href="PATCH_NOTES.md">📝 Patch Notes (V1.21.11)</a> &nbsp;|&nbsp;
   <a href="THIRD_PARTY_LICENSES.md">🔌 Third-Party &amp; Codecs</a> &nbsp;|&nbsp;
@@ -11,6 +12,64 @@
 "**"You can't spell Salsa without ALSA — because even the cleanest audio chips sound flat until they have a zero-latency dip to taste, with zero chunks dropped and plenty of Dynamic EQ heat!"**
 
 High-Frequency (Up to **192,000 Hz / 32-Bit Float**) WASAPI style Architecture / WaveRT Zero-Copy Audio Engine, **100% Pure Rust Backend Daemon & CLI (`lwasapi-audiodg` / `lwasapi-ctl`), PA v35 Server & PipeWire-0 Video Broker**, **Direct BlueZ D-Bus A2DP/AVRCP Audio**, **10-Band Real-Time Dynamic EQ APO**, Sample-Accurate **DAW MIDI Hub**, and Automatic **`qpwgraph`-Equivalent Signal Topology & Owner's Manual**, **Designed to remove all PipeWire-Pulse or WirePlumber audio dependencies**.  
+
+---
+
+## Screenshots
+
+### Salsa Studio — Main Mixer, 10-Band Dynamic EQ & Sessions (`salsa`)
+![Salsa Studio — Main Mixer & 10-Band Dynamic EQ](assets/screenshots/salsa-studio.png)
+
+### Auto-Graph Topology & Interactive Owner's Manual (`salsa-graph`)
+![Salsa — Auto-Graph Topology & Owner's Manual](assets/screenshots/salsa-topology-manual.png)
+
+### Advanced Options, DSP, Hardware Analog & Diagnostics (`salsa --advanced`)
+![Salsa — Advanced Options, DSP, Hardware Analog & Diagnostics](assets/screenshots/salsa-advanced-options.png)
+
+### Custom Theme Studio — Live Interactive Preview (`salsa --theme-studio`)
+![Salsa Studio — Custom Theme Studio](assets/screenshots/salsa-custom-theme-studio.png)
+
+### System Tray Quick Mixer (`lwasapi-tray`) & About / LGPL-3.0 Viewer (`salsa --about`)
+<table>
+  <tr>
+    <th align="center">System Tray Quick Mixer (<code>lwasapi-tray</code>)</th>
+    <th align="center">About &amp; LGPL-3.0 License Viewer (<code>salsa --about</code>)</th>
+  </tr>
+  <tr>
+    <td align="center" width="42%">
+      <img src="assets/screenshots/salsa-tray-quick-mixer.png" alt="Salsa — System Tray Quick Mixer" width="340" />
+    </td>
+    <td align="center" width="58%">
+      <img src="assets/screenshots/salsa-about-license.png" alt="About Salsa Studio — LGPL-3.0 License Viewer" width="480" />
+    </td>
+  </tr>
+</table>
+
+### Standalone Live Architecture & IPC Debugger (`salsa-debug`)
+<table>
+  <tr>
+    <th align="center">Live Event Stream (<code>--tab 0</code>)</th>
+    <th align="center">App &amp; Process Routing Audit (<code>--tab 1</code>)</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="assets/screenshots/salsa-debugger-events.png" alt="Salsa Debugger — Live Event Stream" /></td>
+    <td align="center"><img src="assets/screenshots/salsa-debugger-routing-audit.png" alt="Salsa Debugger — App & Process Routing Audit" /></td>
+  </tr>
+  <tr>
+    <th align="center">Streams, Rings &amp; RT Timing (<code>--tab 2</code>)</th>
+    <th align="center">Boundary, Configs &amp; Probes (<code>--tab 3</code>)</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="assets/screenshots/salsa-debugger-streams-rt.png" alt="Salsa Debugger — Streams, Rings & RT Timing" /></td>
+    <td align="center"><img src="assets/screenshots/salsa-debugger-boundary-probes.png" alt="Salsa Debugger — Boundary, Configs & Probes" /></td>
+  </tr>
+  <tr>
+    <th align="center" colspan="2">ScreenCast Broker &amp; Live Feed (<code>--tab 4 --live-feed</code>)</th>
+  </tr>
+  <tr>
+    <td align="center" colspan="2"><img src="assets/screenshots/salsa-debugger-screencast.png" alt="Salsa Debugger — ScreenCast Broker & Live Feed" width="760" /></td>
+  </tr>
+</table>
 
 ---
 
@@ -60,9 +119,13 @@ cd salsa-lwasapi
 
 ## Useful Commands
 
-- **Open Salsa Studio Mixer, Device Switcher, Live Debugger Tab & 10-Band Dynamic EQ GUI**:
+- **Open Salsa Studio Mixer, Device Switcher, Advanced Options, Theme Studio, or About Dialog**:
   ```bash
   salsa
+  salsa --studio
+  salsa --advanced
+  salsa --theme-studio
+  salsa --about
   ```
 - **Open Automatic Signal Topology Graph (`qpwgraph` View) & Owner's Manual**:
   ```bash
@@ -71,7 +134,8 @@ cd salsa-lwasapi
 - **Open Standalone Live Interaction Debugger or Run CLI Audits/Probes**:
   ```bash
   salsa-debug
-  salsa-debug --live-feed
+  salsa-debug --tab 2
+  salsa-debug --tab 4 --live-feed
   salsa-debug --snapshot
   salsa-debug --audit
   salsa-debug --export-text [output.txt]

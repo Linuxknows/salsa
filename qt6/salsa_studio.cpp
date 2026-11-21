@@ -191,7 +191,12 @@ public:
     explicit StudioController(bool forceStudio = false, QObject* parent = nullptr);
     ~StudioController() override;
 
-    void start(bool forceStudio, bool forceTopology = false);
+    void start(
+        bool forceStudio,
+        bool forceTopology = false,
+        bool forceAdvanced = false,
+        bool forceThemeStudio = false,
+        bool forceAbout = false);
     void shutdownAll();
 
 private:
@@ -246,6 +251,7 @@ private:
     void openTopologyWindow();
     void enterStudioFromTopology();
     void openAdvancedWindow();
+    void openAboutWindow(bool standaloneQuit = false);
     void selectManualChapter(const QString& key);
     void openLiveDebuggerWindow();
 
@@ -699,7 +705,17 @@ void StudioController::handleSingleInstanceClient() {
 
 void StudioController::activateExistingWindow(const QString& targetMode, const QByteArray& actToken) {
     QWidget* target = nullptr;
-    if (targetMode == QStringLiteral("topology") && introWin_) {
+    if (targetMode == QStringLiteral("advanced")) {
+        openAdvancedWindow();
+        target = advWin_;
+    } else if (targetMode == QStringLiteral("theme-studio")) {
+        openCustomThemeDialog();
+        target = themeDlg_;
+    } else if (targetMode == QStringLiteral("about")) {
+        if (!actToken.isEmpty()) qputenv("XDG_ACTIVATION_TOKEN", actToken);
+        openAboutWindow(false);
+        return;
+    } else if (targetMode == QStringLiteral("topology") && introWin_) {
         target = introWin_;
     } else if (mainWin_
                && (targetMode == QStringLiteral("studio")
@@ -767,23 +783,36 @@ void StudioController::syncBtConnectionControls(uint32_t flags, const QString& n
     }
 }
 
-void StudioController::start(bool forceStudio, bool forceTopology) {
+void StudioController::start(
+    bool forceStudio,
+    bool forceTopology,
+    bool forceAdvanced,
+    bool forceThemeStudio,
+    bool forceAbout) {
     forceStudio_ = forceStudio;
     pollEngine(true);
-    // Honor show_topology_intro unless --studio or --topology explicitly passed
-    const bool showIntro = forceTopology
-                           || (!forceStudio_ && guiSettings_.value(QStringLiteral("show_topology_intro")).toBool(true));
-    if (showIntro) {
-        studioDbgHandle_ = salsa_dbg_create();
-        introWin_->show();
-        introWin_->raise();
-        introWin_->activateWindow();
-        dbgSnapTimer_->start();
+    // Honor show_topology_intro unless an explicit window mode was passed
+    if (forceAdvanced) {
+        openAdvancedWindow();
+    } else if (forceThemeStudio) {
+        openCustomThemeDialog();
+    } else if (forceAbout) {
+        QTimer::singleShot(0, this, [this]() { openAboutWindow(true); });
     } else {
-        studioEntered_ = true;
-        mainWin_->show();
-        mainWin_->raise();
-        mainWin_->activateWindow();
+        const bool showIntro = forceTopology
+                               || (!forceStudio_ && guiSettings_.value(QStringLiteral("show_topology_intro")).toBool(true));
+        if (showIntro) {
+            studioDbgHandle_ = salsa_dbg_create();
+            introWin_->show();
+            introWin_->raise();
+            introWin_->activateWindow();
+            dbgSnapTimer_->start();
+        } else {
+            studioEntered_ = true;
+            mainWin_->show();
+            mainWin_->raise();
+            mainWin_->activateWindow();
+        }
     }
     setupSingleInstanceServer();
     pollTimer_->start();
@@ -1494,6 +1523,11 @@ void StudioController::buildAdvancedWindow() {
         QStringLiteral("Salsa — Advanced Options, DSP, Hardware Analog & Diagnostics"),
         [this](QCloseEvent*) {
             if (closingAll_) return true;
+            if ((!mainWin_ || !mainWin_->isVisible()) && (!introWin_ || !introWin_->isVisible())) {
+                closingAll_ = true;
+                QApplication::quit();
+                return true;
+            }
             advWin_->hide();
             return false;
         });
@@ -1523,7 +1557,7 @@ void StudioController::buildAdvancedWindow() {
     hcLay->addWidget(btnAboutAdv);
     auto* btnCloseAdv = new QPushButton(QStringLiteral("Close (Esc)"), hdrCard);
     btnCloseAdv->setToolTip(QStringLiteral("Close Advanced Options (Esc) — Hides this window while keeping all DSP, hardware, and shortcut settings active."));
-    connect(btnCloseAdv, &QPushButton::clicked, advWin_, &QWidget::hide);
+    connect(btnCloseAdv, &QPushButton::clicked, advWin_, &QWidget::close);
     hcLay->addWidget(btnCloseAdv);
     advRoot->addWidget(hdrCard);
 
@@ -2167,7 +2201,8 @@ void StudioController::onThemeActivated(int index) {
 
 void StudioController::openCustomThemeDialog() {
     if (!themeDlg_) {
-        themeDlg_ = new SalsaCustomThemeDialog(currentTheme_, fontPct_, mainWin_);
+        QWidget* dlgParent = (mainWin_ && mainWin_->isVisible()) ? static_cast<QWidget*>(mainWin_) : nullptr;
+        themeDlg_ = new SalsaCustomThemeDialog(currentTheme_, fontPct_, dlgParent);
         connect(themeDlg_, &SalsaCustomThemeDialog::liveThemeChanged, this, [this](const SalsaThemeData& t) {
             currentTheme_ = t;
             applyThemeAndFontAll(false);
@@ -2196,6 +2231,15 @@ void StudioController::openCustomThemeDialog() {
                 cmbTheme_->blockSignals(true);
                 cmbTheme_->setCurrentText(currentThemeName_);
                 cmbTheme_->blockSignals(false);
+            }
+        });
+        connect(themeDlg_, &QDialog::finished, this, [this](int) {
+            if (closingAll_) return;
+            if ((!mainWin_ || !mainWin_->isVisible())
+                && (!introWin_ || !introWin_->isVisible())
+                && (!advWin_ || !advWin_->isVisible())) {
+                closingAll_ = true;
+                QTimer::singleShot(0, qApp, &QCoreApplication::quit);
             }
         });
     } else {
@@ -2650,6 +2694,22 @@ void StudioController::openAdvancedWindow() {
     advWin_->show();
     advWin_->raise();
     advWin_->activateWindow();
+}
+
+void StudioController::openAboutWindow(bool standaloneQuit) {
+    QWidget* parent = nullptr;
+    if (mainWin_ && mainWin_->isVisible()) parent = mainWin_;
+    else if (introWin_ && introWin_->isVisible()) parent = introWin_;
+    else if (advWin_ && advWin_->isVisible()) parent = advWin_;
+    showAboutLicenseDialog(parent, QStringLiteral("Salsa Studio"), currentTheme_, fontPct_);
+    if (standaloneQuit
+        && !closingAll_
+        && (!mainWin_ || !mainWin_->isVisible())
+        && (!introWin_ || !introWin_->isVisible())
+        && (!advWin_ || !advWin_->isVisible())) {
+        closingAll_ = true;
+        QApplication::quit();
+    }
 }
 
 void StudioController::selectManualChapter(const QString& key) {
@@ -3138,11 +3198,17 @@ int main(int argc, char** argv) {
     bool selfTest = false;
     bool forceStudio = false;
     bool forceTopology = false;
+    bool forceAdvanced = false;
+    bool forceThemeStudio = false;
+    bool forceAbout = false;
     for (int i = 1; i < argc; ++i) {
         const QString arg = QString::fromUtf8(argv[i]);
         if (arg == QLatin1String("--self-test")) selfTest = true;
         else if (arg == QLatin1String("--studio")) forceStudio = true;
         else if (arg == QLatin1String("--topology") || arg == QLatin1String("--graph")) forceTopology = true;
+        else if (arg == QLatin1String("--advanced")) forceAdvanced = true;
+        else if (arg == QLatin1String("--theme-studio")) forceThemeStudio = true;
+        else if (arg == QLatin1String("--about")) forceAbout = true;
     }
 
     if (!salsa::verifyBridgeAbi()) {
@@ -3164,8 +3230,15 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    const QString mode = forceTopology ? QStringLiteral("topology")
-                                       : (forceStudio ? QStringLiteral("studio") : QStringLiteral("auto"));
+    const QString mode = forceAdvanced
+                             ? QStringLiteral("advanced")
+                             : (forceThemeStudio
+                                    ? QStringLiteral("theme-studio")
+                                    : (forceAbout
+                                           ? QStringLiteral("about")
+                                           : (forceTopology
+                                                  ? QStringLiteral("topology")
+                                                  : (forceStudio ? QStringLiteral("studio") : QStringLiteral("auto")))));
     if (tryActivateExistingStudioInstance(mode, qgetenv("XDG_ACTIVATION_TOKEN"))) {
         return 0;
     }
@@ -3175,6 +3248,6 @@ int main(int argc, char** argv) {
     app.setDesktopFileName(QStringLiteral("salsa-lwasapi"));
 
     salsa::StudioController ctrl(forceStudio);
-    ctrl.start(forceStudio, forceTopology);
+    ctrl.start(forceStudio, forceTopology, forceAdvanced, forceThemeStudio, forceAbout);
     return app.exec();
 }
