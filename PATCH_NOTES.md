@@ -4,7 +4,15 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.21.10 — Current (`2026-11-21`)
+## V1.21.11 — Current (`2026-11-21`)
+
+### 1. Container-Resilient PulseAudio Loopback TCP Failover Across Daemon Restarts
+- Added a cookie-authenticated loopback TCP listener (`127.0.0.1:0` with `TCP_NODELAY`) to [`pa_server.rs`](rust/salsa_net/src/pa_server.rs) (`bind_loopback_tcp_and_write_port()`, `PaState::accept_client_fd()`, `server_thread_main()`, `lwasapi_pa_server_stop()`): alongside `/run/user/$UID/pulse/native`, `lwasapi-audiodg` now binds an ephemeral `127.0.0.1` port whenever `~/.config/pulse/cookie` (`0600`, `256` bytes) is valid, writes that port atomically (`0600`, `O_NOFOLLOW | O_CLOEXEC`) to `~/.config/pulse/salsa-tcp-port`, and enforces strict 256-byte cookie validation in `CMD_AUTH` (`uid_opt = None`).
+- Updated [`imp.rs`](rust/salsa_pa_reconnect/src/imp.rs) (`should_try_tcp_fallback()`, `read_salsa_tcp_target()`, `reconnect_timer_cb()`) so Steam Pressure-Vessel (`srt-bwrap`) and other mount-sandboxed apps whose bind-mounted `/run/pressure-vessel/pulse/native` socket inode becomes orphaned during a rebuild or daemon restart automatically load `~/.config/pulse/cookie`, fail over seamlessly to `tcp4:127.0.0.1:<port>` on even reconnect attempts while keeping direct `SO_PEERCRED` UNIX connections first for host apps, and resume playback streams without dropping game audio.
+
+---
+
+## V1.21.10 (`2026-11-21`)
 
 ### 1. Bluetooth A2DP Sink Preservation & Reconnect Reliability Across TV / Wired Switches
 - Fixed premature Bluetooth transport teardown when reconnecting from TV/HDMI or wired outputs in [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) (`apply_playback_endpoint()`, `should_try_bt_on_apply()`, `should_disable_bt_tx_on_fallback()`): widened the `MediaTransport1.Acquire` readiness poll window from `600 ms` to `3.5 s` (`140 * 25 ms`, returning early on ready socket), stopped forcing `lwasapi_bluez_set_tx_enabled(false)` during transient fallback on explicit Bluetooth or `Auto-Priority` targets so hotplug finishes restoring Bluetooth cleanly, allowed `Auto-Priority` to resume connected Bluetooth headsets even when `Optional BT` mode is enabled, and put Bluetooth TX into standby when `LWASAPI_CMD_BT_CONNECTION` connects while pinned to a non-Bluetooth sink.

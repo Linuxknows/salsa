@@ -3,7 +3,7 @@
 <p align="center">
   <strong>📖 Overview</strong> &nbsp;|&nbsp;
   <a href="SALSA%20Architecture%20Breakdown.md">📐 Architecture Breakdown</a> &nbsp;|&nbsp;
-  <a href="PATCH_NOTES.md">📝 Patch Notes (V1.21.10)</a> &nbsp;|&nbsp;
+  <a href="PATCH_NOTES.md">📝 Patch Notes (V1.21.11)</a> &nbsp;|&nbsp;
   <a href="THIRD_PARTY_LICENSES.md">🔌 Third-Party &amp; Codecs</a> &nbsp;|&nbsp;
   <a href="COPYING.LESSER">⚖️ LGPL-3.0 License</a>
 </p>
@@ -34,10 +34,10 @@ Read the complete 4-stage engine walkthrough, zero-copy WaveRT shared-memory rin
 
 ## Quick 1-Command Install on Any Linux PC
 
-Unzip the archive (for example `V1.21.10` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
+Unzip the archive (for example `V1.21.11` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
 
 ```bash
-unzip "salsa-lwasapi-installer (V1.21.10).zip"
+unzip "salsa-lwasapi-installer (V1.21.11).zip"
 cd salsa-lwasapi
 ./install-salsa.sh
 ```
