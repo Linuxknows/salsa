@@ -340,7 +340,7 @@ pub struct pa_mainloop_api {
             *mut c_void,
         ) -> *mut pa_time_event,
     >,
-    pub time_restart: *mut c_void,
+    pub time_restart: Option<unsafe extern "C" fn(*mut pa_time_event, *const TimeVal)>,
     pub time_free: Option<unsafe extern "C" fn(*mut pa_time_event)>,
     pub time_set_destroy: *mut c_void,
     pub defer_new: Option<
@@ -3321,6 +3321,20 @@ pub unsafe extern "C" fn pa_context_get_index(c: *const pa_context) -> u32 {
     real().pa_context_get_index.map_or(0, |f| f((*wctx).real_ctx))
 }
 
+const PA_USEC_INVALID: pa_usec_t = u64::MAX;
+const PA_TIMEVAL_RTCLOCK: c_long = 1 << 30;
+
+unsafe fn rttime_to_timeval(usec: pa_usec_t, tv: *mut TimeVal) -> *const TimeVal {
+    if usec == PA_USEC_INVALID {
+        return ptr::null();
+    }
+    // Match libpulse's pa_timeval_rtstore(..., rtclock=true) so mainloop_time_new/restart
+    // treat `usec` on the monotonic pa_rtclock timeline rather than wallclock gettimeofday.
+    (*tv).tv_sec = (usec / 1_000_000).min(c_long::MAX as u64) as c_long;
+    (*tv).tv_usec = ((usec % 1_000_000) as c_long) | PA_TIMEVAL_RTCLOCK;
+    tv
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn pa_context_rttime_new(
     c: *const pa_context,
@@ -3335,12 +3349,22 @@ pub unsafe extern "C" fn pa_context_rttime_new(
             .pa_context_rttime_new
             .map_or(ptr::null_mut(), |f| f(c, usec, cb, userdata));
     }
-    if (*wctx).real_ctx.is_null() {
+    let rc = (*wctx).real_ctx;
+    if !rc.is_null() {
+        if let Some(f) = real().pa_context_rttime_new {
+            return f(rc, usec, cb, userdata);
+        }
+    }
+    let api = (*wctx).api;
+    if api.is_null() {
         return ptr::null_mut();
     }
-    real()
-        .pa_context_rttime_new
-        .map_or(ptr::null_mut(), |f| f((*wctx).real_ctx, usec, cb, userdata))
+    let Some(time_new) = (*api).time_new else {
+        return ptr::null_mut();
+    };
+    let mut tv = TimeVal::default();
+    let tv_ptr = rttime_to_timeval(usec, &raw mut tv);
+    time_new(api, tv_ptr, cb, userdata)
 }
 
 #[no_mangle]
@@ -3357,12 +3381,26 @@ pub unsafe extern "C" fn pa_context_rttime_restart(
         }
         return;
     }
-    if (*wctx).real_ctx.is_null() {
+    let rc = (*wctx).real_ctx;
+    if !rc.is_null() {
+        if let Some(f) = real().pa_context_rttime_restart {
+            f(rc, e, usec);
+            return;
+        }
+    }
+    if e.is_null() {
         return;
     }
-    if let Some(f) = real().pa_context_rttime_restart {
-        f((*wctx).real_ctx, e, usec);
+    let api = (*wctx).api;
+    if api.is_null() {
+        return;
     }
+    let Some(time_restart) = (*api).time_restart else {
+        return;
+    };
+    let mut tv = TimeVal::default();
+    let tv_ptr = rttime_to_timeval(usec, &raw mut tv);
+    time_restart(e, tv_ptr);
 }
 
 #[no_mangle]
@@ -5747,18 +5785,34 @@ pub unsafe extern "C" fn pa_stream_disconnect(s: *mut pa_stream) -> c_int {
     (*ws).user_disconnected = true;
     (*ws).reconnecting = false;
     (*ws).reported_state = PA_STREAM_TERMINATED;
+    let rs = (*ws).real_stream;
     let mut rc = 0;
-    if !(*ws).real_stream.is_null() {
-        rc = real()
-            .pa_stream_disconnect
-            .map_or(-1, |f| f((*ws).real_stream));
-    } else if let Some(cb) = (*ws).state_cb {
-        let ud = (*ws).state_ud;
-        pthread_mutex_unlock(&raw mut (*(*ws).wctx).lock);
-        cb(s, ud);
+    let mut need_cb = rs.is_null();
+    if !rs.is_null() {
+        rc = real().pa_stream_disconnect.map_or(-1, |f| f(rs));
+        if rc < 0 {
+            // If real_stream was UNCONNECTED/FAILED/TERMINATED, libpulse rejects disconnect
+            // synchronously and will never emit state_cb(TERMINATED); detach it cleanly so
+            // pa_stream_get_state reports TERMINATED and waiters don't deadlock.
+            (*ws).real_stream = ptr::null_mut();
+            need_cb = true;
+        }
+    }
+    let cb = (*ws).state_cb;
+    let ud = (*ws).state_ud;
+    pthread_mutex_unlock(&raw mut (*(*ws).wctx).lock);
+    if rc < 0 && !rs.is_null() {
+        detach_stream_callbacks(rs);
+        if let Some(f) = real().pa_stream_unref {
+            f(rs);
+        }
+    }
+    if need_cb {
+        if let Some(f) = cb {
+            f(s, ud);
+        }
         return 0;
     }
-    pthread_mutex_unlock(&raw mut (*(*ws).wctx).lock);
     rc
 }
 
@@ -6764,5 +6818,105 @@ mod tests {
         assert_eq!(parse_salsa_tcp_port_str("41235\n"), Some(41235));
         assert_eq!(parse_salsa_tcp_port_str("0"), None);
         assert_eq!(parse_salsa_tcp_port_str("abc"), None);
+    }
+
+    #[test]
+    fn rttime_falls_back_to_mainloop_api_when_real_ctx_null() {
+        #[derive(Default)]
+        struct FakeTimeState {
+            new_calls: usize,
+            restart_calls: usize,
+            last_null_tv: bool,
+            last_sec: c_long,
+            last_usec: c_long,
+        }
+
+        unsafe extern "C" fn fake_time_new(
+            api: *mut pa_mainloop_api,
+            tv: *const TimeVal,
+            _cb: pa_time_event_cb_t,
+            _ud: *mut c_void,
+        ) -> *mut pa_time_event {
+            let st = &mut *((*api).userdata.cast::<FakeTimeState>());
+            st.new_calls += 1;
+            if tv.is_null() {
+                st.last_null_tv = true;
+            } else {
+                st.last_null_tv = false;
+                st.last_sec = (*tv).tv_sec;
+                st.last_usec = (*tv).tv_usec;
+            }
+            0x1234usize as *mut pa_time_event
+        }
+
+        unsafe extern "C" fn fake_time_restart(e: *mut pa_time_event, tv: *const TimeVal) {
+            let st = &mut *(e.cast::<FakeTimeState>());
+            st.restart_calls += 1;
+            if tv.is_null() {
+                st.last_null_tv = true;
+            } else {
+                st.last_null_tv = false;
+                st.last_sec = (*tv).tv_sec;
+                st.last_usec = (*tv).tv_usec;
+            }
+        }
+
+        unsafe {
+            let mut tv = TimeVal::default();
+            assert!(rttime_to_timeval(PA_USEC_INVALID, &raw mut tv).is_null());
+            let p = rttime_to_timeval(12_345_678, &raw mut tv);
+            assert!(!p.is_null());
+            assert_eq!((*p).tv_sec, 12);
+            assert_eq!((*p).tv_usec, 345_678 | PA_TIMEVAL_RTCLOCK);
+
+            let mut fake = FakeTimeState::default();
+            let mut api: pa_mainloop_api = core::mem::zeroed();
+            api.userdata = (&raw mut fake).cast();
+            api.time_new = Some(fake_time_new);
+            api.time_restart = Some(fake_time_restart);
+
+            let mut ctx: Wctx = core::mem::zeroed();
+            ctx.api = &raw mut api;
+            ctx.real_ctx = ptr::null_mut();
+
+            pthread_mutex_lock(G_CTX_LOCK.get());
+            ctx.next = *G_CTX_HEAD.get();
+            *G_CTX_HEAD.get() = &raw mut ctx;
+            pthread_mutex_unlock(G_CTX_LOCK.get());
+
+            let ev = pa_context_rttime_new(
+                (&raw mut ctx).cast(),
+                5_010_000,
+                None,
+                ptr::null_mut(),
+            );
+            assert_eq!(ev as usize, 0x1234);
+            assert_eq!(fake.new_calls, 1);
+            assert!(!fake.last_null_tv);
+            assert_eq!(fake.last_sec, 5);
+            assert_eq!(fake.last_usec, 10_000 | PA_TIMEVAL_RTCLOCK);
+
+            let fake_ev = (&raw mut fake).cast::<pa_time_event>();
+            pa_context_rttime_restart((&raw mut ctx).cast(), fake_ev, 9_020_000);
+            assert_eq!(fake.restart_calls, 1);
+            assert!(!fake.last_null_tv);
+            assert_eq!(fake.last_sec, 9);
+            assert_eq!(fake.last_usec, 20_000 | PA_TIMEVAL_RTCLOCK);
+
+            pa_context_rttime_restart((&raw mut ctx).cast(), fake_ev, PA_USEC_INVALID);
+            assert_eq!(fake.restart_calls, 2);
+            assert!(fake.last_null_tv);
+
+            pthread_mutex_lock(G_CTX_LOCK.get());
+            let mut pp = G_CTX_HEAD.get();
+            while !(*pp).is_null() {
+                if core::ptr::eq(*pp, &raw mut ctx) {
+                    *pp = ctx.next;
+                    break;
+                }
+                pp = &raw mut (**pp).next;
+            }
+            pthread_mutex_unlock(G_CTX_LOCK.get());
+        }
     }
 }
