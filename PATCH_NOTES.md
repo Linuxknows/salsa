@@ -4,7 +4,24 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.21.11 — Current (`2026-11-21`)
+## V1.21.12 — Current (`2026-11-21`)
+
+### 1. Security Hardening, Non-Executable Stacks & IPC Efficiency
+- Added `-D_FORTIFY_SOURCE=3`, `-fstack-protector-strong`, `-Wformat -Wformat-security` (`HARDEN_CXXFLAGS`), and `-Wl,-z,noexecstack` across C++/Rust targets in [`Makefile`](Makefile), plus `--install-pacman-hook` / `--remove-pacman-hook` handling in [`install-salsa.sh`](install-salsa.sh).
+- Hardened cookie verification, D-Bus object path checks, sandboxed TCP failover, bounded settings reads, and non-finite DSP filtering across [`pa_server.rs`](rust/salsa_net/src/pa_server.rs) (`ct_eq_256()`, `sync_active_doi()`), [`bluez_ffi.rs`](rust/salsa_net/src/bluez_ffi.rs) (`is_valid_dbus_object_path()`), [`imp.rs`](rust/salsa_pa_reconnect/src/imp.rs) (`server_string_allows_tcp_fallback()`, `read_salsa_tcp_target()`, `reconnect_timer_cb()`), [`lwasapi_bench.rs`](rust/lwasapi_client/src/bin/lwasapi_bench.rs) (`pick_sandbox_base_dir()`), [`ipc.rs`](rust/salsa_tools/src/ipc.rs) (`SettingsLockGuard`, `read_nofollow_bounded_utf8()`, `cached_proc_comm()`), [`ctl_cli.rs`](rust/salsa_net/src/ctl_cli.rs), and [`dsp.rs`](rust/salsa_net/src/dsp.rs).
+
+### 2. Bluetooth Playback Drive Parity & AVRCP Acquire Preservation
+- Added `apply_bt_hw_analog_drive()` in [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) so Bluetooth A2DP TX streams receive the same hardware analog drive and soft-knee shaping as ALSA playback while scrubbing non-finite samples.
+- Added `apply_peer_avrcp_vol()` in [`bluez_runtime.rs`](rust/salsa_net/src/bluez_runtime.rs) so stale peer AVRCP volume notifications during `MediaTransport1.Acquire` preserve pending host volume sync and boost levels.
+
+### 3. Zero-Flicker PipeWire ScreenCast Preview & Wayland Single-Instance Activation
+- Updated [`pw_broker.rs`](rust/salsa_net/src/pw_broker.rs) multi-slot `spa_io_buffers` handling (`io_read_slot()`, `io_take_ready_slot()`, `io_write_all_slots()`, `io_recycle_buf()`), [`debug_core.rs`](rust/salsa_tools/src/debug_core.rs) (`read_frame_since()`), [`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs) (`salsa_dbg_shm_reset_cache()`), and [`salsa_debugger_widget.cpp`](qt6/salsa_debugger_widget.cpp) (`withinLiveGrace`) so Portal ScreenCast streams capture frame #0 cleanly and switch screens without visual flicker.
+- Added [`SingleInstanceServer`](qt6/salsa_common.hpp), `tryActivateExistingSingleInstance()`, runtime `dlopen` of `libKF6WindowSystem.so.6` (`KWaylandExtras` / `KWindowSystem` XDG activation tokens), and `raiseAndActivateWindow()` in [`salsa_common.cpp`](qt6/salsa_common.cpp), [`salsa_studio.cpp`](qt6/salsa_studio.cpp), and [`salsa_debug.cpp`](qt6/salsa_debug.cpp) so second launches raise and focus the original window on KDE Plasma Wayland instead of only flashing the panel icon.
+- Switched boost and crossfeed labels (`lblHwBoost_`, `lblHwMicBoost_`, `lblCrossfeed_`) to fixed-width monospace `ValMonoLabel` formatting (`formatBoostDbText()` / `formatPctText()`), set `QSizePolicy::Ignored` on `lblHwAnalogDiag_`, and flushed hardware analog sliders synchronously on release/close before polling so `+9.5 dB` -> `+10.0+ dB` adjustments stay pixel-stationary and persist reliably.
+
+---
+
+## V1.21.11 (`2026-11-21`)
 
 ### 1. Container-Resilient PulseAudio Loopback TCP Failover Across Daemon Restarts
 - Added a cookie-authenticated loopback TCP listener (`127.0.0.1:0` with `TCP_NODELAY`) to [`pa_server.rs`](rust/salsa_net/src/pa_server.rs) (`bind_loopback_tcp_and_write_port()`, `PaState::accept_client_fd()`, `server_thread_main()`, `lwasapi_pa_server_stop()`): alongside `/run/user/$UID/pulse/native`, `lwasapi-audiodg` now binds an ephemeral `127.0.0.1` port whenever `~/.config/pulse/cookie` (`0600`, `256` bytes) is valid, writes that port atomically (`0600`, `O_NOFOLLOW | O_CLOEXEC`) to `~/.config/pulse/salsa-tcp-port`, and enforces strict 256-byte cookie validation in `CMD_AUTH` (`uid_opt = None`).

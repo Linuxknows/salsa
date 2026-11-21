@@ -6,7 +6,9 @@
 # the Free Software Foundation, version 3 of the License.
 
 CC         := gcc
-SO_LDFLAGS := -pthread -lm -Wl,-z,relro,-z,now -Wl,--gc-sections -Wl,-S
+SO_LDFLAGS := -pthread -lm -Wl,-z,relro,-z,now -Wl,-z,noexecstack -Wl,--gc-sections -Wl,-S
+HARDEN_CXXFLAGS := -O2 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -Wformat -Wformat-security
+HARDEN_LDFLAGS  := -Wl,-z,relro,-z,now -Wl,-z,noexecstack
 HOST_LIBASOUND := $(shell ldconfig -p 2>/dev/null | awk '/libasound\.so\.2 /{print $$NF; exit}')
 ifeq ($(HOST_LIBASOUND),)
 HOST_LIBASOUND := $(shell for p in /usr/lib/libasound.so.2 /usr/lib64/libasound.so.2 /usr/lib/x86_64-linux-gnu/libasound.so.2 /usr/lib/aarch64-linux-gnu/libasound.so.2; do [ -e "$$p" ] && readlink -f "$$p" && break; done)
@@ -91,8 +93,8 @@ $(PA_RECONNECT32_DIR):
 	mkdir -p $(PA_RECONNECT32_DIR)
 
 $(WIRE_LIB): $(RUST_SRCS) | $(BUILD_DIR)
-	SALSA_HOST_LIBPULSE="$(HOST_LIBPULSE)" RUSTFLAGS="-C relocation-model=pic -C link-arg=-Wl,-z,relro,-z,now" PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) build --manifest-path rust/Cargo.toml --workspace --release --offline --target-dir $(RUST_TARGET_DIR)
-	cp $(RUST_REL_DIR)/libsalsa_wire.a $@.tmp && mv -f $@.tmp $@
+	SALSA_HOST_LIBPULSE="$(HOST_LIBPULSE)" RUSTFLAGS="-C relocation-model=pic -C link-arg=-Wl,-z,relro,-z,now -C link-arg=-Wl,-z,noexecstack" PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) build --manifest-path rust/Cargo.toml --workspace --release --offline --target-dir $(RUST_TARGET_DIR)
+	if [ -f $@ ] && cmp -s $(RUST_REL_DIR)/libsalsa_wire.a $@; then :; else cp $(RUST_REL_DIR)/libsalsa_wire.a $@.tmp && mv -f $@.tmp $@; fi
 
 $(BUILD_DIR)/lwasapi-audiodg: $(WIRE_LIB) | $(BUILD_DIR)
 	cp $(RUST_REL_DIR)/lwasapi-audiodg $@.tmp && mv -f $@.tmp $@
@@ -135,7 +137,7 @@ $(PA_RECONNECT_DIR)/libpulse.so.0: $(WIRE_LIB) $(BUILD_DIR)/salsa_pa_proxy_stubs
 
 ifneq ($(OPT_PA32),)
 $(BUILD_DIR)/rust_target32/i686-unknown-linux-gnu/release/libsalsa_pa_reconnect_proxy.a: $(RUST_SRCS) | $(BUILD_DIR)
-	SALSA_HOST_LIBPULSE="$(HOST_LIBPULSE32)" RUSTFLAGS="-C relocation-model=pic -C link-arg=-Wl,-z,relro,-z,now" PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) build --manifest-path rust/Cargo.toml -p salsa_pa_reconnect_proxy --target i686-unknown-linux-gnu --release --offline --target-dir $(BUILD_DIR)/rust_target32
+	SALSA_HOST_LIBPULSE="$(HOST_LIBPULSE32)" RUSTFLAGS="-C relocation-model=pic -C link-arg=-Wl,-z,relro,-z,now -C link-arg=-Wl,-z,noexecstack" PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) build --manifest-path rust/Cargo.toml -p salsa_pa_reconnect_proxy --target i686-unknown-linux-gnu --release --offline --target-dir $(BUILD_DIR)/rust_target32
 
 $(BUILD_DIR)/salsa_pa_proxy_stubs32.S: $(BUILD_DIR)/rust_target32/i686-unknown-linux-gnu/release/libsalsa_pa_reconnect_proxy.a $(BUILD_DIR)/salsa-gen-pa-proxy src/pulse.version | $(BUILD_DIR)
 	$(BUILD_DIR)/salsa-gen-pa-proxy --arch i386 "$(HOST_LIBPULSE32)" $(BUILD_DIR)/rust_target32/i686-unknown-linux-gnu/release/libsalsa_pa_reconnect_proxy.a $@
@@ -248,37 +250,37 @@ $(QT6_OBJ_DIR)/salsa_debug.moc: qt6/salsa_debug.cpp | $(QT6_OBJ_DIR)
 	$(QT6_MOC) $< -o $@
 
 $(QT6_OBJ_DIR)/salsa_common.o: qt6/salsa_common.cpp $(QT6_COMMON_HDRS) | $(QT6_OBJ_DIR)
-	$(CXX) -std=c++20 -O2 -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) -c $< -o $@
+	$(CXX) -std=c++20 $(HARDEN_CXXFLAGS) -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) -c $< -o $@
 
 $(QT6_OBJ_DIR)/moc_salsa_common.o: $(QT6_OBJ_DIR)/moc_salsa_common.cpp | $(QT6_OBJ_DIR)
-	$(CXX) -std=c++20 -O2 -fPIC -Iqt6 $(QT6_CFLAGS) -c $< -o $@
+	$(CXX) -std=c++20 $(HARDEN_CXXFLAGS) -fPIC -Iqt6 $(QT6_CFLAGS) -c $< -o $@
 
 $(QT6_OBJ_DIR)/salsa_widgets.o: qt6/salsa_widgets.cpp $(QT6_COMMON_HDRS) | $(QT6_OBJ_DIR)
-	$(CXX) -std=c++20 -O2 -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) -c $< -o $@
+	$(CXX) -std=c++20 $(HARDEN_CXXFLAGS) -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) -c $< -o $@
 
 $(QT6_OBJ_DIR)/moc_salsa_widgets.o: $(QT6_OBJ_DIR)/moc_salsa_widgets.cpp | $(QT6_OBJ_DIR)
-	$(CXX) -std=c++20 -O2 -fPIC -Iqt6 $(QT6_CFLAGS) -c $< -o $@
+	$(CXX) -std=c++20 $(HARDEN_CXXFLAGS) -fPIC -Iqt6 $(QT6_CFLAGS) -c $< -o $@
 
 $(QT6_OBJ_DIR)/salsa_debugger_widget.o: qt6/salsa_debugger_widget.cpp $(QT6_COMMON_HDRS) | $(QT6_OBJ_DIR)
-	$(CXX) -std=c++20 -O2 -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) -c $< -o $@
+	$(CXX) -std=c++20 $(HARDEN_CXXFLAGS) -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) -c $< -o $@
 
 $(QT6_OBJ_DIR)/salsa_studio.o: qt6/salsa_studio.cpp $(QT6_OBJ_DIR)/salsa_studio.moc $(QT6_COMMON_HDRS) | $(QT6_OBJ_DIR)
-	$(CXX) -std=c++20 -O2 -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) -c $< -o $@
+	$(CXX) -std=c++20 $(HARDEN_CXXFLAGS) -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) -c $< -o $@
 
 $(QT6_OBJ_DIR)/lwasapi_tray.o: qt6/lwasapi_tray.cpp $(QT6_OBJ_DIR)/lwasapi_tray.moc $(QT6_COMMON_HDRS) | $(QT6_OBJ_DIR)
-	$(CXX) -std=c++20 -O2 -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) $(QT6_TRAY_CFLAGS) -c $< -o $@
+	$(CXX) -std=c++20 $(HARDEN_CXXFLAGS) -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) $(QT6_TRAY_CFLAGS) -c $< -o $@
 
 $(QT6_OBJ_DIR)/salsa_debug.o: qt6/salsa_debug.cpp $(QT6_OBJ_DIR)/salsa_debug.moc $(QT6_COMMON_HDRS) | $(QT6_OBJ_DIR)
-	$(CXX) -std=c++20 -O2 -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) -c $< -o $@
+	$(CXX) -std=c++20 $(HARDEN_CXXFLAGS) -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/lwasapi-tray: $(WIRE_LIB) $(QT6_COMMON_OBJS) $(QT6_OBJ_DIR)/lwasapi_tray.o | $(BUILD_DIR)
-	$(CXX) $(QT6_COMMON_OBJS) $(QT6_OBJ_DIR)/lwasapi_tray.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) $(QT6_TRAY_LIBS) -Wl,-z,relro,-z,now -Wl,-S -o $@.tmp && mv -f $@.tmp $@
+	$(CXX) $(QT6_COMMON_OBJS) $(QT6_OBJ_DIR)/lwasapi_tray.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) $(QT6_TRAY_LIBS) $(HARDEN_LDFLAGS) -Wl,-S -o $@.tmp && mv -f $@.tmp $@
 
 $(BUILD_DIR)/salsa-debug: $(WIRE_LIB) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_debug.o | $(BUILD_DIR)
-	$(CXX) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_debug.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) -Wl,-z,relro,-z,now -Wl,-S -o $@.tmp && mv -f $@.tmp $@
+	$(CXX) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_debug.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) $(HARDEN_LDFLAGS) -Wl,-S -o $@.tmp && mv -f $@.tmp $@
 
 $(BUILD_DIR)/salsa-studio: $(WIRE_LIB) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_studio.o | $(BUILD_DIR)
-	$(CXX) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_studio.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) -Wl,-z,relro,-z,now -Wl,-S -o $@.tmp && mv -f $@.tmp $@
+	$(CXX) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_studio.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) $(HARDEN_LDFLAGS) -Wl,-S -o $@.tmp && mv -f $@.tmp $@
 
 rust-test:
 	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) clippy --manifest-path rust/Cargo.toml --workspace --offline --all-targets -- -D warnings
@@ -292,7 +294,7 @@ test-sanitized: rust-test fuzz-wire
 test: all
 	$(BUILD_DIR)/salsa-regression
 
-REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo V1.21.11))
+REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo V1.21.12))
 
 installer: all
 	$(BUILD_DIR)/salsa-dist "$(REV)"
