@@ -309,6 +309,7 @@ public:
 
     void setTheme(const SalsaThemeData& theme, int fontPct = 100);
     void selectTab(int idx);
+    void setBoundaryConfigIndex(int idx);
     void setScreenCastLive(bool enabled);
     void refreshAll();
     void shutdown();
@@ -385,6 +386,7 @@ private:
     int64_t scNextDueNs_ = 0;
     int scLastOutHz_ = 0;
     bool scLimitsDirty_ = false;
+    bool scPortalAttempted_ = false;
 
     QTimer* pollTimer_ = nullptr;
     QTimer* scTimer_ = nullptr;
@@ -436,6 +438,7 @@ private:
     QComboBox* cmbScFps_ = nullptr;
     QCheckBox* chkScCapBroker_ = nullptr;
     QPushButton* btnScLive_ = nullptr;
+    QPushButton* btnScPick_ = nullptr;
     QPushButton* btnScSaveFrame_ = nullptr;
     QLabel* lblScProfileBadge_ = nullptr;
     QLabel* lblScStats_ = nullptr;

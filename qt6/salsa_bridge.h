@@ -356,9 +356,13 @@ int salsa_dbg_shm_poll_frame(
     size_t rgba_cap,
     SalsaScFrameMeta* meta_out);
 void salsa_dbg_shm_stop(void* ctx);
+int salsa_dbg_portal_start(void* ctx, bool force_reselect);
+void salsa_dbg_portal_stop(void* ctx);
+bool salsa_dbg_portal_is_active(void* ctx);
+char* salsa_dbg_portal_status_json(void* ctx);
 size_t salsa_dbg_dryrun_frame(void* ctx, uint32_t dw, uint32_t dh, uint8_t* rgba_out, size_t rgba_cap);
 char* salsa_dbg_pw_self_test(void);
-char* salsa_dbg_save_frame_png(const uint8_t* rgba, uint32_t w, uint32_t h);
+char* salsa_dbg_save_frame_png(const uint8_t* rgba, size_t rgba_cap, uint32_t w, uint32_t h);
 
 void* salsa_sni_start(SalsaSniCb cb, void* user_ctx, char** icon_dir_out);
 void salsa_sni_update(void* h, bool online, bool muted, bool glow, const char* title, const char* status);

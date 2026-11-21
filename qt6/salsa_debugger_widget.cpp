@@ -80,6 +80,7 @@ void SalsaLiveDebuggerWidget::shutdown() {
     if (scTimer_) scTimer_->stop();
     if (pollTimer_) pollTimer_->stop();
     if (shmCtx_) {
+        salsa_dbg_portal_stop(shmCtx_);
         salsa_dbg_shm_stop(shmCtx_);
         salsa_dbg_shm_destroy(shmCtx_);
         shmCtx_ = nullptr;
@@ -102,6 +103,12 @@ void SalsaLiveDebuggerWidget::shutdown() {
 void SalsaLiveDebuggerWidget::selectTab(int idx) {
     if (subtabs_ && idx >= 0 && idx < subtabs_->count()) {
         subtabs_->setCurrentIndex(idx);
+    }
+}
+
+void SalsaLiveDebuggerWidget::setBoundaryConfigIndex(int idx) {
+    if (cmbCfg_ && idx >= 0 && idx < cmbCfg_->count()) {
+        cmbCfg_->setCurrentIndex(idx);
     }
 }
 
@@ -653,11 +660,17 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
     r1->addWidget(new QLabel(QStringLiteral("Mode:"), ctrlCard));
     cmbScMode_ = new QComboBox(ctrlCard);
     cmbScMode_->addItems({
-        QStringLiteral("Auto (SHM if Casting else Dry-Run)"),
-        QStringLiteral("SHM Preview (Zero-Overhead Live)"),
-        QStringLiteral("Dry-Run Portal Sim (Isolated)"),
+        QStringLiteral("Auto (Live Cast or Wayland Portal)"),
+        QStringLiteral("SHM Cast Only (Passive Broker)"),
+        QStringLiteral("Offline Color Bars (Test Pattern)"),
     });
-    cmbScMode_->setToolTip(QStringLiteral("ScreenCast Preview Mode — Auto displays real Wayland SHM frames while casting and dry-run test frames when idle."));
+    cmbScMode_->setToolTip(QStringLiteral("ScreenCast Preview Mode — Auto attaches to an active Salsa broker cast or starts Wayland Portal live screen capture; Passive waits for external OBS/Discord casts; Offline Color Bars renders a local test pattern."));
+    connect(cmbScMode_, &QComboBox::currentIndexChanged, this, [this](int idx) {
+        lastShmSeq_ = 0;
+        lastScImage_ = QImage();
+        scPortalAttempted_ = false;
+        if (idx != 0 && shmCtx_) salsa_dbg_portal_stop(shmCtx_);
+    });
     r1->addWidget(cmbScMode_);
 
     r1->addWidget(new QLabel(QStringLiteral("Res:"), ctrlCard));
@@ -737,12 +750,14 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
     btnScLive_ = new QPushButton(QStringLiteral("Enable Live Feed (OFF)"), ctrlCard);
     btnScLive_->setCheckable(true);
     btnScLive_->setObjectName(QStringLiteral("PrimaryBtn"));
-    btnScLive_->setToolTip(QStringLiteral("Toggle ScreenCast Live Feed — Maps `lwasapi-audiodg` SHM/DMA-BUF preview frames directly into this viewer at your target FPS."));
+    btnScLive_->setToolTip(QStringLiteral("Toggle ScreenCast Live Feed — Maps `lwasapi-audiodg` SHM/DMA-BUF preview frames (or Wayland Portal capture) directly into this viewer at your target FPS."));
     connect(btnScLive_, &QPushButton::toggled, this, [this](bool on) {
         if (on) {
             btnScLive_->setText(QStringLiteral("Disable Live Feed (ON)"));
             lastShmSeq_ = 0;
+            lastScImage_ = QImage();
             scFrameTimesMs_.clear();
+            scPortalAttempted_ = false;
             refreshScFpsChoices();
             const int fps = cmbScFps_->currentData().toInt();
             scStartTp_ = std::chrono::steady_clock::now();
@@ -753,11 +768,30 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
         } else {
             btnScLive_->setText(QStringLiteral("Enable Live Feed (OFF)"));
             scTimer_->stop();
-            salsa_dbg_shm_stop(shmCtx_);
+            scPortalAttempted_ = false;
+            if (shmCtx_) {
+                salsa_dbg_portal_stop(shmCtx_);
+                salsa_dbg_shm_stop(shmCtx_);
+            }
             sendPwPreviewCmd(false);
+            if (lblScDmabufBadge_) lblScDmabufBadge_->setText(QStringLiteral("IDLE"));
         }
     });
     r2->addWidget(btnScLive_);
+
+    btnScPick_ = new QPushButton(QStringLiteral("Choose Screen..."), ctrlCard);
+    btnScPick_->setToolTip(QStringLiteral("Choose Screen / Window — Re-opens the Wayland ScreenCast picker to select a different monitor or window."));
+    connect(btnScPick_, &QPushButton::clicked, this, [this]() {
+        if (!shmCtx_) return;
+        if (cmbScMode_ && cmbScMode_->currentIndex() != 0) cmbScMode_->setCurrentIndex(0);
+        if (btnScLive_ && !btnScLive_->isChecked()) btnScLive_->setChecked(true);
+        scPortalAttempted_ = true;
+        lastShmSeq_ = 0;
+        lastScImage_ = QImage();
+        salsa_dbg_portal_stop(shmCtx_);
+        salsa_dbg_portal_start(shmCtx_, true);
+    });
+    r2->addWidget(btnScPick_);
 
     btnScSaveFrame_ = new QPushButton(QStringLiteral("Save Frame PNG"), ctrlCard);
     btnScSaveFrame_->setToolTip(QStringLiteral("Save Frame PNG — Encodes the latest captured RGBA preview frame to disk via Salsa's built-in PNG writer."));
@@ -766,7 +800,7 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
             lblScStats_->setText(QStringLiteral("No live frame captured yet to save."));
             return;
         }
-        const SalsaStr saved(salsa_dbg_save_frame_png(scRgbaBuf_.data(), lastScW_, lastScH_));
+        const SalsaStr saved(salsa_dbg_save_frame_png(scRgbaBuf_.data(), scRgbaBuf_.size(), lastScW_, lastScH_));
         lblScStats_->setText(saved.toQString());
     });
     r2->addWidget(btnScSaveFrame_);
@@ -797,7 +831,7 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
     auto* vLay = new QVBoxLayout(viewCard);
     vLay->setContentsMargins(8, 8, 8, 8);
     lblScPreview_ = new QLabel(
-        QStringLiteral("Live ScreenCast Preview is OFF (Zero Overhead).\nToggle 'Enable Live Feed' above to stream portal / dry-run frames."),
+        QStringLiteral("Live ScreenCast Preview is OFF (Zero Overhead).\nToggle 'Enable Live Feed' above to stream live desktop/window video or active broker frames."),
         viewCard);
     lblScPreview_->setAlignment(Qt::AlignCenter);
     lblScPreview_->setMinimumHeight(260);
@@ -1272,9 +1306,10 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
     static constexpr size_t kMaxRgbaBytes = 3840ULL * 2160ULL * 4ULL;
     if (scRgbaBuf_.size() < kMaxRgbaBytes) scRgbaBuf_.resize(kMaxRgbaBytes);
 
-    const QString mode = cmbScMode_->currentText();
-    const bool allowShm = mode.startsWith(QLatin1String("Auto")) || mode.contains(QLatin1String("SHM"));
-    const bool forceDry = mode.contains(QLatin1String("Dry-Run"));
+    const int modeIdx = cmbScMode_->currentIndex();
+    const bool allowShm = (modeIdx == 0 || modeIdx == 1);
+    const bool allowPortal = (modeIdx == 0);
+    const bool forceDry = (modeIdx == 2);
 
     const QJsonObject pw = latestSnapshot_.value(QStringLiteral("pw")).toObject();
     QByteArray shmName = pw.value(QStringLiteral("preview_shm_name")).toString().toUtf8();
@@ -1305,7 +1340,7 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
         }
     }
 
-    if (!realStreamActive && (forceDry || mode.startsWith(QLatin1String("Auto")))) {
+    if (!realStreamActive && forceDry) {
         if (scNextDueNs_ > 0 && nowNs < scNextDueNs_) {
             return;
         }
@@ -1334,6 +1369,70 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
             fw = dw;
             fh = dh;
         }
+    } else if (!realStreamActive && allowPortal) {
+        if (scNextDueNs_ > 0 && nowNs < scNextDueNs_) {
+            return;
+        }
+        scNextDueNs_ = nowNs + 50'000'000LL;
+        QJsonObject pSt = parseJsonObj(SalsaStr(salsa_dbg_portal_status_json(shmCtx_)).toQString());
+        QString pState = pSt.value(QStringLiteral("state")).toString(QStringLiteral("idle"));
+        if (!scPortalAttempted_ && !salsa_dbg_portal_is_active(shmCtx_)
+            && pState != QLatin1String("authorizing")
+            && pState != QLatin1String("connecting")
+            && pState != QLatin1String("streaming")) {
+            scPortalAttempted_ = true;
+            salsa_dbg_portal_start(shmCtx_, false);
+            pSt = parseJsonObj(SalsaStr(salsa_dbg_portal_status_json(shmCtx_)).toQString());
+            pState = pSt.value(QStringLiteral("state")).toString(QStringLiteral("idle"));
+        }
+        const QString pMsg = pSt.value(QStringLiteral("message")).toString();
+        const uint32_t nodeId = static_cast<uint32_t>(pSt.value(QStringLiteral("node_id")).toInteger(0));
+        if (pState == QLatin1String("authorizing")) {
+            lblScDmabufBadge_->setText(QStringLiteral("PORTAL AUTH"));
+            lblScStats_->setText(QStringLiteral("Wayland ScreenCast Portal: waiting for screen/window authorization..."));
+            if (lastScImage_.isNull()) {
+                lblScPreview_->setText(QStringLiteral("Waiting for Wayland ScreenCast authorization...\nSelect a monitor or window in the system dialog and click Share."));
+            }
+        } else if (pState == QLatin1String("connecting")) {
+            lblScDmabufBadge_->setText(QStringLiteral("CONNECTING"));
+            lblScStats_->setText(QStringLiteral("Wayland Portal authorized (node %1): linking PipeWire video consumer...").arg(nodeId));
+            if (lastScImage_.isNull()) {
+                lblScPreview_->setText(QStringLiteral("ScreenCast authorized — connecting PipeWire video stream to Salsa broker..."));
+            }
+        } else if (pState == QLatin1String("streaming")) {
+            lblScDmabufBadge_->setText(QStringLiteral("LINKING"));
+            lblScStats_->setText(QStringLiteral("Portal PipeWire consumer streaming (node %1) — awaiting first video frame...").arg(nodeId));
+            if (lastScImage_.isNull()) {
+                lblScPreview_->setText(QStringLiteral("PipeWire video consumer active — awaiting first compositor frame..."));
+            }
+        } else if (pState == QLatin1String("cancelled")) {
+            lblScDmabufBadge_->setText(QStringLiteral("CANCELLED"));
+            lblScStats_->setText(pMsg.isEmpty() ? QStringLiteral("Wayland ScreenCast sharing cancelled.") : pMsg);
+            if (lastScImage_.isNull()) {
+                lblScPreview_->setText(QStringLiteral("ScreenCast sharing cancelled.\nClick 'Choose Screen...' above to authorize capture, or switch Mode to 'Offline Color Bars'."));
+            }
+        } else if (pState == QLatin1String("error")) {
+            lblScDmabufBadge_->setText(QStringLiteral("ERROR"));
+            lblScStats_->setText(pMsg.isEmpty() ? QStringLiteral("Wayland ScreenCast error.") : pMsg);
+            if (lastScImage_.isNull()) {
+                lblScPreview_->setText(QStringLiteral("ScreenCast Portal error: %1\nClick 'Choose Screen...' to retry.").arg(pMsg));
+            }
+        } else {
+            lblScDmabufBadge_->setText(QStringLiteral("WAIT PORTAL"));
+            lblScStats_->setText(QStringLiteral("Auto ScreenCast Preview: awaiting portal or external broker stream..."));
+        }
+        return;
+    } else if (!realStreamActive && !forceDry) {
+        if (scNextDueNs_ > 0 && nowNs < scNextDueNs_) {
+            return;
+        }
+        scNextDueNs_ = nowNs + 100'000'000LL;
+        lblScDmabufBadge_->setText(QStringLiteral("WAIT CAST"));
+        lblScStats_->setText(QStringLiteral("Passive SHM Preview: waiting for external Discord/OBS cast on %1...").arg(QString::fromUtf8(shmName)));
+        if (lastScImage_.isNull()) {
+            lblScPreview_->setText(QStringLiteral("Passive SHM Preview — waiting for an active OBS / Discord / browser ScreenCast stream."));
+        }
+        return;
     }
 
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
@@ -1367,8 +1466,8 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
 
     if (usingDry) {
         updateScProfileBadge(measFps, QStringLiteral("%1x%2").arg(fw).arg(fh));
-        lblScDmabufBadge_->setText(QStringLiteral("DRY-RUN SIM"));
-        lblScStats_->setText(QStringLiteral("Dry-Run Portal Sim: %1x%2 @ %3 FPS (Target %4 Hz Output | Zero-PipeWire Idle)")
+        lblScDmabufBadge_->setText(QStringLiteral("TEST PATTERN"));
+        lblScStats_->setText(QStringLiteral("Offline Color Bars: %1x%2 @ %3 FPS (Target %4 Hz Output | Local Test Pattern)")
                                  .arg(fw).arg(fh).arg(measFps, 0, 'f', 1).arg(targetHz));
     } else if (realStreamActive && meta.bytes_written >= static_cast<size_t>(meta.width) * meta.height * 4) {
         const double brokerFps = meta.actual_fps_x100 / 100.0;

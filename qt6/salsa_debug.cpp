@@ -135,6 +135,10 @@ public:
         if (dbgWidget_) dbgWidget_->setScreenCastLive(enabled);
     }
 
+    void setBoundaryConfigIndex(int idx) {
+        if (dbgWidget_) dbgWidget_->setBoundaryConfigIndex(idx);
+    }
+
 protected:
     void closeEvent(QCloseEvent* event) override {
         if (syncTimer_) syncTimer_->stop();
@@ -237,11 +241,14 @@ int main(int argc, char** argv) {
     bool selfTest = false;
     bool liveFeed = false;
     int initialTab = 0;
+    int cfgIdx = -1;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--self-test") == 0) selfTest = true;
         else if (std::strcmp(argv[i], "--live-feed") == 0 || std::strcmp(argv[i], "--live") == 0) liveFeed = true;
         else if (std::strcmp(argv[i], "--tab") == 0 && i + 1 < argc) {
             initialTab = std::clamp(std::atoi(argv[++i]), 0, 4);
+        } else if (std::strcmp(argv[i], "--config-idx") == 0 && i + 1 < argc) {
+            cfgIdx = std::atoi(argv[++i]);
         }
     }
 
@@ -273,6 +280,9 @@ int main(int argc, char** argv) {
     app.setDesktopFileName(QStringLiteral("salsa-debug"));
 
     salsa::SalsaDebugWindow win(initialTab);
+    if (cfgIdx >= 0) {
+        win.setBoundaryConfigIndex(cfgIdx);
+    }
     win.show();
     if (liveFeed) {
         QTimer::singleShot(150, &win, [&win]() { win.setScreenCastLive(true); });

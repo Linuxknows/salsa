@@ -10,6 +10,7 @@
 
 pub mod gio_dbus;
 pub mod qt_bridge;
+pub mod screencast_preview;
 pub mod sni;
 pub mod studio_helpers;
 pub mod studio_manual;

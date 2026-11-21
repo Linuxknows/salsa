@@ -11,7 +11,7 @@ use core::ffi::{c_char, c_int, c_void, CStr};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -24,8 +24,8 @@ use salsa_tools::debug_core::{
     SystemAuditScanner, LOG_LEVELS, SUBSYSTEMS,
 };
 use salsa_tools::host::{
-    ensure_dir_0700, flock_fd, getpid, home_dir, install_root, private_runtime_dir,
-    read_text_lossy, state_dir,
+    ensure_dir_0700, flock_fd, getpid, getuid, home_dir, install_root, private_runtime_dir,
+    read_text_lossy, state_dir, write_atomic_secure,
 };
 use salsa_tools::ipc::{
     bt_connection_ctl, get_engine_status, gui_settings_path, list_devices, load_gui_settings,
@@ -44,9 +44,10 @@ use salsa_wire::legal::{
     full_license_bundle, handle_common_cli_flag, salsa_version, short_legal_notice, COPY_TEXT,
     LESSER_COPY_TEXT, THIRD_PARTY_TEXT,
 };
-use salsa_wire::unix_sys::reset_sigpipe_default;
+use salsa_wire::unix_sys::{reset_sigpipe_default, O_CLOEXEC, O_NOFOLLOW};
 
 use crate::gio_dbus::{cstr as dbus_cstr, gio};
+use crate::screencast_preview::{has_saved_restore_token, PortalScreenCastPreview};
 use crate::sni::{SniEvent, SniThreadHost, TrayIconBank, SNI_XML};
 use crate::studio_helpers::{
     apply_builtin_preset_to_cfg, apply_json_to_eq_cfg, apply_saved_autoeq_to_cfg,
@@ -99,7 +100,9 @@ struct SniOpaque {
 
 struct ShmOpaque {
     reader: Option<ScreenCastShmReader>,
+    shm_name: String,
     dry_cap: DryRunDesktopCapturer,
+    portal: Option<PortalScreenCastPreview>,
 }
 
 struct TrayLockOpaque {
@@ -130,6 +133,7 @@ fn theme_to_wire_json(t: &SalsaTheme) -> JsonValue {
 }
 
 fn run_cmd_bounded(bin: &str, args: &[&str], timeout: Duration) -> Option<Output> {
+    const MAX_PIPE_READ: u64 = 1024 * 1024;
     let mut child = Command::new(bin)
         .args(args)
         .stdin(Stdio::null())
@@ -137,21 +141,49 @@ fn run_cmd_bounded(bin: &str, args: &[&str], timeout: Duration) -> Option<Output
         .stderr(Stdio::piped())
         .spawn()
         .ok()?;
+    let out_pipe = child.stdout.take();
+    let err_pipe = child.stderr.take();
+    let out_thr = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = out_pipe {
+            let _ = p.take(MAX_PIPE_READ).read_to_end(&mut buf);
+        }
+        buf
+    });
+    let err_thr = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = err_pipe {
+            let _ = p.take(MAX_PIPE_READ).read_to_end(&mut buf);
+        }
+        buf
+    });
+
     let start = Instant::now();
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(Some(st)) => break Some(st),
             Ok(None) => {
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return None;
+                    break None;
                 }
-                std::thread::sleep(Duration::from_millis(25));
+                std::thread::sleep(Duration::from_millis(20));
             }
-            Err(_) => return None,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
         }
-    }
+    };
+    let stdout = out_thr.join().unwrap_or_default();
+    let stderr = err_thr.join().unwrap_or_default();
+    status.map(|st| Output {
+        status: st,
+        stdout,
+        stderr,
+    })
 }
 
 fn saved_autoeq_from_json_val(v: &JsonValue) -> Option<SavedAutoEqPreset> {
@@ -1144,6 +1176,13 @@ pub extern "C" fn salsa_ctl_systemd(unit: *const c_char, action: *const c_char) 
     let Some(a) = cstr_to_string(action) else {
         return -1;
     };
+    if !matches!(
+        u.as_str(),
+        "lwasapi-audiodg.service" | "lwasapi-tray.service"
+    ) || !matches!(a.as_str(), "start" | "stop" | "restart" | "reload-or-restart")
+    {
+        return -1;
+    }
     let ok = run_cmd_bounded("systemctl", &["--user", &a, &u], Duration::from_secs(8))
         .is_some_and(|o| o.status.success());
     if ok { 0 } else { -1 }
@@ -1330,15 +1369,6 @@ pub extern "C" fn salsa_dbg_scan_procs_json() -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn salsa_dbg_full_audit_json() -> *mut c_char {
     let audit = SystemAuditScanner::collect_full_audit();
-    let cfg_texts = collect_config_texts(&install_root());
-    let cfg_obj = JsonValue::obj(
-        cfg_texts
-            .into_iter()
-            .map(|(k, v)| (Box::leak(k.into_boxed_str()) as &str, JsonValue::Str(v)))
-            .collect(),
-    );
-    // Avoid leaking keys on repeated calls by constructing JsonValue::Object cleanly
-    let _ = cfg_obj;
     let cfg_entries: Vec<(String, JsonValue)> = collect_config_texts(&install_root())
         .into_iter()
         .map(|(k, v)| (k, JsonValue::Str(v)))
@@ -1493,7 +1523,9 @@ pub extern "C" fn salsa_dbg_save_sc_prefs(
 pub extern "C" fn salsa_dbg_shm_create() -> *mut c_void {
     let b = Box::new(ShmOpaque {
         reader: None,
+        shm_name: String::new(),
         dry_cap: DryRunDesktopCapturer::new(640, 360),
+        portal: None,
     });
     Box::into_raw(b).cast::<c_void>()
 }
@@ -1525,11 +1557,10 @@ pub extern "C" fn salsa_dbg_shm_poll_frame(
     let st = unsafe { &mut *ctx.cast::<ShmOpaque>() };
     let meta = unsafe { &mut *meta_out };
     *meta = unsafe { core::mem::zeroed() };
-    if st.reader.is_none() {
-        if let Some(nm) = cstr_to_string(shm_name) {
-            if !nm.is_empty() {
-                st.reader = ScreenCastShmReader::open(&nm).ok();
-            }
+    if let Some(nm) = cstr_to_string(shm_name) {
+        if !nm.is_empty() && (st.reader.is_none() || st.shm_name != nm) {
+            st.reader = ScreenCastShmReader::open(&nm).ok();
+            st.shm_name = nm;
         }
     }
     let Some(ref reader) = st.reader else {
@@ -1571,9 +1602,79 @@ pub extern "C" fn salsa_dbg_shm_stop(ctx: *mut c_void) {
         return;
     }
     let st = unsafe { &mut *ctx.cast::<ShmOpaque>() };
+    if let Some(mut p) = st.portal.take() {
+        p.stop();
+    }
     if let Some(ref reader) = st.reader {
         reader.send_preview_ping(false, 0, 0, 0, 0);
     }
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_dbg_portal_start(ctx: *mut c_void, force_reselect: bool) -> c_int {
+    if ctx.is_null() {
+        return -1;
+    }
+    let st = unsafe { &mut *ctx.cast::<ShmOpaque>() };
+    if force_reselect {
+        if let Some(mut old) = st.portal.take() {
+            old.stop();
+        }
+    } else if st
+        .portal
+        .as_ref()
+        .is_some_and(PortalScreenCastPreview::is_running_or_pending)
+    {
+        return 0;
+    }
+    st.portal = Some(PortalScreenCastPreview::start(force_reselect));
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_dbg_portal_stop(ctx: *mut c_void) {
+    if ctx.is_null() {
+        return;
+    }
+    let st = unsafe { &mut *ctx.cast::<ShmOpaque>() };
+    if let Some(mut p) = st.portal.take() {
+        p.stop();
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_dbg_portal_is_active(ctx: *mut c_void) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    let st = unsafe { &*ctx.cast::<ShmOpaque>() };
+    st.portal
+        .as_ref()
+        .is_some_and(PortalScreenCastPreview::is_running_or_pending)
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_dbg_portal_status_json(ctx: *mut c_void) -> *mut c_char {
+    if ctx.is_null() {
+        return to_c_string("{\"state\":\"idle\",\"message\":\"\",\"node_id\":0,\"has_token\":false}".into());
+    }
+    let st = unsafe { &*ctx.cast::<ShmOpaque>() };
+    let ps = st.portal.as_ref().map_or_else(
+        || crate::screencast_preview::PortalPreviewStatus {
+            state: "idle",
+            message: String::new(),
+            node_id: 0,
+            has_token: has_saved_restore_token(),
+        },
+        PortalScreenCastPreview::status,
+    );
+    let obj = JsonValue::obj(vec![
+        ("state", JsonValue::Str(ps.state.to_string())),
+        ("message", JsonValue::Str(ps.message)),
+        ("node_id", JsonValue::Int(ps.node_id as i64)),
+        ("has_token", JsonValue::Bool(ps.has_token)),
+    ]);
+    to_c_string(obj.to_json_compact())
 }
 
 #[no_mangle]
@@ -1619,15 +1720,25 @@ pub extern "C" fn salsa_dbg_pw_self_test() -> *mut c_char {
 }
 
 #[no_mangle]
-pub extern "C" fn salsa_dbg_save_frame_png(rgba: *const u8, w: u32, h: u32) -> *mut c_char {
+pub extern "C" fn salsa_dbg_save_frame_png(
+    rgba: *const u8,
+    rgba_cap: usize,
+    w: u32,
+    h: u32,
+) -> *mut c_char {
     if rgba.is_null() || w == 0 || h == 0 {
         return to_c_string("Save PNG: empty frame buffer.".into());
+    }
+    let Some(need) = (w as usize).checked_mul(h as usize).and_then(|n| n.checked_mul(4)) else {
+        return to_c_string("Save PNG: frame dimensions overflow.".into());
+    };
+    if need == 0 || need > rgba_cap {
+        return to_c_string("Save PNG: frame dimensions exceed buffer capacity.".into());
     }
     let dir = private_runtime_dir().join("exports");
     if let Err(e) = ensure_dir_0700(&dir) {
         return to_c_string(format!("Save PNG mkdir failed: {e}"));
     }
-    let need = (w as usize).saturating_mul(h as usize).saturating_mul(4);
     let data = unsafe { core::slice::from_raw_parts(rgba, need) }.to_vec();
     let ts_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1635,7 +1746,7 @@ pub extern "C" fn salsa_dbg_save_frame_png(rgba: *const u8, w: u32, h: u32) -> *
         .unwrap_or(0);
     let path = dir.join(format!("salsa-screencast-{ts_ms}.png"));
     match encode_png_rgba(&RgbaImage { width: w, height: h, data }) {
-        Ok(png_bytes) => match fs::write(&path, png_bytes) {
+        Ok(png_bytes) => match write_atomic_secure(&path, &png_bytes, 0o600) {
             Ok(()) => to_c_string(format!("Saved frame -> {}", path.display())),
             Err(e) => to_c_string(format!("Save PNG write error: {e}")),
         },
@@ -1747,13 +1858,18 @@ pub extern "C" fn salsa_tray_header_icon_png(h: *mut c_void, len_out: *mut usize
 
 #[no_mangle]
 pub extern "C" fn salsa_acquire_tray_lock(replace: bool) -> *mut c_void {
-    let p = private_runtime_dir().join("tray.lock");
+    let dir = private_runtime_dir();
+    if ensure_dir_0700(&dir).is_err() {
+        return core::ptr::null_mut();
+    }
+    let p = dir.join("tray.lock");
     let Ok(mut f) = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
         .mode(0o600)
+        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
         .open(&p)
     else {
         return core::ptr::null_mut();
@@ -1762,12 +1878,21 @@ pub extern "C" fn salsa_acquire_tray_lock(replace: bool) -> *mut c_void {
     if flock_fd(fd, true).is_err() {
         if replace {
             let mut buf = String::new();
-            let _ = f.read_to_string(&mut buf);
+            let _ = (&f).take(32).read_to_string(&mut buf);
             if let Ok(old_pid) = buf.trim().parse::<i32>() {
                 if old_pid > 1 && old_pid as u32 != getpid() {
-                    let cmd = read_text_lossy(Path::new(&format!("/proc/{old_pid}/cmdline")), 512);
-                    if cmd.contains("lwasapi-tray") {
-                        unsafe { kill(old_pid, 15) };
+                    let proc_dir = format!("/proc/{old_pid}");
+                    let same_uid = fs::metadata(&proc_dir)
+                        .map(|m| m.uid() == getuid())
+                        .unwrap_or(false);
+                    if same_uid {
+                        let exe_ok = fs::read_link(format!("{proc_dir}/exe"))
+                            .ok()
+                            .and_then(|ep| ep.file_name().map(|n| n.to_string_lossy().into_owned()))
+                            .is_some_and(|nm| nm == "lwasapi-tray" || nm.starts_with("lwasapi-tray "));
+                        if exe_ok {
+                            unsafe { kill(old_pid, 15) };
+                        }
                     }
                 }
             }
@@ -1944,7 +2069,11 @@ pub extern "C" fn salsa_tray_selftest() -> *mut c_char {
     let Ok(gi) = gio() else {
         return to_c_string("ERR: GIO library unavailable".into());
     };
-    let tmp = std::env::temp_dir().join(format!("salsa_tray_selftest_{}", getpid()));
+    let rt = private_runtime_dir();
+    if ensure_dir_0700(&rt).is_err() {
+        return to_c_string("ERR: private_runtime_dir failed".into());
+    }
+    let tmp = rt.join(format!("salsa_tray_selftest_{}", getpid()));
     let _ = fs::remove_dir_all(&tmp);
     let bank = match TrayIconBank::generate(Some(&tmp.join("tray-icons"))) {
         Ok(b) => b,
