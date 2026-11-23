@@ -386,6 +386,7 @@ pub struct BluezRuntime {
     pub recovery_active: AtomicBool,
     pub last_recover_ns: AtomicU64,
     pub hfp_battery_dirty: AtomicBool,
+    pub bt_topo_gen: AtomicU64,
 
     dbus_conn: Mutex<DbusConnPtr>,
     state: Mutex<BtMutable>,
@@ -433,6 +434,7 @@ impl BluezRuntime {
             recovery_active: AtomicBool::new(false),
             last_recover_ns: AtomicU64::new(0),
             hfp_battery_dirty: AtomicBool::new(false),
+            bt_topo_gen: AtomicU64::new(0),
             dbus_conn: Mutex::new(DbusConnPtr(ptr::null_mut())),
             state: Mutex::new(BtMutable::default()),
             cap: Arc::new(CapState::new()),
@@ -2266,6 +2268,7 @@ unsafe extern "C" fn endpoint_message_handler(
         } else {
             rt.need_release.store(true, Ordering::Release);
         }
+        rt.bt_topo_gen.fetch_add(1, Ordering::Release);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
 
@@ -2291,6 +2294,7 @@ unsafe extern "C" fn endpoint_message_handler(
                 sync_tx_ready(rt, &st);
             }
         }
+        rt.bt_topo_gen.fetch_add(1, Ordering::Release);
         dbg_emit(
             LWASAPI_DBG_BLUEZ,
             LWASAPI_DBG_INFO,
@@ -2336,63 +2340,79 @@ unsafe extern "C" fn bluez_signal_filter(
             let st = rt.state.lock().unwrap();
             !st.transport_path.is_empty() && path == Some(st.transport_path.as_str())
         };
-        if matches_tp {
-            let mut it = DBusMessageIter::default();
-            if unsafe { (db.message_iter_init)(msg, &mut it) } != 0 {
-                let prop_iface = unsafe { iter_get_str(db, &mut it) }.unwrap_or_default();
-                if prop_iface == "org.bluez.MediaTransport1"
-                    && unsafe { (db.message_iter_next)(&mut it) } != 0
+        let mut it = DBusMessageIter::default();
+        if unsafe { (db.message_iter_init)(msg, &mut it) } != 0 {
+            let prop_iface = unsafe { iter_get_str(db, &mut it) }.unwrap_or_default();
+            if prop_iface == "org.bluez.Device1"
+                && unsafe { (db.message_iter_next)(&mut it) } != 0
+            {
+                let mut dict = DBusMessageIter::default();
+                unsafe { (db.message_iter_recurse)(&mut it, &mut dict) };
+                while unsafe { (db.message_iter_get_arg_type)(&mut dict) } == DBUS_TYPE_DICT_ENTRY
                 {
-                    let mut dict = DBusMessageIter::default();
-                    unsafe { (db.message_iter_recurse)(&mut it, &mut dict) };
-                    while unsafe { (db.message_iter_get_arg_type)(&mut dict) }
-                        == DBUS_TYPE_DICT_ENTRY
-                    {
-                        let mut entry = DBusMessageIter::default();
-                        let mut var = DBusMessageIter::default();
-                        unsafe { (db.message_iter_recurse)(&mut dict, &mut entry) };
-                        let k = unsafe { iter_get_str(db, &mut entry) }.unwrap_or_default();
-                        if unsafe { (db.message_iter_next)(&mut entry) } != 0 {
-                            unsafe { (db.message_iter_recurse)(&mut entry, &mut var) };
-                            if k == "Volume" {
-                                if let Some(v) = unsafe { iter_get_u16(db, &mut var) } {
-                                    let (_cv, pct) = apply_peer_avrcp_vol(rt, v, false);
-                                    let alias = rt.state.lock().unwrap().device_alias.clone();
-                                    dbg_emit_vals(
-                                        LWASAPI_DBG_BLUEZ,
-                                        LWASAPI_DBG_INFO,
-                                        0,
-                                        0,
-                                        i32::from(v),
-                                        pct as i32,
-                                        0,
-                                        "BT_AVRCP_VOL",
-                                        &alias,
-                                        &format!("AVRCP Volume={v} ({pct}%)"),
-                                    );
-                                }
-                            } else if k == "Delay" {
-                                if let Some(d) = unsafe { iter_get_u16(db, &mut var) } {
-                                    rt.delay_tenths_ms.store(d, Ordering::Relaxed);
-                                    let alias = rt.state.lock().unwrap().device_alias.clone();
-                                    dbg_emit_vals(
-                                        LWASAPI_DBG_BLUEZ,
-                                        LWASAPI_DBG_TRACE,
-                                        0,
-                                        0,
-                                        i32::from(d),
-                                        0,
-                                        0,
-                                        "BT_DELAY_CHG",
-                                        &alias,
-                                        &format!("Delay={:.1}ms", f64::from(d) / 10.0),
-                                    );
-                                }
+                    let mut entry = DBusMessageIter::default();
+                    unsafe { (db.message_iter_recurse)(&mut dict, &mut entry) };
+                    let k = unsafe { iter_get_str(db, &mut entry) }.unwrap_or_default();
+                    if matches!(k.as_str(), "Connected" | "ServicesResolved" | "UUIDs") {
+                        rt.bt_topo_gen.fetch_add(1, Ordering::Release);
+                        break;
+                    }
+                    if unsafe { (db.message_iter_next)(&mut dict) } == 0 {
+                        break;
+                    }
+                }
+            } else if matches_tp
+                && prop_iface == "org.bluez.MediaTransport1"
+                && unsafe { (db.message_iter_next)(&mut it) } != 0
+            {
+                let mut dict = DBusMessageIter::default();
+                unsafe { (db.message_iter_recurse)(&mut it, &mut dict) };
+                while unsafe { (db.message_iter_get_arg_type)(&mut dict) } == DBUS_TYPE_DICT_ENTRY
+                {
+                    let mut entry = DBusMessageIter::default();
+                    let mut var = DBusMessageIter::default();
+                    unsafe { (db.message_iter_recurse)(&mut dict, &mut entry) };
+                    let k = unsafe { iter_get_str(db, &mut entry) }.unwrap_or_default();
+                    if unsafe { (db.message_iter_next)(&mut entry) } != 0 {
+                        unsafe { (db.message_iter_recurse)(&mut entry, &mut var) };
+                        if k == "Volume" {
+                            if let Some(v) = unsafe { iter_get_u16(db, &mut var) } {
+                                let (_cv, pct) = apply_peer_avrcp_vol(rt, v, false);
+                                let alias = rt.state.lock().unwrap().device_alias.clone();
+                                dbg_emit_vals(
+                                    LWASAPI_DBG_BLUEZ,
+                                    LWASAPI_DBG_INFO,
+                                    0,
+                                    0,
+                                    i32::from(v),
+                                    pct as i32,
+                                    0,
+                                    "BT_AVRCP_VOL",
+                                    &alias,
+                                    &format!("AVRCP Volume={v} ({pct}%)"),
+                                );
+                            }
+                        } else if k == "Delay" {
+                            if let Some(d) = unsafe { iter_get_u16(db, &mut var) } {
+                                rt.delay_tenths_ms.store(d, Ordering::Relaxed);
+                                let alias = rt.state.lock().unwrap().device_alias.clone();
+                                dbg_emit_vals(
+                                    LWASAPI_DBG_BLUEZ,
+                                    LWASAPI_DBG_TRACE,
+                                    0,
+                                    0,
+                                    i32::from(d),
+                                    0,
+                                    0,
+                                    "BT_DELAY_CHG",
+                                    &alias,
+                                    &format!("Delay={:.1}ms", f64::from(d) / 10.0),
+                                );
                             }
                         }
-                        if unsafe { (db.message_iter_next)(&mut dict) } == 0 {
-                            break;
-                        }
+                    }
+                    if unsafe { (db.message_iter_next)(&mut dict) } == 0 {
+                        break;
                     }
                 }
             }
@@ -2463,7 +2483,11 @@ unsafe extern "C" fn bluez_signal_filter(
                     let mut if_entry = DBusMessageIter::default();
                     unsafe { (db.message_iter_recurse)(&mut if_arr, &mut if_entry) };
                     let added_iface = unsafe { iter_get_str(db, &mut if_entry) }.unwrap_or_default();
-                    if added_iface == "org.bluez.Media1" {
+                    if added_iface == "org.bluez.MediaTransport1"
+                        || added_iface == "org.bluez.Device1"
+                    {
+                        rt.bt_topo_gen.fetch_add(1, Ordering::Release);
+                    } else if added_iface == "org.bluez.Media1" {
                         let need = {
                             let st = rt.state.lock().unwrap();
                             !st.endpoints_registered || (!obj.is_empty() && obj != st.adapter_path)
@@ -2505,6 +2529,9 @@ unsafe extern "C" fn bluez_signal_filter(
                     sync_tx_ready(rt, &st);
                     removed = true;
                 }
+            }
+            if obj.contains("/dev_") {
+                rt.bt_topo_gen.fetch_add(1, Ordering::Release);
             }
             if removed {
                 dbg_emit(
@@ -5041,24 +5068,30 @@ pub unsafe fn bluez_enumerate_devices_impl(
 pub unsafe fn bluez_hw_fingerprint_impl(bt: *const c_void) -> u64 {
     let mut h = alsa_hw_fingerprint_seed();
     if let Some(rt) = unsafe { bt_from_ptr(bt) } {
-        let (bt_live, tx_act, cid, mac) = {
+        let (bt_live, tx_act, cid, mac, known_conn, known_cnt) = {
             let st = rt.state.lock().unwrap();
             (
                 st.has_bluez_transport && !st.transport_path.is_empty(),
                 st.tx_stream_active,
                 st.codec_id,
                 st.mac_address.clone(),
+                st.known_bt_audio_connected,
+                st.known_bt_audio_aliases.len().min(255) as u8,
             )
         };
         let has_cap = rt.cap.has_capture_hw.load(Ordering::Acquire);
         let cap_id = rt.cap.meta.lock().unwrap().cap_device_id.clone();
+        let topo_gen = rt.bt_topo_gen.load(Ordering::Acquire);
         let flags = [
             u8::from(bt_live),
             u8::from(tx_act),
             u8::from(has_cap),
             cid,
+            u8::from(known_conn),
+            known_cnt,
         ];
         h = fnv1a_step(h, &flags);
+        h = fnv1a_step(h, &topo_gen.to_le_bytes());
         if bt_live {
             h = fnv1a_step(h, mac.as_bytes());
         }
@@ -5636,8 +5669,12 @@ fn sync_known_bt_devices(rt: Option<&BluezRuntime>, objs: &ManagedObjects) {
         }
     }
     let mut st = r.state.lock().unwrap_or_else(|e| e.into_inner());
+    let changed = st.known_bt_audio_connected != any_conn || st.known_bt_audio_aliases != aliases;
     st.known_bt_audio_aliases = aliases;
     st.known_bt_audio_connected = any_conn;
+    if changed {
+        r.bt_topo_gen.fetch_add(1, Ordering::Release);
+    }
 }
 
 /// Returns paired/connected BlueZ A2DP audio device aliases observed by `BluezRuntime`.
@@ -6098,5 +6135,24 @@ mod tests {
         assert_eq!(cv3, 68);
         assert_eq!(shown3, 54);
         assert_eq!(rt.desktop_volume_pct.load(Ordering::Relaxed), 54);
+    }
+
+    #[test]
+    fn bt_fingerprint_reflects_topo_gen_and_known_connected_even_when_paused() {
+        let rt = BluezRuntime::new();
+        rt.tx_paused.store(true, Ordering::Release);
+        let ptr = (&raw const rt).cast::<c_void>();
+        let fp0 = unsafe { bluez_hw_fingerprint_impl(ptr) };
+        rt.bt_topo_gen.fetch_add(1, Ordering::Release);
+        let fp1 = unsafe { bluez_hw_fingerprint_impl(ptr) };
+        assert_ne!(fp0, fp1);
+
+        {
+            let mut st = rt.state.lock().unwrap();
+            st.known_bt_audio_connected = true;
+            st.known_bt_audio_aliases.push("Bose QC Ultra 2 HP".to_string());
+        }
+        let fp2 = unsafe { bluez_hw_fingerprint_impl(ptr) };
+        assert_ne!(fp1, fp2);
     }
 }

@@ -53,6 +53,7 @@ use crate::dsp::{
 };
 use crate::failsafe::{record_trip, FS_MANUAL_RESET};
 use crate::hw_analog::{
+    card_has_plugged_headphone_jack, is_headphone_playback_card,
     lwasapi_hw_analog_clamp_cfg, lwasapi_hw_analog_create, lwasapi_hw_analog_destroy,
     lwasapi_hw_analog_get_cap_makeup_linear, lwasapi_hw_analog_get_drive_linear,
     lwasapi_hw_analog_get_info, lwasapi_hw_analog_is_dac_unity_active, lwasapi_hw_analog_poll_hid,
@@ -390,6 +391,253 @@ impl Default for MidiMeta {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct HotplugTracker {
+    initialized: bool,
+    seen_pb_ids: Vec<String>,
+    hp_jack_cards: [bool; 32],
+    restore_target_pb: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PlaybackHotplugAction {
+    None,
+    Switch {
+        apply_req: String,
+        new_target_pb: Option<String>,
+        reason: &'static str,
+    },
+}
+
+fn collect_playback_ids(dl: &LwasapiDeviceList) -> Vec<String> {
+    let n = (dl.num_devices as usize).min(LWASAPI_MAX_DEVICES);
+    let mut ids = Vec::with_capacity(n);
+    for e in dl.devices.iter().take(n) {
+        if e.is_capture == 0 {
+            let id = c_str_to_string(&e.id);
+            if !id.is_empty() && !ids.iter().any(|existing| existing == &id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+
+#[inline]
+fn is_hdmi_playback_name(name: &str) -> bool {
+    let low = name.to_ascii_lowercase();
+    low.contains("hdmi") || low.contains("displayport")
+}
+
+fn any_usb_in_list_matches_bt_name<FUsb>(
+    dl: &LwasapiDeviceList,
+    bt_name: &str,
+    is_usb_id: &FUsb,
+) -> bool
+where
+    FUsb: Fn(&str) -> bool,
+{
+    let n = (dl.num_devices as usize).min(LWASAPI_MAX_DEVICES);
+    dl.devices.iter().take(n).any(|e| {
+        if e.is_capture != 0 || e.is_bluetooth != 0 {
+            return false;
+        }
+        let id = c_str_to_string(&e.id);
+        if !is_usb_id(&id) {
+            return false;
+        }
+        let nm = c_str_to_string(&e.name);
+        usb_device_matches_bt_name(&nm, bt_name)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_playback_hotplug_with<FUsb, FHp>(
+    force_virtual: bool,
+    target_pb: &str,
+    active_pb: &str,
+    hw_is_virtual: bool,
+    hw_is_bt: bool,
+    bt_now: bool,
+    usb_bt_active: bool,
+    dlist: &LwasapiDeviceList,
+    card_hp_jacks: &[bool; 32],
+    tracker: &mut HotplugTracker,
+    is_usb_id: FUsb,
+    is_hp_dev: FHp,
+) -> PlaybackHotplugAction
+where
+    FUsb: Fn(&str) -> bool,
+    FHp: Fn(&str, &str) -> bool,
+{
+    let curr_ids = collect_playback_ids(dlist);
+    if !tracker.initialized {
+        tracker.seen_pb_ids = curr_ids;
+        tracker.hp_jack_cards = *card_hp_jacks;
+        tracker.initialized = true;
+        return PlaybackHotplugAction::None;
+    }
+
+    let n = (dlist.num_devices as usize).min(LWASAPI_MAX_DEVICES);
+    let mut newly_added_usb_hp: Option<String> = None;
+    let mut newly_added_usb: Option<String> = None;
+    let mut newly_added_bt: Option<String> = None;
+    let mut newly_plugged_hp: Option<String> = None;
+    let mut active_name = String::new();
+    let mut has_usb_hp_in_list = false;
+
+    for e in dlist.devices.iter().take(n) {
+        if e.is_capture != 0 {
+            continue;
+        }
+        let id = c_str_to_string(&e.id);
+        let nm = c_str_to_string(&e.name);
+        if id == active_pb {
+            active_name = nm.clone();
+        }
+        let is_bt_entry = e.is_bluetooth != 0;
+        let is_usb_entry = !is_bt_entry && is_usb_id(&id);
+        let is_hp_entry = !is_bt_entry && is_hp_dev(&id, &nm);
+        if is_usb_entry && is_hp_entry && !is_hdmi_playback_name(&nm) {
+            has_usb_hp_in_list = true;
+        }
+        if !is_bt_entry {
+            let cidx = parse_card_idx_from_id(&id);
+            if cidx >= 0 && (cidx as usize) < 32 {
+                let ci = cidx as usize;
+                if !tracker.hp_jack_cards[ci] && card_hp_jacks[ci] && newly_plugged_hp.is_none() {
+                    newly_plugged_hp = Some(id.clone());
+                }
+            }
+        }
+        if !id.is_empty() && !tracker.seen_pb_ids.iter().any(|prev| prev == &id) {
+            if is_usb_entry && !is_hdmi_playback_name(&nm) {
+                if is_hp_entry && newly_added_usb_hp.is_none() {
+                    newly_added_usb_hp = Some(id.clone());
+                } else if newly_added_usb.is_none() {
+                    newly_added_usb = Some(id.clone());
+                }
+            } else if is_bt_entry
+                && !any_usb_in_list_matches_bt_name(dlist, &nm, &is_usb_id)
+                && newly_added_bt.is_none()
+            {
+                newly_added_bt = Some(id.clone());
+            }
+        }
+    }
+
+    tracker.seen_pb_ids = curr_ids;
+    tracker.hp_jack_cards = *card_hp_jacks;
+
+    if force_virtual || target_pb == "virtual" {
+        tracker.restore_target_pb = None;
+        return PlaybackHotplugAction::None;
+    }
+
+    let target_auto = target_pb == "auto" || target_pb.is_empty();
+    let target_is_bt = target_pb == "bluetooth" || target_pb.starts_with("bluez");
+    let bt_in_list = device_list_has_type(dlist, "bluetooth", 0);
+
+    // 1. Newly plugged headphones (USB headphones > analog headphone jack > new USB DAC > new BT headset)
+    let hotplug_cand = newly_added_usb_hp
+        .or(newly_plugged_hp)
+        .or(newly_added_usb)
+        .or(newly_added_bt);
+    if let Some(new_id) = hotplug_cand {
+        if new_id != active_pb {
+            let new_target = if target_auto {
+                None
+            } else {
+                if tracker.restore_target_pb.is_none()
+                    && target_pb != new_id
+                    && device_list_has_type(dlist, target_pb, 0)
+                {
+                    tracker.restore_target_pb = Some(target_pb.to_string());
+                }
+                Some(new_id.clone())
+            };
+            return PlaybackHotplugAction::Switch {
+                apply_req: new_id,
+                new_target_pb: new_target,
+                reason: "hotplug_headphone_or_usb",
+            };
+        }
+    }
+
+    // 2. Dual USB+BT priority: upgrade to USB cable if matching USB is present while BT plays
+    if hw_is_bt && usb_bt_active {
+        return PlaybackHotplugAction::Switch {
+            apply_req: "auto".to_string(),
+            new_target_pb: None,
+            reason: "dual_usb_over_bt",
+        };
+    }
+
+    // 3. Preferred explicit target returned (after temporary loss/failover)
+    let same_target = active_pb == target_pb || (target_pb == "bluetooth" && hw_is_bt);
+    let target_available = device_list_has_type(dlist, target_pb, 0) && !(target_is_bt && usb_bt_active);
+    if !target_auto && !same_target && target_available {
+        return PlaybackHotplugAction::Switch {
+            apply_req: target_pb.to_string(),
+            new_target_pb: None,
+            reason: "restored_target",
+        };
+    }
+
+    // 4. Active endpoint lost OR stranded on WaveRT-Virtual-Clock when real hardware is available
+    let active_kernel_lost =
+        !hw_is_virtual && !hw_is_bt && !device_list_has_type(dlist, active_pb, 0);
+    let active_bt_lost = hw_is_bt && !bt_now && !device_list_has_type(dlist, active_pb, 0);
+    let any_hw_avail = device_list_has_any_type(dlist, 0, false) || bt_in_list;
+    if (active_kernel_lost || active_bt_lost || hw_is_virtual) && any_hw_avail {
+        if let Some(prev_pb) = tracker.restore_target_pb.clone() {
+            if bt_in_list && !usb_bt_active && !prev_pb.starts_with("bluez") && prev_pb != "bluetooth" {
+                return PlaybackHotplugAction::Switch {
+                    apply_req: "auto".to_string(),
+                    new_target_pb: None,
+                    reason: "unplug_failover_bt",
+                };
+            }
+            if device_list_has_type(dlist, &prev_pb, 0) {
+                tracker.restore_target_pb = None;
+                return PlaybackHotplugAction::Switch {
+                    apply_req: prev_pb.clone(),
+                    new_target_pb: Some(prev_pb),
+                    reason: "unplug_restore_prev_target",
+                };
+            }
+            tracker.restore_target_pb = None;
+        }
+        return PlaybackHotplugAction::Switch {
+            apply_req: "auto".to_string(),
+            new_target_pb: None,
+            reason: if hw_is_virtual {
+                "recover_from_virtual"
+            } else {
+                "active_lost_failover"
+            },
+        };
+    }
+
+    // 5. Auto-Priority steady-state upgrades
+    if target_auto {
+        let auto_upgrade_bt = !hw_is_bt && bt_in_list && !usb_bt_active;
+        let auto_upgrade_hp_usb =
+            !hw_is_bt && !is_hp_dev(active_pb, &active_name) && has_usb_hp_in_list;
+        let auto_upgrade_nonusb_to_usb =
+            !hw_is_bt && !is_usb_id(active_pb) && device_list_has_any_type(dlist, 0, true);
+        if auto_upgrade_bt || auto_upgrade_hp_usb || auto_upgrade_nonusb_to_usb {
+            return PlaybackHotplugAction::Switch {
+                apply_req: "auto".to_string(),
+                new_target_pb: None,
+                reason: "auto_priority_upgrade",
+            };
+        }
+    }
+
+    PlaybackHotplugAction::None
+}
+
 struct AudiodgEngine {
     reconf_lock: Mutex<()>,
     hw_io_lock: Mutex<()>,
@@ -398,6 +646,7 @@ struct AudiodgEngine {
     saved_bt: Mutex<SavedBtState>,
     midi_hub: Mutex<MidiHubBox>,
     midi_meta: Mutex<MidiMeta>,
+    hotplug_tracker: Mutex<HotplugTracker>,
 
     bt_ptr: AtomicPtr<c_void>,
     pa_srv: AtomicPtr<PaServerHandle>,
@@ -431,6 +680,7 @@ impl AudiodgEngine {
             saved_bt: Mutex::new(SavedBtState::from_runtime(rt)),
             midi_hub: Mutex::new(MidiHubBox(midi_box)),
             midi_meta: Mutex::new(MidiMeta::default()),
+            hotplug_tracker: Mutex::new(HotplugTracker::default()),
             bt_ptr: AtomicPtr::new(bt),
             pa_srv: AtomicPtr::new(ptr::null_mut()),
             pw_brk: AtomicPtr::new(ptr::null_mut()),
@@ -1310,6 +1560,9 @@ impl AudiodgEngine {
         }
 
         self.hw_analog_probe_and_sync(true);
+        if pb_id.is_some_and(|p| !p.is_empty()) {
+            self.seed_hotplug_baseline(true);
+        }
         self.save_state();
         drop(_reconf);
 
@@ -1508,11 +1761,36 @@ impl AudiodgEngine {
         })
     }
 
+    fn probe_card_hp_jacks() -> [bool; 32] {
+        let mut out = [false; 32];
+        for (c, slot) in out.iter_mut().enumerate() {
+            let p = format!("/dev/snd/controlC{c}");
+            if Path::new(&p).exists() {
+                *slot = card_has_plugged_headphone_jack(c as i32);
+            }
+        }
+        out
+    }
+
+    fn seed_hotplug_baseline(&self, clear_restore: bool) {
+        let mut dlist: LwasapiDeviceList = unsafe { mem::zeroed() };
+        self.enumerate_devices_safe(&mut dlist);
+        let hp_jacks = Self::probe_card_hp_jacks();
+        let mut ht = self.hotplug_tracker.lock().unwrap_or_else(|e| e.into_inner());
+        ht.seen_pb_ids = collect_playback_ids(&dlist);
+        ht.hp_jack_cards = hp_jacks;
+        ht.initialized = true;
+        if clear_restore {
+            ht.restore_target_pb = None;
+        }
+    }
+
     fn sync_hotplug_topology(&self, force_virtual: bool, bt_now: bool) -> bool {
         let mut cap_deferred = false;
         let _reconf = self.reconf_lock.lock().unwrap();
         let mut dlist: LwasapiDeviceList = unsafe { mem::zeroed() };
         self.enumerate_devices_safe(&mut dlist);
+        let hp_jacks = Self::probe_card_hp_jacks();
         let bt_has_cap = snapshot_bt(self.bt()).has_capture_hw;
 
         let (pref_r, pref_p, pref_b, mut eng_rate, pref_cap, hw_is_virtual, hw_is_bt, target_pb, active_pb, target_cap, active_cap) = {
@@ -1532,69 +1810,67 @@ impl AudiodgEngine {
             )
         };
 
-        if !force_virtual && target_pb != "virtual" {
-            let target_auto = target_pb == "auto";
-            let target_is_bt = target_pb == "bluetooth" || target_pb.starts_with("bluez");
-            let active_kernel_lost =
-                !hw_is_virtual && !hw_is_bt && !device_list_has_type(&dlist, &active_pb, 0);
-            let active_bt_lost = hw_is_bt && !bt_now;
-            let target_returned = !target_auto
-                && (!target_is_bt || bt_now)
-                && active_pb != target_pb
-                && device_list_has_type(&dlist, &target_pb, 0);
-            let usb_bt_active = unsafe { any_usb_matches_bt(&dlist, self.bt()) };
-            let auto_upgrade_bt = target_auto && !hw_is_bt && bt_now && !usb_bt_active;
-            let auto_upgrade_matching_usb = target_auto && hw_is_bt && usb_bt_active;
-            let auto_recover_hw =
-                target_auto && hw_is_virtual && device_list_has_any_type(&dlist, 0, false);
-            let auto_upgrade_usb = target_auto
-                && !hw_is_bt
-                && !dev_id_is_usb_card(&active_pb)
-                && device_list_has_any_type(&dlist, 0, true);
+        let usb_bt_active = unsafe { any_usb_matches_bt(&dlist, self.bt()) };
+        let pb_action = {
+            let mut ht = self.hotplug_tracker.lock().unwrap_or_else(|e| e.into_inner());
+            evaluate_playback_hotplug_with(
+                force_virtual,
+                &target_pb,
+                &active_pb,
+                hw_is_virtual,
+                hw_is_bt,
+                bt_now,
+                usb_bt_active,
+                &dlist,
+                &hp_jacks,
+                &mut ht,
+                dev_id_is_usb_card,
+                |id, nm| is_headphone_playback_card(parse_card_idx_from_id(id), nm),
+            )
+        };
 
-            if target_returned {
-                eprintln!(
-                    "[LWASAPI-audiodg] Hotplug restored preferred playback endpoint: {}",
-                    target_pb
-                );
-                dbg_emit(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
-                    0,
-                    0,
-                    "HOTPLUG_PB",
-                    &target_pb,
-                    "restored preferred target",
-                );
-                self.apply_playback_endpoint(&target_pb, pref_r, pref_p, pref_b, false, false, Some(&dlist));
-            } else if active_kernel_lost
-                || active_bt_lost
-                || auto_upgrade_bt
-                || auto_upgrade_matching_usb
-                || auto_recover_hw
-                || auto_upgrade_usb
-            {
-                eprintln!("[LWASAPI-audiodg] Hotplug playback change detected, re-evaluating auto route...");
-                let tgt = if target_auto { "auto" } else { &target_pb };
-                dbg_emit(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
-                    0,
-                    0,
-                    "HOTPLUG_PB",
-                    tgt,
-                    &format!(
-                        "lost={} btlost={} upg_bt={} upg_usb_bt={} rec={} usb={}",
-                        i32::from(active_kernel_lost),
-                        i32::from(active_bt_lost),
-                        i32::from(auto_upgrade_bt),
-                        i32::from(auto_upgrade_matching_usb),
-                        i32::from(auto_recover_hw),
-                        i32::from(auto_upgrade_usb)
-                    ),
-                );
-                self.apply_playback_endpoint(tgt, pref_r, pref_p, pref_b, false, false, Some(&dlist));
+        if let PlaybackHotplugAction::Switch {
+            apply_req,
+            new_target_pb,
+            reason,
+        } = pb_action
+        {
+            if let Some(ref updated_tgt) = new_target_pb {
+                {
+                    let mut hws = self.hw_lock.lock().unwrap();
+                    copy_str_to_c(&mut hws.target_playback_id, updated_tgt);
+                }
+                if snapshot_bt(self.bt()).initialized {
+                    let c_pb = to_cstring_lossy(updated_tgt);
+                    unsafe { lwasapi_bluez_set_preferred_target(self.bt(), c_pb.as_ptr()) };
+                }
             }
+            eprintln!(
+                "[LWASAPI-audiodg] Hotplug playback switch ({reason}): req={apply_req}"
+            );
+            dbg_emit(
+                LWASAPI_DBG_ENGINE,
+                LWASAPI_DBG_INFO,
+                0,
+                0,
+                "HOTPLUG_PB",
+                &apply_req,
+                reason,
+            );
+            self.apply_playback_endpoint(
+                &apply_req,
+                pref_r,
+                pref_p,
+                pref_b,
+                false,
+                false,
+                Some(&dlist),
+            );
+            if new_target_pb.is_some() {
+                self.save_state();
+            }
+        }
+        {
             let hws = self.hw_lock.lock().unwrap();
             if hws.hw.sample_rate != 0 {
                 eng_rate = hws.hw.sample_rate;
@@ -3169,6 +3445,7 @@ impl AudiodgEngine {
                             buf: pack_dst.cast::<c_void>(),
                             frames: period as c_ulong,
                         };
+                        let mut had_xrun = false;
                         let mut wr = unsafe {
                             ioctl_raw(
                                 hw_snap.fd,
@@ -3179,20 +3456,23 @@ impl AudiodgEngine {
                         if wr < 0 {
                             let xerr = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                             if xerr == ERRNO_EPIPE || xerr == ERRNO_ESTRPIPE {
+                                had_xrun = true;
                                 let xc = self.hw_xruns.fetch_add(1, Ordering::Relaxed) + 1;
-                                let dp = c_str_to_string(&hw_snap.device_path);
-                                dbg_emit_vals(
-                                    LWASAPI_DBG_ALSA,
-                                    LWASAPI_DBG_WARN,
-                                    0,
-                                    0,
-                                    xc as i32,
-                                    xerr,
-                                    -xerr,
-                                    "HW_XRUN",
-                                    &dp,
-                                    &format!("ALSA PCM XRUN #{xc} (errno={xerr})"),
-                                );
+                                if xc <= 16 || xc.is_power_of_two() || xc.is_multiple_of(256) {
+                                    let dp = c_str_to_string(&hw_snap.device_path);
+                                    dbg_emit_vals(
+                                        LWASAPI_DBG_ALSA,
+                                        LWASAPI_DBG_WARN,
+                                        0,
+                                        0,
+                                        xc as i32,
+                                        xerr,
+                                        -xerr,
+                                        "HW_XRUN",
+                                        &dp,
+                                        &format!("ALSA PCM XRUN #{xc} (errno={xerr})"),
+                                    );
+                                }
                                 unsafe {
                                     let _ = ioctl_raw(
                                         hw_snap.fd,
@@ -3247,7 +3527,9 @@ impl AudiodgEngine {
                                 }
                             }
                         } else {
-                            need_timer_pace = false;
+                            if !had_xrun {
+                                need_timer_pace = false;
+                            }
                             next_wakeup_ns = mono_ns();
                         }
                     }
@@ -3823,6 +4105,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         force_virtual,
         force_bt,
     );
+    engine.seed_hotplug_baseline(true);
 
     if !(force_virtual && std::env::var("LWASAPI_VIRTUAL_NO_MIDI").as_deref() == Ok("1")) {
         let mut mh = engine.midi_hub.lock().unwrap();
@@ -3915,6 +4198,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     let mut prev_hw_fp = 0u64;
     let mut hw_fp_init = false;
     let mut pending_usb_cap_settle = false;
+    let mut last_virtual_failover_fp: Option<u64> = None;
 
     let my_uid = current_uid();
     while engine.is_running() {
@@ -4028,8 +4312,16 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
             prev_hw_fp = hw_fp;
             hw_fp_init = true;
         }
+        let stranded_virtual = !force_virtual && {
+            let hws = engine.hw_lock.lock().unwrap();
+            hws.hw.is_virtual && c_str_to_string(&hws.target_playback_id) != "virtual"
+        };
+        if !stranded_virtual || hw_changed {
+            last_virtual_failover_fp = None;
+        }
+        let need_virtual_failover = stranded_virtual && last_virtual_failover_fp != Some(hw_fp);
 
-        if hw_changed || bt_now != prev_bt_has || pending_usb_cap_settle {
+        if hw_changed || bt_now != prev_bt_has || pending_usb_cap_settle || need_virtual_failover {
             if bt_now != prev_bt_has {
                 dbg_emit(
                     LWASAPI_DBG_BLUEZ,
@@ -4059,6 +4351,9 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
             }
             pending_usb_cap_settle = engine.sync_hotplug_topology(force_virtual, bt_now);
             prev_hw_fp = unsafe { lwasapi_bluez_hw_fingerprint(engine.bt()) };
+            if stranded_virtual {
+                last_virtual_failover_fp = Some(prev_hw_fp);
+            }
             prev_bt_has = bt_now;
             prev_bt_avrcp = avrcp_now;
             prev_muted = muted_now;
@@ -4885,5 +5180,234 @@ mod tests {
         apply_bt_hw_analog_drive(&mut unity, 1.0, false);
         assert!((unity[0] - 0.4).abs() < 1e-6);
         assert_eq!(unity[1], -1.0);
+    }
+
+    fn make_pb_list(devs: &[(&str, &str, bool)]) -> LwasapiDeviceList {
+        let mut dl: LwasapiDeviceList = unsafe { mem::zeroed() };
+        for &(id, name, is_bt) in devs {
+            let i = dl.num_devices as usize;
+            dl.num_devices += 1;
+            copy_str_to_c(&mut dl.devices[i].id, id);
+            copy_str_to_c(&mut dl.devices[i].name, name);
+            dl.devices[i].is_bluetooth = u32::from(is_bt);
+        }
+        dl
+    }
+
+    #[test]
+    fn hotplug_auto_switches_to_plugged_usb_or_bt_headphones_and_restores_on_unplug() {
+        use crate::hw_analog::is_headphone_card_name;
+        let jacks_none = [false; 32];
+        let mut tracker = HotplugTracker::default();
+        let scar_only = make_pb_list(&[
+            ("hw:0,0", "Focusrite Scarlett 2i2 4th Gen - USB Audio", false),
+            ("hw:1,8", "HDA ATI HDMI - Q32G11ZNE", false),
+        ]);
+        let is_usb = |id: &str| id == "hw:0,0" || id == "hw:6,0";
+        let is_hp = |id: &str, nm: &str| id == "hw:6,0" || is_headphone_card_name(nm, "", "");
+
+        // Seed baseline on Scarlett (pinned hw:0,0) -> no switch
+        let act0 = evaluate_playback_hotplug_with(
+            false,
+            "hw:0,0",
+            "hw:0,0",
+            false,
+            false,
+            false,
+            false,
+            &scar_only,
+            &jacks_none,
+            &mut tracker,
+            is_usb,
+            is_hp,
+        );
+        assert_eq!(act0, PlaybackHotplugAction::None);
+
+        // Plug in Bose QC Ultra 2 HP (USB) as hw:6,0 while hw:0,0 (also USB) is active -> auto-switches!
+        let with_bose = make_pb_list(&[
+            ("hw:0,0", "Focusrite Scarlett 2i2 4th Gen - USB Audio", false),
+            ("hw:1,8", "HDA ATI HDMI - Q32G11ZNE", false),
+            ("hw:6,0", "Bose Corporation Bose QC Ultra 2 HP - USB Audio", false),
+        ]);
+        let act1 = evaluate_playback_hotplug_with(
+            false,
+            "hw:0,0",
+            "hw:0,0",
+            false,
+            false,
+            false,
+            false,
+            &with_bose,
+            &jacks_none,
+            &mut tracker,
+            is_usb,
+            is_hp,
+        );
+        assert_eq!(
+            act1,
+            PlaybackHotplugAction::Switch {
+                apply_req: "hw:6,0".to_string(),
+                new_target_pb: Some("hw:6,0".to_string()),
+                reason: "hotplug_headphone_or_usb",
+            }
+        );
+
+        // Unplug hw:6,0 (dropped to virtual) -> seamlessly restores saved hw:0,0 instead of staying virtual!
+        let act2 = evaluate_playback_hotplug_with(
+            false,
+            "hw:6,0",
+            "virtual",
+            true,
+            false,
+            false,
+            false,
+            &scar_only,
+            &jacks_none,
+            &mut tracker,
+            is_usb,
+            is_hp,
+        );
+        assert_eq!(
+            act2,
+            PlaybackHotplugAction::Switch {
+                apply_req: "hw:0,0".to_string(),
+                new_target_pb: Some("hw:0,0".to_string()),
+                reason: "unplug_restore_prev_target",
+            }
+        );
+
+        // Connect Bluetooth headphones while on Scarlett -> auto-switches to Bluetooth
+        let with_bt = make_pb_list(&[
+            ("hw:0,0", "Focusrite Scarlett 2i2 4th Gen - USB Audio", false),
+            ("bluez:68:F2:1F:04:F9:F6", "Bose QC Ultra 2 HP (AAC)", true),
+        ]);
+        let act3 = evaluate_playback_hotplug_with(
+            false,
+            "hw:0,0",
+            "hw:0,0",
+            false,
+            false,
+            false,
+            false,
+            &with_bt,
+            &jacks_none,
+            &mut tracker,
+            is_usb,
+            is_hp,
+        );
+        assert_eq!(
+            act3,
+            PlaybackHotplugAction::Switch {
+                apply_req: "bluez:68:F2:1F:04:F9:F6".to_string(),
+                new_target_pb: Some("bluez:68:F2:1F:04:F9:F6".to_string()),
+                reason: "hotplug_headphone_or_usb",
+            }
+        );
+
+        // Plugging in an HDMI monitor wakeup must NOT hijack playback away from Scarlett
+        let with_new_hdmi = make_pb_list(&[
+            ("hw:0,0", "Focusrite Scarlett 2i2 4th Gen - USB Audio", false),
+            ("bluez:68:F2:1F:04:F9:F6", "Bose QC Ultra 2 HP (AAC)", true),
+            ("hw:1,9", "HDA ATI HDMI - Beyond TV", false),
+        ]);
+        let act4 = evaluate_playback_hotplug_with(
+            false,
+            "hw:0,0",
+            "hw:0,0",
+            false,
+            false,
+            false,
+            false,
+            &with_new_hdmi,
+            &jacks_none,
+            &mut tracker,
+            is_usb,
+            is_hp,
+        );
+        assert_eq!(act4, PlaybackHotplugAction::None);
+
+        // Plugging 3.5mm analog headphone jack into card 4 switches playback automatically
+        let mut tracker_jack = HotplugTracker::default();
+        let with_hda = make_pb_list(&[
+            ("hw:0,0", "Focusrite Scarlett 2i2 4th Gen - USB Audio", false),
+            ("hw:4,0", "Generic USB Audio", false),
+        ]);
+        let _ = evaluate_playback_hotplug_with(
+            false,
+            "auto",
+            "hw:0,0",
+            false,
+            false,
+            false,
+            false,
+            &with_hda,
+            &jacks_none,
+            &mut tracker_jack,
+            |id| id == "hw:0,0" || id == "hw:4,0",
+            |_, nm| is_headphone_card_name(nm, "", ""),
+        );
+        let mut jacks_c4 = [false; 32];
+        jacks_c4[4] = true;
+        let act5 = evaluate_playback_hotplug_with(
+            false,
+            "auto",
+            "hw:0,0",
+            false,
+            false,
+            false,
+            false,
+            &with_hda,
+            &jacks_c4,
+            &mut tracker_jack,
+            |id| id == "hw:0,0" || id == "hw:4,0",
+            |_, nm| is_headphone_card_name(nm, "", ""),
+        );
+        assert_eq!(
+            act5,
+            PlaybackHotplugAction::Switch {
+                apply_req: "hw:4,0".to_string(),
+                new_target_pb: None,
+                reason: "hotplug_headphone_or_usb",
+            }
+        );
+
+        // Pinned hw:6,0 unplugged with no restore target -> fails over cleanly to auto instead of silent virtual
+        let mut tracker_pin = HotplugTracker::default();
+        let _ = evaluate_playback_hotplug_with(
+            false,
+            "hw:6,0",
+            "hw:6,0",
+            false,
+            false,
+            false,
+            false,
+            &with_bose,
+            &jacks_none,
+            &mut tracker_pin,
+            is_usb,
+            is_hp,
+        );
+        let act6 = evaluate_playback_hotplug_with(
+            false,
+            "hw:6,0",
+            "virtual",
+            true,
+            false,
+            false,
+            false,
+            &scar_only,
+            &jacks_none,
+            &mut tracker_pin,
+            is_usb,
+            is_hp,
+        );
+        assert_eq!(
+            act6,
+            PlaybackHotplugAction::Switch {
+                apply_req: "auto".to_string(),
+                new_target_pb: None,
+                reason: "recover_from_virtual",
+            }
+        );
     }
 }

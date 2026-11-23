@@ -90,8 +90,13 @@ pub unsafe extern "C" fn salsa_real_dlopen_passthrough(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void {
-    let _ = resolve_real_dlopen();
+pub unsafe extern "C" fn salsa_dlopen_prepare(
+    filename: *const c_char,
+    _flags: c_int,
+    out_fn: *mut *const c_void,
+    out_filename: *mut *const c_char,
+) -> *mut c_void {
+    let real_dlopen = resolve_real_dlopen();
     imp::ensure_init();
     if !filename.is_null()
         && !strstr(filename, c"libpulse.so".as_ptr()).is_null()
@@ -99,26 +104,94 @@ pub unsafe extern "C" fn dlopen(filename: *const c_char, flags: c_int) -> *mut c
         && strstr(filename, c"libpulse-mainloop".as_ptr()).is_null()
         && SELF_PATH_LEN.load(Ordering::Acquire) > 0
     {
-        if let Some(real_dlopen) = resolve_real_dlopen() {
+        if let Some(real_dlopen_fn) = real_dlopen {
             let self_ptr = (&raw const SELF_PATH_BUF).cast::<c_char>();
-            let self_h = real_dlopen(self_ptr, RTLD_LAZY | RTLD_NOLOAD);
+            let self_h = real_dlopen_fn(self_ptr, RTLD_LAZY | RTLD_NOLOAD);
             if !self_h.is_null() {
+                *out_fn = ptr::null();
                 return self_h;
             }
-            return real_dlopen(self_ptr, flags);
+            *out_filename = self_ptr;
+            *out_fn = real_dlopen_fn as *const c_void;
+            return ptr::null_mut();
         }
     }
-    if let Some(real_dlopen) = resolve_real_dlopen() {
-        real_dlopen(filename, flags)
-    } else {
-        ptr::null_mut()
+    *out_fn = match real_dlopen {
+        Some(real_dlopen_fn) => real_dlopen_fn as *const c_void,
+        None => ptr::null(),
+    };
+    ptr::null_mut()
+}
+
+// Tail-jump to glibc's real dlopen so [rsp] stays the caller's return address and $ORIGIN/RUNPATH works.
+#[cfg(all(target_arch = "x86_64", not(test)))]
+core::arch::global_asm!(
+    ".globl dlopen",
+    ".type dlopen, @function",
+    "dlopen:",
+    ".cfi_startproc",
+    "endbr64",
+    "push rdi",
+    ".cfi_adjust_cfa_offset 8",
+    "push rsi",
+    ".cfi_adjust_cfa_offset 8",
+    "sub rsp, 24",
+    ".cfi_adjust_cfa_offset 24",
+    "mov [rsp + 8], rdi",
+    "mov rdx, rsp",
+    "lea rcx, [rsp + 8]",
+    "call {prepare}",
+    "mov rcx, [rsp]",
+    "mov r8, [rsp + 8]",
+    "add rsp, 24",
+    ".cfi_adjust_cfa_offset -24",
+    "pop rsi",
+    ".cfi_adjust_cfa_offset -8",
+    "pop rdi",
+    ".cfi_adjust_cfa_offset -8",
+    "test rcx, rcx",
+    "jz 2f",
+    "mov rdi, r8",
+    "jmp rcx",
+    "2:",
+    "ret",
+    ".cfi_endproc",
+    ".size dlopen, .-dlopen",
+    prepare = sym salsa_dlopen_prepare,
+);
+
+#[cfg(all(not(target_arch = "x86_64"), not(test)))]
+#[no_mangle]
+pub unsafe extern "C" fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void {
+    let mut target: *const c_void = ptr::null();
+    let mut target_name = filename;
+    let handle = salsa_dlopen_prepare(filename, flags, &raw mut target, &raw mut target_name);
+    if target.is_null() {
+        return handle;
     }
+    let real_dlopen_fn = core::mem::transmute::<*const c_void, DlopenFn>(target);
+    real_dlopen_fn(target_name, flags)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn reconnect_preload_types_sane() {
         assert_eq!(core::mem::size_of::<super::imp::pa_spawn_api>(), 3 * core::mem::size_of::<usize>());
+    }
+
+    #[test]
+    fn non_pulse_dlopen_preserves_filename_for_passthrough() {
+        unsafe {
+            let mut target: *const c_void = ptr::null();
+            let orig = c"gameoverlayui.so".as_ptr();
+            let mut out_name = orig;
+            let handle = salsa_dlopen_prepare(orig, RTLD_LAZY, &raw mut target, &raw mut out_name);
+            assert!(handle.is_null());
+            assert!(!target.is_null());
+            assert_eq!(out_name, orig);
+        }
     }
 }

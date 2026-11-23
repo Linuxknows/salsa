@@ -1026,8 +1026,8 @@ void StudioController::buildMainWindow() {
     cmbSink_ = new QComboBox(hwCard);
     cmbSink_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     cmbSink_->setMinimumContentsLength(14);
-    cmbSink_->addItem(QStringLiteral("Auto-Priority (Dual USB > BT A2DP > USB > Analog > HDMI)"), QStringLiteral("auto"));
-    cmbSink_->setToolTip(QStringLiteral("Playback Output Sink — Auto-Priority gives plugged USB cables priority over matching Bluetooth headsets, then BT A2DP, USB, Analog, and HDMI."));
+    cmbSink_->addItem(QStringLiteral("Auto-Priority (USB HP > BT A2DP > USB > Analog > HDMI)"), QStringLiteral("auto"));
+    cmbSink_->setToolTip(QStringLiteral("Playback Output Sink — Auto-Priority automatically switches to plugged USB/3.5mm headphones and Bluetooth headsets over speakers, giving USB priority when dual-connected."));
     connect(cmbSink_, &QComboBox::activated, this, [this](int i) { onSinkActivated(i); });
     devRow->addWidget(cmbSink_, 1);
     btnBtReset_ = new QPushButton(QStringLiteral("Reset BT"), hwCard);
@@ -3200,7 +3200,7 @@ void StudioController::pollEngine(bool initial) {
             lastDevSig_ = sig;
             updatingUi_ = true;
             cmbSink_->clear();
-            cmbSink_->addItem(QStringLiteral("Auto-Priority (Dual USB > BT A2DP > USB > Analog > HDMI)"), QStringLiteral("auto"));
+            cmbSink_->addItem(QStringLiteral("Auto-Priority (USB HP > BT A2DP > USB > Analog > HDMI)"), QStringLiteral("auto"));
             cmbSource_->clear();
             cmbSource_->addItem(QStringLiteral("Auto-Priority (USB Mic > HDA > Virtual)"), QStringLiteral("auto"));
             for (uint32_t i = 0; i < std::min<uint32_t>(dl.num_devices, SALSA_MAX_DEVICES); ++i) {

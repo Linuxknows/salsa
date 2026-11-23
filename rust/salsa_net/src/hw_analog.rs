@@ -798,6 +798,173 @@ fn write_alsa_int(fd: i32, el: &HwCtlElem, target_val: c_long) -> bool {
     }
 }
 
+fn read_alsa_bool(fd: i32, el: &HwCtlElem) -> Option<bool> {
+    if fd < 0 || !el.valid || el.tp != SNDRV_CTL_ELEM_TYPE_BOOLEAN {
+        return None;
+    }
+    let mut ev = SndCtlElemValue::zeroed_for(el.id);
+    let rc = unsafe {
+        ioctl_raw(
+            fd,
+            SNDRV_CTL_IOCTL_ELEM_READ,
+            (&mut ev as *mut SndCtlElemValue).cast::<c_void>(),
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    let cnt = if el.count > 0 && el.count <= 16 {
+        el.count as usize
+    } else {
+        1
+    };
+    Some((0..cnt).any(|i| ev.get_bool(i)))
+}
+
+#[inline]
+fn has_word_token_ci(hay: &str, token: &str) -> bool {
+    hay.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|w| !w.is_empty() && w.eq_ignore_ascii_case(token))
+}
+
+/// Returns `true` when metadata/USB descriptors identify dedicated headphones or headsets.
+pub fn is_headphone_card_name(dev_name: &str, usbid: &str, stream_head: &str) -> bool {
+    let combined_usb = !usbid.is_empty()
+        || ci_contains(dev_name, "USB")
+        || ci_contains(stream_head, "USB");
+    let check_text = |text: &str| -> bool {
+        !text.is_empty()
+            && (ci_contains(text, "headphone")
+                || ci_contains(text, "headset")
+                || ci_contains(text, "earphone")
+                || ci_contains(text, "earbud")
+                || ci_contains(text, "qc ultra")
+                || ci_contains(text, "qc45")
+                || ci_contains(text, "wh-1000")
+                || ci_contains(text, "wf-1000")
+                || ci_contains(text, "airpods")
+                || ci_contains(text, "soundcore")
+                || ci_contains(text, "hyperx")
+                || ci_contains(text, "steelseries")
+                || ci_contains(text, "arctis")
+                || ci_contains(text, "epos")
+                || ci_contains(text, "sennheiser")
+                || ci_contains(text, "beyerdynamic")
+                || ci_contains(text, "audeze")
+                || ci_contains(text, "qudelix")
+                || ci_contains(text, "jabra")
+                || ci_contains(text, "plantronics")
+                || ci_contains(text, "apple usb-c")
+                || has_word_token_ci(text, "iem")
+                || (has_word_token_ci(text, "hp")
+                    && (combined_usb || ci_contains(text, "bose") || ci_contains(text, "ultra"))))
+    };
+
+    if ci_starts_with(usbid, "05a7:") || ci_starts_with(usbid, "05ac:110") {
+        return true;
+    }
+    check_text(dev_name) || check_text(stream_head)
+}
+
+#[inline]
+fn ci_starts_with(s: &str, prefix: &str) -> bool {
+    s.len() >= prefix.len() && s.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+}
+
+/// Probes ALSA card control elements to check if a playback Headphone jack is actively plugged.
+pub fn card_has_plugged_headphone_jack(card: i32) -> bool {
+    if card < 0 {
+        return false;
+    }
+    let ctl_path = format!("/dev/snd/controlC{card}");
+    let fd = open_raw_flags(&ctl_path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if fd < 0 {
+        return false;
+    }
+    let mut el: SndCtlElemList = unsafe { mem::zeroed() };
+    if unsafe {
+        ioctl_raw(
+            fd,
+            SNDRV_CTL_IOCTL_ELEM_LIST,
+            (&mut el as *mut SndCtlElemList).cast::<c_void>(),
+        )
+    } < 0
+        || el.count == 0
+    {
+        close_raw_fd(fd);
+        return false;
+    }
+    let cnt = el.count.min(256) as usize;
+    let mut pids = vec![SndCtlElemId::default(); cnt];
+    el.offset = 0;
+    el.space = cnt as c_uint;
+    el.pids = pids.as_mut_ptr();
+    if unsafe {
+        ioctl_raw(
+            fd,
+            SNDRV_CTL_IOCTL_ELEM_LIST,
+            (&mut el as *mut SndCtlElemList).cast::<c_void>(),
+        )
+    } < 0
+    {
+        close_raw_fd(fd);
+        return false;
+    }
+    let got = (el.used as usize).min(cnt);
+    let mut plugged = false;
+    for id in pids.iter().take(got) {
+        let mut info: SndCtlElemInfo = unsafe { mem::zeroed() };
+        info.id = *id;
+        if unsafe {
+            ioctl_raw(
+                fd,
+                SNDRV_CTL_IOCTL_ELEM_INFO,
+                (&mut info as *mut SndCtlElemInfo).cast::<c_void>(),
+            )
+        } < 0
+        {
+            continue;
+        }
+        if (info.tp as u32) != SNDRV_CTL_ELEM_TYPE_BOOLEAN {
+            continue;
+        }
+        let nm = c_str_to_string(&id.name);
+        if !ci_contains(&nm, "Headphone")
+            || !ci_contains(&nm, "Jack")
+            || ci_contains(&nm, "Mic")
+            || ci_contains(&nm, "Phantom")
+        {
+            continue;
+        }
+        let mut ev = SndCtlElemValue::zeroed_for(*id);
+        if unsafe {
+            ioctl_raw(
+                fd,
+                SNDRV_CTL_IOCTL_ELEM_READ,
+                (&mut ev as *mut SndCtlElemValue).cast::<c_void>(),
+            )
+        } == 0
+            && ev.get_bool(0)
+        {
+            plugged = true;
+            break;
+        }
+    }
+    close_raw_fd(fd);
+    plugged
+}
+
+/// Returns `true` when an ALSA playback card represents USB/BT/headset headphones or an active headphone jack.
+pub fn is_headphone_playback_card(card: i32, dev_name: &str) -> bool {
+    if card < 0 {
+        return is_headphone_card_name(dev_name, "", "");
+    }
+    let usbid = read_small_text(&format!("/proc/asound/card{card}/usbid")).unwrap_or_default();
+    let stream_head =
+        read_small_text(&format!("/proc/asound/card{card}/stream0")).unwrap_or_default();
+    is_headphone_card_name(dev_name, &usbid, &stream_head) || card_has_plugged_headphone_jack(card)
+}
+
 fn write_alsa_enum_match(
     fd: i32,
     el: &HwCtlElem,
@@ -860,6 +1027,18 @@ pub fn score_card_with_meta(
     usbid: &str,
     uevent: &str,
 ) -> i32 {
+    score_card_with_meta_hp(dev_name, is_usb, has_usb_file, usbid, uevent, "", false)
+}
+
+pub fn score_card_with_meta_hp(
+    dev_name: &str,
+    is_usb: bool,
+    has_usb_file: bool,
+    usbid: &str,
+    uevent: &str,
+    stream_head: &str,
+    has_plugged_hp_jack: bool,
+) -> i32 {
     let mut sc = 0i32;
     if is_usb || has_usb_file {
         sc += 100;
@@ -884,6 +1063,12 @@ pub fn score_card_with_meta(
         || ci_contains(dev_name, "Sabre")
     {
         sc += 120;
+    }
+    if is_headphone_card_name(dev_name, usbid, stream_head) {
+        sc += 200;
+    }
+    if has_plugged_hp_jack {
+        sc += 220;
     }
     if ci_contains(dev_name, "Generic USB Audio") || ci_eq(usbid, "26ce:0a08") {
         sc -= 20;
@@ -1114,6 +1299,21 @@ pub unsafe extern "C" fn lwasapi_hw_analog_sync(
                 }
                 if inner.pb_dac_sw.valid {
                     write_alsa_int(pfd, &inner.pb_dac_sw, c_long::from(!desktop_muted));
+                }
+            } else if !desktop_muted
+                && (!inner.sync_cache_valid
+                    || inner.pb_card != inner.last_pb_card
+                    || inner.last_d_muted)
+            {
+                if inner.pb_dac_sw.valid && read_alsa_bool(pfd, &inner.pb_dac_sw) == Some(false) {
+                    write_alsa_int(pfd, &inner.pb_dac_sw, 1);
+                }
+                if inner.pb_hp_sw.valid
+                    && cfg.output_route != LWASAPI_HW_ROUTE_SPK
+                    && card_has_plugged_headphone_jack(inner.pb_card)
+                    && read_alsa_bool(pfd, &inner.pb_hp_sw) == Some(false)
+                {
+                    write_alsa_int(pfd, &inner.pb_hp_sw, 1);
                 }
             }
             close_raw_fd(pfd);
@@ -1384,13 +1584,24 @@ pub unsafe extern "C" fn lwasapi_hw_analog_score_card(
 ) -> c_int {
     let p_usb = format!("/proc/asound/card{card_index}/usbid");
     let p_drv = format!("/sys/class/sound/card{card_index}/device/uevent");
+    let p_stream = format!("/proc/asound/card{card_index}/stream0");
     let usbid_opt = read_small_text(&p_usb);
     let is_usb = usbid_opt.is_some();
     let has_usb_file = Path::new(&p_usb).exists();
     let usbid = usbid_opt.unwrap_or_default();
     let uevent = read_small_text(&p_drv).unwrap_or_default();
+    let stream_head = read_small_text(&p_stream).unwrap_or_default();
+    let has_hp_jack = card_has_plugged_headphone_jack(card_index as i32);
     let dname = unsafe { ptr_to_opt_str(dev_name) }.unwrap_or_default();
-    score_card_with_meta(&dname, is_usb, has_usb_file, &usbid, &uevent)
+    score_card_with_meta_hp(
+        &dname,
+        is_usb,
+        has_usb_file,
+        &usbid,
+        &uevent,
+        &stream_head,
+        has_hp_jack,
+    )
 }
 
 #[cfg(test)]
@@ -1430,6 +1641,23 @@ mod tests {
         assert!(sc_strix > sc_hdmi + 100);
         assert!(sc_soar > sc_hdmi + 100);
         assert!(sc_scar > sc_hdmi + 100);
+
+        let sc_scar_usb = score_card_with_meta("Focusrite Scarlett 2i2 4th Gen", true, true, "1235:8219", "");
+        let sc_bose_usb = score_card_with_meta(
+            "Bose Corporation Bose QC Ultra 2 HP - USB Audio",
+            true,
+            true,
+            "05a7:4082",
+            "",
+        );
+        assert!(sc_bose_usb > sc_scar_usb);
+        assert!(is_headphone_card_name("Bose Corporation Bose QC Ultra 2 HP (USB)", "05a7:4082", ""));
+        assert!(is_headphone_card_name("HyperX Cloud III Wireless", "", ""));
+        assert!(!is_headphone_card_name("Focusrite Scarlett 2i2 4th Gen", "1235:8219", ""));
+        assert!(!is_headphone_card_name("HDA ATI HDMI", "", ""));
+
+        let sc_jack_hp = score_card_with_meta_hp("Generic USB Audio", true, true, "26ce:0a08", "", "", true);
+        assert!(sc_jack_hp > sc_scar_usb);
 
         let (arch, caps) = identify_card_arch_from_meta(2, "DLX", "0b05:180c", "", "");
         assert!(arch.contains("STRIX"));

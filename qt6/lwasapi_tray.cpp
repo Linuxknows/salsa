@@ -1512,11 +1512,8 @@ void TrayController::buildPopup() {
     connect(cmbOutDev_, &QComboBox::activated, this, [this](int idx) {
         if (syncingUi_) return;
         const QString pbId = cmbOutDev_->itemData(idx).toString();
-        const QString capId = cmbMicDev_ ? cmbMicDev_->currentData().toString() : QString();
-        if (!pbId.isEmpty() || !capId.isEmpty()) {
-            salsa_set_devices(
-                pbId.isEmpty() ? nullptr : pbId.toUtf8().constData(),
-                capId.isEmpty() ? nullptr : capId.toUtf8().constData());
+        if (!pbId.isEmpty()) {
+            salsa_set_devices(pbId.toUtf8().constData(), nullptr);
             lastDevSig_.clear();
             QTimer::singleShot(120, this, [this]() { syncFromEngine(false); });
         }
@@ -1577,11 +1574,8 @@ void TrayController::buildPopup() {
     connect(cmbMicDev_, &QComboBox::activated, this, [this](int idx) {
         if (syncingUi_) return;
         const QString capId = cmbMicDev_->itemData(idx).toString();
-        const QString pbId = cmbOutDev_ ? cmbOutDev_->currentData().toString() : QString();
-        if (!pbId.isEmpty() || !capId.isEmpty()) {
-            salsa_set_devices(
-                pbId.isEmpty() ? nullptr : pbId.toUtf8().constData(),
-                capId.isEmpty() ? nullptr : capId.toUtf8().constData());
+        if (!capId.isEmpty()) {
+            salsa_set_devices(nullptr, capId.toUtf8().constData());
             lastDevSig_.clear();
             QTimer::singleShot(120, this, [this]() { syncFromEngine(false); });
         }
@@ -2450,10 +2444,12 @@ void TrayController::populateDeviceCombos() {
 
     cmbOutDev_->clear();
     cmbMicDev_->clear();
+    cmbOutDev_->addItem(QStringLiteral("Auto-Priority (Smart Hotplug)"), QStringLiteral("auto"));
+    cmbMicDev_->addItem(QStringLiteral("Auto-Priority (USB Mic > HDA)"), QStringLiteral("auto"));
     int pbIdx = 0;
     int capIdx = 0;
-    int pI = 0;
-    int cI = 0;
+    int pI = 1;
+    int cI = 1;
     for (uint32_t i = 0; i < std::min<uint32_t>(devices_.num_devices, SALSA_MAX_DEVICES); ++i) {
         const auto& d = devices_.devices[i];
         const QString id = cFixedStr(d.id, sizeof(d.id));

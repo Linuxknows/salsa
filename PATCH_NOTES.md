@@ -4,7 +4,24 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.21.12 — Current (`2026-11-21`)
+## V1.21.13 — Current (`2026-11-23`)
+
+### 1. Automatic Headphone Hotplug Switching, Card Priority & Mute-Switch Safety
+- Updated [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) (`HotplugTracker`, `evaluate_playback_hotplug_with()`, `sync_hotplug_topology()`, `seed_hotplug_baseline()`): plugging in USB headphones/headsets (`hw:6,0`), connecting Bluetooth A2DP headsets, or inserting a 3.5 mm analog headphone jack (`card_has_plugged_headphone_jack()`) now automatically switches playback even when switching from another USB audio interface (e.g., Focusrite Scarlett 2i2) or a previously selected speaker device, remembers the prior speaker target to restore seamlessly on unplug (or fails over immediately to connected Bluetooth / available ALSA endpoints instead of stranding on silent `WaveRT-Virtual-Clock`), and ignores HDMI/DisplayPort monitor wakeups.
+- Updated [`hw_analog.rs`](rust/salsa_net/src/hw_analog.rs) (`is_headphone_card_name()`, `card_has_plugged_headphone_jack()`, `score_card_with_meta_hp()`, `read_alsa_bool()`, `hw_analog_sync()`): added dedicated headphone/headset/jack scoring priority above desktop audio interfaces and unmutes muted ALSA DAC/headphone switches (`pb_dac_sw` / `pb_hp_sw`) on activation when Salsa master output is unmuted.
+- Updated [`bluez_runtime.rs`](rust/salsa_net/src/bluez_runtime.rs) (`bt_topo_gen`, `bluez_signal_filter()`, `sync_known_bt_devices()`, `bluez_hw_fingerprint_impl()`) so Bluetooth `Device1` / `MediaTransport1` connection transitions wake hotplug detection even while Bluetooth TX was paused on speakers or USB.
+- Added an `"Auto-Priority (Smart Hotplug)"` entry at index `0` in [`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp), stopped microphone selection from overwriting `target_playback_id`, and updated Auto-Priority labels in [`salsa_studio.cpp`](qt6/salsa_studio.cpp).
+
+### 2. Smooth Video Playback Start & Underrun Recovery (PulseAudio Server + RT Pacing)
+- Updated [`pa_server.rs`](rust/salsa_net/src/pa_server.rs) (`enforce_playback_attr()`, `lwasapi_pa_server_mix_playback()`, `service_stream_events_and_capture()`, `CMD_CORK_PLAYBACK_STREAM`, `CMD_FLUSH_PLAYBACK_STREAM`): raised default/low-latency video playback prebuffer headroom (`>= 15 ms` prebuf with `>= 30 ms` `tlength` when `prebuf != 0`, keeping `prebuf + minreq <= tlength` to prevent request stalls), re-armed `in_prebuf` cleanly on both full and partial underruns as well as cork-to-uncork transitions when buffered frames are below `prebuf`, and reset `started_sent` across flushes and underruns so browser video playback starts smoothly without choppy machine-gun stuttering.
+- Added an `had_xrun` timer-pacing guard and rate-limited `HW_XRUN` logging in [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) so recoverable ALSA PCM XRUNs never spin in a tight retry loop.
+
+### 3. `salsa_pa_reconnect` `dlopen` `$ORIGIN`/`RUNPATH` Tail-Jump Preservation
+- Updated [`lib.rs`](rust/salsa_pa_reconnect/src/lib.rs) (`salsa_dlopen_prepare()` + x86_64 tail-jump `dlopen` trampoline) so non-PulseAudio `dlopen()` passthrough preserves the caller's stack return address and `$ORIGIN` / `RUNPATH` resolution cleanly.
+
+---
+
+## V1.21.12 (`2026-11-21`)
 
 ### 1. Security Hardening, Non-Executable Stacks & IPC Efficiency
 - Added `-D_FORTIFY_SOURCE=3`, `-fstack-protector-strong`, `-Wformat -Wformat-security` (`HARDEN_CXXFLAGS`), and `-Wl,-z,noexecstack` across C++/Rust targets in [`Makefile`](Makefile), plus `--install-pacman-hook` / `--remove-pacman-hook` handling in [`install-salsa.sh`](install-salsa.sh).

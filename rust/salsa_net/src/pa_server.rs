@@ -232,6 +232,7 @@ struct PaRtStream {
     fragsize: AtomicU32,
     corked: AtomicU32,
     in_prebuf: AtomicU32,
+    underflow_resync: AtomicBool,
     draining: AtomicU32,
     muted: AtomicU32,
     volume_milli: AtomicU32,
@@ -287,6 +288,7 @@ impl PaRtStream {
             fragsize: AtomicU32::new(0),
             corked: AtomicU32::new(0),
             in_prebuf: AtomicU32::new(0),
+            underflow_resync: AtomicBool::new(false),
             draining: AtomicU32::new(0),
             muted: AtomicU32::new(0),
             volume_milli: AtomicU32::new(1000),
@@ -1339,6 +1341,7 @@ impl PaState {
                 rs.underrun_baseline_bytes.store(0, Ordering::Relaxed);
                 rs.corked.store(0, Ordering::Relaxed);
                 rs.in_prebuf.store(0, Ordering::Relaxed);
+                rs.underflow_resync.store(false, Ordering::Relaxed);
                 rs.draining.store(0, Ordering::Relaxed);
                 rs.muted.store(0, Ordering::Relaxed);
                 rs.volume_milli.store(1000, Ordering::Relaxed);
@@ -1507,6 +1510,9 @@ impl PaState {
             }
             let rs = &rt.streams[si];
             if self.streams[si].is_playback {
+                if rs.underflow_resync.swap(false, Ordering::AcqRel) {
+                    self.streams[si].started_sent = false;
+                }
                 let wr = rs.wr_frame.load(Ordering::Acquire);
                 let rd = rs.rd_frame.load(Ordering::Acquire);
                 if rs.draining.load(Ordering::Relaxed) != 0 && rd >= wr {
@@ -1519,9 +1525,13 @@ impl PaState {
                 let wi = rs.write_index.load(Ordering::Relaxed);
                 let ack_pending = self.streams[si].requested_bytes_total.saturating_sub(wi);
                 let tl = self.streams[si].tlength as u64;
+                let prebuf = self.streams[si].prebuf as u64;
+                let in_prebuf_now = rs.in_prebuf.load(Ordering::Acquire) != 0;
                 if queued_bytes + ack_pending < tl && rs.draining.load(Ordering::Relaxed) == 0 {
                     let need = (tl - (queued_bytes + ack_pending)) as u32;
-                    if need >= self.streams[si].minreq {
+                    if need >= self.streams[si].minreq
+                        || (in_prebuf_now && queued_bytes + ack_pending < prebuf.min(tl))
+                    {
                         self.send_stream_request(si, need);
                     }
                 }
@@ -2991,10 +3001,22 @@ impl PaState {
                     self.clients[ci].reply_err(tag, ERR_NOENTITY);
                     return;
                 };
+                let is_pb = self.streams[si].is_playback;
+                if is_pb && !cork {
+                    let rs = &rt.streams[si];
+                    let wr = rs.wr_frame.load(Ordering::Acquire);
+                    let rd = rs.rd_frame.load(Ordering::Acquire);
+                    let fsz = self.streams[si].frame_size as u64;
+                    let queued_bytes = wr.saturating_sub(rd) * fsz;
+                    let preb = self.streams[si].prebuf as u64;
+                    if preb > 0 && queued_bytes < preb {
+                        rs.in_prebuf.store(1, Ordering::Release);
+                        self.streams[si].started_sent = false;
+                    }
+                }
                 rt.streams[si]
                     .corked
                     .store(u32::from(cork), Ordering::Relaxed);
-                let is_pb = self.streams[si].is_playback;
                 let sidx = self.streams[si].index;
                 let nm = if self.streams[si].name.is_empty() {
                     self.clients[ci].name.clone()
@@ -3018,6 +3040,25 @@ impl PaState {
                     ),
                 );
                 self.clients[ci].reply_simple_ack(tag);
+                if is_pb && !cork && rt.streams[si].draining.load(Ordering::Relaxed) == 0 {
+                    let rs = &rt.streams[si];
+                    let wr = rs.wr_frame.load(Ordering::Acquire);
+                    let rd = rs.rd_frame.load(Ordering::Acquire);
+                    let fsz = self.streams[si].frame_size as u64;
+                    let queued_bytes = wr.saturating_sub(rd) * fsz;
+                    let wi = rs.write_index.load(Ordering::Relaxed);
+                    let ack_pending = self.streams[si].requested_bytes_total.saturating_sub(wi);
+                    let tl = self.streams[si].tlength as u64;
+                    if queued_bytes + ack_pending < tl {
+                        let need = (tl - (queued_bytes + ack_pending)) as u32;
+                        if need >= self.streams[si].minreq
+                            || (rs.in_prebuf.load(Ordering::Acquire) != 0
+                                && queued_bytes + ack_pending < (self.streams[si].prebuf as u64))
+                        {
+                            self.send_stream_request(si, need);
+                        }
+                    }
+                }
                 self.broadcast_sub_event(
                     if is_pb {
                         SUB_EVENT_SINK_INPUT
@@ -3046,6 +3087,8 @@ impl PaState {
                 if self.streams[si].is_playback {
                     rs.in_prebuf
                         .store(u32::from(self.streams[si].prebuf > 0), Ordering::Release);
+                    rs.underflow_resync.store(false, Ordering::Release);
+                    self.streams[si].started_sent = false;
                     rs.underrun_baseline_bytes.store(wi, Ordering::Relaxed);
                 }
                 self.clients[ci].reply_simple_ack(tag);
@@ -3973,6 +4016,8 @@ fn enforce_playback_attr(s: &mut PaStreamMeta, maxl: u32, tl: u32, minr: u32, pr
     }
     bytes_5ms = bytes_5ms.max(fsz);
     let bytes_20ms = bytes_10ms * 2;
+    let bytes_15ms = ((bytes_10ms + bytes_5ms) / fsz) * fsz;
+    let bytes_30ms = ((bytes_10ms * 3) / fsz) * fsz;
 
     s.maxlength = if maxl == PA_INVALID_INDEX || maxl > max_ring {
         max_ring
@@ -3989,7 +4034,12 @@ fn enforce_playback_attr(s: &mut PaStreamMeta, maxl: u32, tl: u32, minr: u32, pr
     } else {
         tl
     };
-    s.tlength = ((s.tlength.clamp(bytes_20ms, s.maxlength) / fsz) * fsz).max(fsz);
+    let min_tl = if preb == 0 {
+        bytes_20ms
+    } else {
+        bytes_30ms.min(s.maxlength)
+    };
+    s.tlength = ((s.tlength.clamp(min_tl, s.maxlength) / fsz) * fsz).max(fsz);
 
     let min_floor = if s.tlength <= bytes_20ms * 2 {
         bytes_5ms
@@ -4016,7 +4066,20 @@ fn enforce_playback_attr(s: &mut PaStreamMeta, maxl: u32, tl: u32, minr: u32, pr
         s.tlength = s.minreq;
     }
 
-    s.prebuf = if preb == PA_INVALID_INDEX { s.minreq } else { preb };
+    let max_preb = if s.tlength > s.minreq {
+        ((s.tlength - s.minreq) / fsz) * fsz
+    } else {
+        s.tlength
+    };
+    let def_prebuf = ((s.tlength / 2).max(bytes_15ms).min(max_preb) / fsz) * fsz;
+    s.prebuf = if preb == PA_INVALID_INDEX {
+        def_prebuf.max(s.minreq.min(max_preb))
+    } else if preb == 0 {
+        0
+    } else {
+        let min_safe_preb = bytes_10ms.min(max_preb);
+        ((preb.max(min_safe_preb) / fsz) * fsz).min(s.tlength)
+    };
     s.prebuf = ((s.prebuf / fsz) * fsz).min(s.tlength);
 }
 
@@ -4996,6 +5059,10 @@ pub unsafe extern "C" fn lwasapi_pa_server_mix_playback(
             if rs.draining.load(Ordering::Relaxed) == 0 {
                 rs.underrun_baseline_bytes
                     .store(rs.read_index.load(Ordering::Relaxed), Ordering::Relaxed);
+                if rs.prebuf.load(Ordering::Relaxed) > 0 {
+                    rs.in_prebuf.store(1, Ordering::Release);
+                    rs.underflow_resync.store(true, Ordering::Release);
+                }
                 wake_needed = true;
             }
             continue;
@@ -5052,6 +5119,11 @@ pub unsafe extern "C" fn lwasapi_pa_server_mix_playback(
                     engine_rate,
                     doi_cap,
                 );
+                if rs.draining.load(Ordering::Relaxed) == 0 && rs.prebuf.load(Ordering::Relaxed) > 0 {
+                    rs.in_prebuf.store(1, Ordering::Release);
+                    rs.underflow_resync.store(true, Ordering::Release);
+                    wake_needed = true;
+                }
             }
             rd += n as u64;
             stream_save_hist(rs, &mut cur, n as u64, rd);
@@ -5112,6 +5184,11 @@ pub unsafe extern "C" fn lwasapi_pa_server_mix_playback(
                     engine_rate,
                     doi_cap,
                 );
+                if rs.draining.load(Ordering::Relaxed) == 0 && rs.prebuf.load(Ordering::Relaxed) > 0 {
+                    rs.in_prebuf.store(1, Ordering::Release);
+                    rs.underflow_resync.store(true, Ordering::Release);
+                    wake_needed = true;
+                }
             }
             let mut adv = pos.floor() as u64;
             if rd + adv > wr {
@@ -5794,5 +5871,70 @@ mod tests {
         good_tb.put_arbitrary(&st.cookie.clone());
         st.handle_control_packet(0, &good_tb.into_vec(), &rt, &vol_lock);
         assert!(st.clients[0].authed);
+    }
+
+    #[test]
+    fn playback_attr_and_underrun_rearm_prebuf_for_smooth_video_start() {
+        let mut sm = PaStreamMeta {
+            frame_size: 8,
+            ..PaStreamMeta::default()
+        };
+        sm.ss.rate = 48_000;
+        sm.ss.channels = 2;
+
+        // Low-latency browser video defaults (preb=INVALID) get >= 15ms prebuf and >= 30ms tlength
+        enforce_playback_attr(&mut sm, PA_INVALID_INDEX, 1920 * 4, PA_INVALID_INDEX, PA_INVALID_INDEX);
+        assert!(sm.tlength >= 1440 * 8, "tlength={}", sm.tlength);
+        assert!(sm.prebuf >= 720 * 8, "prebuf={}", sm.prebuf);
+        assert!(sm.prebuf <= sm.tlength.saturating_sub(sm.minreq));
+
+        // Explicit prebuf=0 remains zero
+        let mut sm_zero = PaStreamMeta {
+            frame_size: 8,
+            ..PaStreamMeta::default()
+        };
+        sm_zero.ss.rate = 48_000;
+        sm_zero.ss.channels = 2;
+        enforce_playback_attr(&mut sm_zero, PA_INVALID_INDEX, 960 * 8, PA_INVALID_INDEX, 0);
+        assert_eq!(sm_zero.prebuf, 0);
+
+        // Partial/empty underrun re-arms in_prebuf cleanly and fades smoothly instead of stuttering
+        let mut h = PaServerHandle {
+            state: Arc::new(Mutex::new(PaState::new(
+                empty_pa_callbacks(),
+                String::new(),
+                String::new(),
+            ))),
+            rt: Arc::new(PaRtShared::new(-1)),
+            vol_file_lock: Arc::new(Mutex::new(())),
+            running: Arc::new(AtomicBool::new(false)),
+            wake_efd: crate::unix_sys::new_eventfd().expect("eventfd"),
+            sock_path: String::new(),
+            pid_path: String::new(),
+            tcp_port: None,
+            tcp_port_path: None,
+            thread: None,
+        };
+        let rt_ref = Arc::clone(&h.rt);
+        let rs = &rt_ref.streams[0];
+        rs.active.store(1, Ordering::Release);
+        rs.is_playback.store(true, Ordering::Release);
+        rs.frame_size.store(8, Ordering::Relaxed);
+        rs.sample_rate_atomic.store(48_000, Ordering::Relaxed);
+        rs.tlength.store(sm.tlength, Ordering::Relaxed);
+        rs.prebuf.store(sm.prebuf, Ordering::Relaxed);
+        rs.in_prebuf.store(0, Ordering::Release);
+        rs.wr_frame.store(64, Ordering::Release);
+        rs.rd_frame.store(0, Ordering::Release);
+        for i in 0..64 {
+            rs.ring_set(i, 0.25, 0.25);
+        }
+        let mut out = vec![0.0f32; 256];
+        unsafe {
+            lwasapi_pa_server_mix_playback(&mut h, out.as_mut_ptr(), 128, 48_000);
+        }
+        assert_eq!(rs.rd_frame.load(Ordering::Acquire), 64);
+        assert_eq!(rs.in_prebuf.load(Ordering::Acquire), 1);
+        assert!(rs.underflow_resync.load(Ordering::Acquire));
     }
 }
