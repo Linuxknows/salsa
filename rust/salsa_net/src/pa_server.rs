@@ -327,9 +327,55 @@ impl PaRtStream {
     }
 }
 
+struct PaWasapiRtSlot {
+    active: AtomicBool,
+    session_id: AtomicU32,
+    pa_stream_idx: AtomicU32,
+    volume_milli: AtomicU32,
+    muted: AtomicBool,
+    doi_watched: AtomicBool,
+    pa_ctl_seq: AtomicU64,
+    pa_target_vol_milli: AtomicU32,
+    pa_target_muted: AtomicBool,
+    mix_peak_l: AtomicU32,
+    mix_peak_r: AtomicU32,
+    period_frames: AtomicU32,
+    period_l: Vec<AtomicU32>,
+    period_r: Vec<AtomicU32>,
+}
+
+impl PaWasapiRtSlot {
+    fn new() -> Self {
+        let mut period_l = Vec::with_capacity(PA_MAX_DOI_PERIOD);
+        let mut period_r = Vec::with_capacity(PA_MAX_DOI_PERIOD);
+        for _ in 0..PA_MAX_DOI_PERIOD {
+            period_l.push(AtomicU32::new(0));
+            period_r.push(AtomicU32::new(0));
+        }
+        Self {
+            active: AtomicBool::new(false),
+            session_id: AtomicU32::new(0),
+            pa_stream_idx: AtomicU32::new(PA_INVALID_INDEX),
+            volume_milli: AtomicU32::new(1000),
+            muted: AtomicBool::new(false),
+            doi_watched: AtomicBool::new(false),
+            pa_ctl_seq: AtomicU64::new(0),
+            pa_target_vol_milli: AtomicU32::new(1000),
+            pa_target_muted: AtomicBool::new(false),
+            mix_peak_l: AtomicU32::new(0),
+            mix_peak_r: AtomicU32::new(0),
+            period_frames: AtomicU32::new(0),
+            period_l,
+            period_r,
+        }
+    }
+}
+
 struct PaRtShared {
     streams: Vec<PaRtStream>,
+    wasapi_slots: Vec<PaWasapiRtSlot>,
     has_active_doi: AtomicBool,
+    wasapi_doi_mask: AtomicU32,
     mon_vol_milli: AtomicU32,
     mon_muted: AtomicI32,
     dom_stream_rate: AtomicU32,
@@ -343,9 +389,15 @@ impl PaRtShared {
         for _ in 0..PA_MAX_STREAMS {
             streams.push(PaRtStream::new());
         }
+        let mut wasapi_slots = Vec::with_capacity(LWASAPI_MAX_SESSIONS);
+        for _ in 0..LWASAPI_MAX_SESSIONS {
+            wasapi_slots.push(PaWasapiRtSlot::new());
+        }
         Self {
             streams,
+            wasapi_slots,
             has_active_doi: AtomicBool::new(false),
+            wasapi_doi_mask: AtomicU32::new(0),
             mon_vol_milli: AtomicU32::new(1000),
             mon_muted: AtomicI32::new(0),
             dom_stream_rate: AtomicU32::new(0),
@@ -356,12 +408,37 @@ impl PaRtShared {
 
     #[inline]
     fn sync_active_doi(&self) {
-        let any_doi = self.streams.iter().any(|s| {
-            s.in_use.load(Ordering::Relaxed)
+        let mut any_doi = false;
+        for s in &self.streams {
+            if s.in_use.load(Ordering::Relaxed)
                 && !s.is_playback.load(Ordering::Relaxed)
                 && s.direct_on_input.load(Ordering::Relaxed) != PA_INVALID_INDEX
-        });
+            {
+                any_doi = true;
+                break;
+            }
+        }
         self.has_active_doi.store(any_doi, Ordering::Release);
+
+        let mut wmask = 0u32;
+        for (slot_idx, ws) in self.wasapi_slots.iter().enumerate() {
+            let w_idx = ws.pa_stream_idx.load(Ordering::Acquire);
+            let watched = any_doi
+                && ws.active.load(Ordering::Acquire)
+                && w_idx != PA_INVALID_INDEX
+                && self.streams.iter().any(|s| {
+                    s.in_use.load(Ordering::Relaxed)
+                        && !s.is_playback.load(Ordering::Relaxed)
+                        && s.direct_on_input.load(Ordering::Relaxed) == w_idx
+                });
+            ws.doi_watched.store(watched, Ordering::Release);
+            if !watched {
+                ws.period_frames.store(0, Ordering::Relaxed);
+            } else if slot_idx < 32 {
+                wmask |= 1u32 << slot_idx;
+            }
+        }
+        self.wasapi_doi_mask.store(wmask, Ordering::Release);
     }
 
     #[inline]
@@ -615,6 +692,23 @@ struct AppVolEntry {
     muted: u8,
 }
 
+#[derive(Clone, Default)]
+struct WasapiPaProxyMeta {
+    active: bool,
+    session_id: u32,
+    pa_stream_idx: u32,
+    pa_client_idx: u32,
+    client_pid: u32,
+    client_name: String,
+    stream_name: String,
+    target_dev_idx: u32,
+    ss: PaSampleSpec,
+    map: PaChannelMap,
+    vol: PaCVolume,
+    client_props: PaPropBag,
+    stream_props: PaPropBag,
+}
+
 struct PaState {
     cbs: LwasapiPaCallbacks,
     _sock_path: String,
@@ -623,6 +717,7 @@ struct PaState {
     cookie_valid: bool,
     clients: Vec<PaClient>,
     streams: Vec<PaStreamMeta>,
+    wasapi_proxies: Vec<WasapiPaProxyMeta>,
     next_client_idx: u32,
     next_stream_idx: u32,
     stable_ids: Vec<StableId>,
@@ -648,6 +743,7 @@ impl PaState {
             clients.push(PaClient::new(s));
         }
         let streams = vec![PaStreamMeta::default(); PA_MAX_STREAMS];
+        let wasapi_proxies = vec![WasapiPaProxyMeta::default(); LWASAPI_MAX_SESSIONS];
         let stable_ids = vec![StableId::default(); PA_MAX_STABLE_IDS];
         let mut st = Self {
             cbs,
@@ -657,6 +753,7 @@ impl PaState {
             cookie_valid: false,
             clients,
             streams,
+            wasapi_proxies,
             next_client_idx: 1,
             next_stream_idx: 1,
             stable_ids,
@@ -1304,6 +1401,170 @@ impl PaState {
             }
         }
         None
+    }
+
+    fn find_wasapi_proxy_by_stream_idx(&self, idx: u32) -> Option<usize> {
+        for (slot_idx, w) in self.wasapi_proxies.iter().enumerate() {
+            if w.active && w.pa_stream_idx == idx {
+                return Some(slot_idx);
+            }
+        }
+        None
+    }
+
+    fn sync_wasapi_proxy_vol_from_rt(
+        w: &mut WasapiPaProxyMeta,
+        ws: &PaWasapiRtSlot,
+    ) -> (bool, bool) {
+        let milli = ws.volume_milli.load(Ordering::Relaxed);
+        let muted = ws.muted.load(Ordering::Relaxed);
+        let ch = w.ss.channels.max(1);
+        w.vol = milli_to_cvol(milli, ch);
+        (muted, false)
+    }
+
+    fn register_wasapi_proxy(
+        &mut self,
+        slot_idx: usize,
+        session_id: u32,
+        pid: u32,
+        raw_name: &str,
+        rate: u32,
+        channels: u32,
+        rt: &PaRtShared,
+    ) {
+        if slot_idx >= LWASAPI_MAX_SESSIONS || slot_idx >= self.wasapi_proxies.len() {
+            return;
+        }
+        if self.wasapi_proxies[slot_idx].active {
+            if self.wasapi_proxies[slot_idx].session_id == session_id {
+                return;
+            }
+            self.unregister_wasapi_proxy(slot_idx, self.wasapi_proxies[slot_idx].session_id, rt);
+        }
+        self.refresh_device_cache();
+        let active_sink = self.find_active_sink_idx();
+        let pa_client_idx = self.next_client_idx;
+        self.next_client_idx = self.next_client_idx.wrapping_add(1).max(1);
+        let pa_stream_idx = self.next_stream_idx;
+        self.next_stream_idx = self.next_stream_idx.wrapping_add(1).max(1);
+
+        let clean_name = if raw_name.trim().is_empty() {
+            "AudioSession"
+        } else {
+            raw_name.trim()
+        };
+        let app_bin = clean_name
+            .split(':')
+            .next()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(clean_name);
+
+        let mut cprops = PaPropBag::default();
+        cprops.set_kv("application.name", app_bin);
+        cprops.set_kv("application.process.binary", app_bin);
+        cprops.set_kv("salsa.wasapi.session_id", &session_id.to_string());
+        if pid > 0 {
+            cprops.set_kv("application.process.id", &pid.to_string());
+        }
+
+        let mut sprops = cprops.clone();
+        sprops.set_kv("media.name", clean_name);
+
+        let ch_u8 = (channels as u8).clamp(1, 8);
+        let eff_rate = rate.clamp(8_000, 768_000);
+        let ss = PaSampleSpec {
+            format: FMT_FLOAT32LE,
+            channels: ch_u8,
+            rate: eff_rate,
+        };
+        let map = std_channel_map(ch_u8);
+        let vol = milli_to_cvol(1000, ch_u8);
+
+        self.wasapi_proxies[slot_idx] = WasapiPaProxyMeta {
+            active: true,
+            session_id,
+            pa_stream_idx,
+            pa_client_idx,
+            client_pid: pid,
+            client_name: app_bin.to_string(),
+            stream_name: clean_name.to_string(),
+            target_dev_idx: active_sink,
+            ss,
+            map,
+            vol,
+            client_props: cprops,
+            stream_props: sprops,
+        };
+
+        let ws = &rt.wasapi_slots[slot_idx];
+        ws.session_id.store(session_id, Ordering::Relaxed);
+        ws.pa_stream_idx.store(pa_stream_idx, Ordering::Release);
+        ws.volume_milli.store(1000, Ordering::Relaxed);
+        ws.muted.store(false, Ordering::Relaxed);
+        ws.doi_watched.store(false, Ordering::Release);
+        ws.pa_ctl_seq.store(0, Ordering::Release);
+        ws.pa_target_vol_milli.store(1000, Ordering::Relaxed);
+        ws.pa_target_muted.store(false, Ordering::Relaxed);
+        ws.mix_peak_l.store(0, Ordering::Relaxed);
+        ws.mix_peak_r.store(0, Ordering::Relaxed);
+        ws.period_frames.store(0, Ordering::Relaxed);
+        ws.active.store(true, Ordering::Release);
+        rt.sync_active_doi();
+
+        self.broadcast_sub_event(SUB_EVENT_CLIENT, SUB_EVENT_NEW, pa_client_idx);
+        self.broadcast_sub_event(SUB_EVENT_SINK_INPUT, SUB_EVENT_NEW, pa_stream_idx);
+        dbg_emit_vals(
+            LWASAPI_DBG_PA,
+            LWASAPI_DBG_INFO,
+            pid,
+            10000 + pa_stream_idx,
+            eff_rate as i32,
+            i32::from(ch_u8),
+            session_id as i32,
+            "PA_WASAPI_ADD",
+            clean_name,
+            &format!("pa_si=#{pa_stream_idx} pa_cid=#{pa_client_idx} wasapi_sid=#{session_id}"),
+        );
+    }
+
+    fn unregister_wasapi_proxy(&mut self, slot_idx: usize, session_id: u32, rt: &PaRtShared) {
+        if slot_idx >= LWASAPI_MAX_SESSIONS || slot_idx >= self.wasapi_proxies.len() {
+            return;
+        }
+        let w = &self.wasapi_proxies[slot_idx];
+        if !w.active || (session_id != 0 && w.session_id != session_id) {
+            return;
+        }
+        let pa_stream_idx = w.pa_stream_idx;
+        let pa_client_idx = w.pa_client_idx;
+        let pid = w.client_pid;
+        let nm = w.stream_name.clone();
+
+        let ws = &rt.wasapi_slots[slot_idx];
+        ws.active.store(false, Ordering::Release);
+        ws.doi_watched.store(false, Ordering::Release);
+        ws.period_frames.store(0, Ordering::Relaxed);
+        ws.pa_stream_idx.store(PA_INVALID_INDEX, Ordering::Release);
+        ws.session_id.store(0, Ordering::Relaxed);
+        self.wasapi_proxies[slot_idx] = WasapiPaProxyMeta::default();
+        rt.sync_active_doi();
+
+        self.broadcast_sub_event(SUB_EVENT_SINK_INPUT, SUB_EVENT_REMOVE, pa_stream_idx);
+        self.broadcast_sub_event(SUB_EVENT_CLIENT, SUB_EVENT_REMOVE, pa_client_idx);
+        dbg_emit_vals(
+            LWASAPI_DBG_PA,
+            LWASAPI_DBG_INFO,
+            pid,
+            10000 + pa_stream_idx,
+            0,
+            0,
+            session_id as i32,
+            "PA_WASAPI_DEL",
+            &nm,
+            &format!("pa_si=#{pa_stream_idx} pa_cid=#{pa_client_idx} wasapi_sid=#{session_id}"),
+        );
     }
 
     fn alloc_stream(&mut self, ci: usize, rt: &PaRtShared) -> Option<usize> {
@@ -2123,17 +2384,22 @@ impl PaState {
                     if cmd == CMD_GET_CLIENT_INFO && cl.index != req_idx {
                         continue;
                     }
-                    tb.put_u32(PA_TAG_U32, cl.index);
-                    tb.put_str(Some(if cl.name.is_empty() {
+                    let nm = if cl.name.is_empty() {
                         "PulseAudio Client"
                     } else {
                         &cl.name
-                    }));
-                    tb.put_u32(PA_TAG_U32, 0);
-                    tb.put_str(Some("Salsa-LWASAPI"));
-                    if ver >= 13 {
-                        tb.put_proplist(Some(&cl.props));
+                    };
+                    put_client_fields(&mut tb, ver, cl.index, nm, &cl.props);
+                    added += 1;
+                }
+                for w in &self.wasapi_proxies {
+                    if !w.active {
+                        continue;
                     }
+                    if cmd == CMD_GET_CLIENT_INFO && w.pa_client_idx != req_idx {
+                        continue;
+                    }
+                    put_client_fields(&mut tb, ver, w.pa_client_idx, &w.client_name, &w.client_props);
                     added += 1;
                 }
                 if cmd == CMD_GET_CLIENT_INFO && added == 0 {
@@ -2168,6 +2434,38 @@ impl PaState {
                         s,
                         rt.streams[si].muted.load(Ordering::Relaxed) != 0,
                         rt.streams[si].corked.load(Ordering::Relaxed) != 0,
+                    );
+                    added += 1;
+                }
+                let active_sink = self.find_active_sink_idx();
+                for (slot_idx, w) in self.wasapi_proxies.iter_mut().enumerate() {
+                    if !w.active {
+                        continue;
+                    }
+                    if cmd == CMD_GET_SINK_INPUT_INFO && w.pa_stream_idx != req_idx {
+                        continue;
+                    }
+                    w.target_dev_idx = active_sink;
+                    let (muted, corked) =
+                        Self::sync_wasapi_proxy_vol_from_rt(w, &rt.wasapi_slots[slot_idx]);
+                    let nm = if w.stream_name.is_empty() {
+                        w.client_name.as_str()
+                    } else {
+                        w.stream_name.as_str()
+                    };
+                    put_sink_input_fields(
+                        &mut tb,
+                        ver,
+                        w.pa_stream_idx,
+                        nm,
+                        w.pa_client_idx,
+                        w.target_dev_idx,
+                        &w.ss,
+                        &w.map,
+                        &w.vol,
+                        &w.stream_props,
+                        muted,
+                        corked,
                     );
                     added += 1;
                 }
@@ -2374,55 +2672,83 @@ impl PaState {
                     self.clients[ci].reply_err(tag, ERR_PROTOCOL);
                     return;
                 };
-                let Some(si) = self.find_stream_by_index(idx) else {
+                if let Some(si) = self.find_stream_by_index(idx) {
+                    self.streams[si].vol = cv;
+                    rt.streams[si]
+                        .volume_milli
+                        .store(cvol_to_milli(&cv), Ordering::Relaxed);
+                    let is_pb = self.streams[si].is_playback;
+                    self.record_app_volume(si, rt);
+                    let (p, snap) = self.app_vols_snapshot();
+                    write_app_volumes_disk(vol_lock, &p, &snap);
+                    self.clients[ci].reply_simple_ack(tag);
+                    self.broadcast_sub_event(
+                        if is_pb {
+                            SUB_EVENT_SINK_INPUT
+                        } else {
+                            SUB_EVENT_SOURCE_OUTPUT
+                        },
+                        SUB_EVENT_CHANGE,
+                        idx,
+                    );
+                } else if cmd == CMD_SET_SINK_INPUT_VOLUME {
+                    let Some(wi) = self.find_wasapi_proxy_by_stream_idx(idx) else {
+                        self.clients[ci].reply_err(tag, ERR_NOENTITY);
+                        return;
+                    };
+                    let milli = cvol_to_milli(&cv).min(1500);
+                    self.wasapi_proxies[wi].vol = cv;
+                    let ws = &rt.wasapi_slots[wi];
+                    ws.volume_milli.store(milli, Ordering::Relaxed);
+                    ws.pa_target_vol_milli.store(milli, Ordering::Relaxed);
+                    ws.pa_target_muted
+                        .store(ws.muted.load(Ordering::Relaxed), Ordering::Relaxed);
+                    ws.pa_ctl_seq.fetch_add(1, Ordering::Release);
+                    self.clients[ci].reply_simple_ack(tag);
+                    self.broadcast_sub_event(SUB_EVENT_SINK_INPUT, SUB_EVENT_CHANGE, idx);
+                } else {
                     self.clients[ci].reply_err(tag, ERR_NOENTITY);
-                    return;
-                };
-                self.streams[si].vol = cv;
-                rt.streams[si]
-                    .volume_milli
-                    .store(cvol_to_milli(&cv), Ordering::Relaxed);
-                let is_pb = self.streams[si].is_playback;
-                self.record_app_volume(si, rt);
-                let (p, snap) = self.app_vols_snapshot();
-                write_app_volumes_disk(vol_lock, &p, &snap);
-                self.clients[ci].reply_simple_ack(tag);
-                self.broadcast_sub_event(
-                    if is_pb {
-                        SUB_EVENT_SINK_INPUT
-                    } else {
-                        SUB_EVENT_SOURCE_OUTPUT
-                    },
-                    SUB_EVENT_CHANGE,
-                    idx,
-                );
+                }
             }
             CMD_SET_SINK_INPUT_MUTE | CMD_SET_SOURCE_OUTPUT_MUTE => {
                 let (Some(idx), Some(mute)) = (tr.read_u32(), tr.read_bool()) else {
                     self.clients[ci].reply_err(tag, ERR_PROTOCOL);
                     return;
                 };
-                let Some(si) = self.find_stream_by_index(idx) else {
+                if let Some(si) = self.find_stream_by_index(idx) {
+                    rt.streams[si]
+                        .muted
+                        .store(u32::from(mute), Ordering::Relaxed);
+                    let is_pb = self.streams[si].is_playback;
+                    self.record_app_volume(si, rt);
+                    let (p, snap) = self.app_vols_snapshot();
+                    write_app_volumes_disk(vol_lock, &p, &snap);
+                    self.clients[ci].reply_simple_ack(tag);
+                    self.broadcast_sub_event(
+                        if is_pb {
+                            SUB_EVENT_SINK_INPUT
+                        } else {
+                            SUB_EVENT_SOURCE_OUTPUT
+                        },
+                        SUB_EVENT_CHANGE,
+                        idx,
+                    );
+                } else if cmd == CMD_SET_SINK_INPUT_MUTE {
+                    let Some(wi) = self.find_wasapi_proxy_by_stream_idx(idx) else {
+                        self.clients[ci].reply_err(tag, ERR_NOENTITY);
+                        return;
+                    };
+                    let ws = &rt.wasapi_slots[wi];
+                    ws.muted.store(mute, Ordering::Relaxed);
+                    ws.pa_target_vol_milli
+                        .store(ws.volume_milli.load(Ordering::Relaxed), Ordering::Relaxed);
+                    ws.pa_target_muted.store(mute, Ordering::Relaxed);
+                    ws.pa_ctl_seq.fetch_add(1, Ordering::Release);
+                    self.clients[ci].reply_simple_ack(tag);
+                    self.broadcast_sub_event(SUB_EVENT_SINK_INPUT, SUB_EVENT_CHANGE, idx);
+                } else {
                     self.clients[ci].reply_err(tag, ERR_NOENTITY);
-                    return;
-                };
-                rt.streams[si]
-                    .muted
-                    .store(u32::from(mute), Ordering::Relaxed);
-                let is_pb = self.streams[si].is_playback;
-                self.record_app_volume(si, rt);
-                let (p, snap) = self.app_vols_snapshot();
-                write_app_volumes_disk(vol_lock, &p, &snap);
-                self.clients[ci].reply_simple_ack(tag);
-                self.broadcast_sub_event(
-                    if is_pb {
-                        SUB_EVENT_SINK_INPUT
-                    } else {
-                        SUB_EVENT_SOURCE_OUTPUT
-                    },
-                    SUB_EVENT_CHANGE,
-                    idx,
-                );
+                }
             }
             CMD_SET_DEFAULT_SINK | CMD_SET_DEFAULT_SOURCE => {
                 let Some(nm_opt) = tr.read_str_slice() else {
@@ -2604,17 +2930,37 @@ impl PaState {
                     }
                 }
 
+                let c_pid = self.clients[ci].pid;
+                let c_name = self.clients[ci].name.clone();
+                let c_bin = self.clients[ci].props.get_str("application.process.binary");
+                let c_app = self.clients[ci].props.get_str("application.name");
+
                 let sm = &mut self.streams[si];
                 sm.is_playback = true;
                 sm.target_dev_idx = actual_sink_idx;
                 sm.ss = ss;
                 sm.map = mp;
                 sm.props = pb;
+                if c_pid > 0 && sm.props.get_str("application.process.id").is_none() {
+                    sm.props.set_kv("application.process.id", &c_pid.to_string());
+                }
+                if sm.props.get_str("application.name").is_none() {
+                    if let Some(ref an) = c_app {
+                        sm.props.set_kv("application.name", an);
+                    } else if !c_name.is_empty() {
+                        sm.props.set_kv("application.name", &c_name);
+                    }
+                }
+                if sm.props.get_str("application.process.binary").is_none() {
+                    if let Some(ref bn) = c_bin {
+                        sm.props.set_kv("application.process.binary", bn);
+                    }
+                }
                 sm.name = sm
                     .props
                     .get_str("media.name")
                     .or(sname)
-                    .unwrap_or_else(|| self.clients[ci].name.clone());
+                    .unwrap_or(c_name);
                 sm.frame_size = frame_size;
                 enforce_playback_attr(sm, maxl, eff_tl, minr, preb);
 
@@ -2797,15 +3143,23 @@ impl PaState {
                 }
 
                 let (actual_src_idx, actual_src_nm, is_mon) = if doi != PA_INVALID_INDEX {
-                    let Some(target_si) = self.find_stream_by_index(doi) else {
+                    let tgt_dev = if let Some(target_si) = self.find_stream_by_index(doi) {
+                        if !self.streams[target_si].is_playback {
+                            self.clients[ci].reply_err(tag, ERR_NOENTITY);
+                            return;
+                        }
+                        self.streams[target_si].target_dev_idx
+                    } else if let Some(target_wi) = self.find_wasapi_proxy_by_stream_idx(doi) {
+                        let d = self.wasapi_proxies[target_wi].target_dev_idx;
+                        if d != PA_INVALID_INDEX {
+                            d
+                        } else {
+                            self.find_active_sink_idx()
+                        }
+                    } else {
                         self.clients[ci].reply_err(tag, ERR_NOENTITY);
                         return;
                     };
-                    if !self.streams[target_si].is_playback {
-                        self.clients[ci].reply_err(tag, ERR_NOENTITY);
-                        return;
-                    }
-                    let tgt_dev = self.streams[target_si].target_dev_idx;
                     let mut mon_idx = self.find_monitor_src_idx_for_sink(tgt_dev);
                     if mon_idx == PA_INVALID_INDEX {
                         mon_idx = self.stable_pa_idx(PA_FAC_SOURCE, "mon:virtual");
@@ -3295,6 +3649,21 @@ impl PaState {
                 };
                 let dev_nm =
                     nm_opt.map(|(o, l)| String::from_utf8_lossy(&buf[o..o + l]).into_owned());
+                if cmd == CMD_MOVE_SINK_INPUT {
+                    if let Some(wi) = self.find_wasapi_proxy_by_stream_idx(sidx) {
+                        self.refresh_device_cache();
+                        let Some((resolved_idx, _)) =
+                            self.resolve_sink_idx_and_name(dev_idx, dev_nm.as_deref())
+                        else {
+                            self.clients[ci].reply_err(tag, ERR_NOENTITY);
+                            return;
+                        };
+                        self.wasapi_proxies[wi].target_dev_idx = resolved_idx;
+                        self.clients[ci].reply_simple_ack(tag);
+                        self.broadcast_sub_event(SUB_EVENT_SINK_INPUT, SUB_EVENT_CHANGE, sidx);
+                        return;
+                    }
+                }
                 let Some(si) = self.find_stream_by_index(sidx) else {
                     self.clients[ci].reply_err(tag, ERR_NOENTITY);
                     return;
@@ -3351,6 +3720,10 @@ impl PaState {
                     self.clients[ci].reply_err(tag, ERR_PROTOCOL);
                     return;
                 };
+                if cmd == CMD_KILL_SINK_INPUT && self.find_wasapi_proxy_by_stream_idx(idx).is_some() {
+                    self.clients[ci].reply_err(tag, ERR_ACCESS);
+                    return;
+                }
                 let Some(si) = self.find_stream_by_index(idx) else {
                     self.clients[ci].reply_err(tag, ERR_NOENTITY);
                     return;
@@ -4502,6 +4875,73 @@ fn put_card_entry(
     }
 }
 
+fn milli_to_cvol(milli: u32, channels: u8) -> PaCVolume {
+    let ch = channels.clamp(1, 32);
+    let pv = pct_to_pa_vol((milli.min(1500) + 5) / 10);
+    let mut vol = PaCVolume {
+        channels: ch,
+        values: [0; 32],
+    };
+    for v in &mut vol.values[..ch as usize] {
+        *v = pv;
+    }
+    vol
+}
+
+fn put_client_fields(tb: &mut TagBuilder, ver: u32, idx: u32, name: &str, props: &PaPropBag) {
+    tb.put_u32(PA_TAG_U32, idx);
+    tb.put_str(Some(name));
+    tb.put_u32(PA_TAG_U32, 0);
+    tb.put_str(Some("Salsa-LWASAPI"));
+    if ver >= 13 {
+        tb.put_proplist(Some(props));
+    }
+}
+
+fn put_sink_input_fields(
+    tb: &mut TagBuilder,
+    ver: u32,
+    idx: u32,
+    nm: &str,
+    client_index: u32,
+    sink_idx: u32,
+    ss: &PaSampleSpec,
+    map: &PaChannelMap,
+    vol: &PaCVolume,
+    props: &PaPropBag,
+    muted: bool,
+    corked: bool,
+) {
+    tb.put_u32(PA_TAG_U32, idx);
+    tb.put_str(Some(nm));
+    tb.put_u32(PA_TAG_U32, 0);
+    tb.put_u32(PA_TAG_U32, client_index);
+    tb.put_u32(PA_TAG_U32, sink_idx);
+    tb.put_ss(ss);
+    tb.put_map(map);
+    tb.put_cvol(vol);
+    tb.put_u64_raw(PA_TAG_USEC, 2000);
+    tb.put_u64_raw(PA_TAG_USEC, 2000);
+    tb.put_str(Some("linear"));
+    tb.put_str(Some("Salsa-LWASAPI"));
+    if ver >= 11 {
+        tb.put_bool(muted);
+    }
+    if ver >= 13 {
+        tb.put_proplist(Some(props));
+    }
+    if ver >= 19 {
+        tb.put_bool(corked);
+    }
+    if ver >= 20 {
+        tb.put_bool(true);
+        tb.put_bool(true);
+    }
+    if ver >= 21 {
+        tb.put_pcm_format_spec(ss, map);
+    }
+}
+
 fn put_sink_input_entry(
     tb: &mut TagBuilder,
     ver: u32,
@@ -4516,34 +4956,20 @@ fn put_sink_input_entry(
     } else {
         "Salsa Stream"
     };
-    tb.put_u32(PA_TAG_U32, s.index);
-    tb.put_str(Some(nm));
-    tb.put_u32(PA_TAG_U32, 0);
-    tb.put_u32(PA_TAG_U32, s.client_index);
-    tb.put_u32(PA_TAG_U32, s.target_dev_idx);
-    tb.put_ss(&s.ss);
-    tb.put_map(&s.map);
-    tb.put_cvol(&s.vol);
-    tb.put_u64_raw(PA_TAG_USEC, 2000);
-    tb.put_u64_raw(PA_TAG_USEC, 2000);
-    tb.put_str(Some("linear"));
-    tb.put_str(Some("Salsa-LWASAPI"));
-    if ver >= 11 {
-        tb.put_bool(muted);
-    }
-    if ver >= 13 {
-        tb.put_proplist(Some(&s.props));
-    }
-    if ver >= 19 {
-        tb.put_bool(corked);
-    }
-    if ver >= 20 {
-        tb.put_bool(true);
-        tb.put_bool(true);
-    }
-    if ver >= 21 {
-        tb.put_pcm_format_spec(&s.ss, &s.map);
-    }
+    put_sink_input_fields(
+        tb,
+        ver,
+        s.index,
+        nm,
+        s.client_index,
+        s.target_dev_idx,
+        &s.ss,
+        &s.map,
+        &s.vol,
+        &s.props,
+        muted,
+        corked,
+    );
 }
 
 fn put_source_output_entry(
@@ -4644,6 +5070,11 @@ fn emit_fade_out(
     let l0 = cur.last_mix_l;
     let r0 = cur.last_mix_r;
     if l0 == 0.0 && r0 == 0.0 {
+        let zero_end = (offset + rem).min(doi_cap);
+        for k in offset..zero_end {
+            rs.period_l[k].store(0, Ordering::Relaxed);
+            rs.period_r[k].store(0, Ordering::Relaxed);
+        }
         return;
     }
     for j in 0..rem {
@@ -4944,6 +5375,20 @@ pub unsafe extern "C" fn lwasapi_pa_server_notify_change(srv: *mut PaServerHandl
             } else {
                 st.stream_update_device_id(si);
             }
+        }
+        let mut changed_wasapi: [u32; LWASAPI_MAX_SESSIONS] = [0; LWASAPI_MAX_SESSIONS];
+        let mut cw_cnt = 0usize;
+        for w in &mut st.wasapi_proxies {
+            if w.active && w.target_dev_idx != sink_idx {
+                w.target_dev_idx = sink_idx;
+                if cw_cnt < changed_wasapi.len() {
+                    changed_wasapi[cw_cnt] = w.pa_stream_idx;
+                    cw_cnt += 1;
+                }
+            }
+        }
+        for &w_idx in &changed_wasapi[..cw_cnt] {
+            st.broadcast_sub_event(SUB_EVENT_SINK_INPUT, SUB_EVENT_CHANGE, w_idx);
         }
         st.broadcast_sub_event(SUB_EVENT_SERVER, SUB_EVENT_CHANGE, PA_INVALID_INDEX);
     }
@@ -5282,7 +5727,11 @@ pub unsafe extern "C" fn lwasapi_pa_server_push_capture(
 
         let mut doi_l = 0.0f32;
         let mut doi_r = 0.0f32;
-        let mut doi_stream_ref: Option<&PaRtStream> = None;
+        enum DoiSource<'a> {
+            Pa(&'a PaRtStream),
+            Wasapi(&'a PaWasapiRtSlot),
+        }
+        let mut doi_stream_ref: Option<DoiSource<'_>> = None;
         let mut src_slice = if is_mon { mon_slice } else { mic_slice };
 
         if has_doi {
@@ -5295,9 +5744,23 @@ pub unsafe extern "C" fn lwasapi_pa_server_push_capture(
                     doi_l = f32::from_bits(cand.mix_peak_l.load(Ordering::Relaxed));
                     doi_r = f32::from_bits(cand.mix_peak_r.load(Ordering::Relaxed));
                     if !peak_detect && cand.period_frames.load(Ordering::Relaxed) >= frames {
-                        doi_stream_ref = Some(cand);
+                        doi_stream_ref = Some(DoiSource::Pa(cand));
                     }
                     break;
+                }
+            }
+            if doi_stream_ref.is_none() {
+                for ws in &h.rt.wasapi_slots {
+                    if ws.active.load(Ordering::Acquire)
+                        && ws.pa_stream_idx.load(Ordering::Acquire) == doi
+                    {
+                        doi_l = f32::from_bits(ws.mix_peak_l.load(Ordering::Relaxed));
+                        doi_r = f32::from_bits(ws.mix_peak_r.load(Ordering::Relaxed));
+                        if !peak_detect && ws.period_frames.load(Ordering::Acquire) >= frames {
+                            doi_stream_ref = Some(DoiSource::Wasapi(ws));
+                        }
+                        break;
+                    }
                 }
             }
             if !peak_detect {
@@ -5308,11 +5771,15 @@ pub unsafe extern "C" fn lwasapi_pa_server_push_capture(
         }
 
         let get_src = |idx: usize| -> Option<(f32, f32)> {
-            if let Some(ds) = doi_stream_ref {
-                if idx < ds.period_l.len() {
+            if let Some(ref ds) = doi_stream_ref {
+                let (pl, pr) = match ds {
+                    DoiSource::Pa(s) => (&s.period_l, &s.period_r),
+                    DoiSource::Wasapi(w) => (&w.period_l, &w.period_r),
+                };
+                if idx < pl.len() {
                     return Some((
-                        f32::from_bits(ds.period_l[idx].load(Ordering::Relaxed)),
-                        f32::from_bits(ds.period_r[idx].load(Ordering::Relaxed)),
+                        f32::from_bits(pl[idx].load(Ordering::Relaxed)),
+                        f32::from_bits(pr[idx].load(Ordering::Relaxed)),
                     ));
                 }
             }
@@ -5781,6 +6248,164 @@ pub unsafe extern "C" fn lwasapi_pa_server_reset_clients(srv: *mut PaServerHandl
     flushed
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn lwasapi_pa_server_register_wasapi_session(
+    srv: *mut PaServerHandle,
+    slot_idx: u32,
+    session_id: u32,
+    pid: u32,
+    name_ptr: *const c_char,
+    rate: u32,
+    channels: u32,
+) {
+    if srv.is_null() || (slot_idx as usize) >= LWASAPI_MAX_SESSIONS {
+        return;
+    }
+    let h = unsafe { &*srv };
+    let nm = if name_ptr.is_null() {
+        "AudioSession"
+    } else {
+        unsafe { CStr::from_ptr(name_ptr) }.to_str().unwrap_or("AudioSession")
+    };
+    {
+        let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
+        st.register_wasapi_proxy(
+            slot_idx as usize,
+            session_id,
+            pid,
+            nm,
+            rate,
+            channels,
+            &h.rt,
+        );
+    }
+    h.rt.signal_wake();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lwasapi_pa_server_unregister_wasapi_session(
+    srv: *mut PaServerHandle,
+    slot_idx: u32,
+    session_id: u32,
+) {
+    if srv.is_null() || (slot_idx as usize) >= LWASAPI_MAX_SESSIONS {
+        return;
+    }
+    let h = unsafe { &*srv };
+    {
+        let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
+        st.unregister_wasapi_proxy(slot_idx as usize, session_id, &h.rt);
+    }
+    h.rt.signal_wake();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lwasapi_pa_server_update_wasapi_session_vol(
+    srv: *mut PaServerHandle,
+    slot_idx: u32,
+    session_id: u32,
+    volume_milli: u32,
+    muted: bool,
+) {
+    if srv.is_null() || (slot_idx as usize) >= LWASAPI_MAX_SESSIONS {
+        return;
+    }
+    let h = unsafe { &*srv };
+    let si = slot_idx as usize;
+    let clamped = volume_milli.min(1500);
+    let pa_idx = {
+        let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
+        let w = &mut st.wasapi_proxies[si];
+        if !w.active || w.session_id != session_id {
+            return;
+        }
+        let ws = &h.rt.wasapi_slots[si];
+        ws.volume_milli.store(clamped, Ordering::Relaxed);
+        ws.muted.store(muted, Ordering::Relaxed);
+        w.vol = milli_to_cvol(clamped, w.ss.channels.max(1));
+        let idx = w.pa_stream_idx;
+        st.broadcast_sub_event(SUB_EVENT_SINK_INPUT, SUB_EVENT_CHANGE, idx);
+        idx
+    };
+    let _ = pa_idx;
+    h.rt.signal_wake();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lwasapi_pa_server_wasapi_doi_mask(srv: *mut PaServerHandle) -> u32 {
+    if srv.is_null() {
+        return 0;
+    }
+    let h = unsafe { &*srv };
+    h.rt.wasapi_doi_mask.load(Ordering::Acquire)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lwasapi_pa_server_push_wasapi_period(
+    srv: *mut PaServerHandle,
+    slot_idx: u32,
+    interleaved_ptr: *const f32,
+    frames: u32,
+    channels: u32,
+) {
+    if srv.is_null() || interleaved_ptr.is_null() || frames == 0 || channels == 0 {
+        return;
+    }
+    let si = slot_idx as usize;
+    let h = unsafe { &*srv };
+    if si >= h.rt.wasapi_slots.len() {
+        return;
+    }
+    let ws = &h.rt.wasapi_slots[si];
+    if !ws.active.load(Ordering::Acquire) {
+        return;
+    }
+    let n = (frames as usize).min(PA_MAX_DOI_PERIOD);
+    let ch = channels as usize;
+    let src = unsafe { core::slice::from_raw_parts(interleaved_ptr, (frames as usize) * ch) };
+    let mut pk_l = 0.0f32;
+    let mut pk_r = 0.0f32;
+    for f in 0..n {
+        let base = f * ch;
+        let l = src[base];
+        let r = if ch > 1 { src[base + 1] } else { l };
+        pk_l = pk_l.max(l.abs());
+        pk_r = pk_r.max(r.abs());
+        ws.period_l[f].store(l.to_bits(), Ordering::Relaxed);
+        ws.period_r[f].store(r.to_bits(), Ordering::Relaxed);
+    }
+    ws.mix_peak_l.store(pk_l.to_bits(), Ordering::Relaxed);
+    ws.mix_peak_r.store(pk_r.to_bits(), Ordering::Relaxed);
+    ws.period_frames.store(n as u32, Ordering::Release);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lwasapi_pa_server_poll_wasapi_ctl(
+    srv: *mut PaServerHandle,
+    slot_idx: u32,
+    last_seq: &mut u64,
+    out_vol_milli: &mut u32,
+    out_muted: &mut u32,
+) -> bool {
+    if srv.is_null() {
+        return false;
+    }
+    let si = slot_idx as usize;
+    let h = unsafe { &*srv };
+    if si >= h.rt.wasapi_slots.len() {
+        return false;
+    }
+    let ws = &h.rt.wasapi_slots[si];
+    let seq = ws.pa_ctl_seq.load(Ordering::Acquire);
+    if seq == *last_seq {
+        return false;
+    }
+    *last_seq = seq;
+    *out_vol_milli = ws.pa_target_vol_milli.load(Ordering::Relaxed);
+    *out_muted = u32::from(ws.pa_target_muted.load(Ordering::Relaxed));
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5936,5 +6561,218 @@ mod tests {
         assert_eq!(rs.rd_frame.load(Ordering::Acquire), 64);
         assert_eq!(rs.in_prebuf.load(Ordering::Acquire), 1);
         assert!(rs.underflow_resync.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn wasapi_session_exposes_pa_sink_input_and_feeds_doi_record_stream() {
+        use std::os::unix::net::UnixStream;
+
+        let mut h = PaServerHandle {
+            state: Arc::new(Mutex::new(PaState::new(
+                empty_pa_callbacks(),
+                String::new(),
+                String::new(),
+            ))),
+            rt: Arc::new(PaRtShared::new(-1)),
+            vol_file_lock: Arc::new(Mutex::new(())),
+            running: Arc::new(AtomicBool::new(false)),
+            wake_efd: crate::unix_sys::new_eventfd().expect("eventfd"),
+            sock_path: String::new(),
+            pid_path: String::new(),
+            tcp_port: None,
+            tcp_port_path: None,
+            thread: None,
+        };
+
+        // 1. Register a WASAPI playback session (e.g., FL64.exe:Salsa-WaveRT-ASIO @ 192kHz).
+        let cname = std::ffi::CString::new("FL64.exe:Salsa-WaveRT-ASIO").unwrap();
+        unsafe {
+            lwasapi_pa_server_register_wasapi_session(
+                &mut h,
+                2,
+                77,
+                451327,
+                cname.as_ptr(),
+                192_000,
+                2,
+            );
+        }
+
+        // Authenticate a mock Discord capture PA client.
+        let Ok((sock_a, _sock_b)) = UnixStream::pair() else {
+            panic!("UnixStream::pair failed");
+        };
+        let owned: OwnedFd = sock_a.into();
+        let (pa_stream_idx, _pa_client_idx) = {
+            let mut st = h.state.lock().unwrap();
+            st.cookie = [0x11u8; PA_NATIVE_COOKIE_LEN];
+            st.cookie_valid = true;
+            st.accept_client_fd(owned, Some((1000, 340351)), false);
+
+            let mut auth_tb = TagBuilder::new(320);
+            auth_tb.put_u32(PA_TAG_U32, CMD_AUTH);
+            auth_tb.put_u32(PA_TAG_U32, 1);
+            auth_tb.put_u32(PA_TAG_U32, PA_PROTO_VERSION);
+            auth_tb.put_arbitrary(&st.cookie.clone());
+            st.handle_control_packet(0, &auth_tb.into_vec(), &h.rt, &h.vol_file_lock);
+            assert!(st.clients[0].authed);
+
+            // Verify CMD_GET_SINK_INPUT_INFO_LIST includes the WASAPI session with its PID.
+            let mut si_tb = TagBuilder::new(32);
+            si_tb.put_u32(PA_TAG_U32, CMD_GET_SINK_INPUT_INFO_LIST);
+            si_tb.put_u32(PA_TAG_U32, 2);
+            st.clients[0].out_q.clear();
+            st.handle_control_packet(0, &si_tb.into_vec(), &h.rt, &h.vol_file_lock);
+            let reply = st.clients[0].out_q.pop_front().expect("sink input list reply");
+            let w = &st.wasapi_proxies[2];
+            assert!(w.active);
+            assert_eq!(w.client_pid, 451327);
+            assert_eq!(w.stream_props.get_str("application.process.id").as_deref(), Some("451327"));
+            assert_eq!(w.client_props.get_str("application.process.binary").as_deref(), Some("FL64.exe"));
+            assert!(!reply.data.is_empty());
+
+            // Verify fill_sessions does NOT duplicate the WASAPI proxy in Salsa's PA sessions list.
+            let mut eng_st: LwasapiEngineStatus = unsafe { mem::zeroed() };
+            let mut n_cli = 0u32;
+            drop(st);
+            unsafe { lwasapi_pa_server_fill_sessions(&mut h, &mut eng_st, &mut n_cli) };
+            assert_eq!(eng_st.num_sessions, 0);
+
+            let st = h.state.lock().unwrap();
+            (st.wasapi_proxies[2].pa_stream_idx, st.wasapi_proxies[2].pa_client_idx)
+        };
+
+        // 2. Attach a direct_on_input (pa_stream_set_monitor_stream) record stream to the WASAPI proxy.
+        {
+            let mut st = h.state.lock().unwrap();
+            let mut rec_tb = TagBuilder::new(256);
+            rec_tb.put_u32(PA_TAG_U32, CMD_CREATE_RECORD_STREAM);
+            rec_tb.put_u32(PA_TAG_U32, 3);
+            rec_tb.put_ss(&PaSampleSpec {
+                format: FMT_FLOAT32LE,
+                channels: 2,
+                rate: 48_000,
+            });
+            rec_tb.put_map(&std_channel_map(2));
+            rec_tb.put_u32(PA_TAG_U32, PA_INVALID_INDEX);
+            rec_tb.put_str(None);
+            rec_tb.put_u32(PA_TAG_U32, PA_INVALID_INDEX); // maxlength
+            rec_tb.put_bool(false); // corked
+            rec_tb.put_u32(PA_TAG_U32, 128 * 8); // fragsize
+            for _ in 0..7 {
+                rec_tb.put_bool(false);
+            }
+            rec_tb.put_bool(false); // peak_detect
+            rec_tb.put_bool(false); // adjust_latency
+            rec_tb.put_proplist(None);
+            rec_tb.put_u32(PA_TAG_U32, pa_stream_idx); // direct_on_input!
+            st.handle_control_packet(0, &rec_tb.into_vec(), &h.rt, &h.vol_file_lock);
+            assert!(st.streams[0].in_use);
+            assert_eq!(st.streams[0].direct_on_input, pa_stream_idx);
+        }
+
+        // Verify WASAPI doi mask includes bit 2.
+        let mask = unsafe { lwasapi_pa_server_wasapi_doi_mask(&mut h) };
+        assert_eq!(mask & (1u32 << 2), 1u32 << 2);
+
+        // 3. Push one 128-frame WASAPI period and pump capture; verify DOI record stream receives exact samples.
+        let mut period_pcm = vec![0.0f32; 128 * 2];
+        for f in 0..128 {
+            period_pcm[f * 2] = 0.25;
+            period_pcm[f * 2 + 1] = -0.5;
+        }
+        unsafe {
+            lwasapi_pa_server_push_wasapi_period(&mut h, 2, period_pcm.as_ptr(), 128, 2);
+            lwasapi_pa_server_push_capture(&mut h, core::ptr::null(), 0, 48_000, period_pcm.as_ptr(), 128, 48_000);
+        }
+        let wr = h.rt.streams[0].wr_frame.load(Ordering::Acquire);
+        assert_eq!(wr, 128);
+        let (sl, sr) = h.rt.streams[0].ring_get(10);
+        assert!((sl - 0.25).abs() < 1e-5);
+        assert!((sr + 0.5).abs() < 1e-5);
+
+        // 4. PA SET_SINK_INPUT_MUTE + SET_SINK_INPUT_VOLUME forward lock-free control to WASAPI poller.
+        {
+            let mut st = h.state.lock().unwrap();
+            let mut mute_tb = TagBuilder::new(64);
+            mute_tb.put_u32(PA_TAG_U32, CMD_SET_SINK_INPUT_MUTE);
+            mute_tb.put_u32(PA_TAG_U32, 4);
+            mute_tb.put_u32(PA_TAG_U32, pa_stream_idx);
+            mute_tb.put_bool(true);
+            st.handle_control_packet(0, &mute_tb.into_vec(), &h.rt, &h.vol_file_lock);
+        }
+        let mut seq = 0u64;
+        let mut vm = 0u32;
+        let mut mu = 0u32;
+        assert!(unsafe { lwasapi_pa_server_poll_wasapi_ctl(&mut h, 2, &mut seq, &mut vm, &mut mu) });
+        assert_eq!(mu, 1);
+
+        // 5. Unregister WASAPI session clears mask and proxy state cleanly.
+        unsafe { lwasapi_pa_server_unregister_wasapi_session(&mut h, 2, 77) };
+        assert_eq!(unsafe { lwasapi_pa_server_wasapi_doi_mask(&mut h) } & (1u32 << 2), 0);
+        assert!(!h.state.lock().unwrap().wasapi_proxies[2].active);
+    }
+
+    #[test]
+    fn playback_stream_inherits_pid_and_emit_fade_out_zeros_doi_tail() {
+        use std::os::unix::net::UnixStream;
+
+        let mut st = PaState::new(empty_pa_callbacks(), String::new(), String::new());
+        st.cookie = [0x22u8; PA_NATIVE_COOKIE_LEN];
+        st.cookie_valid = true;
+        let Ok((sock_a, _sock_b)) = UnixStream::pair() else {
+            panic!("UnixStream::pair failed");
+        };
+        let owned: OwnedFd = sock_a.into();
+        st.accept_client_fd(owned, Some((1000, 99123)), false);
+        let rt = Arc::new(PaRtShared::new(-1));
+        let vol_lock = Mutex::new(());
+
+        let mut auth_tb = TagBuilder::new(320);
+        auth_tb.put_u32(PA_TAG_U32, CMD_AUTH);
+        auth_tb.put_u32(PA_TAG_U32, 1);
+        auth_tb.put_u32(PA_TAG_U32, PA_PROTO_VERSION);
+        auth_tb.put_arbitrary(&st.cookie.clone());
+        st.handle_control_packet(0, &auth_tb.into_vec(), &rt, &vol_lock);
+
+        let mut pb_tb = TagBuilder::new(256);
+        pb_tb.put_u32(PA_TAG_U32, CMD_CREATE_PLAYBACK_STREAM);
+        pb_tb.put_u32(PA_TAG_U32, 2);
+        pb_tb.put_ss(&PaSampleSpec {
+            format: FMT_FLOAT32LE,
+            channels: 2,
+            rate: 48_000,
+        });
+        pb_tb.put_map(&std_channel_map(2));
+        pb_tb.put_u32(PA_TAG_U32, PA_INVALID_INDEX);
+        pb_tb.put_str(None);
+        pb_tb.put_u32(PA_TAG_U32, PA_INVALID_INDEX); // maxl
+        pb_tb.put_bool(false); // corked
+        pb_tb.put_u32(PA_TAG_U32, PA_INVALID_INDEX); // tlength
+        pb_tb.put_u32(PA_TAG_U32, PA_INVALID_INDEX); // prebuf
+        pb_tb.put_u32(PA_TAG_U32, PA_INVALID_INDEX); // minreq
+        pb_tb.put_u32(PA_TAG_U32, 0); // syncid
+        pb_tb.put_cvol(&milli_to_cvol(1000, 2));
+        for _ in 0..7 {
+            pb_tb.put_bool(false);
+        }
+        pb_tb.put_bool(false);
+        pb_tb.put_bool(false);
+        pb_tb.put_proplist(None);
+        st.handle_control_packet(0, &pb_tb.into_vec(), &rt, &vol_lock);
+        assert!(st.streams[0].in_use);
+        assert_eq!(st.streams[0].props.get_str("application.process.id").as_deref(), Some("99123"));
+
+        // Seed stale DOI tail in period_l/r and verify emit_fade_out from zero zeros it cleanly.
+        let rs = &rt.streams[0];
+        for i in 10..64 {
+            rs.period_l[i].store(0.75f32.to_bits(), Ordering::Relaxed);
+            rs.period_r[i].store((-0.75f32).to_bits(), Ordering::Relaxed);
+        }
+        let mut cur = RtCursor::default();
+        let mut out = vec![0.0f32; 128 * 2];
+        emit_fade_out(rs, &mut cur, &mut out, 10, 54, 48_000, 128);
+        assert_eq!(f32::from_bits(rs.period_l[30].load(Ordering::Relaxed)), 0.0);
+        assert_eq!(f32::from_bits(rs.period_r[30].load(Ordering::Relaxed)), 0.0);
     }
 }

@@ -19,6 +19,10 @@ Chronological changelog organized by installer revision.
 ### 3. `salsa_pa_reconnect` `dlopen` `$ORIGIN`/`RUNPATH` Tail-Jump Preservation
 - Updated [`lib.rs`](rust/salsa_pa_reconnect/src/lib.rs) (`salsa_dlopen_prepare()` + x86_64 tail-jump `dlopen` trampoline) so non-PulseAudio `dlopen()` passthrough preserves the caller's stack return address and `$ORIGIN` / `RUNPATH` resolution cleanly.
 
+### 4. WASAPI / WaveRT-ASIO Stream Capture Bridge for Discord Screen Share (`PulseAudio` `doi`)
+- Updated [`pa_server.rs`](rust/salsa_net/src/pa_server.rs) (`PaWasapiRtSlot`, `WasapiPaProxyMeta`, `register_wasapi_proxy()`, `unregister_wasapi_proxy()`, `put_client_fields()`, `put_sink_input_fields()`, `lwasapi_pa_server_register_wasapi_session()`, `lwasapi_pa_server_unregister_wasapi_session()`, `lwasapi_pa_server_update_wasapi_session_vol()`, `lwasapi_pa_server_wasapi_doi_mask()`, `lwasapi_pa_server_push_wasapi_period()`, `lwasapi_pa_server_poll_wasapi_ctl()`) and [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) (`consume_wasapi_playback_slot()`) so active native WASAPI / WaveRT-ASIO / ALSA-shim playback sessions (such as `FL64.exe:Salsa-WaveRT-ASIO`) register virtual PA `sink_input` and `client` entries with `application.process.id`, bidirectional volume/mute sync, live subscription events, and a lock-free per-session `direct_on_input` (`pa_stream_set_monitor_stream`) audio tap without duplicating sessions in `lwasapi-ctl` or Salsa Studio.
+- Updated `CMD_CREATE_PLAYBACK_STREAM` in [`pa_server.rs`](rust/salsa_net/src/pa_server.rs) to inherit `application.process.id`, `application.name`, and `application.process.binary` from authenticated PA clients when omitted, and updated `emit_fade_out()` to zero trailing `period_l`/`period_r` samples on zero-level partial underruns.
+
 ---
 
 ## V1.21.12 (`2026-11-21`)

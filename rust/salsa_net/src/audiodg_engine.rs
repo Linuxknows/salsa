@@ -66,9 +66,12 @@ use crate::midi_hub::{
 use crate::pa_server::{
     lwasapi_pa_server_control_stream, lwasapi_pa_server_fill_debug, lwasapi_pa_server_fill_sessions,
     lwasapi_pa_server_mix_playback, lwasapi_pa_server_notify_change,
-    lwasapi_pa_server_notify_volume, lwasapi_pa_server_push_capture,
-    lwasapi_pa_server_reset_clients, lwasapi_pa_server_set_stream_volume, lwasapi_pa_server_start,
-    lwasapi_pa_server_stop, PaServerHandle,
+    lwasapi_pa_server_notify_volume, lwasapi_pa_server_poll_wasapi_ctl,
+    lwasapi_pa_server_push_capture, lwasapi_pa_server_push_wasapi_period,
+    lwasapi_pa_server_register_wasapi_session, lwasapi_pa_server_reset_clients,
+    lwasapi_pa_server_set_stream_volume, lwasapi_pa_server_start, lwasapi_pa_server_stop,
+    lwasapi_pa_server_unregister_wasapi_session, lwasapi_pa_server_update_wasapi_session_vol,
+    lwasapi_pa_server_wasapi_doi_mask, PaServerHandle,
 };
 use crate::pw_broker::{
     lwasapi_pw_broker_fill_debug, lwasapi_pw_broker_reset_clients, lwasapi_pw_broker_self_test,
@@ -282,6 +285,7 @@ struct EngineSession {
     stream_live: bool,
     underrun_pending: bool,
     last_audio_ns: u64,
+    last_pa_ctl_seq: u64,
 }
 
 impl EngineSession {
@@ -304,6 +308,7 @@ impl EngineSession {
             stream_live: false,
             underrun_pending: false,
             last_audio_ns: 0,
+            last_pa_ctl_seq: 0,
         }
     }
 
@@ -2085,6 +2090,7 @@ impl AudiodgEngine {
         let mut auth_name = [0u8; 64];
         copy_str_to_c(&mut auth_name, s_name_str);
 
+        let is_loopback = (req.stream_flags & AUDCLNT_STREAMFLAGS_LOOPBACK) != 0;
         ss.sessions[slot_idx] = EngineSession {
             in_use: true,
             session_id: sid,
@@ -2099,10 +2105,11 @@ impl AudiodgEngine {
             sample_rate: eff_rate,
             channels: eff_ch,
             is_capture: is_cap_u32 != 0,
-            is_loopback: (req.stream_flags & AUDCLNT_STREAMFLAGS_LOOPBACK) != 0,
+            is_loopback,
             stream_live: false,
             underrun_pending: false,
             last_audio_ns: 0,
+            last_pa_ctl_seq: 0,
         };
         if req.share_mode == AUDCLNT_SHAREMODE_EXCLUSIVE {
             ss.exclusive_session_id = sid as i32;
@@ -2122,6 +2129,24 @@ impl AudiodgEngine {
                 destroy_session_slot(&mut ss, slot_idx);
             }
             return;
+        }
+
+        if is_cap_u32 == 0 && !is_loopback {
+            let pa = self.pa();
+            if !pa.is_null() {
+                let c_nm = to_cstring_lossy(s_name_str);
+                unsafe {
+                    lwasapi_pa_server_register_wasapi_session(
+                        pa,
+                        slot_idx as u32,
+                        sid,
+                        auth_pid,
+                        c_nm.as_ptr(),
+                        eff_rate,
+                        eff_ch,
+                    );
+                }
+            }
         }
 
         if req.share_mode == AUDCLNT_SHAREMODE_EXCLUSIVE {
@@ -2281,14 +2306,19 @@ impl AudiodgEngine {
                     );
                 } else {
                     let mut found = false;
+                    let mut upd_pa: Option<(u32, u32, u32, bool)> = None;
                     {
                         let ss = self.sessions_lock.lock().unwrap();
-                        for slot in &ss.sessions {
+                        for (slot_idx, slot) in ss.sessions.iter().enumerate() {
                             let r = slot.ring_ptr();
                             if slot.in_use && slot.session_id == req.target_session_id && !r.is_null() {
-                                unsafe {
+                                let muted_now = unsafe {
                                     (*ptr::addr_of!((*r).volume_milli))
                                         .store(req.volume_milli, Ordering::SeqCst);
+                                    (*ptr::addr_of!((*r).muted)).load(Ordering::SeqCst) != 0
+                                };
+                                if !slot.is_capture && !slot.is_loopback {
+                                    upd_pa = Some((slot_idx as u32, slot.session_id, req.volume_milli, muted_now));
                                 }
                                 resp.hr = S_OK;
                                 found = true;
@@ -2297,6 +2327,13 @@ impl AudiodgEngine {
                         }
                     }
                     let pa = self.pa();
+                    if let Some((w_slot, w_sid, vm, mu)) = upd_pa {
+                        if !pa.is_null() {
+                            unsafe {
+                                lwasapi_pa_server_update_wasapi_session_vol(pa, w_slot, w_sid, vm, mu);
+                            }
+                        }
+                    }
                     if !found
                         && !pa.is_null()
                         && unsafe {
@@ -2329,28 +2366,44 @@ impl AudiodgEngine {
                 resp.hr = E_INVALIDARG;
                 let tgt_dev = c_str_to_string(&req.target_device);
                 if req.target_session_id < 10_000 {
-                    let ss = self.sessions_lock.lock().unwrap();
-                    for slot in &ss.sessions {
-                        let r = slot.ring_ptr();
-                        if slot.in_use && slot.session_id == req.target_session_id && !r.is_null() {
-                            unsafe {
-                                if req.volume_milli <= 1500 {
-                                    (*ptr::addr_of!((*r).volume_milli))
-                                        .store(req.volume_milli, Ordering::SeqCst);
-                                }
-                                let muted_at = &*ptr::addr_of!((*r).muted);
-                                match req.share_mode {
-                                    1 => muted_at.store(0, Ordering::SeqCst),
-                                    2 => muted_at.store(1, Ordering::SeqCst),
-                                    3 => {
-                                        let cur = muted_at.load(Ordering::SeqCst);
-                                        muted_at.store(u32::from(cur == 0), Ordering::SeqCst);
+                    let mut upd_pa: Option<(u32, u32, u32, bool)> = None;
+                    {
+                        let ss = self.sessions_lock.lock().unwrap();
+                        for (slot_idx, slot) in ss.sessions.iter().enumerate() {
+                            let r = slot.ring_ptr();
+                            if slot.in_use && slot.session_id == req.target_session_id && !r.is_null() {
+                                unsafe {
+                                    if req.volume_milli <= 1500 {
+                                        (*ptr::addr_of!((*r).volume_milli))
+                                            .store(req.volume_milli, Ordering::SeqCst);
                                     }
-                                    _ => {}
+                                    let muted_at = &*ptr::addr_of!((*r).muted);
+                                    match req.share_mode {
+                                        1 => muted_at.store(0, Ordering::SeqCst),
+                                        2 => muted_at.store(1, Ordering::SeqCst),
+                                        3 => {
+                                            let cur = muted_at.load(Ordering::SeqCst);
+                                            muted_at.store(u32::from(cur == 0), Ordering::SeqCst);
+                                        }
+                                        _ => {}
+                                    }
+                                    if !slot.is_capture && !slot.is_loopback {
+                                        let vm = (*ptr::addr_of!((*r).volume_milli)).load(Ordering::SeqCst);
+                                        let mu = muted_at.load(Ordering::SeqCst) != 0;
+                                        upd_pa = Some((slot_idx as u32, slot.session_id, vm, mu));
+                                    }
                                 }
+                                resp.hr = S_OK;
+                                break;
                             }
-                            resp.hr = S_OK;
-                            break;
+                        }
+                    }
+                    if let Some((w_slot, w_sid, vm, mu)) = upd_pa {
+                        let pa = self.pa();
+                        if !pa.is_null() {
+                            unsafe {
+                                lwasapi_pa_server_update_wasapi_session_vol(pa, w_slot, w_sid, vm, mu);
+                            }
                         }
                     }
                 } else {
@@ -3039,6 +3092,7 @@ impl AudiodgEngine {
         self.rt_priority.store(prio_set, Ordering::Relaxed);
 
         let mut mix_buf = vec![0.0f32; LWASAPI_MAX_PERIOD * LWASAPI_MAX_CHANNELS];
+        let mut wasapi_doi_buf = vec![0.0f32; LWASAPI_MAX_PERIOD * LWASAPI_MAX_CHANNELS];
         let mut pa_stereo = vec![0.0f32; LWASAPI_MAX_PERIOD * 2];
         let mut mic_buf = vec![0.0f32; LWASAPI_MAX_PERIOD * 2];
         let mut native_mic_buf = vec![0.0f32; LWASAPI_MAX_PERIOD * 2];
@@ -3171,56 +3225,51 @@ impl AudiodgEngine {
 
                 let exclusive_id = ss.exclusive_session_id;
                 let pa = self.pa();
+                let doi_mask = if !pa.is_null() {
+                    unsafe { lwasapi_pa_server_wasapi_doi_mask(pa) }
+                } else {
+                    0
+                };
                 if exclusive_id >= 0 {
-                    for slot in &mut ss.sessions {
+                    for (slot_idx, slot) in ss.sessions.iter_mut().enumerate() {
                         let r = slot.ring_ptr();
                         if slot.in_use && (slot.session_id as i32) == exclusive_id && !r.is_null() {
                             unsafe {
                                 (*ptr::addr_of!((*r).hw_clock_ns)).store(now_ns, Ordering::Relaxed);
-                                salsa_dsp_consume_session_frames(
-                                    r,
-                                    &mut slot.resample_phase,
-                                    slot.sample_rate,
-                                    slot.channels,
-                                    &mut slot.stream_live,
-                                    &mut slot.underrun_pending,
-                                    &mut slot.last_audio_ns,
-                                    mix_buf.as_mut_ptr(),
-                                    period,
-                                    ch,
-                                    rate,
-                                    true,
-                                    now_ns,
-                                );
                             }
+                            consume_wasapi_playback_slot(
+                                slot_idx,
+                                slot,
+                                r,
+                                pa,
+                                doi_mask,
+                                &mut wasapi_doi_buf,
+                                &mut mix_buf,
+                                (period, ch, rate, now_ns),
+                                true,
+                            );
                             break;
                         }
                     }
                 } else {
-                    for slot in &mut ss.sessions {
+                    for (slot_idx, slot) in ss.sessions.iter_mut().enumerate() {
                         let r = slot.ring_ptr();
                         if slot.in_use && !r.is_null() {
                             unsafe {
                                 (*ptr::addr_of!((*r).hw_clock_ns)).store(now_ns, Ordering::Relaxed);
                             }
                             if !slot.is_capture && !slot.is_loopback {
-                                unsafe {
-                                    salsa_dsp_consume_session_frames(
-                                        r,
-                                        &mut slot.resample_phase,
-                                        slot.sample_rate,
-                                        slot.channels,
-                                        &mut slot.stream_live,
-                                        &mut slot.underrun_pending,
-                                        &mut slot.last_audio_ns,
-                                        mix_buf.as_mut_ptr(),
-                                        period,
-                                        ch,
-                                        rate,
-                                        false,
-                                        now_ns,
-                                    );
-                                }
+                                consume_wasapi_playback_slot(
+                                    slot_idx,
+                                    slot,
+                                    r,
+                                    pa,
+                                    doi_mask,
+                                    &mut wasapi_doi_buf,
+                                    &mut mix_buf,
+                                    (period, ch, rate, now_ns),
+                                    false,
+                                );
                             }
                         }
                     }
@@ -3609,6 +3658,89 @@ fn destroy_session_slot(ss: &mut SessionsState, slot_idx: usize) {
         &format!("session slot={slot_idx} closed"),
     );
     ss.sessions[slot_idx] = EngineSession::empty();
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn consume_wasapi_playback_slot(
+    slot_idx: usize,
+    slot: &mut EngineSession,
+    r: *mut LwasapiShmRing,
+    pa: *mut PaServerHandle,
+    doi_mask: u32,
+    wasapi_doi_buf: &mut [f32],
+    mix_buf: &mut [f32],
+    spec: (u32, u32, u32, u64),
+    exclusive: bool,
+) {
+    let (period, ch, rate, now_ns) = spec;
+    if !pa.is_null() {
+        let mut new_vol = 0u32;
+        let mut new_mut = 0u32;
+        if unsafe {
+            lwasapi_pa_server_poll_wasapi_ctl(
+                pa,
+                slot_idx as u32,
+                &mut slot.last_pa_ctl_seq,
+                &mut new_vol,
+                &mut new_mut,
+            )
+        } {
+            unsafe {
+                (*ptr::addr_of!((*r).volume_milli)).store(new_vol, Ordering::SeqCst);
+                (*ptr::addr_of!((*r).muted)).store(new_mut, Ordering::SeqCst);
+            }
+        }
+    }
+    let watch_doi = !pa.is_null() && slot_idx < 32 && ((doi_mask >> slot_idx) & 1) != 0;
+    let total_samples = (period as usize) * (ch as usize);
+    if watch_doi && total_samples <= wasapi_doi_buf.len() && total_samples <= mix_buf.len() {
+        let doi_slice = &mut wasapi_doi_buf[..total_samples];
+        doi_slice.fill(0.0);
+        unsafe {
+            salsa_dsp_consume_session_frames(
+                r,
+                &mut slot.resample_phase,
+                slot.sample_rate,
+                slot.channels,
+                &mut slot.stream_live,
+                &mut slot.underrun_pending,
+                &mut slot.last_audio_ns,
+                doi_slice.as_mut_ptr(),
+                period,
+                ch,
+                rate,
+                true,
+                now_ns,
+            );
+            lwasapi_pa_server_push_wasapi_period(pa, slot_idx as u32, doi_slice.as_ptr(), period, ch);
+        }
+        if exclusive {
+            mix_buf[..total_samples].copy_from_slice(doi_slice);
+        } else {
+            for (dst, src) in mix_buf[..total_samples].iter_mut().zip(doi_slice.iter()) {
+                *dst += *src;
+            }
+        }
+    } else {
+        unsafe {
+            salsa_dsp_consume_session_frames(
+                r,
+                &mut slot.resample_phase,
+                slot.sample_rate,
+                slot.channels,
+                &mut slot.stream_live,
+                &mut slot.underrun_pending,
+                &mut slot.last_audio_ns,
+                mix_buf.as_mut_ptr(),
+                period,
+                ch,
+                rate,
+                exclusive,
+                now_ns,
+            );
+        }
+    }
 }
 
 unsafe extern "C" fn pa_cb_get_status(ctx: *mut c_void, out_st: *mut LwasapiEngineStatus) {
@@ -4254,15 +4386,36 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                     };
                     if closed {
                         let slot_idx = slot_map[idx] as usize;
-                        let mut ss = engine.sessions_lock.lock().unwrap();
-                        if ss.sessions[slot_idx].in_use {
-                            let cpid = ss.sessions[slot_idx].client_pid;
-                            let cname = c_str_to_string(&ss.sessions[slot_idx].client_name);
-                            eprintln!(
-                                "[LWASAPI-audiodg] Session #{} ('{}', PID {}) closed.",
-                                ss.sessions[slot_idx].session_id, cname, cpid
-                            );
-                            destroy_session_slot(&mut ss, slot_idx);
+                        let mut unreg_sid = 0u32;
+                        {
+                            let mut ss = engine.sessions_lock.lock().unwrap();
+                            if ss.sessions[slot_idx].in_use {
+                                let sid = ss.sessions[slot_idx].session_id;
+                                let is_pb_wasapi =
+                                    !ss.sessions[slot_idx].is_capture && !ss.sessions[slot_idx].is_loopback;
+                                let cpid = ss.sessions[slot_idx].client_pid;
+                                let cname = c_str_to_string(&ss.sessions[slot_idx].client_name);
+                                eprintln!(
+                                    "[LWASAPI-audiodg] Session #{} ('{}', PID {}) closed.",
+                                    sid, cname, cpid
+                                );
+                                destroy_session_slot(&mut ss, slot_idx);
+                                if is_pb_wasapi {
+                                    unreg_sid = sid;
+                                }
+                            }
+                        }
+                        if unreg_sid != 0 {
+                            let pa = engine.pa();
+                            if !pa.is_null() {
+                                unsafe {
+                                    lwasapi_pa_server_unregister_wasapi_session(
+                                        pa,
+                                        slot_idx as u32,
+                                        unreg_sid,
+                                    );
+                                }
+                            }
                         }
                     }
                 }
