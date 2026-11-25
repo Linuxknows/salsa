@@ -3,6 +3,6 @@ contact_links:
   - name: Report a Security Vulnerability (Private)
     url: https://github.com/Linuxknows/salsa/security/advisories/new
     about: Privately report security vulnerabilities via GitHub Security Advisories (do not open public issues).
-  - name: Architecture & Troubleshooting Docs
+  - name: Salsa Live Debugger & Troubleshooting Guide
     url: https://github.com/Linuxknows/salsa/blob/main/SUPPORT.md
-    about: Run built-in Salsa diagnostics (`salsa-installer --check`, `salsa-debug`, `salsa --topology`) before filing a bug.
+    about: Use `salsa-debug` (`Export Bundle` / `salsa-debug --export` / `--probe`) and `salsa --topology` to diagnose issues before filing a bug.
