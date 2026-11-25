@@ -162,6 +162,9 @@ void applyGlobalFontScale(QApplication* app, int fontPct);
 QColor mixColors(const QColor& a, const QColor& b, double t);
 QString validHexColor(const QString& candidate, const QString& fallback);
 
+void preferNativeWaylandPlatform();
+void syncResolvedPlatformEnv();
+
 void spawnDetachedWaylandBinary(
     const QString& binName,
     const QStringList& args = {},

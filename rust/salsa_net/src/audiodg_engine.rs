@@ -83,11 +83,11 @@ use crate::state_conf::{
     salsa_dsp_clamp_param_eq_ext, salsa_state_init_defaults, salsa_state_load, salsa_state_save,
 };
 use crate::unix_sys::{
-    bind_unix_listener_0600, close_raw_fd, create_memfd, current_pid, current_uid, dbg_emit,
-    dbg_emit_vals, do_poll, install_term_signals, ioctl_raw, mono_ns, nb_recv, new_eventfd,
-    open_chrdev_rw_cloexec, resolve_sock_path_common, seal_memfd_size, send_all_nosignal,
-    sendmsg_all_with_fds, sleep_abs_mono_ns, socket_peercred, term_signal_requested,
-    try_realtime_fifo, MappedMem, PollFd, POLLERR, POLLHUP, POLLIN,
+    bind_unix_listener_0600, claim_systemd_unix_listeners, close_raw_fd, create_memfd, current_pid,
+    current_uid, dbg_emit, dbg_emit_vals, do_poll, install_term_signals, ioctl_raw, mono_ns,
+    nb_recv, new_eventfd, open_chrdev_rw_cloexec, resolve_sock_path_common, seal_memfd_size,
+    send_all_nosignal, sendmsg_all_with_fds, sleep_abs_mono_ns, socket_peercred,
+    term_signal_requested, try_realtime_fifo, MappedMem, PollFd, POLLERR, POLLHUP, POLLIN,
 };
 
 // Linux errno constants (x86_64/generic)
@@ -4126,6 +4126,7 @@ unsafe extern "C" fn dbg_handle_cmd_cb(
 #[no_mangle]
 pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_char) -> c_int {
     std::env::remove_var("LD_LIBRARY_PATH");
+    claim_systemd_unix_listeners();
 
     let mut args: Vec<String> = Vec::new();
     if argc > 0 && !argv.is_null() {
@@ -4229,6 +4230,18 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     let hwa_ptr = lwasapi_hw_analog_create();
     engine.hw_analog.store(hwa_ptr, Ordering::Release);
 
+    // Start the Video-Only PipeWire-0 ScreenCast broker BEFORE `init_hardware()` so
+    // KDE `KPipeWire`/`MediaMonitor` and `xdg-desktop-portal` clients reconnecting
+    // across daemon restarts complete their PipeWire handshake immediately without
+    // waiting on ALSA/BlueZ RFCOMM/L2CAP negotiation.
+    let mut pw_ptr: *mut PwBrokerHandle = ptr::null_mut();
+    if unsafe { lwasapi_pw_broker_start(&mut pw_ptr, ptr::null::<LwasapiPwBrokerOpts>()) == 0 }
+        && !pw_ptr.is_null()
+    {
+        engine.pw_brk.store(pw_ptr, Ordering::Release);
+        eprintln!("[LWASAPI-audiodg] Built-in Video-Only PipeWire ScreenCast broker initialized.");
+    }
+
     engine.init_hardware(
         device_arg.as_deref(),
         rate_arg,
@@ -4253,6 +4266,10 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
 
     let Some(listener) = bind_unix_listener_0600(&sock_path) else {
         eprintln!("bind failed for {sock_path}");
+        let pw_cleanup = engine.pw_brk.swap(ptr::null_mut(), Ordering::AcqRel);
+        if !pw_cleanup.is_null() {
+            unsafe { lwasapi_pw_broker_stop(pw_cleanup) };
+        }
         return 1;
     };
 
@@ -4269,13 +4286,6 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     if unsafe { lwasapi_pa_server_start(&mut pa_ptr, pa_cbs) == 0 } && !pa_ptr.is_null() {
         engine.pa_srv.store(pa_ptr, Ordering::Release);
         eprintln!("[LWASAPI-audiodg] Built-in PulseAudio native protocol v35 server active.");
-    }
-    let mut pw_ptr: *mut PwBrokerHandle = ptr::null_mut();
-    if unsafe { lwasapi_pw_broker_start(&mut pw_ptr, ptr::null::<LwasapiPwBrokerOpts>()) == 0 }
-        && !pw_ptr.is_null()
-    {
-        engine.pw_brk.store(pw_ptr, Ordering::Release);
-        eprintln!("[LWASAPI-audiodg] Built-in Video-Only PipeWire ScreenCast broker initialized.");
     }
 
     let dbg_cbs = LwasapiDbgCallbacks {

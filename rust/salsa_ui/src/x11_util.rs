@@ -209,7 +209,7 @@ unsafe fn send_net_wm_state_msg(
 }
 
 pub fn apply_popup_hints(xid: u64, skip_taskbar: bool, above: bool, blur_rect: Option<(i32, i32)>) {
-    if !display_is_x11() || xid == 0 {
+    if !window_uses_x11() || xid == 0 {
         return;
     }
     let Some(x) = x11() else {
@@ -223,6 +223,7 @@ pub fn apply_popup_hints(xid: u64, skip_taskbar: bool, above: bool, blur_rect: O
         let net_wm_state = (x.x_intern_atom)(dpy, c"_NET_WM_STATE".as_ptr(), 0);
         let skip_tb = (x.x_intern_atom)(dpy, c"_NET_WM_STATE_SKIP_TASKBAR".as_ptr(), 0);
         let skip_pg = (x.x_intern_atom)(dpy, c"_NET_WM_STATE_SKIP_PAGER".as_ptr(), 0);
+        let skip_sw = (x.x_intern_atom)(dpy, c"_KDE_NET_WM_STATE_SKIP_SWITCHER".as_ptr(), 0);
         let abv = (x.x_intern_atom)(dpy, c"_NET_WM_STATE_ABOVE".as_ptr(), 0);
         let atom_ty = (x.x_intern_atom)(dpy, c"ATOM".as_ptr(), 0);
         let card_ty = (x.x_intern_atom)(dpy, c"CARDINAL".as_ptr(), 0);
@@ -231,6 +232,9 @@ pub fn apply_popup_hints(xid: u64, skip_taskbar: bool, above: bool, blur_rect: O
         if skip_taskbar {
             atoms.push(skip_tb);
             atoms.push(skip_pg);
+            if skip_sw != 0 {
+                atoms.push(skip_sw);
+            }
         }
         if above {
             atoms.push(abv);
@@ -248,6 +252,9 @@ pub fn apply_popup_hints(xid: u64, skip_taskbar: bool, above: bool, blur_rect: O
             );
             if skip_taskbar {
                 send_net_wm_state_msg(x, dpy, root, xid as c_ulong, net_wm_state, skip_tb, skip_pg);
+                if skip_sw != 0 {
+                    send_net_wm_state_msg(x, dpy, root, xid as c_ulong, net_wm_state, skip_sw, 0);
+                }
             }
             if above {
                 send_net_wm_state_msg(x, dpy, root, xid as c_ulong, net_wm_state, abv, 0);
@@ -278,7 +285,7 @@ pub fn apply_popup_hints(xid: u64, skip_taskbar: bool, above: bool, blur_rect: O
 }
 
 pub fn apply_osd_hints(xid: u64, w: i32, h: i32) {
-    if !display_is_x11() || xid == 0 {
+    if !window_uses_x11() || xid == 0 {
         return;
     }
     let Some(x) = x11() else {
@@ -366,7 +373,7 @@ pub fn apply_osd_hints(xid: u64, w: i32, h: i32) {
 }
 
 pub fn move_window_x11(xid: u64, x_pos: i32, y_pos: i32) {
-    if !display_is_x11() || xid == 0 {
+    if !window_uses_x11() || xid == 0 {
         return;
     }
     let Some(x) = x11() else {
@@ -382,7 +389,7 @@ pub fn move_window_x11(xid: u64, x_pos: i32, y_pos: i32) {
 }
 
 pub fn query_pointer_x11() -> Option<(i32, i32)> {
-    if !display_is_x11() {
+    if !window_uses_x11() {
         return None;
     }
     let x = x11()?;
@@ -413,6 +420,9 @@ pub fn query_pointer_x11() -> Option<(i32, i32)> {
 }
 
 pub fn all_monitor_geometries_x11() -> Vec<(i32, i32, i32, i32, bool)> {
+    if !window_uses_x11() {
+        return vec![(0, 0, 1920, 1080, true)];
+    }
     let Some(x) = x11() else {
         return vec![(0, 0, 1920, 1080, true)];
     };
@@ -481,6 +491,26 @@ pub fn display_is_x11() -> bool {
     !has_wayland && has_x11
 }
 
+/// Returns true when the current Qt process is using X11/XCB (`QT_QPA_PLATFORM=xcb` on
+/// XWayland or a pure X11 session), so EWMH `_NET_WM_STATE_SKIP_TASKBAR` hints apply even
+/// on Wayland sessions that fall back to XWayland (e.g. GNOME without `zwlr_layer_shell_v1`).
+pub fn window_uses_x11() -> bool {
+    let has_x11 = env::var("DISPLAY").is_ok_and(|v| !v.is_empty());
+    if !has_x11 {
+        return false;
+    }
+    if let Ok(qpa) = env::var("QT_QPA_PLATFORM") {
+        let q = qpa.trim();
+        if q.eq_ignore_ascii_case("xcb") || q.starts_with("xcb:") {
+            return true;
+        }
+        if q.to_ascii_lowercase().contains("wayland") || q.eq_ignore_ascii_case("offscreen") {
+            return false;
+        }
+    }
+    display_is_x11()
+}
+
 fn parse_xft_dpi_from_xrdb(txt: &str) -> Option<f64> {
     for line in txt.lines() {
         let trimmed = line.trim();
@@ -538,7 +568,7 @@ fn kwin_xwayland_scale() -> Option<f64> {
 
 /// Logical-to-physical UI scale factor on X11/XWayland desktops (e.g. 1.5 for 144 DPI).
 pub fn x11_ui_scale() -> f64 {
-    if !display_is_x11() {
+    if !window_uses_x11() {
         return 1.0;
     }
     let mut desired = None;

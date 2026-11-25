@@ -803,6 +803,107 @@ pub fn bind_unix_listener_0600(path: &str) -> Option<UnixListener> {
     Some(listener)
 }
 
+const SD_LISTEN_FDS_START: RawFd = 3;
+const F_GETFD: c_int = 1;
+const F_SETFD: c_int = 2;
+const FD_CLOEXEC: c_int = 1;
+const SO_TYPE: c_int = 3;
+const SO_ACCEPTCONN: c_int = 30;
+
+static SYSTEMD_LISTEN_SOCKETS: std::sync::OnceLock<std::sync::Mutex<Vec<(String, OwnedFd)>>> =
+    std::sync::OnceLock::new();
+
+/// Claims any `AF_UNIX` `SOCK_STREAM` listening sockets passed via systemd `LISTEN_FDS` /
+/// `LISTEN_PID`, marks them `FD_CLOEXEC` + `O_NONBLOCK`, clears the `LISTEN_*` environment
+/// variables so child processes never inherit them, and indexes each fd by its `getsockname()`
+/// filesystem path for portable multi-PC lookup.
+pub fn claim_systemd_unix_listeners() {
+    let _ = SYSTEMD_LISTEN_SOCKETS.get_or_init(|| {
+        let mut claimed = Vec::new();
+        let pid_ok = std::env::var("LISTEN_PID")
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .is_some_and(|p| p == current_pid());
+        let nfds = if pid_ok {
+            std::env::var("LISTEN_FDS")
+                .ok()
+                .and_then(|s| s.trim().parse::<i32>().ok())
+                .unwrap_or(0)
+                .clamp(0, 32)
+        } else {
+            0
+        };
+        std::env::remove_var("LISTEN_PID");
+        std::env::remove_var("LISTEN_FDS");
+        std::env::remove_var("LISTEN_FDNAMES");
+
+        for i in 0..nfds {
+            let fd = SD_LISTEN_FDS_START + i;
+            let mut stype: c_int = 0;
+            let mut slen = mem::size_of::<c_int>() as u32;
+            if unsafe {
+                getsockopt(
+                    fd,
+                    SOL_SOCKET,
+                    SO_TYPE,
+                    (&mut stype as *mut c_int).cast::<c_void>(),
+                    &mut slen,
+                )
+            } != 0
+                || stype != SOCK_STREAM
+            {
+                continue;
+            }
+            let mut acc: c_int = 0;
+            let mut alen = mem::size_of::<c_int>() as u32;
+            if unsafe {
+                getsockopt(
+                    fd,
+                    SOL_SOCKET,
+                    SO_ACCEPTCONN,
+                    (&mut acc as *mut c_int).cast::<c_void>(),
+                    &mut alen,
+                )
+            } != 0
+                || acc == 0
+            {
+                continue;
+            }
+            unsafe {
+                let flags = fcntl(fd, F_GETFD);
+                if flags >= 0 {
+                    let _ = fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+                }
+            }
+            let listener = unsafe { UnixListener::from_raw_fd(fd) };
+            let _ = listener.set_nonblocking(true);
+            let bound_path = listener
+                .local_addr()
+                .ok()
+                .and_then(|a| a.as_pathname().map(|p| p.to_string_lossy().into_owned()));
+            let owned: OwnedFd = listener.into();
+            if let Some(p) = bound_path {
+                claimed.push((p, owned));
+            }
+        }
+        std::sync::Mutex::new(claimed)
+    });
+}
+
+pub fn take_systemd_unix_listener(target_path: &str) -> Option<OwnedFd> {
+    claim_systemd_unix_listeners();
+    let mut guard = SYSTEMD_LISTEN_SOCKETS.get()?.lock().ok()?;
+    let idx = guard.iter().position(|(p, _)| p == target_path)?;
+    Some(guard.swap_remove(idx).1)
+}
+
+pub fn dup_unix_listener_nonblock(fd: RawFd) -> Option<UnixListener> {
+    let dup = dup_fd_cloexec(fd)?;
+    let listener = UnixListener::from(dup);
+    let _ = listener.set_nonblocking(true);
+    Some(listener)
+}
+
 pub fn socket_peercred(fd: RawFd) -> Option<UCred> {
     let mut uc = UCred::default();
     let mut ulen = mem::size_of::<UCred>() as u32;

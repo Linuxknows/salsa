@@ -2071,27 +2071,47 @@ LD_LIBRARY_PATH={ld_val}\n"
         }
     }
 
-    if run_quiet(
+    let has_pw_socket_unit = unit_exists("lwasapi-pipewire.socket");
+    let pw_socket_was_active = has_pw_socket_unit
+        && run_quiet(
+            "systemctl",
+            &["--user", "is-active", "--quiet", "lwasapi-pipewire.socket"],
+        );
+    let audiodg_was_active = run_quiet(
         "systemctl",
         &["--user", "is-active", "--quiet", "lwasapi-audiodg.service"],
-    ) {
-        if !trigger_broker_sync_mode() {
+    );
+
+    if has_pw_socket_unit && !pw_socket_was_active {
+        if audiodg_was_active {
+            let _ = run_quiet("systemctl", &["--user", "stop", "lwasapi-audiodg.service"]);
+        }
+        let _ = run_quiet(
+            "systemctl",
+            &["--user", "enable", "--now", "lwasapi-pipewire.socket"],
+        );
+        if audiodg_was_active {
+            let _ = run_quiet("systemctl", &["--user", "start", "lwasapi-audiodg.service"]);
+        }
+    }
+
+    if audiodg_was_active {
+        if !(has_pw_socket_unit && !pw_socket_was_active) && !trigger_broker_sync_mode() {
             let _ = run_quiet(
                 "systemctl",
                 &["--user", "try-restart", "lwasapi-audiodg.service"],
             );
-            let rt = env::var("XDG_RUNTIME_DIR")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| format!("/run/user/{}", current_uid()));
-            let pw_sock = format!("{rt}/pipewire-0");
-            thread::sleep(Duration::from_millis(150));
-            for _ in 0..40 {
-                if Path::new(&pw_sock).exists() {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(50));
+        }
+        let rt = env::var("XDG_RUNTIME_DIR")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("/run/user/{}", current_uid()));
+        let pw_sock = format!("{rt}/pipewire-0");
+        for _ in 0..40 {
+            if Path::new(&pw_sock).exists() {
+                break;
             }
+            thread::sleep(Duration::from_millis(50));
         }
         let _ = run_quiet(
             "systemctl",
@@ -2217,6 +2237,10 @@ fn cmd_disable_auto() -> i32 {
 
     let _ = trigger_broker_sync_mode();
     let _ = run_quiet("systemctl", &["--user", "stop", "lwasapi-audiodg.service"]);
+    let _ = run_quiet(
+        "systemctl",
+        &["--user", "disable", "--now", "lwasapi-pipewire.socket"],
+    );
 
     let units_list = format!("{cfg_dir}/masked_units.list");
     if let Ok(text) = fs::read_to_string(&units_list) {

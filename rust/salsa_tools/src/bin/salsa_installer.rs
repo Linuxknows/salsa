@@ -240,16 +240,42 @@ fn write_user_units(root: &Path) -> Result<(), String> {
     let tray_exec = systemd_quote(&root.join("build/lwasapi-tray").to_string_lossy());
     let autosync_exec = systemd_quote(&root.join("build/lwasapi-autosync").to_string_lossy());
 
+    let pw_socket_unit = "\
+[Unit]
+Description=Salsa — Zero-Downtime Video-Only PipeWire-0 Socket (ScreenCast & KDE MediaMonitor)
+ConditionPathExists=%h/.config/lwasapi/pipewire_zero_mode
+Before=graphical-session-pre.target sockets.target
+
+[Socket]
+ListenStream=%t/pipewire-0
+ListenStream=%t/pipewire-0-manager
+SocketMode=0600
+DirectoryMode=0700
+Backlog=128
+RemoveOnStop=yes
+Service=lwasapi-audiodg.service
+
+[Install]
+WantedBy=sockets.target default.target
+";
+    write_atomic_secure(
+        &unit_dir.join("lwasapi-pipewire.socket"),
+        pw_socket_unit.as_bytes(),
+        0o644,
+    )
+    .map_err(|e| format!("write pipewire socket unit: {e}"))?;
+
     let audiodg_unit = format!(
         "[Unit]\n\
          Description=Salsa — Linux WASAPI (lwasapi-audiodg) WaveRT 192kHz, Native PA v35, Direct BlueZ, Video Broker & Dynamic EQ Engine\n\
-         After=bluetooth.target sound.target\n\
-         Wants=bluetooth.target sound.target\n\
+         After=bluetooth.target sound.target lwasapi-pipewire.socket\n\
+         Wants=bluetooth.target sound.target lwasapi-pipewire.socket\n\
          \n\
          [Service]\n\
          Type=simple\n\
          WorkingDirectory={root_wd}\n\
          ExecStart={audiodg_exec}\n\
+         Sockets=lwasapi-pipewire.socket\n\
          UMask=0077\n\
          Restart=always\n\
          RestartSec=1\n\
@@ -856,6 +882,7 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
         eprintln!("{e}");
         return ExitCode::from(1);
     }
+    let _ = run_quiet("systemctl", &["--user", "daemon-reload"]);
     println!(
         "  [OK] Systemd user units written to {}",
         config_home().join("systemd/user").display()
@@ -937,6 +964,7 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
         warnings += 1;
     }
     for unit in [
+        "lwasapi-pipewire.socket",
         "lwasapi-audiodg.service",
         "lwasapi-module-watcher.path",
         "lwasapi-module-watcher.timer",
@@ -1077,6 +1105,7 @@ fn do_check(root: &Path) -> ExitCode {
 
     let unit_dir = config_home().join("systemd/user");
     for unit in [
+        "lwasapi-pipewire.socket",
         "lwasapi-audiodg.service",
         "lwasapi-tray.service",
         "lwasapi-module-watcher.path",
@@ -1191,6 +1220,7 @@ fn do_uninstall(root: &Path) -> ExitCode {
         "lwasapi-module-watcher.service",
         "lwasapi-tray.service",
         "lwasapi-audiodg.service",
+        "lwasapi-pipewire.socket",
     ] {
         let _ = run_quiet("systemctl", &["--user", "disable", "--now", unit]);
         let _ = fs::remove_file(config_home().join("systemd/user").join(unit));

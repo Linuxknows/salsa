@@ -829,6 +829,25 @@ void SingleInstanceServer::stop() {
     }
 }
 
+void preferNativeWaylandPlatform() {
+    if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
+        const bool hasWayland = !qEnvironmentVariable("WAYLAND_DISPLAY").trimmed().isEmpty()
+            || !qEnvironmentVariable("WAYLAND_SOCKET").trimmed().isEmpty();
+        if (hasWayland) {
+            qputenv("QT_QPA_PLATFORM", "wayland;xcb");
+        }
+    }
+}
+
+void syncResolvedPlatformEnv() {
+    const QString plat = QGuiApplication::platformName();
+    if (plat == QLatin1String("xcb")) {
+        qputenv("QT_QPA_PLATFORM", "xcb");
+    } else if (plat.contains(QLatin1String("wayland"), Qt::CaseInsensitive)) {
+        qputenv("QT_QPA_PLATFORM", "wayland");
+    }
+}
+
 void spawnDetachedWaylandBinary(const QString& binName, const QStringList& args, QWidget* sourceWidget) {
     const QString root = installRootPath();
     QString exePath = QDir(root).filePath(QStringLiteral("build/%1").arg(binName));
@@ -840,8 +859,8 @@ void spawnDetachedWaylandBinary(const QString& binName, const QStringList& args,
 
     QProcess proc;
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    // lwasapi-tray runs under QT_QPA_PLATFORM=xcb for Plasma SNI positioning;
-    // child Wayland apps must clear QT_QPA_PLATFORM so they connect natively to Wayland.
+    // Clear any in-process QT_QPA_PLATFORM override (e.g. XCB fallback on compositors
+    // without zwlr_layer_shell_v1) so child Salsa apps connect natively to Wayland.
     env.remove(QStringLiteral("QT_QPA_PLATFORM"));
     env.remove(QStringLiteral("LWASAPI_TRAY_REPLACED"));
     if (env.value(QStringLiteral("XDG_ACTIVATION_TOKEN")).isEmpty()) {

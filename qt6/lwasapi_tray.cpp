@@ -42,6 +42,7 @@
 #include <QPainterPath>
 #include <QPen>
 #include <QPixmap>
+#include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScreen>
@@ -51,6 +52,9 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+#include <QWindow>
+
+#include <dlfcn.h>
 
 #include <algorithm>
 #include <chrono>
@@ -74,43 +78,285 @@ inline qint64 nowMs() { return QDateTime::currentMSecsSinceEpoch(); }
 inline constexpr int TRAY_SAMPLE_RATES[6] = {44100, 48000, 88200, 96000, 176400, 192000};
 inline constexpr int TRAY_FONT_STEPS[7] = {80, 90, 100, 110, 120, 135, 150};
 
-inline QPoint waylandToQtPoint(int gx, int gy) {
-    if (QGuiApplication::platformName() != QLatin1String("xcb")) {
-        return QPoint(gx, gy);
+// Runtime `dlopen` bridge to `LayerShellQt::Window` (`zwlr_layer_shell_v1`) so `lwasapi-tray`
+// runs as a 100% pure native Wayland surface (zero X11/XWayland, zero panel taskbar icon) on
+// KDE Plasma Wayland, Hyprland, Sway, COSMIC, Niri, River, and Labwc without requiring
+// `layer-shell-qt` headers at compile time on minimal distros.
+struct LayerShellDyn {
+    enum Anchor : int {
+        AnchorNone = 0,
+        AnchorTop = 1,
+        AnchorBottom = 2,
+        AnchorLeft = 4,
+        AnchorRight = 8,
+    };
+    enum Layer : int {
+        LayerBackground = 0,
+        LayerBottom = 1,
+        LayerTop = 2,
+        LayerOverlay = 3,
+    };
+    enum KeyboardInteractivity : int {
+        KeyboardNone = 0,
+        KeyboardExclusive = 1,
+        KeyboardOnDemand = 2,
+    };
+
+    using FnGet = QObject* (*)(QWindow*);
+    using FnSetInt = void (*)(QObject*, int);
+    using FnSetMargins = void (*)(QObject*, const QMargins&);
+    using FnSetSize = void (*)(QObject*, const QSize&);
+    using FnSetScope = void (*)(QObject*, const QString&);
+    using FnSetScreen = void (*)(QObject*, QScreen*);
+    using FnSetBool = void (*)(QObject*, bool);
+
+    void* handle = nullptr;
+    FnGet get = nullptr;
+    FnSetInt setAnchors = nullptr;
+    FnSetMargins setMargins = nullptr;
+    FnSetSize setDesiredSize = nullptr;
+    FnSetInt setExclusiveZone = nullptr;
+    FnSetInt setLayer = nullptr;
+    FnSetInt setKeyboardInteractivity = nullptr;
+    FnSetScope setScope = nullptr;
+    FnSetScreen setScreen = nullptr;
+    FnSetBool setActivateOnShow = nullptr;
+    FnSetBool setCloseOnDismissed = nullptr;
+
+    static const LayerShellDyn& instance() {
+        static const LayerShellDyn inst = []() {
+            LayerShellDyn d;
+            for (const char* soname : {"libLayerShellQtInterface.so.6", "libLayerShellQtInterface.so"}) {
+                d.handle = ::dlopen(soname, RTLD_LAZY | RTLD_LOCAL);
+                if (d.handle) break;
+            }
+            if (!d.handle) return d;
+            d.get = reinterpret_cast<FnGet>(::dlsym(d.handle, "_ZN12LayerShellQt6Window3getEP7QWindow"));
+            d.setAnchors = reinterpret_cast<FnSetInt>(
+                ::dlsym(d.handle, "_ZN12LayerShellQt6Window10setAnchorsE6QFlagsINS0_6AnchorEE"));
+            d.setMargins = reinterpret_cast<FnSetMargins>(
+                ::dlsym(d.handle, "_ZN12LayerShellQt6Window10setMarginsERK8QMargins"));
+            d.setDesiredSize = reinterpret_cast<FnSetSize>(
+                ::dlsym(d.handle, "_ZN12LayerShellQt6Window14setDesiredSizeERK5QSize"));
+            d.setExclusiveZone = reinterpret_cast<FnSetInt>(
+                ::dlsym(d.handle, "_ZN12LayerShellQt6Window16setExclusiveZoneEi"));
+            d.setLayer = reinterpret_cast<FnSetInt>(
+                ::dlsym(d.handle, "_ZN12LayerShellQt6Window8setLayerENS0_5LayerE"));
+            d.setKeyboardInteractivity = reinterpret_cast<FnSetInt>(
+                ::dlsym(d.handle, "_ZN12LayerShellQt6Window24setKeyboardInteractivityENS0_21KeyboardInteractivityE"));
+            d.setScope = reinterpret_cast<FnSetScope>(
+                ::dlsym(d.handle, "_ZN12LayerShellQt6Window8setScopeERK7QString"));
+            d.setScreen = reinterpret_cast<FnSetScreen>(
+                ::dlsym(d.handle, "_ZN12LayerShellQt6Window9setScreenEP7QScreen"));
+            d.setActivateOnShow = reinterpret_cast<FnSetBool>(
+                ::dlsym(d.handle, "_ZN12LayerShellQt6Window17setActivateOnShowEb"));
+            d.setCloseOnDismissed = reinterpret_cast<FnSetBool>(
+                ::dlsym(d.handle, "_ZN12LayerShellQt6Window19setCloseOnDismissedEb"));
+            return d;
+        }();
+        return inst;
     }
+
+    bool available() const {
+        return get && setAnchors && setMargins && setDesiredSize && setExclusiveZone
+            && setLayer && setKeyboardInteractivity && setScope && setScreen
+            && setActivateOnShow && setCloseOnDismissed;
+    }
+};
+
+inline bool compositorSupportsLayerShellEnv() {
+    const bool hasWayland = !qEnvironmentVariable("WAYLAND_DISPLAY").trimmed().isEmpty()
+        || !qEnvironmentVariable("WAYLAND_SOCKET").trimmed().isEmpty();
+    if (!hasWayland) return false;
+    const QString desk = qEnvironmentVariable("XDG_CURRENT_DESKTOP") + QLatin1Char(':')
+        + qEnvironmentVariable("XDG_SESSION_DESKTOP");
+    // GNOME Mutter intentionally omits zwlr_layer_shell_v1; all other major Wayland
+    // compositors (KDE KWin, Hyprland, Sway, COSMIC, Niri, River, Labwc, LXQt) implement it.
+    if (desk.contains(QLatin1String("GNOME"), Qt::CaseInsensitive)) {
+        return false;
+    }
+    return LayerShellDyn::instance().available();
+}
+
+inline bool usingWaylandLayerShell() {
+    return QGuiApplication::platformName().contains(QLatin1String("wayland"), Qt::CaseInsensitive)
+        && LayerShellDyn::instance().available();
+}
+
+struct ResolvedTrayTarget {
+    QScreen* screen = nullptr;
+    QPoint qtPt;
+};
+
+inline QScreen* queryKwinActiveScreen() {
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected()) return nullptr;
+    QDBusMessage msg = QDBusMessage::createMethodCall(
+        QStringLiteral("org.kde.KWin"),
+        QStringLiteral("/KWin"),
+        QStringLiteral("org.kde.KWin"),
+        QStringLiteral("activeOutputName"));
+    QDBusReply<QString> rep = bus.call(msg, QDBus::Block, 35);
+    if (!rep.isValid()) return nullptr;
+    const QString activeName = rep.value().trimmed();
+    if (activeName.isEmpty()) return nullptr;
     const auto screens = QGuiApplication::screens();
+    for (QScreen* s : screens) {
+        if (s && s->name().compare(activeName, Qt::CaseInsensitive) == 0) {
+            return s;
+        }
+    }
+    return nullptr;
+}
+
+inline bool tryPlasmaMixedPointOnScreen(QScreen* s, int gx, int gy, QPoint* outPt) {
+    if (!s) return false;
+    const QRect sg = s->geometry();
+    if (sg.width() <= 0 || sg.height() <= 0) return false;
+    const double dpr = std::max(1.0, static_cast<double>(s->devicePixelRatio()));
+    // Plasma 6 SystemTray::popupPosition on Wayland sends:
+    //   gx = screen->geometry().x() + local_x * dpr
+    //   gy = screen->geometry().y() + local_y * dpr
+    const int lx = static_cast<int>(std::lround((gx - sg.x()) / dpr));
+    const int ly = static_cast<int>(std::lround((gy - sg.y()) / dpr));
+    if (lx >= -6 && lx <= sg.width() + 6 && ly >= -6 && ly <= sg.height() + 6) {
+        if (outPt) {
+            *outPt = QPoint(
+                sg.x() + std::clamp(lx, 0, std::max(0, sg.width() - 1)),
+                sg.y() + std::clamp(ly, 0, std::max(0, sg.height() - 1)));
+        }
+        return true;
+    }
+    return false;
+}
+
+inline ResolvedTrayTarget resolveTrayTarget(const QPoint& rawPt, bool hasRawPt) {
+    const auto screens = QGuiApplication::screens();
+    const bool isXcb = (QGuiApplication::platformName() == QLatin1String("xcb"));
+
+    if (!hasRawPt || (rawPt.x() == 0 && rawPt.y() == 0)) {
+        QScreen* scr = !isXcb ? queryKwinActiveScreen() : nullptr;
+        if (!scr) scr = QGuiApplication::screenAt(QCursor::pos());
+        if (!scr) scr = QGuiApplication::primaryScreen();
+        return {scr, scr ? scr->geometry().center() : QCursor::pos()};
+    }
+
+    const int gx = rawPt.x();
+    const int gy = rawPt.y();
+
+    if (!isXcb) {
+        QScreen* kwinScr = queryKwinActiveScreen();
+        const QString desk = qEnvironmentVariable("XDG_CURRENT_DESKTOP") + QLatin1Char(':')
+            + qEnvironmentVariable("XDG_SESSION_DESKTOP");
+        const bool isKde = (kwinScr != nullptr) || desk.contains(QLatin1String("KDE"), Qt::CaseInsensitive);
+
+        if (kwinScr) {
+            QPoint pt;
+            if (isKde) {
+                if (tryPlasmaMixedPointOnScreen(kwinScr, gx, gy, &pt)) {
+                    return {kwinScr, pt};
+                }
+                if (kwinScr->geometry().contains(QPoint(gx, gy))) {
+                    return {kwinScr, QPoint(gx, gy)};
+                }
+            } else {
+                if (kwinScr->geometry().contains(QPoint(gx, gy))) {
+                    return {kwinScr, QPoint(gx, gy)};
+                }
+                if (tryPlasmaMixedPointOnScreen(kwinScr, gx, gy, &pt)) {
+                    return {kwinScr, pt};
+                }
+            }
+        }
+
+        if (!isKde) {
+            for (QScreen* s : screens) {
+                if (s && s->geometry().contains(QPoint(gx, gy))) {
+                    return {s, QPoint(gx, gy)};
+                }
+            }
+        }
+
+        QScreen* bestPlasmaScr = nullptr;
+        QPoint bestPlasmaPt;
+        int bestLocalX = -1;
+        for (QScreen* s : screens) {
+            QPoint pt;
+            if (tryPlasmaMixedPointOnScreen(s, gx, gy, &pt)) {
+                const int lx = pt.x() - s->geometry().x();
+                if (lx > bestLocalX) {
+                    bestLocalX = lx;
+                    bestPlasmaScr = s;
+                    bestPlasmaPt = pt;
+                }
+            }
+        }
+        if (bestPlasmaScr) {
+            return {bestPlasmaScr, bestPlasmaPt};
+        }
+
+        for (QScreen* s : screens) {
+            if (s && s->geometry().contains(QPoint(gx, gy))) {
+                return {s, QPoint(gx, gy)};
+            }
+        }
+
+        for (QScreen* s : screens) {
+            if (!s) continue;
+            const double dpr = std::max(1.0, static_cast<double>(s->devicePixelRatio()));
+            const QPoint scaled(static_cast<int>(std::lround(gx / dpr)),
+                                static_cast<int>(std::lround(gy / dpr)));
+            if (s->geometry().contains(scaled)) {
+                return {s, scaled};
+            }
+        }
+
+        QScreen* fallbackScr = kwinScr ? kwinScr : QGuiApplication::primaryScreen();
+        return {fallbackScr, QPoint(gx, gy)};
+    }
+
+    // XCB / XWayland fallback coordinate mapping
+    QPoint qtPt(gx, gy);
+    bool matched = false;
     for (QScreen* s : screens) {
         const QRect sg = s->geometry();
         const double dpr = std::max(1.0, static_cast<double>(s->devicePixelRatio()));
         const int wx = static_cast<int>(std::lround(sg.x() / dpr));
         const int wy = static_cast<int>(std::lround(sg.y() / dpr));
         if (wx <= gx && gx < wx + sg.width() && wy <= gy && gy < wy + sg.height()) {
-            return QPoint(sg.x() + (gx - wx), sg.y() + (gy - wy));
+            qtPt = QPoint(sg.x() + (gx - wx), sg.y() + (gy - wy));
+            matched = true;
+            break;
         }
     }
-    for (QScreen* s : screens) {
-        const QRect sg = s->geometry();
-        const double dpr = std::max(1.0, static_cast<double>(s->devicePixelRatio()));
-        const double px = std::lround(sg.x() / dpr) * dpr;
-        const double py = std::lround(sg.y() / dpr) * dpr;
-        const double pw = sg.width() * dpr;
-        const double ph = sg.height() * dpr;
-        if (px <= gx && gx < px + pw && py <= gy && gy < py + ph) {
-            return QPoint(
-                sg.x() + static_cast<int>(std::lround((gx - px) / dpr)),
-                sg.y() + static_cast<int>(std::lround((gy - py) / dpr)));
+    if (!matched) {
+        for (QScreen* s : screens) {
+            const QRect sg = s->geometry();
+            const double dpr = std::max(1.0, static_cast<double>(s->devicePixelRatio()));
+            const double px = std::lround(sg.x() / dpr) * dpr;
+            const double py = std::lround(sg.y() / dpr) * dpr;
+            const double pw = sg.width() * dpr;
+            const double ph = sg.height() * dpr;
+            if (px <= gx && gx < px + pw && py <= gy && gy < py + ph) {
+                qtPt = QPoint(
+                    sg.x() + static_cast<int>(std::lround((gx - px) / dpr)),
+                    sg.y() + static_cast<int>(std::lround((gy - py) / dpr)));
+                break;
+            }
         }
     }
-    return QPoint(gx, gy);
+    QScreen* scr = QGuiApplication::screenAt(qtPt);
+    if (!scr) scr = QGuiApplication::screenAt(QCursor::pos());
+    if (!scr) scr = QGuiApplication::primaryScreen();
+    return {scr, qtPt};
+}
+
+inline QPoint waylandToQtPoint(int gx, int gy) {
+    return resolveTrayTarget(QPoint(gx, gy), gx != 0 || gy != 0).qtPt;
 }
 
 inline QScreen* screenForTrayPoint(const QPoint& rawPt, bool hasRawPt) {
-    if (hasRawPt && (rawPt.x() != 0 || rawPt.y() != 0)) {
-        const QPoint qtPt = waylandToQtPoint(rawPt.x(), rawPt.y());
-        if (QScreen* s = QGuiApplication::screenAt(qtPt)) return s;
-    }
-    if (QScreen* s = QGuiApplication::screenAt(QCursor::pos())) return s;
-    return QGuiApplication::primaryScreen();
+    return resolveTrayTarget(rawPt, hasRawPt).screen;
 }
 
 static QFrame* makeHLine(QWidget* parent) {
@@ -858,9 +1104,15 @@ class SalsaOsdOverlay : public QWidget {
     Q_OBJECT
 public:
     explicit SalsaOsdOverlay(QWidget* parent = nullptr) : QWidget(parent) {
-        setWindowFlags(
-            Qt::ToolTip | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint
-            | Qt::WindowTransparentForInput | Qt::WindowDoesNotAcceptFocus);
+        if (usingWaylandLayerShell()) {
+            setWindowFlags(
+                Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint
+                | Qt::WindowTransparentForInput | Qt::WindowDoesNotAcceptFocus);
+        } else {
+            setWindowFlags(
+                Qt::ToolTip | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint
+                | Qt::WindowTransparentForInput | Qt::WindowDoesNotAcceptFocus);
+        }
         setAttribute(Qt::WA_TranslucentBackground, true);
         setAttribute(Qt::WA_ShowWithoutActivating, true);
         setAttribute(Qt::WA_TransparentForMouseEvents, true);
@@ -890,6 +1142,33 @@ public:
         resize(w, h);
 
         QScreen* scr = screenForTrayPoint(rawAnchorPt, rawAnchorPt.x() != 0 || rawAnchorPt.y() != 0);
+        if (usingWaylandLayerShell()) {
+            if (isVisible() && lastOsdScreen_ != scr) {
+                hide();
+            }
+            lastOsdScreen_ = scr;
+            (void)winId();
+            if (QWindow* qw = windowHandle()) {
+                const auto& ls = LayerShellDyn::instance();
+                if (QObject* lsw = ls.get(qw)) {
+                    if (scr) ls.setScreen(lsw, scr);
+                    ls.setLayer(lsw, LayerShellDyn::LayerOverlay);
+                    ls.setScope(lsw, QStringLiteral("osd"));
+                    ls.setExclusiveZone(lsw, 0);
+                    ls.setKeyboardInteractivity(lsw, LayerShellDyn::KeyboardNone);
+                    ls.setActivateOnShow(lsw, false);
+                    ls.setCloseOnDismissed(lsw, false);
+                    ls.setAnchors(lsw, LayerShellDyn::AnchorBottom);
+                    ls.setMargins(lsw, QMargins(0, 0, 0, scaledPx(62, fontPct_)));
+                    ls.setDesiredSize(lsw, QSize(w, h));
+                }
+            }
+            show();
+            update();
+            hideTimer_->start(1650);
+            return;
+        }
+
         QRect avail = scr ? scr->availableGeometry() : QRect(0, 0, 1920, 1080);
         if (avail.width() < 200 || avail.height() < 200) {
             avail = scr ? scr->geometry() : QRect(0, 0, 1920, 1080);
@@ -897,8 +1176,9 @@ public:
         const int ox = avail.x() + (avail.width() - w) / 2;
         const int oy = avail.y() + avail.height() - h - scaledPx(62, fontPct_);
         move(ox, oy);
+        salsa_apply_x11_osd_hints(static_cast<uint64_t>(winId()), w, h);
         show();
-        salsa_apply_x11_popup_hints(static_cast<uint64_t>(winId()), true, true, ox, oy);
+        salsa_apply_x11_osd_hints(static_cast<uint64_t>(winId()), w, h);
         update();
         hideTimer_->start(1650);
     }
@@ -1015,6 +1295,7 @@ private:
     QColor accent_{"#22c55e"};
     int fontPct_ = 100;
     QTimer* hideTimer_ = nullptr;
+    QPointer<QScreen> lastOsdScreen_;
 };
 
 // =========================================================================
@@ -1025,18 +1306,25 @@ class PopupWindowFrame : public QFrame {
 public:
     explicit PopupWindowFrame(std::function<void()> onDeactivate)
         : onDeactivate_(std::move(onDeactivate)) {
-        setWindowFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+        if (usingWaylandLayerShell()) {
+            setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+        } else {
+            setWindowFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+        }
         setAttribute(Qt::WA_TranslucentBackground, true);
     }
 
 protected:
     void showEvent(QShowEvent* ev) override {
         QFrame::showEvent(ev);
-        QTimer::singleShot(10, this, [this]() {
-            if (isVisible()) {
-                salsa_apply_x11_popup_hints(static_cast<uint64_t>(winId()), true, true, 0, 0);
-            }
-        });
+        if (!usingWaylandLayerShell()) {
+            salsa_apply_x11_popup_hints(static_cast<uint64_t>(winId()), true, true, 0, 0);
+            QTimer::singleShot(10, this, [this]() {
+                if (isVisible()) {
+                    salsa_apply_x11_popup_hints(static_cast<uint64_t>(winId()), true, true, 0, 0);
+                }
+            });
+        }
     }
     void changeEvent(QEvent* ev) override {
         if (ev->type() == QEvent::ActivationChange && !isActiveWindow()) {
@@ -1137,6 +1425,8 @@ private:
     int anchorPanelLoc_ = 4;
     int anchorBottom_ = 0;
     QRect anchorAvail_;
+    QPointer<QScreen> lastPopupScreen_;
+    QPointer<QScreen> lastMenuScreen_;
 
     QString lastBtAlias_;
     qint64 lastBtPollMs_ = 0;
@@ -1878,8 +2168,8 @@ void TrayController::buildPopup() {
     btnStudio->setCursor(Qt::PointingHandCursor);
     btnStudio->setToolTip(QStringLiteral("Open Salsa Studio — Launches the full 10-band Dynamic EQ, session routing, and hardware stage window."));
     connect(btnStudio, &QPushButton::clicked, this, [this]() {
+        spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--studio")}, popupWin_);
         if (!pinned_) popupWin_->hide();
-        spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--studio")});
     });
     foot->addWidget(btnStudio, 1);
 
@@ -1888,8 +2178,8 @@ void TrayController::buildPopup() {
     btnGraph->setCursor(Qt::PointingHandCursor);
     btnGraph->setToolTip(QStringLiteral("Signal Flow Graph — Opens Salsa Studio directly on the live interactive pipeline topology & Owner's Manual."));
     connect(btnGraph, &QPushButton::clicked, this, [this]() {
+        spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--topology")}, popupWin_);
         if (!pinned_) popupWin_->hide();
-        spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--topology")});
     });
     foot->addWidget(btnGraph);
 
@@ -1898,8 +2188,8 @@ void TrayController::buildPopup() {
     btnDbg->setCursor(Qt::PointingHandCursor);
     btnDbg->setToolTip(QStringLiteral("Live Architecture Debugger — Opens real-time event logging, RT timing telemetry, process leak checks, and ScreenCast viewer."));
     connect(btnDbg, &QPushButton::clicked, this, [this]() {
+        spawnDetachedWaylandBinary(QStringLiteral("salsa-debug"), {}, popupWin_);
         if (!pinned_) popupWin_->hide();
-        spawnDetachedWaylandBinary(QStringLiteral("salsa-debug"));
     });
     foot->addWidget(btnDbg);
 
@@ -1940,20 +2230,20 @@ void TrayController::buildContextMenu() {
 
     auto* aStudio = ctxMenu_->addAction(QStringLiteral("Open Salsa Studio"));
     aStudio->setToolTip(QStringLiteral("Launches the full Salsa Studio equalizer, mixer, and advanced configuration window."));
-    connect(aStudio, &QAction::triggered, this, []() {
-        spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--studio")});
+    connect(aStudio, &QAction::triggered, this, [this]() {
+        spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--studio")}, ctxMenu_);
     });
 
     auto* aGraph = ctxMenu_->addAction(QStringLiteral("Signal Flow Graph"));
     aGraph->setToolTip(QStringLiteral("Opens Salsa Studio directly on the live topology pipeline diagram."));
-    connect(aGraph, &QAction::triggered, this, []() {
-        spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--topology")});
+    connect(aGraph, &QAction::triggered, this, [this]() {
+        spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--topology")}, ctxMenu_);
     });
 
     auto* aDbg = ctxMenu_->addAction(QStringLiteral("Live Debugger"));
     aDbg->setToolTip(QStringLiteral("Launches the standalone Live Architecture Debugger and ScreenCast Inspector."));
-    connect(aDbg, &QAction::triggered, this, []() {
-        spawnDetachedWaylandBinary(QStringLiteral("salsa-debug"));
+    connect(aDbg, &QAction::triggered, this, [this]() {
+        spawnDetachedWaylandBinary(QStringLiteral("salsa-debug"), {}, ctxMenu_);
     });
 
     ctxMenu_->addSeparator();
@@ -2281,8 +2571,9 @@ void TrayController::positionAndShowPopup(const QPoint& rawPt) {
     int popH = std::clamp(popupWin_->sizeHint().height(), scaledPx(460, fontPct_), scaledPx(740, fontPct_));
 
     const bool hasRaw = (rawPt.x() > 0 || rawPt.y() > 0);
-    const QPoint qtPt = hasRaw ? waylandToQtPoint(rawPt.x(), rawPt.y()) : QCursor::pos();
-    QScreen* scr = screenForTrayPoint(rawPt, hasRaw);
+    const ResolvedTrayTarget tgt = resolveTrayTarget(rawPt, hasRaw);
+    const QPoint qtPt = tgt.qtPt;
+    QScreen* scr = tgt.screen;
     QRect avail = scr ? scr->availableGeometry() : QRect(0, 0, 1920, 1032);
     if (avail.width() < 200 || avail.height() < 200) {
         avail = scr ? scr->geometry() : QRect(0, 0, 1920, 1080);
@@ -2292,11 +2583,61 @@ void TrayController::positionAndShowPopup(const QPoint& rawPt) {
 
     int loc = 4, clearance = 48, rightPad = 24;
     salsa_plasma_panel_info(&loc, &clearance, &rightPad);
+    const bool isXcb = (QGuiApplication::platformName() == QLatin1String("xcb"));
     const double dpr = scr ? std::max(1.0, static_cast<double>(scr->devicePixelRatio())) : 1.0;
-    const int logicalPad = static_cast<int>(std::lround(rightPad / dpr));
+    const int logicalPad = isXcb ? static_cast<int>(std::lround(rightPad / dpr)) : rightPad;
 
     anchorPanelLoc_ = loc;
     anchorAvail_ = avail;
+
+    if (usingWaylandLayerShell()) {
+        if (popupWin_->isVisible() && lastPopupScreen_ != scr) {
+            popupWin_->hide();
+        }
+        lastPopupScreen_ = scr;
+        const QRect sg = scr ? scr->geometry() : avail;
+        (void)popupWin_->winId();
+        if (QWindow* qw = popupWin_->windowHandle()) {
+            const auto& ls = LayerShellDyn::instance();
+            if (QObject* lsw = ls.get(qw)) {
+                if (scr) ls.setScreen(lsw, scr);
+                ls.setLayer(lsw, LayerShellDyn::LayerTop);
+                ls.setScope(lsw, QStringLiteral("salsa-tray-popup"));
+                ls.setExclusiveZone(lsw, 0);
+                ls.setKeyboardInteractivity(lsw, LayerShellDyn::KeyboardOnDemand);
+                ls.setActivateOnShow(lsw, true);
+                ls.setCloseOnDismissed(lsw, false);
+                if (loc == 5 || loc == 6) {
+                    const int horizAnchor = (loc == 5) ? LayerShellDyn::AnchorLeft : LayerShellDyn::AnchorRight;
+                    const int localY = hasRaw
+                        ? std::clamp(qtPt.y() - sg.y() - popH / 2, 8, std::max(8, sg.height() - popH - 8))
+                        : std::max(8, sg.height() - popH - 16);
+                    ls.setAnchors(lsw, LayerShellDyn::AnchorTop | horizAnchor);
+                    ls.setMargins(lsw, QMargins(8, localY, 8, 8));
+                } else {
+                    const int vertAnchor = (loc == 3) ? LayerShellDyn::AnchorTop : LayerShellDyn::AnchorBottom;
+                    if (hasRaw) {
+                        const int localX = std::clamp(
+                            qtPt.x() - sg.x() - popW / 2,
+                            8,
+                            std::max(8, sg.width() - popW - 8));
+                        ls.setAnchors(lsw, LayerShellDyn::AnchorLeft | vertAnchor);
+                        ls.setMargins(lsw, QMargins(localX, 8, 0, 8));
+                    } else {
+                        ls.setAnchors(lsw, LayerShellDyn::AnchorRight | vertAnchor);
+                        ls.setMargins(lsw, QMargins(0, 8, std::max(16, logicalPad), 8));
+                    }
+                }
+                ls.setDesiredSize(lsw, QSize(popW, popH));
+            }
+        }
+        popupOpenAtMs_ = nowMs();
+        popupWin_->show();
+        if (pollTimer_) pollTimer_->setInterval(33);
+        popupWin_->raise();
+        popupWin_->activateWindow();
+        return;
+    }
 
     int px = hasRaw ? (qtPt.x() - popW / 2) : (avail.right() + 1 - popW - std::max(16, logicalPad));
     px = std::clamp(px, avail.left() + 8, avail.right() + 1 - popW - 8);
@@ -2306,6 +2647,7 @@ void TrayController::positionAndShowPopup(const QPoint& rawPt) {
 
     popupWin_->move(px, py);
     popupOpenAtMs_ = nowMs();
+    salsa_apply_x11_popup_hints(static_cast<uint64_t>(popupWin_->winId()), true, true, 0, 0);
     popupWin_->show();
     if (pollTimer_) pollTimer_->setInterval(33);
     salsa_apply_x11_popup_hints(static_cast<uint64_t>(popupWin_->winId()), true, true, 0, 0);
@@ -2329,7 +2671,14 @@ void TrayController::keepBottomAnchored() {
         popupWin_->setMinimumWidth(popW);
         popupWin_->setMaximumWidth(popW);
         popupWin_->resize(popW, popH);
-        if (anchorPanelLoc_ != 3 && anchorAvail_.isValid()) {
+        if (usingWaylandLayerShell()) {
+            if (QWindow* qw = popupWin_->windowHandle()) {
+                const auto& ls = LayerShellDyn::instance();
+                if (QObject* lsw = ls.get(qw)) {
+                    ls.setDesiredSize(lsw, QSize(popW, popH));
+                }
+            }
+        } else if (anchorPanelLoc_ != 3 && anchorAvail_.isValid()) {
             const int topLim = anchorAvail_.top() + 8;
             const int newY = std::max(topLim, anchorBottom_ - popH);
             popupWin_->move(popupWin_->x(), newY);
@@ -2350,6 +2699,60 @@ void TrayController::popupToggle(const QPoint& rawPt) {
 void TrayController::showMenuAt(const QPoint& rawPt) {
     if (!ctxMenu_) return;
     syncFromEngine(false);
+    if (usingWaylandLayerShell()) {
+        const bool hasRaw = (rawPt.x() > 0 || rawPt.y() > 0);
+        const ResolvedTrayTarget tgt = resolveTrayTarget(rawPt, hasRaw);
+        const QPoint qtPt = tgt.qtPt;
+        QScreen* scr = tgt.screen;
+        if (ctxMenu_->isVisible() && lastMenuScreen_ != scr) {
+            ctxMenu_->hide();
+        }
+        lastMenuScreen_ = scr;
+        const QRect sg = scr ? scr->geometry() : QRect(0, 0, 1920, 1080);
+        int loc = 4, clearance = 48, rightPad = 24;
+        salsa_plasma_panel_info(&loc, &clearance, &rightPad);
+        const int logicalPad = rightPad;
+        const QSize mh = ctxMenu_->sizeHint();
+        (void)ctxMenu_->winId();
+        if (QWindow* qw = ctxMenu_->windowHandle()) {
+            const auto& ls = LayerShellDyn::instance();
+            if (QObject* lsw = ls.get(qw)) {
+                if (scr) ls.setScreen(lsw, scr);
+                ls.setLayer(lsw, LayerShellDyn::LayerTop);
+                ls.setScope(lsw, QStringLiteral("salsa-tray-menu"));
+                ls.setExclusiveZone(lsw, 0);
+                ls.setKeyboardInteractivity(lsw, LayerShellDyn::KeyboardOnDemand);
+                ls.setActivateOnShow(lsw, true);
+                ls.setCloseOnDismissed(lsw, true);
+                if (loc == 5 || loc == 6) {
+                    const int horizAnchor = (loc == 5) ? LayerShellDyn::AnchorLeft : LayerShellDyn::AnchorRight;
+                    const int localY = hasRaw
+                        ? std::clamp(qtPt.y() - sg.y() - mh.height() / 2, 8, std::max(8, sg.height() - mh.height() - 8))
+                        : std::max(8, sg.height() - mh.height() - 16);
+                    ls.setAnchors(lsw, LayerShellDyn::AnchorTop | horizAnchor);
+                    ls.setMargins(lsw, QMargins(8, localY, 8, 8));
+                } else {
+                    const int vertAnchor = (loc == 3) ? LayerShellDyn::AnchorTop : LayerShellDyn::AnchorBottom;
+                    if (hasRaw) {
+                        const int localX = std::clamp(
+                            qtPt.x() - sg.x() - mh.width() / 2,
+                            8,
+                            std::max(8, sg.width() - mh.width() - 8));
+                        ls.setAnchors(lsw, LayerShellDyn::AnchorLeft | vertAnchor);
+                        ls.setMargins(lsw, QMargins(localX, 8, 0, 8));
+                    } else {
+                        ls.setAnchors(lsw, LayerShellDyn::AnchorRight | vertAnchor);
+                        ls.setMargins(lsw, QMargins(0, 8, std::max(16, logicalPad), 8));
+                    }
+                }
+                if (mh.width() > 0 && mh.height() > 0) {
+                    ls.setDesiredSize(lsw, mh);
+                }
+            }
+        }
+        ctxMenu_->popup(qtPt);
+        return;
+    }
     if (rawPt.x() <= 0 && rawPt.y() <= 0) {
         ctxMenu_->popup(QCursor::pos());
     } else {
@@ -2994,9 +3397,18 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    // Use XCB/XWayland for Plasma StatusNotifierItem popup anchoring + X11 skip_taskbar hints
-    if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM") && qEnvironmentVariableIsSet("DISPLAY")) {
-        qputenv("QT_QPA_PLATFORM", "xcb");
+    // Prefer 100% pure native Wayland (`zwlr_layer_shell_v1` via LayerShellQt) whenever
+    // supported by the compositor (KDE Plasma Wayland, Hyprland, Sway, COSMIC, Niri, River,
+    // Labwc, LXQt) so `lwasapi-tray` needs zero X11/XWayland and never creates a panel icon.
+    // Fall back to XCB only on pure X11 sessions or Wayland compositors without layer-shell (GNOME).
+    if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
+        if (salsa::compositorSupportsLayerShellEnv()) {
+            qputenv("QT_QPA_PLATFORM", "wayland;xcb");
+        } else if (qEnvironmentVariableIsSet("DISPLAY")) {
+            qputenv("QT_QPA_PLATFORM", "xcb");
+        } else {
+            qputenv("QT_QPA_PLATFORM", "wayland");
+        }
     }
 
     void* lock = salsa_acquire_tray_lock(replace);
@@ -3005,8 +3417,9 @@ int main(int argc, char** argv) {
     }
 
     QApplication app(argc, argv);
+    salsa::syncResolvedPlatformEnv();
     app.setApplicationName(QStringLiteral("lwasapi-tray"));
-    app.setDesktopFileName(QStringLiteral("salsa-lwasapi"));
+    app.setDesktopFileName(QStringLiteral("lwasapi-tray"));
     app.setQuitOnLastWindowClosed(false);
 
     salsa::TrayController ctrl(true);

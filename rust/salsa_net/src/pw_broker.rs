@@ -28,11 +28,11 @@ use crate::pw_wire::{
 };
 use crate::unix_sys::{
     bind_unix_listener_0600, create_memfd, current_hostname, current_pid, current_uid,
-    current_username, dbg_emit, dmabuf_sync, do_poll, dup_fd_cloexec, ensure_private_dir,
-    eventfd_drain, eventfd_signal, memfd_size_valid, mono_ns, new_eventfd, open_private_shm,
-    recvmsg_with_fds, seal_memfd_size, sendmsg_all_with_fds, set_thread_nice, socket_peercred,
-    unix_socket_actively_served, unlink_shm_path, MappedMem, PollFd, RecvFdsResult, POLLERR,
-    POLLHUP, POLLIN,
+    current_username, dbg_emit, dmabuf_sync, do_poll, dup_fd_cloexec, dup_unix_listener_nonblock,
+    ensure_private_dir, eventfd_drain, eventfd_signal, memfd_size_valid, mono_ns, new_eventfd,
+    open_private_shm, recvmsg_with_fds, seal_memfd_size, sendmsg_all_with_fds, set_thread_nice,
+    socket_peercred, take_systemd_unix_listener, unix_socket_actively_served, unlink_shm_path,
+    MappedMem, PollFd, RecvFdsResult, POLLERR, POLLHUP, POLLIN,
 };
 
 use core::ffi::{c_char, c_int};
@@ -859,6 +859,8 @@ struct PwState {
     socket_path: String,
     manager_socket_path: String,
     ignore_zero_flag: bool,
+    systemd_listen_fd: Option<OwnedFd>,
+    systemd_mgr_fd: Option<OwnedFd>,
     listen: Option<UnixListener>,
     mgr: Option<UnixListener>,
     wake_efd: Option<OwnedFd>,
@@ -904,6 +906,8 @@ impl PwState {
             socket_path: String::new(),
             manager_socket_path: String::new(),
             ignore_zero_flag: false,
+            systemd_listen_fd: None,
+            systemd_mgr_fd: None,
             listen: None,
             mgr: None,
             wake_efd: None,
@@ -953,10 +957,10 @@ impl PwState {
         let want_zero = self.zero_mode_configured();
         self.shared.zero_pw_mode.store(want_zero, Ordering::Relaxed);
         if !want_zero {
-            if self.listen.take().is_some() {
+            if self.listen.take().is_some() && self.systemd_listen_fd.is_none() {
                 let _ = fs::remove_file(&self.socket_path);
             }
-            if self.mgr.take().is_some() {
+            if self.mgr.take().is_some() && self.systemd_mgr_fd.is_none() {
                 let _ = fs::remove_file(&self.manager_socket_path);
             }
             self.shared.broker_listening.store(false, Ordering::Relaxed);
@@ -965,20 +969,33 @@ impl PwState {
         if self.listen.is_some() {
             return 0;
         }
-        if !self.ignore_zero_flag && unix_socket_actively_served(&self.socket_path, current_pid()) {
-            dbg_emit(
-                LWASAPI_DBG_PW_VIDEO,
-                LWASAPI_DBG_WARN,
-                current_pid(),
-                0,
-                "PW_BROKER_DEFER",
-                &self.socket_path,
-                &format!("upstream pipewire process still holding {}", self.socket_path),
-            );
-            return -16; // -EBUSY
+        if !self.ignore_zero_flag && self.systemd_listen_fd.is_none() {
+            self.systemd_listen_fd = take_systemd_unix_listener(&self.socket_path);
+            self.systemd_mgr_fd = take_systemd_unix_listener(&self.manager_socket_path);
         }
-        self.listen = bind_unix_listener_0600(&self.socket_path);
-        self.mgr = bind_unix_listener_0600(&self.manager_socket_path);
+        if let Some(ref sfd) = self.systemd_listen_fd {
+            self.listen = dup_unix_listener_nonblock(sfd.as_raw_fd());
+            self.mgr = self
+                .systemd_mgr_fd
+                .as_ref()
+                .and_then(|mfd| dup_unix_listener_nonblock(mfd.as_raw_fd()))
+                .or_else(|| bind_unix_listener_0600(&self.manager_socket_path));
+        } else {
+            if !self.ignore_zero_flag && unix_socket_actively_served(&self.socket_path, current_pid()) {
+                dbg_emit(
+                    LWASAPI_DBG_PW_VIDEO,
+                    LWASAPI_DBG_WARN,
+                    current_pid(),
+                    0,
+                    "PW_BROKER_DEFER",
+                    &self.socket_path,
+                    &format!("upstream pipewire process still holding {}", self.socket_path),
+                );
+                return -16; // -EBUSY
+            }
+            self.listen = bind_unix_listener_0600(&self.socket_path);
+            self.mgr = bind_unix_listener_0600(&self.manager_socket_path);
+        }
         let ok = self.listen.is_some();
         self.shared.broker_listening.store(ok, Ordering::Relaxed);
         if ok {
@@ -4214,12 +4231,14 @@ pub unsafe extern "C" fn lwasapi_pw_broker_stop(brk: *mut PwBrokerHandle) {
                 st.handle_client_disconnect(ci);
             }
         }
-        if st.listen.take().is_some() {
+        if st.listen.take().is_some() && st.systemd_listen_fd.is_none() {
             let _ = fs::remove_file(&st.socket_path);
         }
-        if st.mgr.take().is_some() {
+        if st.mgr.take().is_some() && st.systemd_mgr_fd.is_none() {
             let _ = fs::remove_file(&st.manager_socket_path);
         }
+        st.systemd_listen_fd = None;
+        st.systemd_mgr_fd = None;
         st.preview_shm_map = None;
         st.preview_shm_fd = None;
         unlink_shm_path(&st.preview_shm_name, st.preview_shm_posix);

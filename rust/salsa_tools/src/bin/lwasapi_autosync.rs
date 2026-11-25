@@ -19,9 +19,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use salsa_tools::debug_core::SystemAuditScanner;
 use salsa_tools::host::{
-    detect_pkg_db_path, ensure_dir_0700, find_host_lib, find_host_lib32, flock_fd, funlock_fd,
-    install_root, natural_version_cmp, read_text_lossy, sha256_file, state_dir, which,
-    write_atomic_secure,
+    ensure_dir_0700, find_host_lib, find_host_lib32, flock_fd, funlock_fd, install_root,
+    natural_version_cmp, read_text_lossy, sha256_file, state_dir, which, write_atomic_secure,
 };
 use salsa_tools::json::JsonValue;
 use salsa_wire::unix_sys::reset_sigpipe_default;
@@ -33,6 +32,13 @@ const LIBS: [&str; 6] = [
     "libpulse-mainloop-glib.so.0",
     "libjack.so.0",
     "libjackserver.so.0",
+];
+
+const EXTRA_HOST_LIBS_64: [&str; 4] = [
+    "libfdk-aac.so.2",
+    "libldacBT_enc.so.2",
+    "libfreeaptx.so.0",
+    "libdbus-1.so.3",
 ];
 
 #[derive(Default)]
@@ -84,7 +90,7 @@ fn stat_token(label: &str, path_opt: Option<&str>) -> String {
 }
 
 fn compute_fingerprint() -> String {
-    let mut lines = Vec::with_capacity(16);
+    let mut lines = Vec::with_capacity(20);
     for lib in LIBS {
         let p64 = find_host_lib(lib);
         lines.push(stat_token(&format!("64:{lib}"), p64.as_deref()));
@@ -92,6 +98,10 @@ fn compute_fingerprint() -> String {
     for lib in LIBS {
         let p32 = find_host_lib32(lib);
         lines.push(stat_token(&format!("32:{lib}"), p32.as_deref()));
+    }
+    for lib in EXTRA_HOST_LIBS_64 {
+        let p64 = find_host_lib(lib);
+        lines.push(stat_token(&format!("64:{lib}"), p64.as_deref()));
     }
     let marker = "/var/lib/salsa-autosync/libpulse-updated";
     if let Ok(meta) = fs::metadata(marker) {
@@ -103,14 +113,6 @@ fn compute_fingerprint() -> String {
         ));
     } else {
         lines.push(format!("hook={marker}:none"));
-    }
-    let pkg_db = detect_pkg_db_path();
-    if let Ok(meta) = fs::metadata(pkg_db) {
-        lines.push(format!(
-            "pkgdb={pkg_db}:{}.{}",
-            meta.mtime(),
-            meta.mtime_nsec()
-        ));
     }
     lines.join("\n")
 }
@@ -141,7 +143,11 @@ fn pipewire_zero_drifted(st_dir: &Path) -> bool {
             return true;
         }
     }
-    false
+    st_dir
+        .parent()
+        .is_some_and(|cfg| cfg.join("systemd/user/lwasapi-pipewire.socket").is_file())
+        && systemd_is_active("lwasapi-audiodg.service")
+        && !systemd_is_active("lwasapi-pipewire.socket")
 }
 
 fn pkg_lock_busy() -> bool {
@@ -508,7 +514,7 @@ fn run_sync_locked(
         );
     }
 
-    if pipewire_zero_enabled(st_dir) {
+    if !drifted && pipewire_zero_enabled(st_dir) && pipewire_zero_drifted(st_dir) {
         let ctl = base_dir.join("build/lwasapi-ctl");
         if ctl.is_file() {
             let _ = Command::new(&ctl).arg("enable-auto").status();

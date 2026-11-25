@@ -889,11 +889,18 @@ impl SystemAuditScanner {
             ("pipewire_0", xdg_rt.join("pipewire-0")),
             ("pipewire_0_manager", xdg_rt.join("pipewire-0-manager")),
         ];
+        let lwasapi_pw_sock_active = query_systemd_unit("lwasapi-pipewire.socket")
+            .get("active_state")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|s| s == "active" || s == "listening");
         let mut sockets_arr = Vec::with_capacity(sock_specs.len());
         let mut pw_is_salsa = false;
         for (name, path) in &sock_specs {
             let info = peercred_for_unix_socket(path);
-            if *name == "pipewire_0" && info.peer_comm == "lwasapi-audiodg" {
+            if *name == "pipewire_0"
+                && (info.peer_comm == "lwasapi-audiodg"
+                    || (info.peer_comm == "systemd" && lwasapi_pw_sock_active))
+            {
                 pw_is_salsa = true;
             }
             sockets_arr.push(JsonValue::obj(vec![
@@ -924,6 +931,7 @@ impl SystemAuditScanner {
         }
 
         let unit_names = [
+            "lwasapi-pipewire.socket",
             "lwasapi-audiodg.service",
             "lwasapi-tray.service",
             "lwasapi-module-watcher.path",

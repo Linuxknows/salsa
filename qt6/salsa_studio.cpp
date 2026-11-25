@@ -3663,7 +3663,9 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    salsa::preferNativeWaylandPlatform();
     QApplication app(argc, argv);
+    salsa::syncResolvedPlatformEnv();
     app.setApplicationName(QStringLiteral("salsa-studio"));
     app.setDesktopFileName(QStringLiteral("salsa-lwasapi"));
 
