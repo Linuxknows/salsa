@@ -1,12 +1,12 @@
 [package]
-name = "alsa_plugin_lwasapi"
+name = "alsa_plugin_lasapi"
 version = "0.1.0"
 edition = "2021"
 license = "LGPL-3.0-only"
 publish = false
 
 [lib]
-name = "alsa_plugin_lwasapi"
+name = "alsa_plugin_lasapi"
 crate-type = ["staticlib"]
 path = "src/lib.rs"
 

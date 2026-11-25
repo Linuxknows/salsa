@@ -2,8 +2,8 @@
 resolver = "2"
 members = [
     "salsa_net",
-    "lwasapi_client",
-    "alsa_plugin_lwasapi",
+    "lasapi_client",
+    "alsa_plugin_lasapi",
     "shim_alsa",
     "shim_pulse",
     "shim_jack",

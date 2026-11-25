@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -26,38 +26,38 @@ use std::thread;
 use std::time::Duration;
 
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, AUDCLNT_SHAREMODE_EXCLUSIVE, E_FAIL, LwasapiDeviceList,
-    LwasapiEngineStatus, LwasapiEqConfig, LwasapiHwAnalogCfg, LwasapiIpcReq, LwasapiIpcResp,
-    LwasapiParamEqPayload, LWASAPI_BT_CAP_AAC, LWASAPI_BT_CAP_APTX, LWASAPI_BT_CAP_APTX_HD,
-    LWASAPI_BT_CAP_LDAC, LWASAPI_BT_CAP_SBC, LWASAPI_BT_CONN_CONNECT,
-    LWASAPI_BT_CONN_DISCONNECT, LWASAPI_BT_CONN_QUERY, LWASAPI_BT_CONN_SET_AUTOCONN,
-    LWASAPI_BT_CONN_SET_OPTIONAL, LWASAPI_BT_PREF_AAC, LWASAPI_BT_PREF_APTX,
-    LWASAPI_BT_PREF_APTX_HD, LWASAPI_BT_PREF_AUTO, LWASAPI_BT_PREF_LDAC, LWASAPI_BT_PREF_SBC,
-    LWASAPI_BT_STAT_CONNECTED, LWASAPI_BT_STAT_OPTIONAL, LWASAPI_BT_STAT_TRANSPORT,
-    LWASAPI_BT_STAT_USB_MATCHES_BT, LWASAPI_CFG_FLAG_CAPTURE_RATE, LWASAPI_CMD_BT_CONNECTION,
-    LWASAPI_CMD_GET_STATUS, LWASAPI_CMD_INJECT_MIDI, LWASAPI_CMD_LIST_DEVICES,
-    LWASAPI_CMD_RELOAD_CONFIG, LWASAPI_CMD_SAVE_CONFIG, LWASAPI_CMD_SET_BT_CODEC,
-    LWASAPI_CMD_SET_DEVICES, LWASAPI_CMD_SET_ENGINE_CONFIG, LWASAPI_CMD_SET_EQ, LWASAPI_CMD_SET_HW_ANALOG,
-    LWASAPI_CMD_SET_MIC_APO, LWASAPI_CMD_SET_PARAM_EQ, LWASAPI_CMD_SET_SESSION_CONTROL,
-    LWASAPI_CMD_SET_VOLUME, LWASAPI_EQ_BANDS, LWASAPI_FILTER_HIGH_SHELF, LWASAPI_FILTER_LOW_SHELF,
-    LWASAPI_FILTER_PEAK, LWASAPI_LDAC_MODE_330, LWASAPI_LDAC_MODE_660, LWASAPI_LDAC_MODE_990,
-    LWASAPI_LDAC_MODE_ADAPTIVE, S_OK,
+    c_str_to_string, copy_str_to_c, AUDCLNT_SHAREMODE_EXCLUSIVE, E_FAIL, LasapiDeviceList,
+    LasapiEngineStatus, LasapiEqConfig, LasapiHwAnalogCfg, LasapiIpcReq, LasapiIpcResp,
+    LasapiParamEqPayload, LASAPI_BT_CAP_AAC, LASAPI_BT_CAP_APTX, LASAPI_BT_CAP_APTX_HD,
+    LASAPI_BT_CAP_LDAC, LASAPI_BT_CAP_SBC, LASAPI_BT_CONN_CONNECT,
+    LASAPI_BT_CONN_DISCONNECT, LASAPI_BT_CONN_QUERY, LASAPI_BT_CONN_SET_AUTOCONN,
+    LASAPI_BT_CONN_SET_OPTIONAL, LASAPI_BT_PREF_AAC, LASAPI_BT_PREF_APTX,
+    LASAPI_BT_PREF_APTX_HD, LASAPI_BT_PREF_AUTO, LASAPI_BT_PREF_LDAC, LASAPI_BT_PREF_SBC,
+    LASAPI_BT_STAT_CONNECTED, LASAPI_BT_STAT_OPTIONAL, LASAPI_BT_STAT_TRANSPORT,
+    LASAPI_BT_STAT_USB_MATCHES_BT, LASAPI_CFG_FLAG_CAPTURE_RATE, LASAPI_CMD_BT_CONNECTION,
+    LASAPI_CMD_GET_STATUS, LASAPI_CMD_INJECT_MIDI, LASAPI_CMD_LIST_DEVICES,
+    LASAPI_CMD_RELOAD_CONFIG, LASAPI_CMD_SAVE_CONFIG, LASAPI_CMD_SET_BT_CODEC,
+    LASAPI_CMD_SET_DEVICES, LASAPI_CMD_SET_ENGINE_CONFIG, LASAPI_CMD_SET_EQ, LASAPI_CMD_SET_HW_ANALOG,
+    LASAPI_CMD_SET_MIC_APO, LASAPI_CMD_SET_PARAM_EQ, LASAPI_CMD_SET_SESSION_CONTROL,
+    LASAPI_CMD_SET_VOLUME, LASAPI_EQ_BANDS, LASAPI_FILTER_HIGH_SHELF, LASAPI_FILTER_LOW_SHELF,
+    LASAPI_FILTER_PEAK, LASAPI_LDAC_MODE_330, LASAPI_LDAC_MODE_660, LASAPI_LDAC_MODE_990,
+    LASAPI_LDAC_MODE_ADAPTIVE, S_OK,
 };
 use crate::hw_analog::{
-    LWASAPI_HW_AMP_AUTO, LWASAPI_HW_AMP_HIGH, LWASAPI_HW_AMP_LOW, LWASAPI_HW_AMP_MED,
-    LWASAPI_HW_ROUTE_AUTO, LWASAPI_HW_ROUTE_HP, LWASAPI_HW_ROUTE_SPK,
+    LASAPI_HW_AMP_AUTO, LASAPI_HW_AMP_HIGH, LASAPI_HW_AMP_LOW, LASAPI_HW_AMP_MED,
+    LASAPI_HW_ROUTE_AUTO, LASAPI_HW_ROUTE_HP, LASAPI_HW_ROUTE_SPK,
 };
 use crate::legal::{handle_common_cli_flag, one_line_legal_notice, salsa_version};
 use crate::unix_sys::{current_uid, resolve_sock_path_common, O_CLOEXEC, O_NOFOLLOW};
 
-use crate::c_abi::{lwasapi_bluez_enumerate_devices, lwasapi_bluez_reset_device};
+use crate::c_abi::{lasapi_bluez_enumerate_devices, lasapi_bluez_reset_device};
 
 fn get_socket_path() -> String {
-    resolve_sock_path_common("LWASAPI_SOCKET", "audiodg.sock", "/tmp/lwasapi-audiodg.sock")
+    resolve_sock_path_common("LASAPI_SOCKET", "audiodg.sock", "/tmp/lasapi-audiodg.sock")
 }
 
 fn get_debug_socket_path() -> String {
-    resolve_sock_path_common("LWASAPI_DEBUG_SOCK", "debug.sock", "/tmp/lwasapi-debug.sock")
+    resolve_sock_path_common("LASAPI_DEBUG_SOCK", "debug.sock", "/tmp/lasapi-debug.sock")
 }
 
 fn struct_as_bytes<T>(val: &T) -> &[u8] {
@@ -76,32 +76,32 @@ fn connect_engine() -> Option<UnixStream> {
     UnixStream::connect(get_socket_path()).ok()
 }
 
-fn get_full_status() -> Option<LwasapiEngineStatus> {
+fn get_full_status() -> Option<LasapiEngineStatus> {
     let mut stream = connect_engine()?;
-    let mut req: LwasapiIpcReq = zeroed_struct();
-    req.cmd = LWASAPI_CMD_GET_STATUS;
+    let mut req: LasapiIpcReq = zeroed_struct();
+    req.cmd = LASAPI_CMD_GET_STATUS;
     stream.write_all(struct_as_bytes(&req)).ok()?;
-    let mut st: LwasapiEngineStatus = zeroed_struct();
+    let mut st: LasapiEngineStatus = zeroed_struct();
     stream.read_exact(struct_as_bytes_mut(&mut st)).ok()?;
     Some(st)
 }
 
-fn send_req_only(req: &LwasapiIpcReq) -> Option<LwasapiIpcResp> {
+fn send_req_only(req: &LasapiIpcReq) -> Option<LasapiIpcResp> {
     let mut stream = connect_engine()?;
     stream.write_all(struct_as_bytes(req)).ok()?;
-    let mut resp: LwasapiIpcResp = zeroed_struct();
+    let mut resp: LasapiIpcResp = zeroed_struct();
     resp.hr = E_FAIL;
     let _ = stream.read_exact(struct_as_bytes_mut(&mut resp));
     Some(resp)
 }
 
-fn send_payload_cmd(cmd: u32, payload: &[u8]) -> (i32, LwasapiIpcResp) {
-    let mut resp: LwasapiIpcResp = zeroed_struct();
+fn send_payload_cmd(cmd: u32, payload: &[u8]) -> (i32, LasapiIpcResp) {
+    let mut resp: LasapiIpcResp = zeroed_struct();
     resp.hr = E_FAIL;
     let Some(mut stream) = connect_engine() else {
         return (1, resp);
     };
-    let mut req: LwasapiIpcReq = zeroed_struct();
+    let mut req: LasapiIpcReq = zeroed_struct();
     req.cmd = cmd;
     req.requested_buffer_frames = payload.len() as u32;
     if stream.write_all(struct_as_bytes(&req)).is_err() {
@@ -153,39 +153,39 @@ fn c_strtof(s: &str) -> f32 {
 
 fn bt_pref_name(pref: u32) -> &'static str {
     match pref {
-        LWASAPI_BT_PREF_LDAC => "LDAC",
-        LWASAPI_BT_PREF_APTX_HD => "aptX HD",
-        LWASAPI_BT_PREF_APTX => "aptX",
-        LWASAPI_BT_PREF_AAC => "AAC",
-        LWASAPI_BT_PREF_SBC => "SBC",
+        LASAPI_BT_PREF_LDAC => "LDAC",
+        LASAPI_BT_PREF_APTX_HD => "aptX HD",
+        LASAPI_BT_PREF_APTX => "aptX",
+        LASAPI_BT_PREF_AAC => "AAC",
+        LASAPI_BT_PREF_SBC => "SBC",
         _ => "Auto",
     }
 }
 
 fn ldac_tier_name(mode: u32) -> &'static str {
     match mode {
-        LWASAPI_LDAC_MODE_990 => "990 kbps (HQ)",
-        LWASAPI_LDAC_MODE_660 => "660 kbps (SQ)",
-        LWASAPI_LDAC_MODE_330 => "330 kbps (MQ)",
+        LASAPI_LDAC_MODE_990 => "990 kbps (HQ)",
+        LASAPI_LDAC_MODE_660 => "660 kbps (SQ)",
+        LASAPI_LDAC_MODE_330 => "330 kbps (MQ)",
         _ => "Adaptive ABR",
     }
 }
 
 fn format_bt_caps(mask: u32) -> String {
     let mut parts = Vec::new();
-    if (mask & LWASAPI_BT_CAP_LDAC) != 0 {
+    if (mask & LASAPI_BT_CAP_LDAC) != 0 {
         parts.push("LDAC");
     }
-    if (mask & LWASAPI_BT_CAP_APTX_HD) != 0 {
+    if (mask & LASAPI_BT_CAP_APTX_HD) != 0 {
         parts.push("aptX HD");
     }
-    if (mask & LWASAPI_BT_CAP_APTX) != 0 {
+    if (mask & LASAPI_BT_CAP_APTX) != 0 {
         parts.push("aptX");
     }
-    if (mask & LWASAPI_BT_CAP_AAC) != 0 {
+    if (mask & LASAPI_BT_CAP_AAC) != 0 {
         parts.push("AAC");
     }
-    if (mask & LWASAPI_BT_CAP_SBC) != 0 {
+    if (mask & LASAPI_BT_CAP_SBC) != 0 {
         parts.push("SBC");
     }
     if parts.is_empty() {
@@ -198,7 +198,7 @@ fn format_bt_caps(mask: u32) -> String {
 fn cmd_status() -> i32 {
     let Some(st) = get_full_status() else {
         eprintln!(
-            "Error: Could not read status from lwasapi-audiodg on {}",
+            "Error: Could not read status from lasapi-audiodg on {}",
             get_socket_path()
         );
         return 1;
@@ -218,7 +218,7 @@ fn cmd_status() -> i32 {
         "Dynamic EQ Expand (Upward Transient Punch)",
     ];
     const SHAPE_TAGS: [&str; 3] = ["PK", "LS", "HS"];
-    const BAND_LABELS: [&str; LWASAPI_EQ_BANDS] = [
+    const BAND_LABELS: [&str; LASAPI_EQ_BANDS] = [
         "31Hz", "62Hz", "125Hz", "250Hz", "500Hz", "1kHz", "2kHz", "4kHz", "8kHz", "16kHz",
     ];
 
@@ -244,10 +244,10 @@ fn cmd_status() -> i32 {
 
     println!("================================================================================");
     println!(
-        " Salsa {} — Linux WASAPI Studio Engine (Fixed/Split Clock + HW Analog)",
+        " Salsa {} — LASAPI Studio Engine (Fixed/Split Clock + HW Analog)",
         salsa_version()
     );
-    println!(" {}", one_line_legal_notice("lwasapi-ctl"));
+    println!(" {}", one_line_legal_notice("lasapi-ctl"));
     println!("================================================================================");
     println!(" Render / Sink Endpoint : {hw_device} [{act_pb}]");
     println!(" Capture / Mic Endpoint : {hw_cap} [{act_cap}]");
@@ -334,17 +334,17 @@ fn cmd_status() -> i32 {
         };
         println!("   BT Supported SEPs    : {bt_caps} | {neg_disp}");
     }
-    let mut bt_q: LwasapiIpcReq = zeroed_struct();
-    bt_q.cmd = LWASAPI_CMD_BT_CONNECTION;
-    bt_q.requested_period_frames = LWASAPI_BT_CONN_QUERY;
+    let mut bt_q: LasapiIpcReq = zeroed_struct();
+    bt_q.cmd = LASAPI_CMD_BT_CONNECTION;
+    bt_q.requested_period_frames = LASAPI_BT_CONN_QUERY;
     if let Some(bt_r) = send_req_only(&bt_q) {
         let f = bt_r.session_id;
-        let pol = if (f & LWASAPI_BT_STAT_OPTIONAL) != 0 {
+        let pol = if (f & LASAPI_BT_STAT_OPTIONAL) != 0 {
             "Optional (Not Mandatory)"
         } else {
             "Auto-Connect"
         };
-        let usb_pri = if (f & LWASAPI_BT_STAT_USB_MATCHES_BT) != 0 {
+        let usb_pri = if (f & LASAPI_BT_STAT_USB_MATCHES_BT) != 0 {
             " | USB Priority ACTIVE (Matching USB plugged)"
         } else {
             ""
@@ -434,7 +434,7 @@ fn cmd_status() -> i32 {
 
     let midi_dev_raw = c_str_to_string(&st.midi_device);
     let midi_dev = if midi_dev_raw.is_empty() {
-        "LWASAPI-MIDI-Hub"
+        "LASAPI-MIDI-Hub"
     } else {
         midi_dev_raw.as_str()
     };
@@ -511,7 +511,7 @@ fn cmd_status() -> i32 {
         st.param_eq.crossfeed_level * 100.0
     );
     print!("   Parametric Bands     :");
-    for b in 0..LWASAPI_EQ_BANDS {
+    for b in 0..LASAPI_EQ_BANDS {
         let sh = if st.param_eq.band_type[b] <= 2 {
             st.param_eq.band_type[b] as usize
         } else {
@@ -577,11 +577,11 @@ fn cmd_status() -> i32 {
 }
 
 fn cmd_devices() -> i32 {
-    let mut dlist: LwasapiDeviceList = zeroed_struct();
+    let mut dlist: LasapiDeviceList = zeroed_struct();
     let mut live = false;
     if let Some(mut stream) = connect_engine() {
-        let mut req: LwasapiIpcReq = zeroed_struct();
-        req.cmd = LWASAPI_CMD_LIST_DEVICES;
+        let mut req: LasapiIpcReq = zeroed_struct();
+        req.cmd = LASAPI_CMD_LIST_DEVICES;
         if stream.write_all(struct_as_bytes(&req)).is_ok()
             && stream.read_exact(struct_as_bytes_mut(&mut dlist)).is_ok()
         {
@@ -590,7 +590,7 @@ fn cmd_devices() -> i32 {
     }
     if !live {
         unsafe {
-            lwasapi_bluez_enumerate_devices(
+            lasapi_bluez_enumerate_devices(
                 ptr::null(),
                 ptr::null(),
                 ptr::null(),
@@ -600,7 +600,7 @@ fn cmd_devices() -> i32 {
     }
 
     let ndev = (dlist.num_devices as usize).min(dlist.devices.len());
-    println!("Salsa Native Playback Endpoints (use 'lwasapi-ctl set-sink <id>'):");
+    println!("Salsa Native Playback Endpoints (use 'lasapi-ctl set-sink <id>'):");
     let mut pb_cnt = 0u32;
     for e in &dlist.devices[..ndev] {
         if e.is_capture != 0 {
@@ -617,7 +617,7 @@ fn cmd_devices() -> i32 {
         println!("  (No playback hardware found - WaveRT Virtual Clock available)");
     }
 
-    println!("\nSalsa Native Capture / Microphone Endpoints (use 'lwasapi-ctl set-source <id>'):");
+    println!("\nSalsa Native Capture / Microphone Endpoints (use 'lasapi-ctl set-source <id>'):");
     let mut cap_cnt = 0u32;
     for e in &dlist.devices[..ndev] {
         if e.is_capture == 0 {
@@ -648,7 +648,7 @@ fn cmd_devices() -> i32 {
         }
     }
     if Path::new("/dev/snd/seq").exists() {
-        println!("  /dev/snd/seq       ->  ALSA Sequencer ('LWASAPI-MIDI-Hub' + Hardware MIDI Ports)");
+        println!("  /dev/snd/seq       ->  ALSA Sequencer ('LASAPI-MIDI-Hub' + Hardware MIDI Ports)");
     }
     0
 }
@@ -656,13 +656,13 @@ fn cmd_devices() -> i32 {
 fn cmd_set_device(is_capture: bool, dev_id: &str) -> i32 {
     let Some(mut stream) = connect_engine() else {
         eprintln!(
-            "Error: Could not connect to lwasapi-audiodg on {}",
+            "Error: Could not connect to lasapi-audiodg on {}",
             get_socket_path()
         );
         return 1;
     };
-    let mut req: LwasapiIpcReq = zeroed_struct();
-    req.cmd = LWASAPI_CMD_SET_DEVICES;
+    let mut req: LasapiIpcReq = zeroed_struct();
+    req.cmd = LASAPI_CMD_SET_DEVICES;
     if is_capture {
         copy_str_to_c(&mut req.target_capture_device, dev_id);
     } else {
@@ -671,7 +671,7 @@ fn cmd_set_device(is_capture: bool, dev_id: &str) -> i32 {
     if stream.write_all(struct_as_bytes(&req)).is_err() {
         return 1;
     }
-    let mut resp: LwasapiIpcResp = zeroed_struct();
+    let mut resp: LasapiIpcResp = zeroed_struct();
     resp.hr = E_FAIL;
     let ok = stream.read_exact(struct_as_bytes_mut(&mut resp)).is_ok();
     if !ok || resp.hr != S_OK {
@@ -704,7 +704,7 @@ fn cmd_bt_reset(mac_or_empty: &str) -> i32 {
     };
     let mut msg_buf = [0u8; 256];
     let rc = unsafe {
-        lwasapi_bluez_reset_device(
+        lasapi_bluez_reset_device(
             c_hint.as_ptr(),
             msg_buf.as_mut_ptr().cast::<c_char>(),
             msg_buf.len(),
@@ -737,8 +737,8 @@ fn cmd_volume(session_id: u32, mut vol: f32) -> i32 {
     if vol > 2.0 {
         vol /= 100.0;
     }
-    let mut req: LwasapiIpcReq = zeroed_struct();
-    req.cmd = LWASAPI_CMD_SET_VOLUME;
+    let mut req: LasapiIpcReq = zeroed_struct();
+    req.cmd = LASAPI_CMD_SET_VOLUME;
     req.target_session_id = session_id;
     req.volume_milli = (vol * 1000.0) as u32;
     let Some(resp) = send_req_only(&req) else {
@@ -753,8 +753,8 @@ fn cmd_volume(session_id: u32, mut vol: f32) -> i32 {
 }
 
 fn cmd_session_control(session_id: u32, vol_pct: i32, mute_mode: i32, dev_id: Option<&str>) -> i32 {
-    let mut req: LwasapiIpcReq = zeroed_struct();
-    req.cmd = LWASAPI_CMD_SET_SESSION_CONTROL;
+    let mut req: LasapiIpcReq = zeroed_struct();
+    req.cmd = LASAPI_CMD_SET_SESSION_CONTROL;
     req.target_session_id = session_id;
     let clamped_pct = vol_pct.clamp(0, 150);
     req.volume_milli = if vol_pct >= 0 {
@@ -786,31 +786,31 @@ fn cmd_session_control(session_id: u32, vol_pct: i32, mute_mode: i32, dev_id: Op
 
 fn cmd_bt_link(mode: &str, mac: &str) -> i32 {
     let action = match mode {
-        "" | "status" | "query" => LWASAPI_BT_CONN_QUERY,
-        "on" | "connect" => LWASAPI_BT_CONN_CONNECT,
-        "off" | "disconnect" => LWASAPI_BT_CONN_DISCONNECT,
-        "optional" => LWASAPI_BT_CONN_SET_OPTIONAL,
-        "auto" | "mandatory" => LWASAPI_BT_CONN_SET_AUTOCONN,
+        "" | "status" | "query" => LASAPI_BT_CONN_QUERY,
+        "on" | "connect" => LASAPI_BT_CONN_CONNECT,
+        "off" | "disconnect" => LASAPI_BT_CONN_DISCONNECT,
+        "optional" => LASAPI_BT_CONN_SET_OPTIONAL,
+        "auto" | "mandatory" => LASAPI_BT_CONN_SET_AUTOCONN,
         other => {
             eprintln!("Unknown bt-link mode '{other}'. Use status|on|off|optional|auto.");
             return 2;
         }
     };
-    let mut req: LwasapiIpcReq = zeroed_struct();
-    req.cmd = LWASAPI_CMD_BT_CONNECTION;
+    let mut req: LasapiIpcReq = zeroed_struct();
+    req.cmd = LASAPI_CMD_BT_CONNECTION;
     req.requested_period_frames = action;
     if !mac.is_empty() {
         copy_str_to_c(&mut req.target_device, mac);
     }
     let Some(resp) = send_req_only(&req) else {
-        eprintln!("Error: could not contact lwasapi-audiodg for bt-link");
+        eprintln!("Error: could not contact lasapi-audiodg for bt-link");
         return 1;
     };
     let flags = resp.session_id;
-    let opt = (flags & LWASAPI_BT_STAT_OPTIONAL) != 0;
-    let conn = (flags & LWASAPI_BT_STAT_CONNECTED) != 0;
-    let tp = (flags & LWASAPI_BT_STAT_TRANSPORT) != 0;
-    let usb_pri = (flags & LWASAPI_BT_STAT_USB_MATCHES_BT) != 0;
+    let opt = (flags & LASAPI_BT_STAT_OPTIONAL) != 0;
+    let conn = (flags & LASAPI_BT_STAT_CONNECTED) != 0;
+    let tp = (flags & LASAPI_BT_STAT_TRANSPORT) != 0;
+    let usb_pri = (flags & LASAPI_BT_STAT_USB_MATCHES_BT) != 0;
     println!(
         "Bluetooth Link Policy={} | Connected={} | A2DP Transport={} | Dual USB+BT Priority={}",
         if opt { "Optional" } else { "Auto-Connect" },
@@ -822,8 +822,8 @@ fn cmd_bt_link(mode: &str, mac: &str) -> i32 {
 }
 
 fn cmd_master_volume(pct: i32, mute_mode: i32) -> i32 {
-    let mut req: LwasapiIpcReq = zeroed_struct();
-    req.cmd = LWASAPI_CMD_SET_VOLUME;
+    let mut req: LasapiIpcReq = zeroed_struct();
+    req.cmd = LASAPI_CMD_SET_VOLUME;
     req.target_session_id = u32::MAX;
     req.volume_milli = if pct >= 0 { (pct as u32) * 10 } else { u32::MAX };
     req.share_mode = (mute_mode + 1) as u32;
@@ -838,8 +838,8 @@ fn cmd_master_volume(pct: i32, mute_mode: i32) -> i32 {
 }
 
 fn cmd_mic_volume(pct: i32, mute_mode: i32) -> i32 {
-    let mut req: LwasapiIpcReq = zeroed_struct();
-    req.cmd = LWASAPI_CMD_SET_VOLUME;
+    let mut req: LasapiIpcReq = zeroed_struct();
+    req.cmd = LASAPI_CMD_SET_VOLUME;
     req.target_session_id = 0xFFFF_FFFE;
     req.volume_milli = if pct >= 0 { (pct as u32) * 10 } else { u32::MAX };
     req.share_mode = (mute_mode + 1) as u32;
@@ -854,9 +854,9 @@ fn cmd_mic_volume(pct: i32, mute_mode: i32) -> i32 {
 }
 
 fn cmd_midi_send(note: u8, vel: u8) -> i32 {
-    let mut req: LwasapiIpcReq = zeroed_struct();
-    req.cmd = LWASAPI_CMD_INJECT_MIDI;
-    copy_str_to_c(&mut req.client_name, "lwasapi-ctl");
+    let mut req: LasapiIpcReq = zeroed_struct();
+    req.cmd = LASAPI_CMD_INJECT_MIDI;
+    copy_str_to_c(&mut req.client_name, "lasapi-ctl");
     req.midi_ev.size = 3;
     req.midi_ev.data[0] = 0x90;
     req.midi_ev.data[1] = note & 0x7F;
@@ -872,8 +872,8 @@ fn cmd_midi_send(note: u8, vel: u8) -> i32 {
 }
 
 fn cmd_set_rate(rate: u32, period: u32, bits: u32) -> i32 {
-    let mut req: LwasapiIpcReq = zeroed_struct();
-    req.cmd = LWASAPI_CMD_SET_ENGINE_CONFIG;
+    let mut req: LasapiIpcReq = zeroed_struct();
+    req.cmd = LASAPI_CMD_SET_ENGINE_CONFIG;
     req.sample_rate = rate;
     req.requested_period_frames = period;
     req.format = bits;
@@ -920,10 +920,10 @@ fn cmd_set_rate(rate: u32, period: u32, bits: u32) -> i32 {
 }
 
 fn cmd_set_cap_rate(rate: u32) -> i32 {
-    let mut req: LwasapiIpcReq = zeroed_struct();
-    req.cmd = LWASAPI_CMD_SET_ENGINE_CONFIG;
+    let mut req: LasapiIpcReq = zeroed_struct();
+    req.cmd = LASAPI_CMD_SET_ENGINE_CONFIG;
     req.sample_rate = rate;
-    req.stream_flags = LWASAPI_CFG_FLAG_CAPTURE_RATE;
+    req.stream_flags = LASAPI_CFG_FLAG_CAPTURE_RATE;
     let Some(resp) = send_req_only(&req) else {
         return 1;
     };
@@ -944,9 +944,9 @@ fn cmd_set_cap_rate(rate: u32) -> i32 {
     i32::from(resp.hr != S_OK)
 }
 
-fn send_eq(eq: &LwasapiEqConfig) -> i32 {
-    let mut req: LwasapiIpcReq = zeroed_struct();
-    req.cmd = LWASAPI_CMD_SET_EQ;
+fn send_eq(eq: &LasapiEqConfig) -> i32 {
+    let mut req: LasapiIpcReq = zeroed_struct();
+    req.cmd = LASAPI_CMD_SET_EQ;
     req.eq_cfg = *eq;
     let Some(resp) = send_req_only(&req) else {
         return 1;
@@ -961,7 +961,7 @@ fn cmd_eq_preset(preset: &str) -> i32 {
     let mut eq = st.eq_cfg;
     eq.enabled = 1;
     eq.limiter_enabled = 1;
-    eq.band_q = [1.414; LWASAPI_EQ_BANDS];
+    eq.band_q = [1.414; LASAPI_EQ_BANDS];
 
     if preset.eq_ignore_ascii_case("flat") {
         copy_str_to_c(&mut eq.preset_name, "Flat / Studio Reference");
@@ -1026,7 +1026,7 @@ fn cmd_eq_preset(preset: &str) -> i32 {
 }
 
 fn cmd_eq_band(band: i32, gain_db: f32) -> i32 {
-    if !(0..LWASAPI_EQ_BANDS as i32).contains(&band) {
+    if !(0..LASAPI_EQ_BANDS as i32).contains(&band) {
         eprintln!("Band index must be 0..9");
         return 1;
     }
@@ -1150,17 +1150,17 @@ fn cmd_set_codec(codec_str: &str, tier_str: &str) -> i32 {
     };
     let mut cfg = st.bt_codec_cfg;
     if codec_str.eq_ignore_ascii_case("auto") {
-        cfg.preferred_codec = LWASAPI_BT_PREF_AUTO;
+        cfg.preferred_codec = LASAPI_BT_PREF_AUTO;
     } else if codec_str.eq_ignore_ascii_case("ldac") {
-        cfg.preferred_codec = LWASAPI_BT_PREF_LDAC;
+        cfg.preferred_codec = LASAPI_BT_PREF_LDAC;
     } else if codec_str.eq_ignore_ascii_case("aptxhd") || codec_str.eq_ignore_ascii_case("aptx_hd") {
-        cfg.preferred_codec = LWASAPI_BT_PREF_APTX_HD;
+        cfg.preferred_codec = LASAPI_BT_PREF_APTX_HD;
     } else if codec_str.eq_ignore_ascii_case("aptx") {
-        cfg.preferred_codec = LWASAPI_BT_PREF_APTX;
+        cfg.preferred_codec = LASAPI_BT_PREF_APTX;
     } else if codec_str.eq_ignore_ascii_case("aac") {
-        cfg.preferred_codec = LWASAPI_BT_PREF_AAC;
+        cfg.preferred_codec = LASAPI_BT_PREF_AAC;
     } else if codec_str.eq_ignore_ascii_case("sbc") {
-        cfg.preferred_codec = LWASAPI_BT_PREF_SBC;
+        cfg.preferred_codec = LASAPI_BT_PREF_SBC;
     } else {
         eprintln!("Unknown BlueZ codec '{codec_str}'. Use: auto|ldac|aptxhd|aptx|aac|sbc");
         return 1;
@@ -1168,18 +1168,18 @@ fn cmd_set_codec(codec_str: &str, tier_str: &str) -> i32 {
 
     if !tier_str.is_empty() {
         if tier_str.eq_ignore_ascii_case("abr") || tier_str.eq_ignore_ascii_case("adaptive") {
-            cfg.ldac_mode = LWASAPI_LDAC_MODE_ADAPTIVE;
+            cfg.ldac_mode = LASAPI_LDAC_MODE_ADAPTIVE;
             cfg.wireless_abr_enabled = 1;
         } else if tier_str == "990" {
-            cfg.ldac_mode = LWASAPI_LDAC_MODE_990;
+            cfg.ldac_mode = LASAPI_LDAC_MODE_990;
         } else if tier_str == "660" {
-            cfg.ldac_mode = LWASAPI_LDAC_MODE_660;
+            cfg.ldac_mode = LASAPI_LDAC_MODE_660;
         } else if tier_str == "330" {
-            cfg.ldac_mode = LWASAPI_LDAC_MODE_330;
+            cfg.ldac_mode = LASAPI_LDAC_MODE_330;
         }
     }
 
-    let (rc, resp) = send_payload_cmd(LWASAPI_CMD_SET_BT_CODEC, struct_as_bytes(&cfg));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_BT_CODEC, struct_as_bytes(&cfg));
     println!(
         "BlueZ Codec Switcher -> {} (LDAC: {}, ABR: {}, HRESULT=0x{:08x})",
         bt_pref_name(cfg.preferred_codec),
@@ -1200,7 +1200,7 @@ fn cmd_bt_sco(mode_str: &str) -> i32 {
     };
     let mut cfg = st.bt_codec_cfg;
     cfg.hfp_sco_enabled = u32::from(mode_str.eq_ignore_ascii_case("on") || mode_str == "1");
-    let (rc, resp) = send_payload_cmd(LWASAPI_CMD_SET_BT_CODEC, struct_as_bytes(&cfg));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_BT_CODEC, struct_as_bytes(&cfg));
     println!(
         "Bluetooth HFP BTPROTO_SCO Headset Mic -> {} (HRESULT=0x{:08x})",
         if cfg.hfp_sco_enabled != 0 {
@@ -1217,7 +1217,7 @@ fn cmd_hw_analog(args: &[String]) -> i32 {
     let Some(st) = get_full_status() else {
         return 1;
     };
-    let mut cfg: LwasapiHwAnalogCfg = st.hw_analog_cfg;
+    let mut cfg: LasapiHwAnalogCfg = st.hw_analog_cfg;
 
     if args.len() == 2 || (args.len() >= 3 && args[2].eq_ignore_ascii_case("status")) {
         let arch = c_str_to_string(&st.hw_analog_info.card_arch_name);
@@ -1283,8 +1283,8 @@ fn cmd_hw_analog(args: &[String]) -> i32 {
 
     if args[2].eq_ignore_ascii_case("reset") {
         cfg.hw_dac_unity_vol = 1;
-        cfg.hp_amp_tier = LWASAPI_HW_AMP_AUTO;
-        cfg.output_route = LWASAPI_HW_ROUTE_AUTO;
+        cfg.hp_amp_tier = LASAPI_HW_AMP_AUTO;
+        cfg.output_route = LASAPI_HW_ROUTE_AUTO;
         cfg.unlock_0db_rails = 0;
         cfg.analog_boost_db = 0.0;
         cfg.mic_hw_boost_db = 0.0;
@@ -1297,37 +1297,37 @@ fn cmd_hw_analog(args: &[String]) -> i32 {
                 cfg.hw_dac_unity_vol = u32::from(v.eq_ignore_ascii_case("on") || v == "1");
             } else if k.eq_ignore_ascii_case("amp") {
                 if v.eq_ignore_ascii_case("auto") || v == "0" {
-                    cfg.hp_amp_tier = LWASAPI_HW_AMP_AUTO;
+                    cfg.hp_amp_tier = LASAPI_HW_AMP_AUTO;
                 } else if v.eq_ignore_ascii_case("low") || v == "1" {
-                    cfg.hp_amp_tier = LWASAPI_HW_AMP_LOW;
+                    cfg.hp_amp_tier = LASAPI_HW_AMP_LOW;
                 } else if v.eq_ignore_ascii_case("med")
                     || v.eq_ignore_ascii_case("medium")
                     || v == "2"
                 {
-                    cfg.hp_amp_tier = LWASAPI_HW_AMP_MED;
+                    cfg.hp_amp_tier = LASAPI_HW_AMP_MED;
                 } else if v.eq_ignore_ascii_case("high")
                     || v.eq_ignore_ascii_case("600")
                     || v == "3"
                 {
-                    cfg.hp_amp_tier = LWASAPI_HW_AMP_HIGH;
+                    cfg.hp_amp_tier = LASAPI_HW_AMP_HIGH;
                 } else {
                     eprintln!("Unknown amp tier '{v}'. Use: auto|low|med|high");
                     return 1;
                 }
             } else if k.eq_ignore_ascii_case("route") {
                 if v.eq_ignore_ascii_case("auto") || v == "0" {
-                    cfg.output_route = LWASAPI_HW_ROUTE_AUTO;
+                    cfg.output_route = LASAPI_HW_ROUTE_AUTO;
                 } else if v.eq_ignore_ascii_case("hp")
                     || v.eq_ignore_ascii_case("headphones")
                     || v == "1"
                 {
-                    cfg.output_route = LWASAPI_HW_ROUTE_HP;
+                    cfg.output_route = LASAPI_HW_ROUTE_HP;
                 } else if v.eq_ignore_ascii_case("spk")
                     || v.eq_ignore_ascii_case("speakers")
                     || v.eq_ignore_ascii_case("line")
                     || v == "2"
                 {
-                    cfg.output_route = LWASAPI_HW_ROUTE_SPK;
+                    cfg.output_route = LASAPI_HW_ROUTE_SPK;
                 } else {
                     eprintln!("Unknown route '{v}'. Use: auto|hp|spk");
                     return 1;
@@ -1348,7 +1348,7 @@ fn cmd_hw_analog(args: &[String]) -> i32 {
         }
     }
 
-    let (rc, resp) = send_payload_cmd(LWASAPI_CMD_SET_HW_ANALOG, struct_as_bytes(&cfg));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_HW_ANALOG, struct_as_bytes(&cfg));
     println!(
         "HW Analog Architecture -> DAC={} Amp={} Route={} 0dB-Rails={} SoftKnee={:+.1}dB MicBoost={:+.1}dB (HRESULT=0x{:08x})",
         if cfg.hw_dac_unity_vol != 0 {
@@ -1371,15 +1371,15 @@ fn cmd_hw_analog(args: &[String]) -> i32 {
 }
 
 fn cmd_param_eq(band: i32, freq: f32, q: f32, shape: &str, gain: f32) -> i32 {
-    if !(0..LWASAPI_EQ_BANDS as i32).contains(&band) {
-        eprintln!("Band index must be 0..{}", LWASAPI_EQ_BANDS - 1);
+    if !(0..LASAPI_EQ_BANDS as i32).contains(&band) {
+        eprintln!("Band index must be 0..{}", LASAPI_EQ_BANDS - 1);
         return 1;
     }
     let Some(st) = get_full_status() else {
         return 1;
     };
     let b = band as usize;
-    let mut pl = LwasapiParamEqPayload {
+    let mut pl = LasapiParamEqPayload {
         eq: st.eq_cfg,
         ext: st.param_eq,
     };
@@ -1393,15 +1393,15 @@ fn cmd_param_eq(band: i32, freq: f32, q: f32, shape: &str, gain: f32) -> i32 {
     };
     pl.ext.band_type[b] =
         if shape.eq_ignore_ascii_case("lowshelf") || shape.eq_ignore_ascii_case("ls") {
-            LWASAPI_FILTER_LOW_SHELF
+            LASAPI_FILTER_LOW_SHELF
         } else if shape.eq_ignore_ascii_case("highshelf") || shape.eq_ignore_ascii_case("hs") {
-            LWASAPI_FILTER_HIGH_SHELF
+            LASAPI_FILTER_HIGH_SHELF
         } else {
-            LWASAPI_FILTER_PEAK
+            LASAPI_FILTER_PEAK
         };
     copy_str_to_c(&mut pl.eq.preset_name, "Custom Parametric");
 
-    let (rc, resp) = send_payload_cmd(LWASAPI_CMD_SET_PARAM_EQ, struct_as_bytes(&pl));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_PARAM_EQ, struct_as_bytes(&pl));
     println!(
         "Parametric Band #{band} -> {:.1} Hz | Q={:.2} | {shape} | {gain:+.1} dB (HRESULT=0x{:08x})",
         pl.ext.band_freq_hz[b],
@@ -1415,7 +1415,7 @@ fn cmd_crossfeed(mode_str: &str, level_pct: f32, cutoff_hz: u32) -> i32 {
     let Some(st) = get_full_status() else {
         return 1;
     };
-    let mut pl = LwasapiParamEqPayload {
+    let mut pl = LasapiParamEqPayload {
         eq: st.eq_cfg,
         ext: st.param_eq,
     };
@@ -1426,7 +1426,7 @@ fn cmd_crossfeed(mode_str: &str, level_pct: f32, cutoff_hz: u32) -> i32 {
     if (200..=2000).contains(&cutoff_hz) {
         pl.ext.crossfeed_cutoff_hz = cutoff_hz;
     }
-    let (rc, resp) = send_payload_cmd(LWASAPI_CMD_SET_PARAM_EQ, struct_as_bytes(&pl));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_PARAM_EQ, struct_as_bytes(&pl));
     println!(
         "Bauer Headphone Crossfeed -> {} (Level: {:.0}%, Cutoff: {} Hz, HRESULT=0x{:08x})",
         if pl.ext.crossfeed_enabled != 0 {
@@ -1458,7 +1458,7 @@ fn cmd_mic_apo(mode_str: &str, rnn_arg: i32, gate_db: f32, side_pct: i32) -> i32
         cfg.sidetone_enabled = u32::from(side_pct > 0);
         cfg.sidetone_pct = side_pct as u32;
     }
-    let (rc, resp) = send_payload_cmd(LWASAPI_CMD_SET_MIC_APO, struct_as_bytes(&cfg));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_MIC_APO, struct_as_bytes(&cfg));
     println!(
         "Capture Mic APO -> {} | RNNoise: {} | Gate: {:.1} dB | Sidetone: {} ({}%) (HRESULT=0x{:08x})",
         if cfg.enabled != 0 { "ACTIVE" } else { "BYPASSED" },
@@ -1519,7 +1519,7 @@ fn cmd_mic_preset(preset: &str) -> i32 {
         return 1;
     }
 
-    let (rc, resp) = send_payload_cmd(LWASAPI_CMD_SET_MIC_APO, struct_as_bytes(&cfg));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_MIC_APO, struct_as_bytes(&cfg));
     println!(
         "Mic APO Preset '{preset}' -> {} | HPF {:.0}Hz | Gate {:.0}dB | RNNoise {} | Clarity {:+.1}dB (HRESULT=0x{:08x})",
         if cfg.enabled != 0 { "ACTIVE" } else { "BYPASSED" },
@@ -1534,7 +1534,7 @@ fn cmd_mic_preset(preset: &str) -> i32 {
 
 pub fn install_root_from_exe(exe_path: &str) -> String {
     let mut path = Path::new(exe_path).to_path_buf();
-    let is_ctl = path.file_name().and_then(|s| s.to_str()) == Some("lwasapi-ctl");
+    let is_ctl = path.file_name().and_then(|s| s.to_str()) == Some("lasapi-ctl");
     if !path.pop() {
         return ".".to_string();
     }
@@ -1810,7 +1810,7 @@ fn install_steam_wrapper(home: &str, root: &str) {
     let bin_dir = format!("{home}/.local/bin");
     let apps_dir = format!("{home}/.local/share/applications");
     let auto_dir = format!("{home}/.config/autostart");
-    let cfg_dir = format!("{home}/.config/lwasapi");
+    let cfg_dir = format!("{home}/.config/lasapi");
     let _ = fs::create_dir_all(&bin_dir);
     let _ = fs::create_dir_all(&apps_dir);
     let _ = fs::create_dir_all(&cfg_dir);
@@ -1834,7 +1834,7 @@ fn install_steam_wrapper(home: &str, root: &str) {
     let script = format!(
         "#!/bin/sh\n\
 # Salsa PulseAudio Reconnect wrapper for Steam (propagates inside pressure-vessel)\n\
-# Revert anytime with: lwasapi-ctl disable-auto\n\
+# Revert anytime with: lasapi-ctl disable-auto\n\
 RECON_SO={recon_quoted}\n\
 if [ -r \"$RECON_SO\" ]; then\n    \
     case \":${{LD_PRELOAD:-}}:\" in\n        \
@@ -1889,7 +1889,7 @@ exec steam \"$@\"\n"
 fn remove_steam_wrapper(home: &str) {
     let apps_dir = format!("{home}/.local/share/applications");
     let auto_dir = format!("{home}/.config/autostart");
-    let cfg_dir = format!("{home}/.config/lwasapi");
+    let cfg_dir = format!("{home}/.config/lasapi");
     let wrap_path = format!("{home}/.local/bin/salsa-steam-launch");
     let _ = fs::remove_file(&wrap_path);
 
@@ -1921,29 +1921,29 @@ fn cmd_enable_auto() -> i32 {
     let root = get_install_root();
 
     let asoundrc = format!("{home}/.asoundrc");
-    let backup = format!("{home}/.asoundrc.lwasapi.bak");
+    let backup = format!("{home}/.asoundrc.lasapi.bak");
     if Path::new(&asoundrc).exists() && !Path::new(&backup).exists() {
         let _ = fs::rename(&asoundrc, &backup);
     }
 
     let asoundrc_body = format!(
-        "# LWASAPI Full-Duplex Automatic ALSA Application Recognition Config\n\
-# Routes both Playback and Capture streams through LWASAPI.\n\
-# Revert anytime with: lwasapi-ctl disable-auto\n\
-pcm_type.lwasapi {{\n    \
-    lib \"{root}/build/libasound_module_pcm_lwasapi.so\"\n\
+        "# LASAPI Full-Duplex Automatic ALSA Application Recognition Config\n\
+# Routes both Playback and Capture streams through LASAPI.\n\
+# Revert anytime with: lasapi-ctl disable-auto\n\
+pcm_type.lasapi {{\n    \
+    lib \"{root}/build/libasound_module_pcm_lasapi.so\"\n\
 }}\n\n\
-pcm.lwasapi_raw {{\n    \
-    type lwasapi\n\
+pcm.lasapi_raw {{\n    \
+    type lasapi\n\
 }}\n\n\
-pcm.lwasapi {{\n    \
+pcm.lasapi {{\n    \
     type plug\n    \
-    slave.pcm \"lwasapi_raw\"\n\
+    slave.pcm \"lasapi_raw\"\n\
 }}\n\n\
 pcm.!default {{\n    \
     type asym\n    \
-    playback.pcm \"lwasapi\"\n    \
-    capture.pcm \"lwasapi\"\n\
+    playback.pcm \"lasapi\"\n    \
+    capture.pcm \"lasapi\"\n\
 }}\n"
     );
     if let Err(e) = fs::write(&asoundrc, asoundrc_body) {
@@ -1953,12 +1953,12 @@ pcm.!default {{\n    \
 
     let oal_dir = format!("{home}/.config/OpenAL");
     let oal_conf = format!("{oal_dir}/alsoft.conf");
-    let oal_bak = format!("{oal_dir}/alsoft.conf.lwasapi.bak");
+    let oal_bak = format!("{oal_dir}/alsoft.conf.lasapi.bak");
     let _ = fs::create_dir_all(&oal_dir);
     if Path::new(&oal_conf).exists() && !Path::new(&oal_bak).exists() {
         let _ = fs::rename(&oal_conf, &oal_bak);
     }
-    let oal_body = "# LWASAPI OpenAL Soft Automatic Routing\n\
+    let oal_body = "# LASAPI OpenAL Soft Automatic Routing\n\
 [general]\n\
 drivers = pulse,alsa\n\
 channels = stereo\n\
@@ -1972,15 +1972,15 @@ periods = 4\n";
     let wp_lua_main = format!("{home}/.config/wireplumber/main.lua.d");
     let wp_lua_bt = format!("{home}/.config/wireplumber/bluetooth.lua.d");
     let pw_conf_dir = format!("{home}/.config/pipewire/pipewire.conf.d");
-    let cfg_dir = format!("{home}/.config/lwasapi");
+    let cfg_dir = format!("{home}/.config/lasapi");
     let bak_dir = format!("{cfg_dir}/pw_backup");
     let _ = fs::create_dir_all(&bak_dir);
 
     for legacy in [
-        format!("{pw_conf_dir}/99-lwasapi-bridge.conf"),
-        format!("{wp_dir}/99-lwasapi-video-only.conf"),
-        format!("{wp_lua_main}/99-lwasapi-no-audio.lua"),
-        format!("{wp_lua_bt}/99-lwasapi-no-bluez.lua"),
+        format!("{pw_conf_dir}/99-lasapi-bridge.conf"),
+        format!("{wp_dir}/99-lasapi-video-only.conf"),
+        format!("{wp_lua_main}/99-lasapi-no-audio.lua"),
+        format!("{wp_lua_bt}/99-lasapi-no-bluez.lua"),
     ] {
         let _ = fs::remove_file(legacy);
     }
@@ -2022,7 +2022,7 @@ periods = 4\n";
     let _ = fs::create_dir_all(&env_dir);
     let env_body = format!(
         "# Salsa Zero-PipeWire Direct Steam/Proton/Desktop Audio Environment\n\
-# Revert anytime with: lwasapi-ctl disable-auto\n\
+# Revert anytime with: lasapi-ctl disable-auto\n\
 PROTON_USE_PIPEWIRE=0\n\
 SDL_AUDIODRIVER=pulse\n\
 ALSOFT_DRIVERS=pulse,alsa\n\
@@ -2071,27 +2071,27 @@ LD_LIBRARY_PATH={ld_val}\n"
         }
     }
 
-    let has_pw_socket_unit = unit_exists("lwasapi-pipewire.socket");
+    let has_pw_socket_unit = unit_exists("lasapi-pipewire.socket");
     let pw_socket_was_active = has_pw_socket_unit
         && run_quiet(
             "systemctl",
-            &["--user", "is-active", "--quiet", "lwasapi-pipewire.socket"],
+            &["--user", "is-active", "--quiet", "lasapi-pipewire.socket"],
         );
     let audiodg_was_active = run_quiet(
         "systemctl",
-        &["--user", "is-active", "--quiet", "lwasapi-audiodg.service"],
+        &["--user", "is-active", "--quiet", "lasapi-audiodg.service"],
     );
 
     if has_pw_socket_unit && !pw_socket_was_active {
         if audiodg_was_active {
-            let _ = run_quiet("systemctl", &["--user", "stop", "lwasapi-audiodg.service"]);
+            let _ = run_quiet("systemctl", &["--user", "stop", "lasapi-audiodg.service"]);
         }
         let _ = run_quiet(
             "systemctl",
-            &["--user", "enable", "--now", "lwasapi-pipewire.socket"],
+            &["--user", "enable", "--now", "lasapi-pipewire.socket"],
         );
         if audiodg_was_active {
-            let _ = run_quiet("systemctl", &["--user", "start", "lwasapi-audiodg.service"]);
+            let _ = run_quiet("systemctl", &["--user", "start", "lasapi-audiodg.service"]);
         }
     }
 
@@ -2099,7 +2099,7 @@ LD_LIBRARY_PATH={ld_val}\n"
         if !(has_pw_socket_unit && !pw_socket_was_active) && !trigger_broker_sync_mode() {
             let _ = run_quiet(
                 "systemctl",
-                &["--user", "try-restart", "lwasapi-audiodg.service"],
+                &["--user", "try-restart", "lasapi-audiodg.service"],
             );
         }
         let rt = env::var("XDG_RUNTIME_DIR")
@@ -2135,7 +2135,7 @@ LD_LIBRARY_PATH={ld_val}\n"
     println!("  - Steam/Proton direct   : {env_file} (PROTON_USE_PIPEWIRE=0, direct PA/ALSA)");
     println!("  - Steam container proxy : {home}/.local/bin/salsa-steam-launch (reconnects across engine resets)");
     println!("  - Upstream PW/WP/PA     : stopped & masked cleanly");
-    println!("To revert cleanly anytime, run: lwasapi-ctl disable-auto");
+    println!("To revert cleanly anytime, run: lasapi-ctl disable-auto");
     0
 }
 
@@ -2143,7 +2143,7 @@ fn cmd_disable_auto() -> i32 {
     let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
 
     let asoundrc = format!("{home}/.asoundrc");
-    let backup = format!("{home}/.asoundrc.lwasapi.bak");
+    let backup = format!("{home}/.asoundrc.lasapi.bak");
     let _ = fs::remove_file(&asoundrc);
     if Path::new(&backup).exists() {
         let _ = fs::rename(&backup, &asoundrc);
@@ -2153,7 +2153,7 @@ fn cmd_disable_auto() -> i32 {
     }
 
     let oal_conf = format!("{home}/.config/OpenAL/alsoft.conf");
-    let oal_bak = format!("{home}/.config/OpenAL/alsoft.conf.lwasapi.bak");
+    let oal_bak = format!("{home}/.config/OpenAL/alsoft.conf.lasapi.bak");
     let _ = fs::remove_file(&oal_conf);
     if Path::new(&oal_bak).exists() {
         let _ = fs::rename(&oal_bak, &oal_conf);
@@ -2163,14 +2163,14 @@ fn cmd_disable_auto() -> i32 {
     let wp_lua_main = format!("{home}/.config/wireplumber/main.lua.d");
     let wp_lua_bt = format!("{home}/.config/wireplumber/bluetooth.lua.d");
     let pw_dir = format!("{home}/.config/pipewire/pipewire.conf.d");
-    let cfg_dir = format!("{home}/.config/lwasapi");
+    let cfg_dir = format!("{home}/.config/lasapi");
     let bak_dir = format!("{cfg_dir}/pw_backup");
 
     for legacy in [
-        format!("{pw_dir}/99-lwasapi-bridge.conf"),
-        format!("{wp_dir}/99-lwasapi-video-only.conf"),
-        format!("{wp_lua_main}/99-lwasapi-no-audio.lua"),
-        format!("{wp_lua_bt}/99-lwasapi-no-bluez.lua"),
+        format!("{pw_dir}/99-lasapi-bridge.conf"),
+        format!("{wp_dir}/99-lasapi-video-only.conf"),
+        format!("{wp_lua_main}/99-lasapi-no-audio.lua"),
+        format!("{wp_lua_bt}/99-lasapi-no-bluez.lua"),
         format!("{cfg_dir}/pipewire_zero_mode"),
         format!("{home}/.config/environment.d/99-salsa-direct.conf"),
     ] {
@@ -2236,10 +2236,10 @@ fn cmd_disable_auto() -> i32 {
     }
 
     let _ = trigger_broker_sync_mode();
-    let _ = run_quiet("systemctl", &["--user", "stop", "lwasapi-audiodg.service"]);
+    let _ = run_quiet("systemctl", &["--user", "stop", "lasapi-audiodg.service"]);
     let _ = run_quiet(
         "systemctl",
-        &["--user", "disable", "--now", "lwasapi-pipewire.socket"],
+        &["--user", "disable", "--now", "lasapi-pipewire.socket"],
     );
 
     let units_list = format!("{cfg_dir}/masked_units.list");
@@ -2358,25 +2358,25 @@ fn print_usage(prog: &str) {
   mute <0|1|toggle>                         Set or toggle Salsa master speaker mute\n\
   mic-volume <0-150>                        Set Salsa microphone input gain percentage\n\
   mic-mute <0|1|toggle>                     Set or toggle Salsa microphone mute\n\
-  midi-send <note> [velocity]               Inject a MIDI Note-On into the LWASAPI DAW MIDI Hub\n\
+  midi-send <note> [velocity]               Inject a MIDI Note-On into the LASAPI DAW MIDI Hub\n\
   pw-self-test                              Run PipeWire ScreenCast broker live self-test via debug socket\n\
-  save-config                               Overwrite ~/.config/lwasapi/salsa_settings.json with live engine state\n\
-  reload-config                             Reload ~/.config/lwasapi/salsa_settings.json into live engine\n\
+  save-config                               Overwrite ~/.config/lasapi/salsa_settings.json with live engine state\n\
+  reload-config                             Reload ~/.config/lasapi/salsa_settings.json into live engine\n\
   enable-auto                               Enable Zero-PipeWire Salsa mode (Video Broker, Steam/ALSA/PA direct)\n\
   disable-auto                              Restore upstream PipeWire, PipeWire-Pulse & WirePlumber cleanly\n\
   license                                   Show Salsa Copyright, No-Warranty Notice & full LGPL-3.0 / GPL-3.0 terms\n\
   --version                                 Show Salsa version & LGPL-3.0 legal notice\n\n\
 {}\n"
-    , one_line_legal_notice("lwasapi-ctl"));
+    , one_line_legal_notice("lasapi-ctl"));
 }
 
 pub fn run_ctl(args: &[String]) -> i32 {
-    let prog = args.first().map_or("lwasapi-ctl", String::as_str);
+    let prog = args.first().map_or("lasapi-ctl", String::as_str);
     if args.len() < 2 || args[1] == "status" {
         return cmd_status();
     }
     let sub = args[1].as_str();
-    if let Some(rc) = handle_common_cli_flag("lwasapi-ctl", sub) {
+    if let Some(rc) = handle_common_cli_flag("lasapi-ctl", sub) {
         return rc;
     }
     if sub == "-h" || sub == "--help" {
@@ -2540,7 +2540,7 @@ pub fn run_ctl(args: &[String]) -> i32 {
         }
         "pw-self-test" => return cmd_pw_self_test(),
         "save-config" => {
-            let (rc, resp) = send_payload_cmd(LWASAPI_CMD_SAVE_CONFIG, &[]);
+            let (rc, resp) = send_payload_cmd(LASAPI_CMD_SAVE_CONFIG, &[]);
             println!(
                 "Saved & overwrote {} (HRESULT=0x{:08x})",
                 crate::state_conf::salsa_settings_file_path().display(),
@@ -2549,7 +2549,7 @@ pub fn run_ctl(args: &[String]) -> i32 {
             return rc;
         }
         "reload-config" => {
-            let (rc, resp) = send_payload_cmd(LWASAPI_CMD_RELOAD_CONFIG, &[]);
+            let (rc, resp) = send_payload_cmd(LASAPI_CMD_RELOAD_CONFIG, &[]);
             println!(
                 "Reloaded {} into live engine (HRESULT=0x{:08x})",
                 crate::state_conf::salsa_settings_file_path().display(),
@@ -2560,21 +2560,21 @@ pub fn run_ctl(args: &[String]) -> i32 {
         "enable-auto" => return cmd_enable_auto(),
         "disable" | "disable-auto" => return cmd_disable_auto(),
         "bench" | "benchmark" => {
-            let bpath = format!("{}/build/lwasapi-bench", get_install_root());
+            let bpath = format!("{}/build/lasapi-bench", get_install_root());
             let err = Command::new(&bpath)
-                .arg0("lwasapi-bench")
+                .arg0("lasapi-bench")
                 .args(&args[2..])
                 .exec();
-            eprintln!("execl lwasapi-bench: {err}");
+            eprintln!("execl lasapi-bench: {err}");
             return 1;
         }
         "sync-modules" | "sync" => {
-            let spath = format!("{}/build/lwasapi-autosync", get_install_root());
+            let spath = format!("{}/build/lasapi-autosync", get_install_root());
             let err = Command::new(&spath)
-                .arg0("lwasapi-autosync")
+                .arg0("lasapi-autosync")
                 .arg("--force")
                 .exec();
-            eprintln!("execl lwasapi-autosync: {err}");
+            eprintln!("execl lasapi-autosync: {err}");
             return 1;
         }
         _ => {}
@@ -2607,7 +2607,7 @@ mod tests {
 
     #[test]
     fn filtered_ld_path_strips_stale_salsa_and_dedups() {
-        let cur = "/usr/lib:/opt/lwasapi/build/pa_reconnect:/foo:/opt/lwasapi/build/pa_reconnect32:/bar";
+        let cur = "/usr/lib:/opt/lasapi/build/pa_reconnect:/foo:/opt/lasapi/build/pa_reconnect32:/bar";
         let res = build_filtered_ld_path(
             Some("/new/build/pa_reconnect:/new/build/pa_reconnect32"),
             Some(cur),
@@ -2632,11 +2632,11 @@ mod tests {
     #[test]
     fn install_root_resolves_from_build_subdir_or_root() {
         assert_eq!(
-            install_root_from_exe("/opt/lwasapi/build/lwasapi-ctl"),
-            "/opt/lwasapi"
+            install_root_from_exe("/opt/lasapi/build/lasapi-ctl"),
+            "/opt/lasapi"
         );
         assert_eq!(
-            install_root_from_exe("/usr/local/bin/lwasapi-ctl"),
+            install_root_from_exe("/usr/local/bin/lasapi-ctl"),
             "/usr/local/bin"
         );
     }

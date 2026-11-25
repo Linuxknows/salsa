@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use salsa_wire::c_abi::{
     AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_CAPTURE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-    AUDCLNT_STREAMFLAGS_LOOPBACK, LWASAPI_DBG_ERR, LWASAPI_DBG_INFO, LWASAPI_DBG_SHIM,
-    LWASAPI_FMT_FLOAT32, LWASAPI_FMT_S16_LE, LWASAPI_FMT_S32_LE, LWASAPI_RING_FRAMES,
+    AUDCLNT_STREAMFLAGS_LOOPBACK, LASAPI_DBG_ERR, LASAPI_DBG_INFO, LASAPI_DBG_SHIM,
+    LASAPI_FMT_FLOAT32, LASAPI_FMT_S16_LE, LASAPI_FMT_S32_LE, LASAPI_RING_FRAMES,
     WaveFormatEx, S_OK,
 };
 
@@ -305,7 +305,7 @@ pub struct pa_stream {
     corked: c_int,
     is_record: bool,
     index: u32,
-    lwasapi: *mut c_void,
+    lasapi: *mut c_void,
     lfmt: u32,
     frame_bytes: u32,
     write_scratch: *mut c_void,
@@ -362,7 +362,7 @@ extern "C" {
     ) -> c_int;
     fn pthread_join(thread: c_ulong, retval: *mut *mut c_void) -> c_int;
 
-    fn LWASAPI_DebugTraceClient(
+    fn LASAPI_DebugTraceClient(
         sub: u8,
         lvl: u8,
         sid: u32,
@@ -370,7 +370,7 @@ extern "C" {
         target: *const c_char,
         detail: *const c_char,
     );
-    fn LWASAPI_ActivateAudioClient(
+    fn LASAPI_ActivateAudioClient(
         client_name: *const c_char,
         pp_audio_client: *mut *mut c_void,
     ) -> i32;
@@ -425,14 +425,14 @@ fn copy_cstr_buf(dst: &mut [u8], src: *const c_char, fallback: &str) {
 fn map_pa_fmt(pa_fmt: c_int, bytes_per_sample: &mut u32) -> u32 {
     if pa_fmt == PA_SAMPLE_S16LE || pa_fmt == PA_SAMPLE_S16BE {
         *bytes_per_sample = 2;
-        return LWASAPI_FMT_S16_LE;
+        return LASAPI_FMT_S16_LE;
     }
     if pa_fmt == PA_SAMPLE_S32LE || pa_fmt == PA_SAMPLE_S32BE {
         *bytes_per_sample = 4;
-        return LWASAPI_FMT_S32_LE;
+        return LASAPI_FMT_S32_LE;
     }
     *bytes_per_sample = 4;
-    LWASAPI_FMT_FLOAT32
+    LASAPI_FMT_FLOAT32
 }
 
 unsafe fn alloc_done_op() -> *mut pa_operation {
@@ -477,11 +477,11 @@ unsafe extern "C" fn mainloop_worker(arg: *mut c_void) -> *mut c_void {
                     continue;
                 }
                 unsafe { pa_stream_ref(s) };
-                let (is_rec, r_cb, r_ud, w_cb, w_ud, lwasapi, fbytes) = {
+                let (is_rec, r_cb, r_ud, w_cb, w_ud, lasapi, fbytes) = {
                     let s_ref = unsafe { &*s };
                     if s_ref.state != PA_STREAM_READY
                         || s_ref.corked != 0
-                        || s_ref.lwasapi.is_null()
+                        || s_ref.lasapi.is_null()
                     {
                         (false, None, ptr::null_mut(), None, ptr::null_mut(), ptr::null_mut(), 0)
                     } else {
@@ -491,16 +491,16 @@ unsafe extern "C" fn mainloop_worker(arg: *mut c_void) -> *mut c_void {
                             s_ref.read_userdata,
                             s_ref.write_cb,
                             s_ref.write_userdata,
-                            s_ref.lwasapi,
+                            s_ref.lasapi,
                             s_ref.frame_bytes as usize,
                         )
                     }
                 };
-                if !lwasapi.is_null() {
+                if !lasapi.is_null() {
                     if is_rec {
                         if let Some(cb) = r_cb {
                             let mut pkt_frames = 0u32;
-                            unsafe { IAudioCaptureClient_GetNextPacketSize(lwasapi, &mut pkt_frames) };
+                            unsafe { IAudioCaptureClient_GetNextPacketSize(lasapi, &mut pkt_frames) };
                             if pkt_frames >= 256 {
                                 let readable_bytes = (pkt_frames as usize) * fbytes;
                                 unsafe { cb(s, readable_bytes, r_ud) };
@@ -510,8 +510,8 @@ unsafe extern "C" fn mainloop_worker(arg: *mut c_void) -> *mut c_void {
                         let mut buf_frames = 2048u32;
                         let mut pad_frames = 0u32;
                         unsafe {
-                            IAudioClient_GetBufferSize(lwasapi, &mut buf_frames);
-                            IAudioClient_GetCurrentPadding(lwasapi, &mut pad_frames);
+                            IAudioClient_GetBufferSize(lasapi, &mut buf_frames);
+                            IAudioClient_GetCurrentPadding(lasapi, &mut pad_frames);
                         }
                         let avail_frames = buf_frames.saturating_sub(pad_frames);
                         if avail_frames >= 256 {
@@ -766,9 +766,9 @@ pub unsafe extern "C" fn pa_context_connect(
         server
     };
     unsafe {
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"SHIM_PA_CTX".as_ptr(),
             srv,
@@ -798,9 +798,9 @@ pub unsafe extern "C" fn pa_context_disconnect(c: *mut pa_context) {
     }
     let c_ref = unsafe { &mut *c };
     unsafe {
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"SHIM_PA_DISC".as_ptr(),
             c"libpulse-shim".as_ptr(),
@@ -886,14 +886,14 @@ pub unsafe extern "C" fn pa_context_get_server_info(
     if let Some(f) = cb {
         let mut info: pa_server_info = unsafe { mem::zeroed() };
         info.user_name = current_user_cstr();
-        info.host_name = c"CachyOS-LWASAPI".as_ptr();
+        info.host_name = c"CachyOS-LASAPI".as_ptr();
         info.server_version = c"16.1.0".as_ptr();
-        info.server_name = c"LWASAPI-Universal-AudioEngine".as_ptr();
+        info.server_name = c"LASAPI-Universal-AudioEngine".as_ptr();
         info.sample_spec.format = PA_SAMPLE_FLOAT32LE;
         info.sample_spec.rate = 48000;
         info.sample_spec.channels = 2;
-        info.default_sink_name = c"lwasapi_default_sink".as_ptr();
-        info.default_source_name = c"lwasapi_default_source".as_ptr();
+        info.default_sink_name = c"lasapi_default_sink".as_ptr();
+        info.default_source_name = c"lasapi_default_source".as_ptr();
         unsafe {
             pa_channel_map_init_stereo(&mut info.channel_map);
             f(c, &info, userdata);
@@ -907,9 +907,9 @@ pub unsafe extern "C" fn pa_context_get_server_info(
 
 unsafe fn fill_default_sink_info(si: &mut pa_sink_info) {
     *si = unsafe { mem::zeroed() };
-    si.name = c"lwasapi_default_sink".as_ptr();
+    si.name = c"lasapi_default_sink".as_ptr();
     si.index = 0;
-    si.description = c"LWASAPI Universal Windows-Style Audio Sink".as_ptr();
+    si.description = c"LASAPI Universal Windows-Style Audio Sink".as_ptr();
     si.sample_spec.format = PA_SAMPLE_FLOAT32LE;
     si.sample_spec.rate = 48000;
     si.sample_spec.channels = 2;
@@ -920,7 +920,7 @@ unsafe fn fill_default_sink_info(si: &mut pa_sink_info) {
     si.n_volume_steps = 65536;
     si.card = 0;
     si.monitor_source = 1;
-    si.monitor_source_name = c"lwasapi_default_sink.monitor".as_ptr();
+    si.monitor_source_name = c"lasapi_default_sink.monitor".as_ptr();
     si.state = PA_SINK_RUNNING;
     si.flags = PA_SINK_HARDWARE | PA_SINK_LATENCY;
 }
@@ -928,16 +928,16 @@ unsafe fn fill_default_sink_info(si: &mut pa_sink_info) {
 unsafe fn fill_source_info(src: &mut pa_source_info, is_monitor: bool) {
     *src = unsafe { mem::zeroed() };
     if is_monitor {
-        src.name = c"lwasapi_default_sink.monitor".as_ptr();
+        src.name = c"lasapi_default_sink.monitor".as_ptr();
         src.index = 1;
         src.description =
-            c"Monitor of LWASAPI Universal Windows-Style Audio Sink (Desktop Loopback)".as_ptr();
+            c"Monitor of LASAPI Universal Windows-Style Audio Sink (Desktop Loopback)".as_ptr();
         src.monitor_of_sink = 0;
-        src.monitor_of_sink_name = c"lwasapi_default_sink".as_ptr();
+        src.monitor_of_sink_name = c"lasapi_default_sink".as_ptr();
     } else {
-        src.name = c"lwasapi_default_source".as_ptr();
+        src.name = c"lasapi_default_source".as_ptr();
         src.index = 0;
-        src.description = c"LWASAPI Universal Microphone Input (Direct Kernel ALSA)".as_ptr();
+        src.description = c"LASAPI Universal Microphone Input (Direct Kernel ALSA)".as_ptr();
         src.monitor_of_sink = PA_INVALID_INDEX;
         src.monitor_of_sink_name = ptr::null();
     }
@@ -1106,8 +1106,8 @@ pub unsafe extern "C" fn pa_context_set_sink_input_volume(
         let linear = (unsafe { (*volume).values[0] } as f32) / (PA_VOLUME_NORM as f32);
         for i in 0..MAX_PA_STREAMS {
             let s = unsafe { (*c).streams[i] };
-            if !s.is_null() && unsafe { !(*s).lwasapi.is_null() && (*s).index == idx } {
-                unsafe { ISimpleAudioVolume_SetMasterVolume((*s).lwasapi, linear) };
+            if !s.is_null() && unsafe { !(*s).lasapi.is_null() && (*s).index == idx } {
+                unsafe { ISimpleAudioVolume_SetMasterVolume((*s).lasapi, linear) };
             }
         }
     }
@@ -1217,9 +1217,9 @@ pub unsafe extern "C" fn pa_stream_unref(s: *mut pa_stream) {
                 }
             }
         }
-        if !s_ref.lwasapi.is_null() {
-            unsafe { IAudioClient_Release(s_ref.lwasapi) };
-            s_ref.lwasapi = ptr::null_mut();
+        if !s_ref.lasapi.is_null() {
+            unsafe { IAudioClient_Release(s_ref.lasapi) };
+            s_ref.lasapi = ptr::null_mut();
         }
         unsafe {
             free(s_ref.write_scratch);
@@ -1258,9 +1258,9 @@ pub unsafe extern "C" fn pa_stream_get_index(s: *const pa_stream) -> u32 {
 #[no_mangle]
 pub unsafe extern "C" fn pa_stream_get_device_name(s: *const pa_stream) -> *const c_char {
     if !s.is_null() && unsafe { (*s).is_record } {
-        c"lwasapi_default_source".as_ptr()
+        c"lasapi_default_source".as_ptr()
     } else {
-        c"lwasapi_default_sink".as_ptr()
+        c"lasapi_default_sink".as_ptr()
     }
 }
 
@@ -1320,21 +1320,21 @@ pub unsafe extern "C" fn pa_stream_connect_playback(
     }
     let s_ref = unsafe { &mut *s };
     s_ref.is_record = false;
-    if !s_ref.lwasapi.is_null() {
+    if !s_ref.lasapi.is_null() {
         unsafe {
-            IAudioClient_Stop(s_ref.lwasapi);
-            IAudioClient_Release(s_ref.lwasapi);
+            IAudioClient_Stop(s_ref.lasapi);
+            IAudioClient_Release(s_ref.lasapi);
         }
-        s_ref.lwasapi = ptr::null_mut();
+        s_ref.lasapi = ptr::null_mut();
     }
 
-    if unsafe { LWASAPI_ActivateAudioClient(s_ref.name.as_ptr().cast(), &mut s_ref.lwasapi) }
+    if unsafe { LASAPI_ActivateAudioClient(s_ref.name.as_ptr().cast(), &mut s_ref.lasapi) }
         != S_OK
     {
         unsafe {
-            LWASAPI_DebugTraceClient(
-                LWASAPI_DBG_SHIM,
-                LWASAPI_DBG_ERR,
+            LASAPI_DebugTraceClient(
+                LASAPI_DBG_SHIM,
+                LASAPI_DBG_ERR,
                 0,
                 c"SHIM_PA_ERR".as_ptr(),
                 s_ref.name.as_ptr().cast(),
@@ -1355,7 +1355,7 @@ pub unsafe extern "C" fn pa_stream_connect_playback(
         w_format_tag: s_ref.lfmt as u16,
         n_channels: ch,
         n_samples_per_sec: rate,
-        w_bits_per_sample: if s_ref.lfmt == LWASAPI_FMT_S16_LE { 16 } else { 32 },
+        w_bits_per_sample: if s_ref.lfmt == LASAPI_FMT_S16_LE { 16 } else { 32 },
         n_block_align: s_ref.frame_bytes as u16,
         n_avg_bytes_per_sec: rate * s_ref.frame_bytes,
         cb_size: 0,
@@ -1363,7 +1363,7 @@ pub unsafe extern "C" fn pa_stream_connect_playback(
 
     if unsafe {
         IAudioClient_Initialize(
-            s_ref.lwasapi,
+            s_ref.lasapi,
             AUDCLNT_SHAREMODE_SHARED,
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
             4096,
@@ -1373,24 +1373,24 @@ pub unsafe extern "C" fn pa_stream_connect_playback(
     } != S_OK
     {
         unsafe {
-            LWASAPI_DebugTraceClient(
-                LWASAPI_DBG_SHIM,
-                LWASAPI_DBG_ERR,
+            LASAPI_DebugTraceClient(
+                LASAPI_DBG_SHIM,
+                LASAPI_DBG_ERR,
                 0,
                 c"SHIM_PA_ERR".as_ptr(),
                 s_ref.name.as_ptr().cast(),
                 c"IAudioClient_Initialize failed (playback)".as_ptr(),
             );
-            IAudioClient_Release(s_ref.lwasapi);
+            IAudioClient_Release(s_ref.lasapi);
         }
-        s_ref.lwasapi = ptr::null_mut();
+        s_ref.lasapi = ptr::null_mut();
         s_ref.state = PA_STREAM_FAILED;
         return -1;
     }
 
     if !volume.is_null() && unsafe { (*volume).channels > 0 } {
         let linear = (unsafe { (*volume).values[0] } as f32) / (PA_VOLUME_NORM as f32);
-        unsafe { ISimpleAudioVolume_SetMasterVolume(s_ref.lwasapi, linear) };
+        unsafe { ISimpleAudioVolume_SetMasterVolume(s_ref.lasapi, linear) };
     }
 
     s_ref.battr.maxlength = 4096 * s_ref.frame_bytes;
@@ -1405,7 +1405,7 @@ pub unsafe extern "C" fn pa_stream_connect_playback(
 
     s_ref.corked = c_int::from((flags & PA_STREAM_START_CORKED) != 0);
     if s_ref.corked == 0 {
-        unsafe { IAudioClient_Start(s_ref.lwasapi) };
+        unsafe { IAudioClient_Start(s_ref.lasapi) };
     }
 
     let dev_s = if dev.is_null() {
@@ -1418,9 +1418,9 @@ pub unsafe extern "C" fn pa_stream_connect_playback(
         wfx.n_samples_per_sec, wfx.n_channels, s_ref.battr.tlength, s_ref.corked
     );
     unsafe {
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"SHIM_PA_PLAY".as_ptr(),
             s_ref.name.as_ptr().cast(),
@@ -1455,21 +1455,21 @@ pub unsafe extern "C" fn pa_stream_connect_record(
     }
     let s_ref = unsafe { &mut *s };
     s_ref.is_record = true;
-    if !s_ref.lwasapi.is_null() {
+    if !s_ref.lasapi.is_null() {
         unsafe {
-            IAudioClient_Stop(s_ref.lwasapi);
-            IAudioClient_Release(s_ref.lwasapi);
+            IAudioClient_Stop(s_ref.lasapi);
+            IAudioClient_Release(s_ref.lasapi);
         }
-        s_ref.lwasapi = ptr::null_mut();
+        s_ref.lasapi = ptr::null_mut();
     }
 
-    if unsafe { LWASAPI_ActivateAudioClient(s_ref.name.as_ptr().cast(), &mut s_ref.lwasapi) }
+    if unsafe { LASAPI_ActivateAudioClient(s_ref.name.as_ptr().cast(), &mut s_ref.lasapi) }
         != S_OK
     {
         unsafe {
-            LWASAPI_DebugTraceClient(
-                LWASAPI_DBG_SHIM,
-                LWASAPI_DBG_ERR,
+            LASAPI_DebugTraceClient(
+                LASAPI_DBG_SHIM,
+                LASAPI_DBG_ERR,
                 0,
                 c"SHIM_PA_ERR".as_ptr(),
                 s_ref.name.as_ptr().cast(),
@@ -1490,7 +1490,7 @@ pub unsafe extern "C" fn pa_stream_connect_record(
         w_format_tag: s_ref.lfmt as u16,
         n_channels: ch,
         n_samples_per_sec: rate,
-        w_bits_per_sample: if s_ref.lfmt == LWASAPI_FMT_S16_LE { 16 } else { 32 },
+        w_bits_per_sample: if s_ref.lfmt == LASAPI_FMT_S16_LE { 16 } else { 32 },
         n_block_align: s_ref.frame_bytes as u16,
         n_avg_bytes_per_sec: rate * s_ref.frame_bytes,
         cb_size: 0,
@@ -1509,21 +1509,21 @@ pub unsafe extern "C" fn pa_stream_connect_record(
     }
 
     if unsafe {
-        IAudioClient_Initialize(s_ref.lwasapi, AUDCLNT_SHAREMODE_SHARED, lflags, 4096, 256, &wfx)
+        IAudioClient_Initialize(s_ref.lasapi, AUDCLNT_SHAREMODE_SHARED, lflags, 4096, 256, &wfx)
     } != S_OK
     {
         unsafe {
-            LWASAPI_DebugTraceClient(
-                LWASAPI_DBG_SHIM,
-                LWASAPI_DBG_ERR,
+            LASAPI_DebugTraceClient(
+                LASAPI_DBG_SHIM,
+                LASAPI_DBG_ERR,
                 0,
                 c"SHIM_PA_ERR".as_ptr(),
                 s_ref.name.as_ptr().cast(),
                 c"IAudioClient_Initialize failed (record)".as_ptr(),
             );
-            IAudioClient_Release(s_ref.lwasapi);
+            IAudioClient_Release(s_ref.lasapi);
         }
-        s_ref.lwasapi = ptr::null_mut();
+        s_ref.lasapi = ptr::null_mut();
         s_ref.state = PA_STREAM_FAILED;
         return -1;
     }
@@ -1537,7 +1537,7 @@ pub unsafe extern "C" fn pa_stream_connect_record(
 
     s_ref.corked = c_int::from((flags & PA_STREAM_START_CORKED) != 0);
     if s_ref.corked == 0 {
-        unsafe { IAudioClient_Start(s_ref.lwasapi) };
+        unsafe { IAudioClient_Start(s_ref.lasapi) };
     }
 
     let dev_disp = if dev_s.is_empty() { "default" } else { &dev_s };
@@ -1546,9 +1546,9 @@ pub unsafe extern "C" fn pa_stream_connect_record(
         wfx.n_samples_per_sec, wfx.n_channels
     );
     unsafe {
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"SHIM_PA_REC".as_ptr(),
             s_ref.name.as_ptr().cast(),
@@ -1578,21 +1578,21 @@ pub unsafe extern "C" fn pa_stream_disconnect(s: *mut pa_stream) -> c_int {
     }
     let s_ref = unsafe { &mut *s };
     unsafe {
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"SHIM_PA_CLOSE".as_ptr(),
             s_ref.name.as_ptr().cast(),
             c"pa_stream_disconnect".as_ptr(),
         );
     }
-    if !s_ref.lwasapi.is_null() {
+    if !s_ref.lasapi.is_null() {
         unsafe {
-            IAudioClient_Stop(s_ref.lwasapi);
-            IAudioClient_Release(s_ref.lwasapi);
+            IAudioClient_Stop(s_ref.lasapi);
+            IAudioClient_Release(s_ref.lasapi);
         }
-        s_ref.lwasapi = ptr::null_mut();
+        s_ref.lasapi = ptr::null_mut();
     }
     s_ref.state = PA_STREAM_TERMINATED;
     if let Some(cb) = s_ref.state_cb {
@@ -1610,14 +1610,14 @@ pub unsafe extern "C" fn pa_stream_writable_size(s: *const pa_stream) -> usize {
         return 0;
     }
     let s_ref = unsafe { &*s };
-    if s_ref.lwasapi.is_null() || s_ref.is_record {
+    if s_ref.lasapi.is_null() || s_ref.is_record {
         return 0;
     }
     let mut buf = 2048u32;
     let mut pad = 0u32;
     unsafe {
-        IAudioClient_GetBufferSize(s_ref.lwasapi, &mut buf);
-        IAudioClient_GetCurrentPadding(s_ref.lwasapi, &mut pad);
+        IAudioClient_GetBufferSize(s_ref.lasapi, &mut buf);
+        IAudioClient_GetCurrentPadding(s_ref.lasapi, &mut pad);
     }
     (buf.saturating_sub(pad) as usize) * (s_ref.frame_bytes as usize)
 }
@@ -1628,11 +1628,11 @@ pub unsafe extern "C" fn pa_stream_readable_size(s: *const pa_stream) -> usize {
         return 0;
     }
     let s_ref = unsafe { &*s };
-    if s_ref.lwasapi.is_null() || !s_ref.is_record {
+    if s_ref.lasapi.is_null() || !s_ref.is_record {
         return 0;
     }
     let mut pkt = 0u32;
-    unsafe { IAudioCaptureClient_GetNextPacketSize(s_ref.lwasapi, &mut pkt) };
+    unsafe { IAudioCaptureClient_GetNextPacketSize(s_ref.lasapi, &mut pkt) };
     (pkt as usize) * (s_ref.frame_bytes as usize)
 }
 
@@ -1646,12 +1646,12 @@ pub unsafe extern "C" fn pa_stream_peek(
         return -1;
     }
     let s_ref = unsafe { &mut *s };
-    if s_ref.lwasapi.is_null() {
+    if s_ref.lasapi.is_null() {
         return -1;
     }
     if s_ref.read_scratch_len == 0 {
         let mut pkt = 0u32;
-        unsafe { IAudioCaptureClient_GetNextPacketSize(s_ref.lwasapi, &mut pkt) };
+        unsafe { IAudioCaptureClient_GetNextPacketSize(s_ref.lasapi, &mut pkt) };
         if pkt == 0 {
             unsafe {
                 *data = ptr::null();
@@ -1662,7 +1662,7 @@ pub unsafe extern "C" fn pa_stream_peek(
         let max_frames = (s_ref.read_scratch_cap / (s_ref.frame_bytes as usize)) as u32;
         let to_read = pkt.min(max_frames);
         unsafe {
-            IAudioCaptureClient_ReadFrames(s_ref.lwasapi, s_ref.read_scratch, to_read, s_ref.lfmt);
+            IAudioCaptureClient_ReadFrames(s_ref.lasapi, s_ref.read_scratch, to_read, s_ref.lfmt);
         }
         s_ref.read_scratch_len = (to_read as usize) * (s_ref.frame_bytes as usize);
     }
@@ -1731,11 +1731,11 @@ pub unsafe extern "C" fn pa_stream_write(
         return -1;
     }
     let s_ref = unsafe { &mut *s };
-    if s_ref.lwasapi.is_null() || s_ref.frame_bytes == 0 {
+    if s_ref.lasapi.is_null() || s_ref.frame_bytes == 0 {
         return -1;
     }
     let frames = (nbytes / (s_ref.frame_bytes as usize)) as u32;
-    unsafe { IAudioRenderClient_WriteFrames(s_ref.lwasapi, data, frames, s_ref.lfmt) };
+    unsafe { IAudioRenderClient_WriteFrames(s_ref.lasapi, data, frames, s_ref.lfmt) };
     s_ref.bytes_written += nbytes as u64;
     if let Some(f) = free_cb {
         if !ptr::eq(data, s_ref.write_scratch) {
@@ -1755,11 +1755,11 @@ pub unsafe extern "C" fn pa_stream_cork(
     if !s.is_null() {
         let s_ref = unsafe { &mut *s };
         s_ref.corked = c_int::from(b != 0);
-        if !s_ref.lwasapi.is_null() {
+        if !s_ref.lasapi.is_null() {
             if s_ref.corked != 0 {
-                unsafe { IAudioClient_Stop(s_ref.lwasapi) };
+                unsafe { IAudioClient_Stop(s_ref.lasapi) };
             } else {
-                unsafe { IAudioClient_Start(s_ref.lwasapi) };
+                unsafe { IAudioClient_Start(s_ref.lasapi) };
             }
         }
     }
@@ -1850,8 +1850,8 @@ pub unsafe extern "C" fn pa_stream_get_time(s: *mut pa_stream, r_usec: *mut u64)
         return -1;
     }
     let mut pad = 0u32;
-    if !s_ref.lwasapi.is_null() {
-        unsafe { IAudioClient_GetCurrentPadding(s_ref.lwasapi, &mut pad) };
+    if !s_ref.lasapi.is_null() {
+        unsafe { IAudioClient_GetCurrentPadding(s_ref.lasapi, &mut pad) };
     }
     let total_frames = s_ref.bytes_written / u64::from(s_ref.frame_bytes);
     let played_frames = total_frames.saturating_sub(u64::from(pad));
@@ -1876,8 +1876,8 @@ pub unsafe extern "C" fn pa_stream_get_latency(
         return -1;
     }
     let mut pad = 0u32;
-    if !s_ref.lwasapi.is_null() {
-        unsafe { IAudioClient_GetCurrentPadding(s_ref.lwasapi, &mut pad) };
+    if !s_ref.lasapi.is_null() {
+        unsafe { IAudioClient_GetCurrentPadding(s_ref.lasapi, &mut pad) };
     }
     unsafe { *r_usec = (u64::from(pad) * 1_000_000) / u64::from(s_ref.ss.rate) };
     0
@@ -2154,7 +2154,7 @@ pub unsafe extern "C" fn pa_simple_new(
     } else {
         c"stream".as_ptr()
     };
-    if unsafe { LWASAPI_ActivateAudioClient(label, &mut s_ref.client) } != S_OK {
+    if unsafe { LASAPI_ActivateAudioClient(label, &mut s_ref.client) } != S_OK {
         unsafe { free(s.cast()) };
         if !error.is_null() {
             unsafe { *error = -3 };
@@ -2195,7 +2195,7 @@ pub unsafe extern "C" fn pa_simple_new(
         } else if a.tlength != u32::MAX && a.tlength >= s_ref.frame_bytes {
             buf_frames = a.tlength / s_ref.frame_bytes;
         }
-        buf_frames = buf_frames.clamp(512, LWASAPI_RING_FRAMES as u32);
+        buf_frames = buf_frames.clamp(512, LASAPI_RING_FRAMES as u32);
 
         if !s_ref.is_record && a.minreq != u32::MAX && a.minreq >= s_ref.frame_bytes {
             period_frames = a.minreq / s_ref.frame_bytes;
@@ -2354,7 +2354,7 @@ pub unsafe extern "C" fn pa_simple_free(s: *mut pa_simple) {
 
 #[no_mangle]
 pub extern "C" fn pa_strerror(_error: c_int) -> *const c_char {
-    c"LWASAPI PulseAudio Shim Status".as_ptr()
+    c"LASAPI PulseAudio Shim Status".as_ptr()
 }
 
 #[no_mangle]

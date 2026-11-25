@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -38,8 +38,8 @@ use salsa_tools::ipc::{
 use salsa_tools::json::JsonValue;
 use salsa_tools::zlib_png::{decode_png_rgba, encode_png_rgba, RgbaImage};
 use salsa_wire::c_abi::{
-    c_str_to_string, LwasapiBtCodecCfg, LwasapiDeviceList, LwasapiEngineStatus, LwasapiEqConfig,
-    LwasapiHwAnalogCfg, LwasapiMicApoCfg, LwasapiParamEqExt,
+    c_str_to_string, LasapiBtCodecCfg, LasapiDeviceList, LasapiEngineStatus, LasapiEqConfig,
+    LasapiHwAnalogCfg, LasapiMicApoCfg, LasapiParamEqExt,
 };
 use salsa_wire::state_conf::{
     config_dir_path, load_runtime_state_in_dir, salsa_settings_file_path,
@@ -291,16 +291,16 @@ fn collect_config_texts(base_dir: &Path) -> BTreeMap<String, String> {
         read_or(cfg.join("pipewire/pipewire.conf.d/99-salsa-direct.conf")),
     );
     map.insert(
-        "99-lwasapi-video-only.conf".into(),
-        read_or(cfg.join("pipewire/pipewire.conf.d/99-lwasapi-video-only.conf")),
+        "99-lasapi-video-only.conf".into(),
+        read_or(cfg.join("pipewire/pipewire.conf.d/99-lasapi-video-only.conf")),
     );
     map.insert(
         "module_versions.state".into(),
         read_or(st_dir.join("module_versions.state")),
     );
     map.insert(
-        "src/lwasapi.version".into(),
-        read_or(base_dir.join("src/lwasapi.version")),
+        "src/lasapi.version".into(),
+        read_or(base_dir.join("src/lasapi.version")),
     );
     map.insert(
         "src/pulse.version".into(),
@@ -337,13 +337,13 @@ pub extern "C" fn salsa_abi_sizes_ok(
     bt_sz: usize,
     hwa_sz: usize,
 ) -> bool {
-    status_sz == core::mem::size_of::<LwasapiEngineStatus>()
-        && devlist_sz == core::mem::size_of::<LwasapiDeviceList>()
-        && eq_sz == core::mem::size_of::<LwasapiEqConfig>()
-        && ext_sz == core::mem::size_of::<LwasapiParamEqExt>()
-        && mic_sz == core::mem::size_of::<LwasapiMicApoCfg>()
-        && bt_sz == core::mem::size_of::<LwasapiBtCodecCfg>()
-        && hwa_sz == core::mem::size_of::<LwasapiHwAnalogCfg>()
+    status_sz == core::mem::size_of::<LasapiEngineStatus>()
+        && devlist_sz == core::mem::size_of::<LasapiDeviceList>()
+        && eq_sz == core::mem::size_of::<LasapiEqConfig>()
+        && ext_sz == core::mem::size_of::<LasapiParamEqExt>()
+        && mic_sz == core::mem::size_of::<LasapiMicApoCfg>()
+        && bt_sz == core::mem::size_of::<LasapiBtCodecCfg>()
+        && hwa_sz == core::mem::size_of::<LasapiHwAnalogCfg>()
 }
 
 #[no_mangle]
@@ -352,7 +352,7 @@ pub extern "C" fn salsa_reset_sigpipe() {
 }
 
 #[no_mangle]
-pub extern "C" fn salsa_get_engine_status(out: *mut LwasapiEngineStatus) -> c_int {
+pub extern "C" fn salsa_get_engine_status(out: *mut LasapiEngineStatus) -> c_int {
     if out.is_null() {
         return -1;
     }
@@ -366,7 +366,7 @@ pub extern "C" fn salsa_get_engine_status(out: *mut LwasapiEngineStatus) -> c_in
 }
 
 #[no_mangle]
-pub extern "C" fn salsa_list_devices(out: *mut LwasapiDeviceList) -> c_int {
+pub extern "C" fn salsa_list_devices(out: *mut LasapiDeviceList) -> c_int {
     if out.is_null() {
         return -1;
     }
@@ -419,8 +419,8 @@ pub extern "C" fn salsa_set_capture_sample_rate(rate: u32) -> c_int {
 
 #[no_mangle]
 pub extern "C" fn salsa_set_parametric_eq(
-    eq: *const LwasapiEqConfig,
-    ext: *const LwasapiParamEqExt,
+    eq: *const LasapiEqConfig,
+    ext: *const LasapiParamEqExt,
 ) -> c_int {
     if eq.is_null() || ext.is_null() {
         return -1;
@@ -429,7 +429,7 @@ pub extern "C" fn salsa_set_parametric_eq(
 }
 
 #[no_mangle]
-pub extern "C" fn salsa_set_dynamic_eq(eq: *const LwasapiEqConfig) -> c_int {
+pub extern "C" fn salsa_set_dynamic_eq(eq: *const LasapiEqConfig) -> c_int {
     if eq.is_null() {
         return -1;
     }
@@ -437,7 +437,7 @@ pub extern "C" fn salsa_set_dynamic_eq(eq: *const LwasapiEqConfig) -> c_int {
 }
 
 #[no_mangle]
-pub extern "C" fn salsa_set_mic_apo(mic: *const LwasapiMicApoCfg) -> c_int {
+pub extern "C" fn salsa_set_mic_apo(mic: *const LasapiMicApoCfg) -> c_int {
     if mic.is_null() {
         return -1;
     }
@@ -445,7 +445,7 @@ pub extern "C" fn salsa_set_mic_apo(mic: *const LwasapiMicApoCfg) -> c_int {
 }
 
 #[no_mangle]
-pub extern "C" fn salsa_set_bt_codec_config(bt: *const LwasapiBtCodecCfg) -> c_int {
+pub extern "C" fn salsa_set_bt_codec_config(bt: *const LasapiBtCodecCfg) -> c_int {
     if bt.is_null() {
         return -1;
     }
@@ -453,7 +453,7 @@ pub extern "C" fn salsa_set_bt_codec_config(bt: *const LwasapiBtCodecCfg) -> c_i
 }
 
 #[no_mangle]
-pub extern "C" fn salsa_set_hw_analog(hwa: *const LwasapiHwAnalogCfg) -> c_int {
+pub extern "C" fn salsa_set_hw_analog(hwa: *const LasapiHwAnalogCfg) -> c_int {
     if hwa.is_null() {
         return -1;
     }
@@ -611,10 +611,10 @@ pub unsafe extern "C" fn salsa_overwrite_settings_from_ui(
     mic_pct: u32,
     mic_muted: u32,
     bt_optional_mode: u32,
-    bt_cfg: *const LwasapiBtCodecCfg,
-    hw_analog: *const LwasapiHwAnalogCfg,
-    eq_cfg: *const LwasapiEqConfig,
-    param_ext: *const LwasapiParamEqExt,
+    bt_cfg: *const LasapiBtCodecCfg,
+    hw_analog: *const LasapiHwAnalogCfg,
+    eq_cfg: *const LasapiEqConfig,
+    param_ext: *const LasapiParamEqExt,
     gui_json: *const c_char,
 ) -> c_int {
     if let Some(s) = cstr_to_string(gui_json) {
@@ -932,8 +932,8 @@ pub extern "C" fn salsa_reload_autoeq_preset_json(preset_json: *const c_char) ->
 
 #[no_mangle]
 pub extern "C" fn salsa_eq_cfg_to_json(
-    eq: *const LwasapiEqConfig,
-    ext: *const LwasapiParamEqExt,
+    eq: *const LasapiEqConfig,
+    ext: *const LasapiParamEqExt,
 ) -> *mut c_char {
     if eq.is_null() || ext.is_null() {
         return to_c_string("{}".into());
@@ -945,8 +945,8 @@ pub extern "C" fn salsa_eq_cfg_to_json(
 #[no_mangle]
 pub extern "C" fn salsa_json_to_eq_cfg(
     json_str: *const c_char,
-    eq: *mut LwasapiEqConfig,
-    ext: *mut LwasapiParamEqExt,
+    eq: *mut LasapiEqConfig,
+    ext: *mut LasapiParamEqExt,
 ) -> c_int {
     if eq.is_null() || ext.is_null() {
         return -1;
@@ -964,8 +964,8 @@ pub extern "C" fn salsa_json_to_eq_cfg(
 #[no_mangle]
 pub extern "C" fn salsa_apply_builtin_eq_preset(
     name: *const c_char,
-    eq: *mut LwasapiEqConfig,
-    ext: *mut LwasapiParamEqExt,
+    eq: *mut LasapiEqConfig,
+    ext: *mut LasapiParamEqExt,
 ) -> c_int {
     if eq.is_null() || ext.is_null() {
         return -1;
@@ -983,8 +983,8 @@ pub extern "C" fn salsa_apply_builtin_eq_preset(
 #[no_mangle]
 pub extern "C" fn salsa_apply_saved_autoeq(
     preset_json: *const c_char,
-    eq: *mut LwasapiEqConfig,
-    ext: *mut LwasapiParamEqExt,
+    eq: *mut LasapiEqConfig,
+    ext: *mut LasapiParamEqExt,
 ) -> c_int {
     if eq.is_null() || ext.is_null() {
         return -1;
@@ -1003,7 +1003,7 @@ pub extern "C" fn salsa_apply_saved_autoeq(
 }
 
 #[no_mangle]
-pub extern "C" fn salsa_set_eq_preset_name(eq: *mut LwasapiEqConfig, name: *const c_char) {
+pub extern "C" fn salsa_set_eq_preset_name(eq: *mut LasapiEqConfig, name: *const c_char) {
     if eq.is_null() {
         return;
     }
@@ -1074,8 +1074,8 @@ fn pacman_hook_installed() -> bool {
     const HOOK_PATHS: [&str; 4] = [
         "/etc/pacman.d/hooks/99-salsa-autosync.hook",
         "/etc/pacman.d/hooks/95-salsa-autosync.hook",
-        "/etc/pacman.d/hooks/99-lwasapi-autosync.hook",
-        "/etc/pacman.d/hooks/lwasapi-autosync.hook",
+        "/etc/pacman.d/hooks/99-lasapi-autosync.hook",
+        "/etc/pacman.d/hooks/lasapi-autosync.hook",
     ];
     HOOK_PATHS.iter().any(|p| Path::new(p).exists())
 }
@@ -1085,25 +1085,25 @@ pub extern "C" fn salsa_get_integration_status_json() -> *mut c_char {
     let home = home_dir();
     let steam_ready = home.join(".local/bin/salsa-steam-launch").exists();
     let launchers_ok = home
-        .join(".local/share/applications/salsa-lwasapi.desktop")
+        .join(".local/share/applications/salsa-lasapi.desktop")
         .exists();
     let has_pacman = Path::new("/usr/bin/pacman").exists() && Path::new("/etc/pacman.d").is_dir();
     let pacman_hook = pacman_hook_installed();
     let watcher_enabled = run_cmd_bounded(
         "systemctl",
-        &["--user", "is-enabled", "--quiet", "lwasapi-module-watcher.path"],
+        &["--user", "is-enabled", "--quiet", "lasapi-module-watcher.path"],
         Duration::from_secs(2),
     )
     .is_some_and(|o| o.status.success())
         || run_cmd_bounded(
             "systemctl",
-            &["--user", "is-active", "--quiet", "lwasapi-module-watcher.path"],
+            &["--user", "is-active", "--quiet", "lasapi-module-watcher.path"],
             Duration::from_secs(2),
         )
         .is_some_and(|o| o.status.success());
     let eng_active = run_cmd_bounded(
         "systemctl",
-        &["--user", "is-active", "--quiet", "lwasapi-audiodg.service"],
+        &["--user", "is-active", "--quiet", "lasapi-audiodg.service"],
         Duration::from_secs(2),
     )
     .is_some_and(|o| o.status.success());
@@ -1122,7 +1122,7 @@ pub extern "C" fn salsa_get_integration_status_json() -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn salsa_switch_engine_mode(to_pipewire: bool) -> *mut c_char {
     let root = install_root();
-    let ctl = root.join("build/lwasapi-ctl");
+    let ctl = root.join("build/lasapi-ctl");
     let ctl_s = ctl.to_string_lossy().into_owned();
     let msg = if to_pipewire {
         let ok = run_cmd_bounded(&ctl_s, &["disable-auto"], Duration::from_secs(6))
@@ -1130,20 +1130,20 @@ pub extern "C" fn salsa_switch_engine_mode(to_pipewire: bool) -> *mut c_char {
         if ok {
             "Switched to native PipeWire / WirePlumber mode.".into()
         } else {
-            "Requested PipeWire/WirePlumber restore via lwasapi-ctl disable-auto.".into()
+            "Requested PipeWire/WirePlumber restore via lasapi-ctl disable-auto.".into()
         }
     } else {
         let _ = run_cmd_bounded(&ctl_s, &["enable-auto"], Duration::from_secs(6));
         let ok = run_cmd_bounded(
             "systemctl",
-            &["--user", "restart", "lwasapi-audiodg.service"],
+            &["--user", "restart", "lasapi-audiodg.service"],
             Duration::from_secs(6),
         )
         .is_some_and(|o| o.status.success());
         if ok {
-            "Enabled and restarted Salsa Native Audio (lwasapi-audiodg).".into()
+            "Enabled and restarted Salsa Native Audio (lasapi-audiodg).".into()
         } else {
-            "Enabled Salsa Native Audio (lwasapi-ctl enable-auto).".into()
+            "Enabled Salsa Native Audio (lasapi-ctl enable-auto).".into()
         }
     };
     to_c_string(msg)
@@ -1168,7 +1168,7 @@ pub extern "C" fn salsa_toggle_pacman_hook() -> *mut c_char {
             if !installed {
                 let _ = run_cmd_bounded(
                     "systemctl",
-                    &["--user", "restart", "lwasapi-module-watcher.path"],
+                    &["--user", "restart", "lasapi-module-watcher.path"],
                     Duration::from_secs(4),
                 );
             }
@@ -1191,7 +1191,7 @@ pub extern "C" fn salsa_toggle_autosync_watcher(enable: bool) -> *mut c_char {
     let action = if enable { "enable" } else { "disable" };
     let _ = run_cmd_bounded(
         "systemctl",
-        &["--user", action, "--now", "lwasapi-module-watcher.path"],
+        &["--user", action, "--now", "lasapi-module-watcher.path"],
         Duration::from_secs(5),
     );
     if enable {
@@ -1204,7 +1204,7 @@ pub extern "C" fn salsa_toggle_autosync_watcher(enable: bool) -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn salsa_run_sync_modules(force: bool) -> *mut c_char {
     let root = install_root();
-    let bin = root.join("build/lwasapi-autosync");
+    let bin = root.join("build/lasapi-autosync");
     let bin_s = bin.to_string_lossy().into_owned();
     let args: &[&str] = if force { &["--force"] } else { &[] };
     match run_cmd_bounded(&bin_s, args, Duration::from_secs(20)) {
@@ -1217,19 +1217,19 @@ pub extern "C" fn salsa_run_sync_modules(force: bool) -> *mut c_char {
             .trim()
             .to_string();
             if txt.is_empty() {
-                to_c_string(format!("lwasapi-autosync finished (rc={:?})", o.status.code()))
+                to_c_string(format!("lasapi-autosync finished (rc={:?})", o.status.code()))
             } else {
                 to_c_string(txt)
             }
         }
-        None => to_c_string("lwasapi-autosync timed out or could not launch.".into()),
+        None => to_c_string("lasapi-autosync timed out or could not launch.".into()),
     }
 }
 
 #[no_mangle]
 pub extern "C" fn salsa_run_latency_bench() -> *mut c_char {
     let root = install_root();
-    let bin = root.join("build/lwasapi-bench");
+    let bin = root.join("build/lasapi-bench");
     let bin_s = bin.to_string_lossy().into_owned();
     match run_cmd_bounded(&bin_s, &[], Duration::from_secs(20)) {
         Some(o) => {
@@ -1297,7 +1297,7 @@ pub extern "C" fn salsa_ctl_systemd(unit: *const c_char, action: *const c_char) 
     };
     if !matches!(
         u.as_str(),
-        "lwasapi-audiodg.service" | "lwasapi-tray.service"
+        "lasapi-audiodg.service" | "lasapi-tray.service"
     ) || !matches!(a.as_str(), "start" | "stop" | "restart" | "reload-or-restart")
     {
         return -1;
@@ -1870,7 +1870,7 @@ pub extern "C" fn salsa_dbg_dryrun_frame(
 #[no_mangle]
 pub extern "C" fn salsa_dbg_pw_self_test() -> *mut c_char {
     let root = install_root();
-    let ctl = root.join("build/lwasapi-ctl");
+    let ctl = root.join("build/lasapi-ctl");
     let ctl_s = ctl.to_string_lossy().into_owned();
     let msg = match run_cmd_bounded(&ctl_s, &["pw-self-test"], Duration::from_secs(10)) {
         Some(o) => format!(
@@ -1934,7 +1934,7 @@ pub extern "C" fn salsa_sni_start(
     let bank = match TrayIconBank::generate(None) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("[lwasapi-tray] icon bank error: {e}");
+            eprintln!("[lasapi-tray] icon bank error: {e}");
             return core::ptr::null_mut();
         }
     };
@@ -2056,7 +2056,7 @@ pub extern "C" fn salsa_acquire_tray_lock(replace: bool) -> *mut c_void {
                         let exe_ok = fs::read_link(format!("{proc_dir}/exe"))
                             .ok()
                             .and_then(|ep| ep.file_name().map(|n| n.to_string_lossy().into_owned()))
-                            .is_some_and(|nm| nm == "lwasapi-tray" || nm.starts_with("lwasapi-tray "));
+                            .is_some_and(|nm| nm == "lasapi-tray" || nm.starts_with("lasapi-tray "));
                         if exe_ok {
                             unsafe { kill(old_pid, 15) };
                         }
@@ -2092,7 +2092,7 @@ pub extern "C" fn salsa_release_tray_lock(h: *mut c_void) {
 
 #[no_mangle]
 pub extern "C" fn salsa_pid_in_tray_unit() -> bool {
-    read_text_lossy(Path::new("/proc/self/cgroup"), 4096).contains("lwasapi-tray.service")
+    read_text_lossy(Path::new("/proc/self/cgroup"), 4096).contains("lasapi-tray.service")
 }
 
 #[no_mangle]
@@ -2100,7 +2100,7 @@ pub extern "C" fn salsa_tray_unit_active_or_enabled() -> bool {
     for sub in ["is-active", "is-enabled"] {
         if run_cmd_bounded(
             "systemctl",
-            &["--user", sub, "--quiet", "lwasapi-tray.service"],
+            &["--user", sub, "--quiet", "lasapi-tray.service"],
             Duration::from_secs(2),
         )
         .is_some_and(|o| o.status.success())
@@ -2214,8 +2214,8 @@ pub extern "C" fn salsa_studio_selftest() -> *mut c_char {
         return to_c_string(format!("ERR: broken themes: {:?}", broken));
     }
     let host = detect_host_pc_profile();
-    let mut cfg: LwasapiEqConfig = unsafe { core::mem::zeroed() };
-    let mut ext: LwasapiParamEqExt = unsafe { core::mem::zeroed() };
+    let mut cfg: LasapiEqConfig = unsafe { core::mem::zeroed() };
+    let mut ext: LasapiParamEqExt = unsafe { core::mem::zeroed() };
     let sample_eq = "Preamp: -4.2 dB\nFilter 1: ON LSC Fc 105 Hz Gain 5.5 dB Q 0.71\nFilter 2: ON PK Fc 2400 Hz Gain -3.0 dB Q 2.0\n";
     let Some(parsed) = parse_autoeq_txt("selftest.txt", sample_eq) else {
         return to_c_string("ERR: AutoEQ parser selftest failed".into());

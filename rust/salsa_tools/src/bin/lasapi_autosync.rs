@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -52,7 +52,7 @@ struct Opts {
 
 fn log_line(st_dir: &Path, quiet: bool, msg: &str) {
     if !quiet {
-        println!("[lwasapi-autosync] {msg}");
+        println!("[lasapi-autosync] {msg}");
     }
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -145,9 +145,9 @@ fn pipewire_zero_drifted(st_dir: &Path) -> bool {
     }
     st_dir
         .parent()
-        .is_some_and(|cfg| cfg.join("systemd/user/lwasapi-pipewire.socket").is_file())
-        && systemd_is_active("lwasapi-audiodg.service")
-        && !systemd_is_active("lwasapi-pipewire.socket")
+        .is_some_and(|cfg| cfg.join("systemd/user/lasapi-pipewire.socket").is_file())
+        && systemd_is_active("lasapi-audiodg.service")
+        && !systemd_is_active("lasapi-pipewire.socket")
 }
 
 fn pkg_lock_busy() -> bool {
@@ -293,7 +293,7 @@ fn systemd_is_active(unit: &str) -> bool {
 
 fn print_help() {
     println!(
-        "Usage: lwasapi-autosync [OPTIONS]\n\
+        "Usage: lasapi-autosync [OPTIONS]\n\
          \nOptions:\n  --print-fingerprint   Print current host library fingerprint and exit\n  \
          --force               Force version sync + rebuild even if fingerprint unchanged\n  \
          --auto                Background watcher mode\n  \
@@ -310,7 +310,7 @@ fn main() -> ExitCode {
     let mut opts = Opts::default();
     for arg in env::args().skip(1) {
         if matches!(arg.as_str(), "--version" | "-V" | "--license" | "--legal") {
-            if let Some(rc) = salsa_wire::legal::handle_common_cli_flag("lwasapi-autosync", &arg) {
+            if let Some(rc) = salsa_wire::legal::handle_common_cli_flag("lasapi-autosync", &arg) {
                 return ExitCode::from(rc as u8);
             }
         }
@@ -390,7 +390,7 @@ fn main() -> ExitCode {
             log_line(
                 &st_dir,
                 opts.quiet || opts.auto_mode,
-                "Another lwasapi-autosync run is already active; exiting cleanly.",
+                "Another lasapi-autosync run is already active; exiting cleanly.",
             );
             return ExitCode::SUCCESS;
         }
@@ -442,9 +442,9 @@ fn run_sync_locked(
         log_line(
             st_dir,
             opts.quiet,
-            "pipewire_zero_mode drift detected; re-applying lwasapi-ctl enable-auto",
+            "pipewire_zero_mode drift detected; re-applying lasapi-ctl enable-auto",
         );
-        let ctl = base_dir.join("build/lwasapi-ctl");
+        let ctl = base_dir.join("build/lasapi-ctl");
         if ctl.is_file() {
             let _ = Command::new(&ctl).arg("enable-auto").status();
         }
@@ -515,30 +515,30 @@ fn run_sync_locked(
     }
 
     if !drifted && pipewire_zero_enabled(st_dir) && pipewire_zero_drifted(st_dir) {
-        let ctl = base_dir.join("build/lwasapi-ctl");
+        let ctl = base_dir.join("build/lasapi-ctl");
         if ctl.is_file() {
             let _ = Command::new(&ctl).arg("enable-auto").status();
         }
     }
 
-    if systemd_is_active("lwasapi-audiodg.service") {
+    if systemd_is_active("lasapi-audiodg.service") {
         log_line(
             st_dir,
             opts.quiet,
-            "Restarting active lwasapi-audiodg.service...",
+            "Restarting active lasapi-audiodg.service...",
         );
         let _ = Command::new("systemctl")
-            .args(["--user", "restart", "lwasapi-audiodg.service"])
+            .args(["--user", "restart", "lasapi-audiodg.service"])
             .status();
     }
-    if systemd_is_active("lwasapi-tray.service") {
+    if systemd_is_active("lasapi-tray.service") {
         log_line(
             st_dir,
             opts.quiet,
-            "Restarting active lwasapi-tray.service...",
+            "Restarting active lasapi-tray.service...",
         );
         let _ = Command::new("systemctl")
-            .args(["--user", "restart", "lwasapi-tray.service"])
+            .args(["--user", "restart", "lasapi-tray.service"])
             .status();
     }
 

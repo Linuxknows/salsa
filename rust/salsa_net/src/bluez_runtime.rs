@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -55,15 +55,15 @@ use crate::bluez_wire::{
     BT_WIRE_APTX_HD, BT_WIRE_LDAC, BT_WIRE_SBC,
 };
 use crate::c_abi::{
-    copy_str_to_c, LwasapiBtCodecCfg, LwasapiDeviceEntry, LwasapiDeviceList, SalsaBtSnapshot,
-    LWASAPI_BT_CAP_AAC, LWASAPI_BT_CAP_APTX, LWASAPI_BT_CAP_APTX_HD, LWASAPI_BT_CAP_LDAC,
-    LWASAPI_BT_CAP_SBC, LWASAPI_BT_CONN_CONNECT, LWASAPI_BT_CONN_DISCONNECT,
-    LWASAPI_BT_CONN_SET_AUTOCONN, LWASAPI_BT_CONN_SET_OPTIONAL, LWASAPI_BT_PREF_AAC,
-    LWASAPI_BT_PREF_APTX, LWASAPI_BT_PREF_APTX_HD, LWASAPI_BT_PREF_AUTO, LWASAPI_BT_PREF_LDAC,
-    LWASAPI_BT_PREF_SBC, LWASAPI_BT_STAT_CONNECTED, LWASAPI_BT_STAT_OPTIONAL,
-    LWASAPI_BT_STAT_TRANSPORT, LWASAPI_DBG_BLUEZ, LWASAPI_DBG_ERR, LWASAPI_DBG_INFO,
-    LWASAPI_DBG_TRACE, LWASAPI_DBG_WARN, LWASAPI_LDAC_MODE_330, LWASAPI_LDAC_MODE_660,
-    LWASAPI_LDAC_MODE_990, LWASAPI_LDAC_MODE_ADAPTIVE, LWASAPI_MAX_DEVICES,
+    copy_str_to_c, LasapiBtCodecCfg, LasapiDeviceEntry, LasapiDeviceList, SalsaBtSnapshot,
+    LASAPI_BT_CAP_AAC, LASAPI_BT_CAP_APTX, LASAPI_BT_CAP_APTX_HD, LASAPI_BT_CAP_LDAC,
+    LASAPI_BT_CAP_SBC, LASAPI_BT_CONN_CONNECT, LASAPI_BT_CONN_DISCONNECT,
+    LASAPI_BT_CONN_SET_AUTOCONN, LASAPI_BT_CONN_SET_OPTIONAL, LASAPI_BT_PREF_AAC,
+    LASAPI_BT_PREF_APTX, LASAPI_BT_PREF_APTX_HD, LASAPI_BT_PREF_AUTO, LASAPI_BT_PREF_LDAC,
+    LASAPI_BT_PREF_SBC, LASAPI_BT_STAT_CONNECTED, LASAPI_BT_STAT_OPTIONAL,
+    LASAPI_BT_STAT_TRANSPORT, LASAPI_DBG_BLUEZ, LASAPI_DBG_ERR, LASAPI_DBG_INFO,
+    LASAPI_DBG_TRACE, LASAPI_DBG_WARN, LASAPI_LDAC_MODE_330, LASAPI_LDAC_MODE_660,
+    LASAPI_LDAC_MODE_990, LASAPI_LDAC_MODE_ADAPTIVE, LASAPI_MAX_DEVICES,
 };
 use crate::failsafe::{record_trip, FS_BT_FALLBACK};
 use crate::unix_sys::{
@@ -83,19 +83,19 @@ const A2DP_CODEC_SBC: u8 = 0x00;
 const A2DP_CODEC_MPEG24: u8 = 0x02;
 const A2DP_CODEC_VENDOR: u8 = 0xFF;
 
-const LWASAPI_BT_CODEC_SBC: u8 = 0;
-const LWASAPI_BT_CODEC_AAC: u8 = 1;
-const LWASAPI_BT_CODEC_APTX: u8 = 2;
-const LWASAPI_BT_CODEC_APTX_HD: u8 = 3;
-const LWASAPI_BT_CODEC_LDAC: u8 = 4;
+const LASAPI_BT_CODEC_SBC: u8 = 0;
+const LASAPI_BT_CODEC_AAC: u8 = 1;
+const LASAPI_BT_CODEC_APTX: u8 = 2;
+const LASAPI_BT_CODEC_APTX_HD: u8 = 3;
+const LASAPI_BT_CODEC_LDAC: u8 = 4;
 
-const LWASAPI_EP_LDAC: &str = "/org/lwasapi/A2DP/LDAC/Source";
-const LWASAPI_EP_APTXHD: &str = "/org/lwasapi/A2DP/APTXHD/Source";
-const LWASAPI_EP_APTX: &str = "/org/lwasapi/A2DP/APTX/Source";
-const LWASAPI_EP_AAC: &str = "/org/lwasapi/A2DP/AAC/Source";
-const LWASAPI_EP_SBC: &str = "/org/lwasapi/A2DP/SBC/Source";
-const LWASAPI_HFP_AG_PATH: &str = "/org/lwasapi/HFP/AG";
-const LWASAPI_BATTERY_ROOT: &str = "/org/lwasapi/Battery";
+const LASAPI_EP_LDAC: &str = "/org/lasapi/A2DP/LDAC/Source";
+const LASAPI_EP_APTXHD: &str = "/org/lasapi/A2DP/APTXHD/Source";
+const LASAPI_EP_APTX: &str = "/org/lasapi/A2DP/APTX/Source";
+const LASAPI_EP_AAC: &str = "/org/lasapi/A2DP/AAC/Source";
+const LASAPI_EP_SBC: &str = "/org/lasapi/A2DP/SBC/Source";
+const LASAPI_HFP_AG_PATH: &str = "/org/lasapi/HFP/AG";
+const LASAPI_BATTERY_ROOT: &str = "/org/lasapi/Battery";
 
 const BT_RTP_HDR_BYTES: usize = 12;
 const BT_RTP_SBC_PL_BYTES: usize = 1;
@@ -276,8 +276,8 @@ impl Default for BtMutable {
             bt_fd_owner: None,
             rtp_seq: 0,
             rtp_timestamp: 0,
-            pref_codec: LWASAPI_BT_PREF_AUTO,
-            ldac_mode: LWASAPI_LDAC_MODE_ADAPTIVE,
+            pref_codec: LASAPI_BT_PREF_AUTO,
+            ldac_mode: LASAPI_LDAC_MODE_ADAPTIVE,
             wireless_abr_enabled: 1,
             effective_kbps: 0,
             supported_codecs_mask: 0,
@@ -471,7 +471,7 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
     st.tx_clean_streak = 0;
     st.abr_last_ms = 0;
 
-    if st.active_codec_kind == LWASAPI_BT_CODEC_LDAC {
+    if st.active_codec_kind == LASAPI_BT_CODEC_LDAC {
         let Some(ldac) = load_ldac_library() else {
             return -1;
         };
@@ -508,9 +508,9 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
             660
         };
         let eqmid = match st.ldac_mode {
-            LWASAPI_LDAC_MODE_990 => LDACBT_EQMID_HQ,
-            LWASAPI_LDAC_MODE_660 => LDACBT_EQMID_SQ,
-            LWASAPI_LDAC_MODE_330 => LDACBT_EQMID_MQ,
+            LASAPI_LDAC_MODE_990 => LDACBT_EQMID_HQ,
+            LASAPI_LDAC_MODE_660 => LDACBT_EQMID_SQ,
+            LASAPI_LDAC_MODE_330 => LDACBT_EQMID_MQ,
             _ => {
                 if payload_mtu >= 660 {
                     LDACBT_EQMID_HQ
@@ -543,7 +543,7 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
         st.bt_sample_rate = sf;
         st.bt_channels = ch;
         st.effective_kbps = ldac_eqmid_to_kbps(sf, eqmid);
-        if st.ldac_mode == LWASAPI_LDAC_MODE_ADAPTIVE && st.wireless_abr_enabled != 0 {
+        if st.ldac_mode == LASAPI_LDAC_MODE_ADAPTIVE && st.wireless_abr_enabled != 0 {
             if let Some(abr_api) = load_ldac_abr_library() {
                 let abr = unsafe { (abr_api.get_handle)() };
                 if !abr.is_null() {
@@ -559,10 +559,10 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
         return 0;
     }
 
-    if st.active_codec_kind == LWASAPI_BT_CODEC_APTX_HD
-        || st.active_codec_kind == LWASAPI_BT_CODEC_APTX
+    if st.active_codec_kind == LASAPI_BT_CODEC_APTX_HD
+        || st.active_codec_kind == LASAPI_BT_CODEC_APTX
     {
-        let is_hd = st.active_codec_kind == LWASAPI_BT_CODEC_APTX_HD;
+        let is_hd = st.active_codec_kind == LASAPI_BT_CODEC_APTX_HD;
         let need_len = if is_hd { 11 } else { 7 };
         let Some(aptx) = load_aptx_library() else {
             return -1;
@@ -598,7 +598,7 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
         return 0;
     }
 
-    if st.codec_id == A2DP_CODEC_MPEG24 || st.active_codec_kind == LWASAPI_BT_CODEC_AAC {
+    if st.codec_id == A2DP_CODEC_MPEG24 || st.active_codec_kind == LASAPI_BT_CODEC_AAC {
         let Some(fdk) = load_fdk_aac_library() else {
             return -1;
         };
@@ -891,13 +891,13 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
             }
 
             let mtu = raw_mtu.min(pkt.len());
-            let est_need_out = if codec_kind == LWASAPI_BT_CODEC_LDAC {
+            let est_need_out = if codec_kind == LASAPI_BT_CODEC_LDAC {
                 LDACBT_ENC_LSU
-            } else if codec_kind == LWASAPI_BT_CODEC_APTX_HD
-                || codec_kind == LWASAPI_BT_CODEC_APTX
+            } else if codec_kind == LASAPI_BT_CODEC_APTX_HD
+                || codec_kind == LASAPI_BT_CODEC_APTX
             {
                 256
-            } else if codec_id == A2DP_CODEC_MPEG24 || codec_kind == LWASAPI_BT_CODEC_AAC {
+            } else if codec_id == A2DP_CODEC_MPEG24 || codec_kind == LASAPI_BT_CODEC_AAC {
                 fdk_flen as usize
             } else {
                 512
@@ -974,7 +974,7 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                 tx_fd = st.bt_fd;
                 dev_alias.clone_from(&st.device_alias);
 
-                if st.active_codec_kind == LWASAPI_BT_CODEC_LDAC && !st.enc.ldac_enc.is_null() {
+                if st.active_codec_kind == LASAPI_BT_CODEC_LDAC && !st.enc.ldac_enc.is_null() {
                     let flen = LDACBT_ENC_LSU;
                     let hdr_off = BT_RTP_HDR_BYTES + BT_RTP_SBC_PL_BYTES;
                     expected_pop = flen;
@@ -1023,11 +1023,11 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                         }
                     }
                     ts_step = flen as u32;
-                } else if (st.active_codec_kind == LWASAPI_BT_CODEC_APTX_HD
-                    || st.active_codec_kind == LWASAPI_BT_CODEC_APTX)
+                } else if (st.active_codec_kind == LASAPI_BT_CODEC_APTX_HD
+                    || st.active_codec_kind == LASAPI_BT_CODEC_APTX)
                     && !st.enc.aptx_enc.is_null()
                 {
-                    let is_hd = st.active_codec_kind == LWASAPI_BT_CODEC_APTX_HD;
+                    let is_hd = st.active_codec_kind == LASAPI_BT_CODEC_APTX_HD;
                     let hdr_off = if is_hd { BT_RTP_HDR_BYTES } else { 0 };
                     let enc_blk_bytes = if is_hd { 6usize } else { 4usize };
                     let avail_out = mtu.saturating_sub(hdr_off);
@@ -1078,7 +1078,7 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                     }
                     ts_step = flen as u32;
                 } else if (st.codec_id == A2DP_CODEC_MPEG24
-                    || st.active_codec_kind == LWASAPI_BT_CODEC_AAC)
+                    || st.active_codec_kind == LASAPI_BT_CODEC_AAC)
                     && !st.enc.fdk_enc.is_null()
                 {
                     let flen = if st.enc.fdk_frame_length > 0 {
@@ -1232,8 +1232,8 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                     prebuffering = true;
                     partial_streak = 0;
                     dbg_emit_vals(
-                        LWASAPI_DBG_BLUEZ,
-                        LWASAPI_DBG_WARN,
+                        LASAPI_DBG_BLUEZ,
+                        LASAPI_DBG_WARN,
                         0,
                         0,
                         popped as i32,
@@ -1246,8 +1246,8 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                 } else {
                     avg_avail = avg_avail * 0.70 + f64::from(rem_avail) * 0.30;
                     dbg_emit_vals(
-                        LWASAPI_DBG_BLUEZ,
-                        LWASAPI_DBG_WARN,
+                        LASAPI_DBG_BLUEZ,
+                        LASAPI_DBG_WARN,
                         0,
                         0,
                         popped as i32,
@@ -1270,7 +1270,7 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                     }
                     let check_abr = had_eagain
                         || local_clean_streak >= 8
-                        || (codec_kind == LWASAPI_BT_CODEC_LDAC && local_clean_streak >= 4);
+                        || (codec_kind == LASAPI_BT_CODEC_LDAC && local_clean_streak >= 4);
                     if check_abr {
                         let now_ms = mono_ns() / 1_000_000;
                         let mut st = rt.state.lock().unwrap();
@@ -1284,9 +1284,9 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                                 st.tx_clean_streak.saturating_add(local_clean_streak);
                         }
                         local_clean_streak = 0;
-                        if st.active_codec_kind == LWASAPI_BT_CODEC_LDAC
+                        if st.active_codec_kind == LASAPI_BT_CODEC_LDAC
                             && !st.enc.ldac_enc.is_null()
-                            && st.ldac_mode == LWASAPI_LDAC_MODE_ADAPTIVE
+                            && st.ldac_mode == LASAPI_LDAC_MODE_ADAPTIVE
                             && st.wireless_abr_enabled != 0
                             && now_ms.saturating_sub(st.abr_last_ms) >= 20
                         {
@@ -1340,8 +1340,8 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                                 st.neg_reason =
                                     format!("LDAC ABR adapted -> {}kbps", st.effective_kbps);
                                 dbg_emit_vals(
-                                    LWASAPI_DBG_BLUEZ,
-                                    LWASAPI_DBG_INFO,
+                                    LASAPI_DBG_BLUEZ,
+                                    LASAPI_DBG_INFO,
                                     0,
                                     0,
                                     prev_eq,
@@ -1356,7 +1356,7 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                                 );
                             }
                         } else if (st.codec_id == A2DP_CODEC_MPEG24
-                            || st.active_codec_kind == LWASAPI_BT_CODEC_AAC)
+                            || st.active_codec_kind == LASAPI_BT_CODEC_AAC)
                             && !st.enc.fdk_enc.is_null()
                             && st.wireless_abr_enabled != 0
                         {
@@ -1404,8 +1404,8 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                     {
                         rt.tx_errors.fetch_add(1, Ordering::Relaxed);
                         dbg_emit_vals(
-                            LWASAPI_DBG_BLUEZ,
-                            LWASAPI_DBG_ERR,
+                            LASAPI_DBG_BLUEZ,
+                            LASAPI_DBG_ERR,
                             0,
                             0,
                             tx_fd,
@@ -1442,8 +1442,8 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                         if now_c.saturating_sub(last_congest_log_ns) >= 2_000_000_000 {
                             last_congest_log_ns = now_c;
                             dbg_emit_vals(
-                                LWASAPI_DBG_BLUEZ,
-                                LWASAPI_DBG_WARN,
+                                LASAPI_DBG_BLUEZ,
+                                LASAPI_DBG_WARN,
                                 0,
                                 0,
                                 tx_fd,
@@ -1764,11 +1764,11 @@ fn send_connect_profile(db: &DBusApi, conn: *mut DBusConnection, dev_path: &str,
 
 fn select_a2dp_config_for_endpoint(path: &str, rcaps: &[u8]) -> Option<(Vec<u8>, u32)> {
     let kind = match path {
-        LWASAPI_EP_LDAC => BT_WIRE_LDAC,
-        LWASAPI_EP_APTXHD => BT_WIRE_APTX_HD,
-        LWASAPI_EP_APTX => BT_WIRE_APTX,
-        LWASAPI_EP_AAC => BT_WIRE_AAC,
-        LWASAPI_EP_SBC => BT_WIRE_SBC,
+        LASAPI_EP_LDAC => BT_WIRE_LDAC,
+        LASAPI_EP_APTXHD => BT_WIRE_APTX_HD,
+        LASAPI_EP_APTX => BT_WIRE_APTX,
+        LASAPI_EP_AAC => BT_WIRE_AAC,
+        LASAPI_EP_SBC => BT_WIRE_SBC,
         _ => return None,
     };
     if kind == BT_WIRE_SBC && rcaps.len() >= 4 && (rcaps[2] < 2 || rcaps[3] > 53 || rcaps[2] > rcaps[3])
@@ -1841,10 +1841,10 @@ fn acquire_bluez_transport(db: &DBusApi, conn: *mut DBusConnection, rt: &BluezRu
 
     if rep.is_null() {
         let emsg = unsafe { dbus_error_msg(&err) };
-        println!("[LWASAPI-BlueZ] Transport Acquire deferred ({emsg})");
+        println!("[LASAPI-BlueZ] Transport Acquire deferred ({emsg})");
         dbg_emit(
-            LWASAPI_DBG_BLUEZ,
-            LWASAPI_DBG_WARN,
+            LASAPI_DBG_BLUEZ,
+            LASAPI_DBG_WARN,
             0,
             0,
             "BT_ACQ_DEFER",
@@ -1893,11 +1893,11 @@ fn acquire_bluez_transport(db: &DBusApi, conn: *mut DBusConnection, rt: &BluezRu
                     (st.codec_name.clone(), st.device_alias.clone(), st.bt_sample_rate)
                 };
                 println!(
-                    "[LWASAPI-BlueZ] Acquired L2CAP fd={fd} MTU={rmtu}/{wmtu} Codec={cname} ({alias} @ {srate}Hz)"
+                    "[LASAPI-BlueZ] Acquired L2CAP fd={fd} MTU={rmtu}/{wmtu} Codec={cname} ({alias} @ {srate}Hz)"
                 );
                 dbg_emit_vals(
-                    LWASAPI_DBG_BLUEZ,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_BLUEZ,
+                    LASAPI_DBG_INFO,
                     0,
                     0,
                     i32::from(rmtu),
@@ -1937,8 +1937,8 @@ fn release_bluez_transport(db: &DBusApi, conn: *mut DBusConnection, rt: &BluezRu
     }
     if had_fd {
         dbg_emit(
-            LWASAPI_DBG_BLUEZ,
-            LWASAPI_DBG_INFO,
+            LASAPI_DBG_BLUEZ,
+            LASAPI_DBG_INFO,
             0,
             0,
             "BT_L2CAP_REL",
@@ -2174,48 +2174,48 @@ unsafe extern "C" fn endpoint_message_handler(
             st.device_alias = alias.clone();
             st.mac_address = addr.clone();
             match path {
-                LWASAPI_EP_LDAC => {
+                LASAPI_EP_LDAC => {
                     st.codec_id = A2DP_CODEC_VENDOR;
-                    st.active_codec_kind = LWASAPI_BT_CODEC_LDAC;
-                    st.supported_codecs_mask |= LWASAPI_BT_CAP_LDAC;
+                    st.active_codec_kind = LASAPI_BT_CODEC_LDAC;
+                    st.supported_codecs_mask |= LASAPI_BT_CAP_LDAC;
                     st.codec_name = "LDAC".to_string();
                 }
-                LWASAPI_EP_APTXHD => {
+                LASAPI_EP_APTXHD => {
                     st.codec_id = A2DP_CODEC_VENDOR;
-                    st.active_codec_kind = LWASAPI_BT_CODEC_APTX_HD;
-                    st.supported_codecs_mask |= LWASAPI_BT_CAP_APTX_HD;
+                    st.active_codec_kind = LASAPI_BT_CODEC_APTX_HD;
+                    st.supported_codecs_mask |= LASAPI_BT_CAP_APTX_HD;
                     st.codec_name = "aptX HD".to_string();
                 }
-                LWASAPI_EP_APTX => {
+                LASAPI_EP_APTX => {
                     st.codec_id = A2DP_CODEC_VENDOR;
-                    st.active_codec_kind = LWASAPI_BT_CODEC_APTX;
-                    st.supported_codecs_mask |= LWASAPI_BT_CAP_APTX;
+                    st.active_codec_kind = LASAPI_BT_CODEC_APTX;
+                    st.supported_codecs_mask |= LASAPI_BT_CAP_APTX;
                     st.codec_name = "aptX".to_string();
                 }
-                LWASAPI_EP_AAC => {
+                LASAPI_EP_AAC => {
                     st.codec_id = A2DP_CODEC_MPEG24;
-                    st.active_codec_kind = LWASAPI_BT_CODEC_AAC;
-                    st.supported_codecs_mask |= LWASAPI_BT_CAP_AAC;
+                    st.active_codec_kind = LASAPI_BT_CODEC_AAC;
+                    st.supported_codecs_mask |= LASAPI_BT_CAP_AAC;
                     st.codec_name = "AAC".to_string();
                 }
                 _ => {
                     st.codec_id = A2DP_CODEC_SBC;
-                    st.active_codec_kind = LWASAPI_BT_CODEC_SBC;
-                    st.supported_codecs_mask |= LWASAPI_BT_CAP_SBC;
+                    st.active_codec_kind = LASAPI_BT_CODEC_SBC;
+                    st.supported_codecs_mask |= LASAPI_BT_CAP_SBC;
                     st.codec_name = "SBC".to_string();
                 }
             }
-            st.supported_codecs_mask |= LWASAPI_BT_CAP_SBC;
+            st.supported_codecs_mask |= LASAPI_BT_CAP_SBC;
             let clabel: String = st.codec_name.chars().take(15).collect();
-            st.neg_reason = if st.pref_codec != LWASAPI_BT_PREF_AUTO {
+            st.neg_reason = if st.pref_codec != LASAPI_BT_PREF_AUTO {
                 format!("Switched to {clabel} per user codec preference")
-            } else if st.active_codec_kind == LWASAPI_BT_CODEC_LDAC {
+            } else if st.active_codec_kind == LASAPI_BT_CODEC_LDAC {
                 "Negotiated LDAC (peer + host SEP match)".to_string()
-            } else if st.active_codec_kind == LWASAPI_BT_CODEC_APTX_HD
-                || st.active_codec_kind == LWASAPI_BT_CODEC_APTX
+            } else if st.active_codec_kind == LASAPI_BT_CODEC_APTX_HD
+                || st.active_codec_kind == LASAPI_BT_CODEC_APTX
             {
                 format!("Negotiated {clabel} (headset lacks LDAC SEP)")
-            } else if st.active_codec_kind == LWASAPI_BT_CODEC_AAC {
+            } else if st.active_codec_kind == LASAPI_BT_CODEC_AAC {
                 "AAC active: peer lacked LDAC/aptX or chose AAC".to_string()
             } else {
                 "SBC fallback: peer offered baseline A2DP only".to_string()
@@ -2241,8 +2241,8 @@ unsafe extern "C" fn endpoint_message_handler(
         };
 
         dbg_emit_vals(
-            LWASAPI_DBG_BLUEZ,
-            LWASAPI_DBG_INFO,
+            LASAPI_DBG_BLUEZ,
+            LASAPI_DBG_INFO,
             0,
             0,
             i32::from(delay),
@@ -2296,8 +2296,8 @@ unsafe extern "C" fn endpoint_message_handler(
         }
         rt.bt_topo_gen.fetch_add(1, Ordering::Release);
         dbg_emit(
-            LWASAPI_DBG_BLUEZ,
-            LWASAPI_DBG_INFO,
+            LASAPI_DBG_BLUEZ,
+            LASAPI_DBG_INFO,
             0,
             0,
             "BT_CLEAR_CFG",
@@ -2380,8 +2380,8 @@ unsafe extern "C" fn bluez_signal_filter(
                                 let (_cv, pct) = apply_peer_avrcp_vol(rt, v, false);
                                 let alias = rt.state.lock().unwrap().device_alias.clone();
                                 dbg_emit_vals(
-                                    LWASAPI_DBG_BLUEZ,
-                                    LWASAPI_DBG_INFO,
+                                    LASAPI_DBG_BLUEZ,
+                                    LASAPI_DBG_INFO,
                                     0,
                                     0,
                                     i32::from(v),
@@ -2397,8 +2397,8 @@ unsafe extern "C" fn bluez_signal_filter(
                                 rt.delay_tenths_ms.store(d, Ordering::Relaxed);
                                 let alias = rt.state.lock().unwrap().device_alias.clone();
                                 dbg_emit_vals(
-                                    LWASAPI_DBG_BLUEZ,
-                                    LWASAPI_DBG_TRACE,
+                                    LASAPI_DBG_BLUEZ,
+                                    LASAPI_DBG_TRACE,
                                     0,
                                     0,
                                     i32::from(d),
@@ -2447,8 +2447,8 @@ unsafe extern "C" fn bluez_signal_filter(
                 if !new_owner.is_empty() {
                     rt.need_reregister.store(true, Ordering::Release);
                     dbg_emit(
-                        LWASAPI_DBG_BLUEZ,
-                        LWASAPI_DBG_INFO,
+                        LASAPI_DBG_BLUEZ,
+                        LASAPI_DBG_INFO,
                         0,
                         0,
                         "BT_BLUEZ_UP",
@@ -2458,8 +2458,8 @@ unsafe extern "C" fn bluez_signal_filter(
                 } else {
                     rt.need_reregister.store(false, Ordering::Release);
                     dbg_emit(
-                        LWASAPI_DBG_BLUEZ,
-                        LWASAPI_DBG_WARN,
+                        LASAPI_DBG_BLUEZ,
+                        LASAPI_DBG_WARN,
                         0,
                         0,
                         "BT_BLUEZ_DOWN",
@@ -2495,8 +2495,8 @@ unsafe extern "C" fn bluez_signal_filter(
                         if need {
                             rt.need_reregister.store(true, Ordering::Release);
                             dbg_emit(
-                                LWASAPI_DBG_BLUEZ,
-                                LWASAPI_DBG_INFO,
+                                LASAPI_DBG_BLUEZ,
+                                LASAPI_DBG_INFO,
                                 0,
                                 0,
                                 "BT_MEDIA_ADD",
@@ -2535,8 +2535,8 @@ unsafe extern "C" fn bluez_signal_filter(
             }
             if removed {
                 dbg_emit(
-                    LWASAPI_DBG_BLUEZ,
-                    LWASAPI_DBG_WARN,
+                    LASAPI_DBG_BLUEZ,
+                    LASAPI_DBG_WARN,
                     0,
                     0,
                     "BT_IFACE_REM",
@@ -2551,7 +2551,7 @@ unsafe extern "C" fn bluez_signal_filter(
 }
 
 // ============================================================================
-// HFP AG (/org/lwasapi/HFP/AG) + BlueZ BatteryProvider1 (/org/lwasapi/Battery)
+// HFP AG (/org/lasapi/HFP/AG) + BlueZ BatteryProvider1 (/org/lasapi/Battery)
 // ============================================================================
 
 fn make_batt_path(dev_path: &str) -> String {
@@ -2559,7 +2559,7 @@ fn make_batt_path(dev_path: &str) -> String {
     if let Some(len) = hfp_make_batt_path(dev_path.as_bytes(), &mut out) {
         String::from_utf8_lossy(&out[..len]).into_owned()
     } else {
-        "/org/lwasapi/Battery/dev".to_string()
+        "/org/lasapi/Battery/dev".to_string()
     }
 }
 
@@ -2600,7 +2600,7 @@ fn hfp_set_battery_pct(rt: &BluezRuntime, dev_path: &str, raw_pct: i32) {
             }
         }
     }
-    eprintln!("[LWASAPI-HFP] Battery update for {dev_path}: {pct}%");
+    eprintln!("[LASAPI-HFP] Battery update for {dev_path}: {pct}%");
 }
 
 fn hfp_mark_disconnected(rt: &BluezRuntime, dev_path: &str, expected_fd: Option<c_int>) {
@@ -2664,7 +2664,7 @@ fn hfp_flush_battery_dbus(db: &DBusApi, conn: *mut DBusConnection, rt: &BluezRun
             d.published = true;
             unsafe {
                 let sig = (db.message_new_signal)(
-                    c"/org/lwasapi/Battery".as_ptr(),
+                    c"/org/lasapi/Battery".as_ptr(),
                     c"org.freedesktop.DBus.ObjectManager".as_ptr(),
                     c"InterfacesAdded".as_ptr(),
                 );
@@ -2764,7 +2764,7 @@ fn hfp_flush_battery_dbus(db: &DBusApi, conn: *mut DBusConnection, rt: &BluezRun
                 d.published = false;
                 unsafe {
                     let sig = (db.message_new_signal)(
-                        c"/org/lwasapi/Battery".as_ptr(),
+                        c"/org/lasapi/Battery".as_ptr(),
                         c"org.freedesktop.DBus.ObjectManager".as_ptr(),
                         c"InterfacesRemoved".as_ptr(),
                     );
@@ -2815,7 +2815,7 @@ unsafe extern "C" fn hfp_battery_message_handler(
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
     };
 
-    if path == LWASAPI_BATTERY_ROOT
+    if path == LASAPI_BATTERY_ROOT
         && iface == Some("org.freedesktop.DBus.ObjectManager")
         && member == "GetManagedObjects"
     {
@@ -2972,7 +2972,7 @@ fn hfp_handle_at_line(rt: &BluezRuntime, fd: c_int, dev_path: &str, raw_line: &[
     if trimmed.is_empty() {
         return;
     }
-    eprintln!("[LWASAPI-HFP] AT << {trimmed}");
+    eprintln!("[LASAPI-HFP] AT << {trimmed}");
     let act = parse_hfp_at_line(trimmed.as_bytes());
     if !act.handled {
         return;
@@ -3072,7 +3072,7 @@ unsafe extern "C" fn hfp_profile_message_handler(
                     thread::spawn(move || {
                         let _fd_keepalive = fd_owner;
                         let fd = _fd_keepalive.as_raw_fd();
-                        eprintln!("[LWASAPI-HFP] RFCOMM connected for {dp} (fd={fd})");
+                        eprintln!("[LASAPI-HFP] RFCOMM connected for {dp} (fd={fd})");
                         let mut line = Vec::<u8>::with_capacity(512);
                         let mut buf = [0u8; 256];
                         loop {
@@ -3103,7 +3103,7 @@ unsafe extern "C" fn hfp_profile_message_handler(
                                     continue;
                                 }
                                 eprintln!(
-                                    "[LWASAPI-HFP] RFCOMM read error on {dp}: {}",
+                                    "[LASAPI-HFP] RFCOMM read error on {dp}: {}",
                                     std::io::Error::from_raw_os_error(e)
                                 );
                                 break;
@@ -3122,7 +3122,7 @@ unsafe extern "C" fn hfp_profile_message_handler(
                                 }
                             }
                         }
-                        eprintln!("[LWASAPI-HFP] RFCOMM disconnected for {dp}");
+                        eprintln!("[LASAPI-HFP] RFCOMM disconnected for {dp}");
                         hfp_mark_disconnected(&rt_arc, &dp, Some(fd));
                     });
                 }
@@ -3163,7 +3163,7 @@ fn register_hfp_and_battery_provider(
         if !*hfp_reg
             && (db.connection_register_object_path)(
                 conn,
-                c"/org/lwasapi/HFP/AG".as_ptr(),
+                c"/org/lasapi/HFP/AG".as_ptr(),
                 &hfp_vtbl,
                 rt_ptr,
             ) != 0
@@ -3173,7 +3173,7 @@ fn register_hfp_and_battery_provider(
         if !*batt_reg
             && (db.connection_register_fallback)(
                 conn,
-                c"/org/lwasapi/Battery".as_ptr(),
+                c"/org/lasapi/Battery".as_ptr(),
                 &batt_vtbl,
                 rt_ptr,
             ) != 0
@@ -3194,12 +3194,12 @@ fn register_hfp_and_battery_provider(
             let mut it = DBusMessageIter::default();
             let mut dict = DBusMessageIter::default();
             (db.message_iter_init_append)(pmsg, &mut it);
-            let _ = iter_append_str(db, &mut it, DBUS_TYPE_OBJECT_PATH, LWASAPI_HFP_AG_PATH);
+            let _ = iter_append_str(db, &mut it, DBUS_TYPE_OBJECT_PATH, LASAPI_HFP_AG_PATH);
             let _ = iter_append_str(db, &mut it, DBUS_TYPE_STRING, HFP_AG_UUID);
             if (db.message_iter_open_container)(&mut it, DBUS_TYPE_ARRAY, c"{sv}".as_ptr(), &mut dict)
                 != 0
             {
-                add_dict_entry_str(db, &mut dict, "Name", "LWASAPI HFP Battery");
+                add_dict_entry_str(db, &mut dict, "Name", "LASAPI HFP Battery");
                 add_dict_entry_u16(db, &mut dict, "Version", 0x0107);
                 add_dict_entry_u16(db, &mut dict, "Features", 0x0009);
                 add_dict_entry_bool(db, &mut dict, "AutoConnect", true);
@@ -3212,10 +3212,10 @@ fn register_hfp_and_battery_provider(
             (db.message_unref)(pmsg);
             if !rep.is_null() {
                 (db.message_unref)(rep);
-                println!("[LWASAPI-HFP] Registered HFP AG profile {LWASAPI_HFP_AG_PATH}");
+                println!("[LASAPI-HFP] Registered HFP AG profile {LASAPI_HFP_AG_PATH}");
             } else {
                 let emsg = dbus_error_msg(&err);
-                eprintln!("[LWASAPI-HFP] RegisterProfile failed: {emsg}");
+                eprintln!("[LASAPI-HFP] RegisterProfile failed: {emsg}");
                 (db.error_free)(&mut err);
             }
         }
@@ -3235,17 +3235,17 @@ fn register_hfp_and_battery_provider(
         unsafe {
             let mut it = DBusMessageIter::default();
             (db.message_iter_init_append)(bmsg, &mut it);
-            let _ = iter_append_str(db, &mut it, DBUS_TYPE_OBJECT_PATH, LWASAPI_BATTERY_ROOT);
+            let _ = iter_append_str(db, &mut it, DBUS_TYPE_OBJECT_PATH, LASAPI_BATTERY_ROOT);
             let mut err = DBusError::default();
             (db.error_init)(&mut err);
             let rep = (db.connection_send_with_reply_and_block)(conn, bmsg, 2000, &mut err);
             (db.message_unref)(bmsg);
             if !rep.is_null() {
                 (db.message_unref)(rep);
-                println!("[LWASAPI-HFP] Registered BatteryProvider {LWASAPI_BATTERY_ROOT} on {adapter}");
+                println!("[LASAPI-HFP] Registered BatteryProvider {LASAPI_BATTERY_ROOT} on {adapter}");
             } else {
                 let emsg = dbus_error_msg(&err);
-                eprintln!("[LWASAPI-HFP] RegisterBatteryProvider on {adapter} failed: {emsg}");
+                eprintln!("[LASAPI-HFP] RegisterBatteryProvider on {adapter} failed: {emsg}");
                 (db.error_free)(&mut err);
             }
         }
@@ -3265,9 +3265,9 @@ fn register_endpoint_on_adapter(
         return;
     }
     let cname = match ep_path {
-        LWASAPI_EP_LDAC => "LDAC",
-        LWASAPI_EP_APTXHD => "aptX HD",
-        LWASAPI_EP_APTX => "aptX",
+        LASAPI_EP_LDAC => "LDAC",
+        LASAPI_EP_APTXHD => "aptX HD",
+        LASAPI_EP_APTX => "aptX",
         _ if codec == A2DP_CODEC_MPEG24 => "AAC",
         _ => "SBC",
     };
@@ -3291,10 +3291,10 @@ fn register_endpoint_on_adapter(
         (db.message_unref)(msg);
         if !rep.is_null() {
             (db.message_unref)(rep);
-            println!("[LWASAPI-BlueZ] Registered A2DP {cname} endpoint {ep_path} on {adapter}");
+            println!("[LASAPI-BlueZ] Registered A2DP {cname} endpoint {ep_path} on {adapter}");
             dbg_emit(
-                LWASAPI_DBG_BLUEZ,
-                LWASAPI_DBG_INFO,
+                LASAPI_DBG_BLUEZ,
+                LASAPI_DBG_INFO,
                 0,
                 0,
                 "BT_EP_REG",
@@ -3304,8 +3304,8 @@ fn register_endpoint_on_adapter(
         } else {
             let emsg = dbus_error_msg(&err);
             dbg_emit(
-                LWASAPI_DBG_BLUEZ,
-                LWASAPI_DBG_WARN,
+                LASAPI_DBG_BLUEZ,
+                LASAPI_DBG_WARN,
                 0,
                 0,
                 "BT_EP_ERR",
@@ -3411,15 +3411,15 @@ fn register_all_adapters_and_kick_connected(
     };
 
     let ep_defs: [(&str, bool, &CStr); 5] = [
-        (LWASAPI_EP_LDAC, ldac_ok, c"/org/lwasapi/A2DP/LDAC/Source"),
+        (LASAPI_EP_LDAC, ldac_ok, c"/org/lasapi/A2DP/LDAC/Source"),
         (
-            LWASAPI_EP_APTXHD,
+            LASAPI_EP_APTXHD,
             aptx_ok,
-            c"/org/lwasapi/A2DP/APTXHD/Source",
+            c"/org/lasapi/A2DP/APTXHD/Source",
         ),
-        (LWASAPI_EP_APTX, aptx_ok, c"/org/lwasapi/A2DP/APTX/Source"),
-        (LWASAPI_EP_AAC, aac_ok, c"/org/lwasapi/A2DP/AAC/Source"),
-        (LWASAPI_EP_SBC, true, c"/org/lwasapi/A2DP/SBC/Source"),
+        (LASAPI_EP_APTX, aptx_ok, c"/org/lasapi/A2DP/APTX/Source"),
+        (LASAPI_EP_AAC, aac_ok, c"/org/lasapi/A2DP/AAC/Source"),
+        (LASAPI_EP_SBC, true, c"/org/lasapi/A2DP/SBC/Source"),
     ];
     for (idx, &(_, enabled, cpath)) in ep_defs.iter().enumerate() {
         if enabled
@@ -3440,7 +3440,7 @@ fn register_all_adapters_and_kick_connected(
                 db,
                 conn,
                 adapter,
-                LWASAPI_EP_LDAC,
+                LASAPI_EP_LDAC,
                 A2DP_CODEC_VENDOR,
                 &ldac_caps,
             );
@@ -3450,7 +3450,7 @@ fn register_all_adapters_and_kick_connected(
                 db,
                 conn,
                 adapter,
-                LWASAPI_EP_APTXHD,
+                LASAPI_EP_APTXHD,
                 A2DP_CODEC_VENDOR,
                 &aptx_hd_caps,
             );
@@ -3458,7 +3458,7 @@ fn register_all_adapters_and_kick_connected(
                 db,
                 conn,
                 adapter,
-                LWASAPI_EP_APTX,
+                LASAPI_EP_APTX,
                 A2DP_CODEC_VENDOR,
                 &aptx_caps,
             );
@@ -3468,12 +3468,12 @@ fn register_all_adapters_and_kick_connected(
                 db,
                 conn,
                 adapter,
-                LWASAPI_EP_AAC,
+                LASAPI_EP_AAC,
                 A2DP_CODEC_MPEG24,
                 &aac_caps,
             );
         }
-        register_endpoint_on_adapter(db, conn, adapter, LWASAPI_EP_SBC, A2DP_CODEC_SBC, &sbc_caps);
+        register_endpoint_on_adapter(db, conn, adapter, LASAPI_EP_SBC, A2DP_CODEC_SBC, &sbc_caps);
     }
 
     if !adapters.is_empty() {
@@ -3520,18 +3520,18 @@ fn probe_remote_seps(
             continue;
         }
         let sep_cap = if sep.codec == A2DP_CODEC_SBC {
-            LWASAPI_BT_CAP_SBC
+            LASAPI_BT_CAP_SBC
         } else if sep.codec == A2DP_CODEC_MPEG24 {
-            LWASAPI_BT_CAP_AAC
+            LASAPI_BT_CAP_AAC
         } else if sep.codec == A2DP_CODEC_VENDOR && sep.caps.len() >= 6 {
             let vid = u32::from_le_bytes([sep.caps[0], sep.caps[1], sep.caps[2], sep.caps[3]]);
             let cid = u16::from_le_bytes([sep.caps[4], sep.caps[5]]);
             if vid == LDAC_VENDOR_ID && cid == LDAC_CODEC_ID {
-                LWASAPI_BT_CAP_LDAC
+                LASAPI_BT_CAP_LDAC
             } else if vid == APTX_HD_VENDOR_ID && cid == APTX_HD_CODEC_ID {
-                LWASAPI_BT_CAP_APTX_HD
+                LASAPI_BT_CAP_APTX_HD
             } else if vid == APTX_VENDOR_ID && cid == APTX_CODEC_ID {
-                LWASAPI_BT_CAP_APTX
+                LASAPI_BT_CAP_APTX
             } else {
                 0
             }
@@ -3684,12 +3684,12 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                             let mut st = rt.state.lock().unwrap();
                             let err_short: String = err_txt.chars().take(28).collect();
                             st.neg_reason = format!("Codec rejected ({err_short}); restoring");
-                            st.pref_codec = LWASAPI_BT_PREF_AUTO;
+                            st.pref_codec = LASAPI_BT_PREF_AUTO;
                             (st.device_path.clone(), st.has_bluez_transport)
                         };
                         dbg_emit(
-                            LWASAPI_DBG_BLUEZ,
-                            LWASAPI_DBG_WARN,
+                            LASAPI_DBG_BLUEZ,
+                            LASAPI_DBG_WARN,
                             0,
                             0,
                             "BT_RENEG_ERR",
@@ -3728,38 +3728,38 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                 };
 
                 let (target_cap, local_ep) = match want_pref {
-                    LWASAPI_BT_PREF_AUTO => {
-                        if (sup_mask & LWASAPI_BT_CAP_LDAC) != 0 && load_ldac_library().is_some() {
-                            (LWASAPI_BT_CAP_LDAC, LWASAPI_EP_LDAC)
-                        } else if (sup_mask & LWASAPI_BT_CAP_APTX_HD) != 0
+                    LASAPI_BT_PREF_AUTO => {
+                        if (sup_mask & LASAPI_BT_CAP_LDAC) != 0 && load_ldac_library().is_some() {
+                            (LASAPI_BT_CAP_LDAC, LASAPI_EP_LDAC)
+                        } else if (sup_mask & LASAPI_BT_CAP_APTX_HD) != 0
                             && load_aptx_library().is_some()
                         {
-                            (LWASAPI_BT_CAP_APTX_HD, LWASAPI_EP_APTXHD)
-                        } else if (sup_mask & LWASAPI_BT_CAP_APTX) != 0
+                            (LASAPI_BT_CAP_APTX_HD, LASAPI_EP_APTXHD)
+                        } else if (sup_mask & LASAPI_BT_CAP_APTX) != 0
                             && load_aptx_library().is_some()
                         {
-                            (LWASAPI_BT_CAP_APTX, LWASAPI_EP_APTX)
-                        } else if (sup_mask & LWASAPI_BT_CAP_AAC) != 0
+                            (LASAPI_BT_CAP_APTX, LASAPI_EP_APTX)
+                        } else if (sup_mask & LASAPI_BT_CAP_AAC) != 0
                             && load_fdk_aac_library().is_some()
                         {
-                            (LWASAPI_BT_CAP_AAC, LWASAPI_EP_AAC)
+                            (LASAPI_BT_CAP_AAC, LASAPI_EP_AAC)
                         } else {
-                            (LWASAPI_BT_CAP_SBC, LWASAPI_EP_SBC)
+                            (LASAPI_BT_CAP_SBC, LASAPI_EP_SBC)
                         }
                     }
-                    LWASAPI_BT_PREF_LDAC => (LWASAPI_BT_CAP_LDAC, LWASAPI_EP_LDAC),
-                    LWASAPI_BT_PREF_APTX_HD => (LWASAPI_BT_CAP_APTX_HD, LWASAPI_EP_APTXHD),
-                    LWASAPI_BT_PREF_APTX => (LWASAPI_BT_CAP_APTX, LWASAPI_EP_APTX),
-                    LWASAPI_BT_PREF_AAC => (LWASAPI_BT_CAP_AAC, LWASAPI_EP_AAC),
-                    _ => (LWASAPI_BT_CAP_SBC, LWASAPI_EP_SBC),
+                    LASAPI_BT_PREF_LDAC => (LASAPI_BT_CAP_LDAC, LASAPI_EP_LDAC),
+                    LASAPI_BT_PREF_APTX_HD => (LASAPI_BT_CAP_APTX_HD, LASAPI_EP_APTXHD),
+                    LASAPI_BT_PREF_APTX => (LASAPI_BT_CAP_APTX, LASAPI_EP_APTX),
+                    LASAPI_BT_PREF_AAC => (LASAPI_BT_CAP_AAC, LASAPI_EP_AAC),
+                    _ => (LASAPI_BT_CAP_SBC, LASAPI_EP_SBC),
                 };
 
                 let cur_cap = match cur_kind {
-                    LWASAPI_BT_CODEC_LDAC => LWASAPI_BT_CAP_LDAC,
-                    LWASAPI_BT_CODEC_APTX_HD => LWASAPI_BT_CAP_APTX_HD,
-                    LWASAPI_BT_CODEC_APTX => LWASAPI_BT_CAP_APTX,
-                    LWASAPI_BT_CODEC_AAC => LWASAPI_BT_CAP_AAC,
-                    _ => LWASAPI_BT_CAP_SBC,
+                    LASAPI_BT_CODEC_LDAC => LASAPI_BT_CAP_LDAC,
+                    LASAPI_BT_CODEC_APTX_HD => LASAPI_BT_CAP_APTX_HD,
+                    LASAPI_BT_CODEC_APTX => LASAPI_BT_CAP_APTX,
+                    LASAPI_BT_CODEC_AAC => LASAPI_BT_CAP_AAC,
+                    _ => LASAPI_BT_CAP_SBC,
                 };
 
                 if target_cap == cur_cap && had_tp {
@@ -3777,8 +3777,8 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                     };
                     if let Some((sep_path, sel_cfg)) = remote_match {
                         dbg_emit(
-                            LWASAPI_DBG_BLUEZ,
-                            LWASAPI_DBG_INFO,
+                            LASAPI_DBG_BLUEZ,
+                            LASAPI_DBG_INFO,
                             0,
                             0,
                             "BT_RENEG_SEND",
@@ -3826,8 +3826,8 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                         }
                     } else {
                         dbg_emit(
-                            LWASAPI_DBG_BLUEZ,
-                            LWASAPI_DBG_WARN,
+                            LASAPI_DBG_BLUEZ,
+                            LASAPI_DBG_WARN,
                             0,
                             0,
                             "BT_RENEG_SKIP",
@@ -3835,7 +3835,7 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                             &format!("can_switch=0 target_cap=0x{target_cap:x} cur_cap=0x{cur_cap:x}"),
                         );
                         let mut st = rt.state.lock().unwrap();
-                        st.pref_codec = LWASAPI_BT_PREF_AUTO;
+                        st.pref_codec = LASAPI_BT_PREF_AUTO;
                         let kept = if st.codec_name.is_empty() {
                             "active".to_string()
                         } else {
@@ -3854,7 +3854,7 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                         && st.renegotiate_start_ns > 0
                         && reneg_now_ns.saturating_sub(st.renegotiate_start_ns) >= 4_500_000_000;
                     if expired {
-                        st.pref_codec = LWASAPI_BT_PREF_AUTO;
+                        st.pref_codec = LASAPI_BT_PREF_AUTO;
                         st.neg_reason =
                             "Peer timed out codec switch; restored Auto".to_string();
                     }
@@ -3866,8 +3866,8 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                 {
                     rt.bt_renegotiate_fallback.store(false, Ordering::Release);
                     dbg_emit(
-                        LWASAPI_DBG_BLUEZ,
-                        LWASAPI_DBG_WARN,
+                        LASAPI_DBG_BLUEZ,
+                        LASAPI_DBG_WARN,
                         0,
                         0,
                         "BT_RENEG_TMO",
@@ -3930,8 +3930,8 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                     } {
                         let (cv, pct) = apply_peer_avrcp_vol(&rt, cur_v, true);
                         dbg_emit_vals(
-                            LWASAPI_DBG_BLUEZ,
-                            LWASAPI_DBG_INFO,
+                            LASAPI_DBG_BLUEZ,
+                            LASAPI_DBG_INFO,
                             0,
                             0,
                             i32::from(cv),
@@ -4046,8 +4046,8 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                             (db.message_unref)(cmsg);
                         }
                         dbg_emit(
-                            LWASAPI_DBG_BLUEZ,
-                            LWASAPI_DBG_INFO,
+                            LASAPI_DBG_BLUEZ,
+                            LASAPI_DBG_INFO,
                             0,
                             0,
                             "BT_AUTOCONN",
@@ -4119,13 +4119,13 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
             let rt_ptr = (&*rt as *const BluezRuntime as *mut BluezRuntime).cast::<c_void>();
             (db.connection_remove_filter)(conn, Some(bluez_signal_filter), rt_ptr);
             let paths: [&CStr; 7] = [
-                c"/org/lwasapi/A2DP/LDAC/Source",
-                c"/org/lwasapi/A2DP/APTXHD/Source",
-                c"/org/lwasapi/A2DP/APTX/Source",
-                c"/org/lwasapi/A2DP/AAC/Source",
-                c"/org/lwasapi/A2DP/SBC/Source",
-                c"/org/lwasapi/HFP/AG",
-                c"/org/lwasapi/Battery",
+                c"/org/lasapi/A2DP/LDAC/Source",
+                c"/org/lasapi/A2DP/APTXHD/Source",
+                c"/org/lasapi/A2DP/APTX/Source",
+                c"/org/lasapi/A2DP/AAC/Source",
+                c"/org/lasapi/A2DP/SBC/Source",
+                c"/org/lasapi/HFP/AG",
+                c"/org/lasapi/Battery",
             ];
             for (idx, p) in paths.iter().enumerate() {
                 let was_reg = match idx {
@@ -4469,8 +4469,8 @@ fn open_sco_capture(rt: &BluezRuntime, mac_or_empty: &str) -> i32 {
     *rt.sco_thread.lock().unwrap() = Some(jh);
 
     dbg_emit(
-        LWASAPI_DBG_BLUEZ,
-        LWASAPI_DBG_INFO,
+        LASAPI_DBG_BLUEZ,
+        LASAPI_DBG_INFO,
         0,
         0,
         "BT_SCO_OPEN",
@@ -4941,12 +4941,12 @@ fn format_bt_enum_entry_name<'a>(
 ///
 /// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`,
 /// `active_pb_id` and `active_cap_id` must be valid NUL-terminated C strings,
-/// and `out_list` must point to writable storage for `LwasapiDeviceList`.
+/// and `out_list` must point to writable storage for `LasapiDeviceList`.
 pub unsafe fn bluez_enumerate_devices_impl(
     bt: *const c_void,
     active_pb_id: *const c_char,
     active_cap_id: *const c_char,
-    out_list: *mut LwasapiDeviceList,
+    out_list: *mut LasapiDeviceList,
 ) -> c_int {
     if out_list.is_null() {
         return -1;
@@ -4987,7 +4987,7 @@ pub unsafe fn bluez_enumerate_devices_impl(
                     };
 
                     for d in &objs.devices {
-                        if (out.num_devices as usize) >= LWASAPI_MAX_DEVICES {
+                        if (out.num_devices as usize) >= LASAPI_MAX_DEVICES {
                             break;
                         }
                         let has_mt = objs.transports.iter().any(|t| t.device_path == d.obj_path);
@@ -4996,7 +4996,7 @@ pub unsafe fn bluez_enumerate_devices_impl(
                         if should_enumerate_bt_a2dp_device(d.connected, d.has_a2dp_sink, &d.address) {
                             let idx = out.num_devices as usize;
                             out.num_devices += 1;
-                            let mut e: LwasapiDeviceEntry = unsafe { mem::zeroed() };
+                            let mut e: LasapiDeviceEntry = unsafe { mem::zeroed() };
                             let eid = format!("bluez:{}", d.address);
                             let (cn, ename) = format_bt_enum_entry_name(
                                 &d.alias,
@@ -5026,11 +5026,11 @@ pub unsafe fn bluez_enumerate_devices_impl(
                             && d.has_hfp_hf
                             && !d.address.is_empty()
                             && sco_en
-                            && (out.num_devices as usize) < LWASAPI_MAX_DEVICES
+                            && (out.num_devices as usize) < LASAPI_MAX_DEVICES
                         {
                             let idx = out.num_devices as usize;
                             out.num_devices += 1;
-                            let mut sc: LwasapiDeviceEntry = unsafe { mem::zeroed() };
+                            let mut sc: LasapiDeviceEntry = unsafe { mem::zeroed() };
                             let sid = format!("bluez_sco:{}", d.address);
                             let label: String = if !d.alias.is_empty() {
                                 d.alias.chars().take(42).collect()
@@ -5178,10 +5178,10 @@ pub unsafe fn bluez_set_mic_gain_ppm_impl(
 /// # Safety
 ///
 /// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl` and
-/// `cfg_ptr` must point to a valid `LwasapiBtCodecCfg`.
+/// `cfg_ptr` must point to a valid `LasapiBtCodecCfg`.
 pub unsafe fn bluez_set_codec_config_impl(
     bt: *mut c_void,
-    cfg_ptr: *const LwasapiBtCodecCfg,
+    cfg_ptr: *const LasapiBtCodecCfg,
 ) -> c_int {
     if bt.is_null() || cfg_ptr.is_null() {
         return -1;
@@ -5196,40 +5196,40 @@ pub unsafe fn bluez_set_codec_config_impl(
     {
         let mut st = rt.state.lock().unwrap();
         let old_pref = st.pref_codec;
-        let new_pref = if cfg.preferred_codec <= LWASAPI_BT_PREF_SBC {
+        let new_pref = if cfg.preferred_codec <= LASAPI_BT_PREF_SBC {
             cfg.preferred_codec
         } else {
-            LWASAPI_BT_PREF_AUTO
+            LASAPI_BT_PREF_AUTO
         };
-        let new_ldac = if cfg.ldac_mode <= LWASAPI_LDAC_MODE_330 {
+        let new_ldac = if cfg.ldac_mode <= LASAPI_LDAC_MODE_330 {
             cfg.ldac_mode
         } else {
-            LWASAPI_LDAC_MODE_ADAPTIVE
+            LASAPI_LDAC_MODE_ADAPTIVE
         };
         let new_abr = u32::from(cfg.wireless_abr_enabled != 0);
         let sup_mask = st.supported_codecs_mask;
         let has_link = st.has_bluez_transport;
         let mut preflight_ok = true;
 
-        if new_pref != LWASAPI_BT_PREF_AUTO {
+        if new_pref != LASAPI_BT_PREF_AUTO {
             let (want_cap, lib_ok, codec_label) = match new_pref {
-                LWASAPI_BT_PREF_LDAC => (LWASAPI_BT_CAP_LDAC, load_ldac_library().is_some(), "LDAC"),
-                LWASAPI_BT_PREF_APTX_HD => {
-                    (LWASAPI_BT_CAP_APTX_HD, load_aptx_library().is_some(), "aptX HD")
+                LASAPI_BT_PREF_LDAC => (LASAPI_BT_CAP_LDAC, load_ldac_library().is_some(), "LDAC"),
+                LASAPI_BT_PREF_APTX_HD => {
+                    (LASAPI_BT_CAP_APTX_HD, load_aptx_library().is_some(), "aptX HD")
                 }
-                LWASAPI_BT_PREF_APTX => (LWASAPI_BT_CAP_APTX, load_aptx_library().is_some(), "aptX"),
-                LWASAPI_BT_PREF_AAC => (
-                    LWASAPI_BT_CAP_AAC,
+                LASAPI_BT_PREF_APTX => (LASAPI_BT_CAP_APTX, load_aptx_library().is_some(), "aptX"),
+                LASAPI_BT_PREF_AAC => (
+                    LASAPI_BT_CAP_AAC,
                     load_fdk_aac_library().is_some(),
                     "AAC",
                 ),
-                _ => (LWASAPI_BT_CAP_SBC, true, "SBC"),
+                _ => (LASAPI_BT_CAP_SBC, true, "SBC"),
             };
             let cur_name = match st.active_codec_kind {
-                LWASAPI_BT_CODEC_LDAC => "LDAC",
-                LWASAPI_BT_CODEC_APTX_HD => "aptX HD",
-                LWASAPI_BT_CODEC_APTX => "aptX",
-                LWASAPI_BT_CODEC_AAC => "AAC",
+                LASAPI_BT_CODEC_LDAC => "LDAC",
+                LASAPI_BT_CODEC_APTX_HD => "aptX HD",
+                LASAPI_BT_CODEC_APTX => "aptX",
+                LASAPI_BT_CODEC_AAC => "AAC",
                 _ => "SBC",
             };
             if !lib_ok {
@@ -5237,8 +5237,8 @@ pub unsafe fn bluez_set_codec_config_impl(
                 st.neg_reason =
                     format!("{codec_label} host encoder library missing — keeping {cur_name}");
                 dbg_emit(
-                    LWASAPI_DBG_BLUEZ,
-                    LWASAPI_DBG_WARN,
+                    LASAPI_DBG_BLUEZ,
+                    LASAPI_DBG_WARN,
                     0,
                     0,
                     "BT_CODEC_PREFLIGHT",
@@ -5250,8 +5250,8 @@ pub unsafe fn bluez_set_codec_config_impl(
                 st.neg_reason =
                     format!("Headset does not advertise {codec_label} SEP — keeping {cur_name}");
                 dbg_emit(
-                    LWASAPI_DBG_BLUEZ,
-                    LWASAPI_DBG_WARN,
+                    LASAPI_DBG_BLUEZ,
+                    LASAPI_DBG_WARN,
                     0,
                     0,
                     "BT_CODEC_PREFLIGHT",
@@ -5267,14 +5267,14 @@ pub unsafe fn bluez_set_codec_config_impl(
         st.hfp_sco_enabled = u32::from(new_sco);
 
         if preflight_ok
-            && st.active_codec_kind == LWASAPI_BT_CODEC_LDAC
+            && st.active_codec_kind == LASAPI_BT_CODEC_LDAC
             && !st.enc.ldac_enc.is_null()
             && new_pref == old_pref
         {
-            if new_ldac != LWASAPI_LDAC_MODE_ADAPTIVE {
+            if new_ldac != LASAPI_LDAC_MODE_ADAPTIVE {
                 let eq = match new_ldac {
-                    LWASAPI_LDAC_MODE_990 => LDACBT_EQMID_HQ,
-                    LWASAPI_LDAC_MODE_660 => LDACBT_EQMID_SQ,
+                    LASAPI_LDAC_MODE_990 => LDACBT_EQMID_HQ,
+                    LASAPI_LDAC_MODE_660 => LDACBT_EQMID_SQ,
                     _ => LDACBT_EQMID_MQ,
                 };
                 if let Some(set_eqmid) = load_ldac_library().and_then(|l| l.set_eqmid) {
@@ -5303,27 +5303,27 @@ pub unsafe fn bluez_set_codec_config_impl(
         }
 
         let cur_pref_kind = match st.active_codec_kind {
-            LWASAPI_BT_CODEC_LDAC => LWASAPI_BT_PREF_LDAC,
-            LWASAPI_BT_CODEC_APTX_HD => LWASAPI_BT_PREF_APTX_HD,
-            LWASAPI_BT_CODEC_APTX => LWASAPI_BT_PREF_APTX,
-            LWASAPI_BT_CODEC_AAC => LWASAPI_BT_PREF_AAC,
-            _ => LWASAPI_BT_PREF_SBC,
+            LASAPI_BT_CODEC_LDAC => LASAPI_BT_PREF_LDAC,
+            LASAPI_BT_CODEC_APTX_HD => LASAPI_BT_PREF_APTX_HD,
+            LASAPI_BT_CODEC_APTX => LASAPI_BT_PREF_APTX,
+            LASAPI_BT_CODEC_AAC => LASAPI_BT_PREF_AAC,
+            _ => LASAPI_BT_PREF_SBC,
         };
         let mut target_pref = new_pref;
-        if target_pref == LWASAPI_BT_PREF_AUTO && sup_mask != 0 {
+        if target_pref == LASAPI_BT_PREF_AUTO && sup_mask != 0 {
             target_pref =
-                if (sup_mask & LWASAPI_BT_CAP_LDAC) != 0 && load_ldac_library().is_some() {
-                    LWASAPI_BT_PREF_LDAC
-                } else if (sup_mask & LWASAPI_BT_CAP_APTX_HD) != 0 && load_aptx_library().is_some()
+                if (sup_mask & LASAPI_BT_CAP_LDAC) != 0 && load_ldac_library().is_some() {
+                    LASAPI_BT_PREF_LDAC
+                } else if (sup_mask & LASAPI_BT_CAP_APTX_HD) != 0 && load_aptx_library().is_some()
                 {
-                    LWASAPI_BT_PREF_APTX_HD
-                } else if (sup_mask & LWASAPI_BT_CAP_APTX) != 0 && load_aptx_library().is_some() {
-                    LWASAPI_BT_PREF_APTX
-                } else if (sup_mask & LWASAPI_BT_CAP_AAC) != 0 && load_fdk_aac_library().is_some()
+                    LASAPI_BT_PREF_APTX_HD
+                } else if (sup_mask & LASAPI_BT_CAP_APTX) != 0 && load_aptx_library().is_some() {
+                    LASAPI_BT_PREF_APTX
+                } else if (sup_mask & LASAPI_BT_CAP_AAC) != 0 && load_fdk_aac_library().is_some()
                 {
-                    LWASAPI_BT_PREF_AAC
+                    LASAPI_BT_PREF_AAC
                 } else {
-                    LWASAPI_BT_PREF_SBC
+                    LASAPI_BT_PREF_SBC
                 };
         }
         need_reneg = preflight_ok && (new_pref != old_pref) && (target_pref != cur_pref_kind);
@@ -5349,10 +5349,10 @@ pub unsafe fn bluez_set_codec_config_impl(
 /// # Safety
 ///
 /// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl` and
-/// `out_cfg` must point to writable storage for `LwasapiBtCodecCfg`.
+/// `out_cfg` must point to writable storage for `LasapiBtCodecCfg`.
 pub unsafe fn bluez_get_codec_config_impl(
     bt: *const c_void,
-    out_cfg: *mut LwasapiBtCodecCfg,
+    out_cfg: *mut LasapiBtCodecCfg,
 ) {
     if out_cfg.is_null() {
         return;
@@ -5697,7 +5697,7 @@ fn bt_status_flags(rt: Option<&BluezRuntime>, dbus_connected: bool) -> u32 {
     let mut flags = 0u32;
     let opt = rt.map(|r| r.bt_optional_mode.load(Ordering::Acquire)).unwrap_or(true);
     if opt {
-        flags |= LWASAPI_BT_STAT_OPTIONAL;
+        flags |= LASAPI_BT_STAT_OPTIONAL;
     }
     let (st_conn, st_tr) = rt
         .map(|r| {
@@ -5709,10 +5709,10 @@ fn bt_status_flags(rt: Option<&BluezRuntime>, dbus_connected: bool) -> u32 {
         })
         .unwrap_or((false, false));
     if dbus_connected || st_conn {
-        flags |= LWASAPI_BT_STAT_CONNECTED;
+        flags |= LASAPI_BT_STAT_CONNECTED;
     }
     if st_tr {
-        flags |= LWASAPI_BT_STAT_TRANSPORT;
+        flags |= LASAPI_BT_STAT_TRANSPORT;
     }
     flags
 }
@@ -5737,19 +5737,19 @@ pub unsafe fn bluez_connection_ctl_impl(
     let rt = unsafe { bt_from_ptr(bt) };
 
     match action {
-        crate::c_abi::LWASAPI_BT_CONN_QUERY => {
+        crate::c_abi::LASAPI_BT_CONN_QUERY => {
             let flags = bt_status_flags(rt, false);
             if !out_flags.is_null() {
                 unsafe { *out_flags = flags };
             }
-            write_msg(if (flags & LWASAPI_BT_STAT_CONNECTED) != 0 {
+            write_msg(if (flags & LASAPI_BT_STAT_CONNECTED) != 0 {
                 "Bluetooth audio connected"
             } else {
                 "Bluetooth audio disconnected"
             });
             return 0;
         }
-        LWASAPI_BT_CONN_SET_OPTIONAL => {
+        LASAPI_BT_CONN_SET_OPTIONAL => {
             if let Some(r) = rt {
                 r.bt_optional_mode.store(true, Ordering::Release);
             }
@@ -5759,7 +5759,7 @@ pub unsafe fn bluez_connection_ctl_impl(
             write_msg("Bluetooth audio policy set to Optional (USB-First)");
             return 0;
         }
-        LWASAPI_BT_CONN_SET_AUTOCONN => {
+        LASAPI_BT_CONN_SET_AUTOCONN => {
             if let Some(r) = rt {
                 r.bt_optional_mode.store(false, Ordering::Release);
             }
@@ -5803,7 +5803,7 @@ pub unsafe fn bluez_connection_ctl_impl(
         any_connected = objs.devices.iter().any(|d| d.has_a2dp_sink && d.connected);
         let best = pick_best_paired_a2dp_device(&objs.devices, want_mac.as_deref());
 
-        if action == LWASAPI_BT_CONN_CONNECT {
+        if action == LASAPI_BT_CONN_CONNECT {
             if let Some(dev) = best {
                 let label = if dev.alias.is_empty() {
                     dev.address.as_str()
@@ -5896,7 +5896,7 @@ pub unsafe fn bluez_connection_ctl_impl(
                 rc = -1;
                 write_msg("No paired Bluetooth A2DP audio device found.");
             }
-        } else if action == LWASAPI_BT_CONN_DISCONNECT {
+        } else if action == LASAPI_BT_CONN_DISCONNECT {
             if let Some(r) = rt {
                 set_tx_enabled_impl(r, false);
             }

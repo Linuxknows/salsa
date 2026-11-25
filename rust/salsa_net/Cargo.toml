@@ -11,12 +11,12 @@ crate-type = ["staticlib", "rlib"]
 path = "src/lib.rs"
 
 [[bin]]
-name = "lwasapi-audiodg"
-path = "src/bin/lwasapi_audiodg.rs"
+name = "lasapi-audiodg"
+path = "src/bin/lasapi_audiodg.rs"
 
 [[bin]]
-name = "lwasapi-ctl"
-path = "src/bin/lwasapi_ctl.rs"
+name = "lasapi-ctl"
+path = "src/bin/lasapi_ctl.rs"
 
 [[bin]]
 name = "salsa-gen-pa-proxy"

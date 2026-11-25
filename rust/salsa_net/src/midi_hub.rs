@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -18,9 +18,9 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, LwasapiMidiEvent, LwasapiMidiHub, LwasapiShmRing,
-    LWASAPI_DBG_INFO, LWASAPI_DBG_MIDI, LWASAPI_DBG_TRACE, LWASAPI_MIDI_RING_EVENTS,
-    LWASAPI_MIDI_RING_MASK,
+    c_str_to_string, copy_str_to_c, LasapiMidiEvent, LasapiMidiHub, LasapiShmRing,
+    LASAPI_DBG_INFO, LASAPI_DBG_MIDI, LASAPI_DBG_TRACE, LASAPI_MIDI_RING_EVENTS,
+    LASAPI_MIDI_RING_MASK,
 };
 use crate::unix_sys::{
     close_raw_fd, dbg_emit_vals, dl_close, dl_open_any, dl_sym, mono_ns, nb_read_raw,
@@ -103,7 +103,7 @@ pub fn compute_frame_offset(
 }
 
 #[inline]
-pub fn is_key_press(ev: &LwasapiMidiEvent) -> bool {
+pub fn is_key_press(ev: &LasapiMidiEvent) -> bool {
     ev.size >= 3
         && (ev.data[0] & 0xF0) == 0x90
         && (ev.data[1] & 0x80) == 0
@@ -147,15 +147,15 @@ fn discover_midi_card_name(card_num: i32) -> String {
 }
 
 fn feed_raw_byte(
-    hub: &mut LwasapiMidiHub,
+    hub: &mut LasapiMidiHub,
     b: u8,
     ev_ns: u64,
     period_start_ns: u64,
     sample_rate: u32,
     period_frames: u32,
-) -> Option<LwasapiMidiEvent> {
+) -> Option<LasapiMidiEvent> {
     if b >= 0xF8 {
-        return Some(LwasapiMidiEvent {
+        return Some(LasapiMidiEvent {
             frame_offset: compute_frame_offset(ev_ns, period_start_ns, sample_rate, period_frames),
             size: 1,
             port: 0,
@@ -181,7 +181,7 @@ fn feed_raw_byte(
         }
         if hub.msg_idx >= hub.msg_expected {
             let expected = hub.msg_expected.clamp(2, 3) as usize;
-            let ev = LwasapiMidiEvent {
+            let ev = LasapiMidiEvent {
                 frame_offset: compute_frame_offset(
                     ev_ns,
                     period_start_ns,
@@ -208,13 +208,13 @@ fn feed_raw_byte(
     None
 }
 
-fn emit_midi_event_log(controller_name: &str, ev: &LwasapiMidiEvent) {
+fn emit_midi_event_log(controller_name: &str, ev: &LasapiMidiEvent) {
     if ev.size == 1 && ev.data[0] >= 0xF8 {
         if ev.data[0] != 0xF8 && ev.data[0] != 0xFE {
             let detail = format!("rt_byte=0x{:02X} off={}", ev.data[0], ev.frame_offset);
             dbg_emit_vals(
-                LWASAPI_DBG_MIDI,
-                LWASAPI_DBG_TRACE,
+                LASAPI_DBG_MIDI,
+                LASAPI_DBG_TRACE,
                 0,
                 0,
                 i32::from(ev.data[0]),
@@ -232,8 +232,8 @@ fn emit_midi_event_log(controller_name: &str, ev: &LwasapiMidiEvent) {
             ev.data[0], ev.data[1], ev.data[2], ch, ev.frame_offset
         );
         dbg_emit_vals(
-            LWASAPI_DBG_MIDI,
-            LWASAPI_DBG_INFO,
+            LASAPI_DBG_MIDI,
+            LASAPI_DBG_INFO,
             0,
             0,
             i32::from(ev.data[0]),
@@ -246,9 +246,9 @@ fn emit_midi_event_log(controller_name: &str, ev: &LwasapiMidiEvent) {
     }
 }
 
-pub fn init_hub(hub: &mut LwasapiMidiHub) -> c_int {
+pub fn init_hub(hub: &mut LasapiMidiHub) -> c_int {
     unsafe {
-        ptr::write_bytes(hub as *mut LwasapiMidiHub, 0, 1);
+        ptr::write_bytes(hub as *mut LasapiMidiHub, 0, 1);
     }
     hub.rawmidi_fd = -1;
     hub.seq_client_id = -1;
@@ -315,11 +315,11 @@ pub fn init_hub(hub: &mut LwasapiMidiHub) -> c_int {
                         if let Some(f_nb) = p_nb {
                             let _ = f_nb(hub.seq_handle, 1);
                         }
-                        let _ = f_name(hub.seq_handle, c"LWASAPI-MIDI-Hub".as_ptr());
+                        let _ = f_name(hub.seq_handle, c"LASAPI-MIDI-Hub".as_ptr());
                         hub.seq_client_id = p_cid.map_or(-1, |f| f(hub.seq_handle));
                         hub.seq_in_port = f_port(
                             hub.seq_handle,
-                            c"LWASAPI DAW MIDI In/Out".as_ptr(),
+                            c"LASAPI DAW MIDI In/Out".as_ptr(),
                             0x20 | 0x40 | 0x01 | 0x02,
                             0x02 | 0x10_0000,
                         );
@@ -350,7 +350,7 @@ pub fn init_hub(hub: &mut LwasapiMidiHub) -> c_int {
                         }
                         let cname = c_str_to_string(&hub.controller_name);
                         eprintln!(
-                            "[LWASAPI-MIDI] Registered kernel ALSA Sequencer hub 'LWASAPI-MIDI-Hub' (auto-subscribed to '{cname}')"
+                            "[LASAPI-MIDI] Registered kernel ALSA Sequencer hub 'LASAPI-MIDI-Hub' (auto-subscribed to '{cname}')"
                         );
                     }
                 }
@@ -380,8 +380,8 @@ pub fn init_hub(hub: &mut LwasapiMidiHub) -> c_int {
         hub.seq_client_id, hub.seq_in_port, hub.rawmidi_fd
     );
     dbg_emit_vals(
-        LWASAPI_DBG_MIDI,
-        LWASAPI_DBG_INFO,
+        LASAPI_DBG_MIDI,
+        LASAPI_DBG_INFO,
         0,
         0,
         hub.seq_client_id,
@@ -395,8 +395,8 @@ pub fn init_hub(hub: &mut LwasapiMidiHub) -> c_int {
 }
 
 pub fn poll_events(
-    hub: &mut LwasapiMidiHub,
-    out_events: &mut [LwasapiMidiEvent],
+    hub: &mut LasapiMidiHub,
+    out_events: &mut [LasapiMidiEvent],
     period_start_ns: u64,
     sample_rate: u32,
     period_frames: u32,
@@ -431,7 +431,7 @@ pub fn poll_events(
                         }
                         if (1..=3).contains(&dec_len) {
                             let ev_ns = mono_ns();
-                            let ev = LwasapiMidiEvent {
+                            let ev = LasapiMidiEvent {
                                 frame_offset: compute_frame_offset(
                                     ev_ns,
                                     period_start_ns,
@@ -484,23 +484,23 @@ pub fn poll_events(
     count
 }
 
-pub unsafe fn push_to_ring(ring: *mut LwasapiShmRing, ev: &LwasapiMidiEvent) {
+pub unsafe fn push_to_ring(ring: *mut LasapiShmRing, ev: &LasapiMidiEvent) {
     if ring.is_null() {
         return;
     }
     let w = unsafe { (*ring).midi_write_idx.load(Ordering::Relaxed) };
     let r = unsafe { (*ring).midi_read_idx.load(Ordering::Acquire) };
-    if w.wrapping_sub(r) >= LWASAPI_MIDI_RING_EVENTS as u64 {
+    if w.wrapping_sub(r) >= LASAPI_MIDI_RING_EVENTS as u64 {
         return;
     }
-    let slot = (w as usize) & LWASAPI_MIDI_RING_MASK;
+    let slot = (w as usize) & LASAPI_MIDI_RING_MASK;
     unsafe {
         ptr::addr_of_mut!((*ring).midi_ring[slot]).write(*ev);
         (*ring).midi_write_idx.store(w.wrapping_add(1), Ordering::Release);
     }
 }
 
-pub fn close_hub(hub: &mut LwasapiMidiHub) {
+pub fn close_hub(hub: &mut LasapiMidiHub) {
     if !hub.initialized {
         return;
     }
@@ -535,7 +535,7 @@ pub fn close_hub(hub: &mut LwasapiMidiHub) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_midi_init(m: *mut LwasapiMidiHub) -> c_int {
+pub unsafe extern "C" fn lasapi_midi_init(m: *mut LasapiMidiHub) -> c_int {
     if m.is_null() {
         return -1;
     }
@@ -543,9 +543,9 @@ pub unsafe extern "C" fn lwasapi_midi_init(m: *mut LwasapiMidiHub) -> c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_midi_poll_events(
-    m: *mut LwasapiMidiHub,
-    out_events: *mut LwasapiMidiEvent,
+pub unsafe extern "C" fn lasapi_midi_poll_events(
+    m: *mut LasapiMidiHub,
+    out_events: *mut LasapiMidiEvent,
     max_events: c_int,
     period_start_ns: u64,
     sample_rate: u32,
@@ -559,9 +559,9 @@ pub unsafe extern "C" fn lwasapi_midi_poll_events(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_midi_push_to_ring(
-    ring: *mut LwasapiShmRing,
-    ev: *const LwasapiMidiEvent,
+pub unsafe extern "C" fn lasapi_midi_push_to_ring(
+    ring: *mut LasapiShmRing,
+    ev: *const LasapiMidiEvent,
 ) {
     if ring.is_null() || ev.is_null() {
         return;
@@ -570,7 +570,7 @@ pub unsafe extern "C" fn lwasapi_midi_push_to_ring(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_midi_close(m: *mut LwasapiMidiHub) {
+pub unsafe extern "C" fn lasapi_midi_close(m: *mut LasapiMidiHub) {
     if m.is_null() {
         return;
     }
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn rawmidi_running_status_and_realtime_interleave() {
-        let mut hub: LwasapiMidiHub = unsafe { mem::zeroed() };
+        let mut hub: LasapiMidiHub = unsafe { mem::zeroed() };
         hub.initialized = true;
         hub.rawmidi_fd = -1;
 
@@ -617,12 +617,12 @@ mod tests {
         );
         assert!(parse_proc_asound_cards(sample, 9).is_none());
 
-        let mut boxed: Box<LwasapiShmRing> = unsafe {
-            let mut u = Box::<LwasapiShmRing>::new_uninit();
+        let mut boxed: Box<LasapiShmRing> = unsafe {
+            let mut u = Box::<LasapiShmRing>::new_uninit();
             ptr::write_bytes(u.as_mut_ptr(), 0, 1);
             u.assume_init()
         };
-        let ev = LwasapiMidiEvent {
+        let ev = LasapiMidiEvent {
             frame_offset: 12,
             size: 3,
             port: 0,

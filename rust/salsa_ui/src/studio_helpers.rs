@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 
 use salsa_tools::host::{home_dir, read_text_lossy};
 use salsa_tools::ipc::{
-    gui_settings_path, salsa_state_path, update_gui_settings, LwasapiEqConfig, LwasapiParamEqExt,
-    DEFAULT_BAND_FREQS_HZ, EQ_PRESETS, LWASAPI_EQ_BANDS, LWASAPI_FILTER_HIGH_SHELF,
-    LWASAPI_FILTER_LOW_SHELF, LWASAPI_FILTER_PEAK,
+    gui_settings_path, salsa_state_path, update_gui_settings, LasapiEqConfig, LasapiParamEqExt,
+    DEFAULT_BAND_FREQS_HZ, EQ_PRESETS, LASAPI_EQ_BANDS, LASAPI_FILTER_HIGH_SHELF,
+    LASAPI_FILTER_LOW_SHELF, LASAPI_FILTER_PEAK,
 };
 use salsa_tools::json::JsonValue;
 
@@ -74,8 +74,8 @@ pub fn format_band_freq_short(hz: f32, filter_type: u32) -> String {
         format!("{:.0} Hz", hz.round())
     };
     match filter_type {
-        LWASAPI_FILTER_LOW_SHELF => format!("{base} LS"),
-        LWASAPI_FILTER_HIGH_SHELF => format!("{base} HS"),
+        LASAPI_FILTER_LOW_SHELF => format!("{base} LS"),
+        LASAPI_FILTER_HIGH_SHELF => format!("{base} HS"),
         _ => base,
     }
 }
@@ -96,7 +96,7 @@ pub fn dyn_mode_full(mode: u32) -> &'static str {
         .unwrap_or("1: Dynamic Compress (Tame Peaks)")
 }
 
-pub fn eq_cfg_to_json(cfg: &LwasapiEqConfig, ext: &LwasapiParamEqExt) -> JsonValue {
+pub fn eq_cfg_to_json(cfg: &LasapiEqConfig, ext: &LasapiParamEqExt) -> JsonValue {
     let pname = {
         let s = c_bytes_to_str(&cfg.preset_name);
         if s.is_empty() {
@@ -177,8 +177,8 @@ pub fn eq_cfg_to_json(cfg: &LwasapiEqConfig, ext: &LwasapiParamEqExt) -> JsonVal
 
 pub fn apply_json_to_eq_cfg(
     eq_obj: &JsonValue,
-    cfg: &mut LwasapiEqConfig,
-    ext: &mut LwasapiParamEqExt,
+    cfg: &mut LasapiEqConfig,
+    ext: &mut LasapiParamEqExt,
 ) {
     let pname = eq_obj
         .get("preset_name")
@@ -222,14 +222,14 @@ pub fn apply_json_to_eq_cfg(
     );
 
     if let Some(arr) = eq_obj.get("band_gains_db").and_then(JsonValue::as_array) {
-        if arr.len() == LWASAPI_EQ_BANDS {
+        if arr.len() == LASAPI_EQ_BANDS {
             for (i, v) in arr.iter().enumerate() {
                 cfg.band_gains_db[i] = (v.as_f64().unwrap_or(0.0) as f32).clamp(-18.0, 18.0);
             }
         }
     }
     if let Some(arr) = eq_obj.get("band_q").and_then(JsonValue::as_array) {
-        if arr.len() == LWASAPI_EQ_BANDS {
+        if arr.len() == LASAPI_EQ_BANDS {
             for (i, v) in arr.iter().enumerate() {
                 let q = v.as_f64().unwrap_or(1.414) as f32;
                 cfg.band_q[i] = if q >= 0.2 { q.clamp(0.2, 10.0) } else { 1.414 };
@@ -244,7 +244,7 @@ pub fn apply_json_to_eq_cfg(
     }
 
     if let Some(arr) = eq_obj.get("band_freq_hz").and_then(JsonValue::as_array) {
-        if arr.len() == LWASAPI_EQ_BANDS {
+        if arr.len() == LASAPI_EQ_BANDS {
             for (i, v) in arr.iter().enumerate() {
                 let f = v.as_f64().unwrap_or(f64::from(DEFAULT_BAND_FREQS_HZ[i])) as f32;
                 ext.band_freq_hz[i] = if f > 1.0 {
@@ -259,14 +259,14 @@ pub fn apply_json_to_eq_cfg(
     }
 
     if let Some(arr) = eq_obj.get("band_type").and_then(JsonValue::as_array) {
-        if arr.len() == LWASAPI_EQ_BANDS {
+        if arr.len() == LASAPI_EQ_BANDS {
             for (i, v) in arr.iter().enumerate() {
                 let t = v.as_u64().unwrap_or(0) as u32;
-                ext.band_type[i] = if t <= 2 { t } else { LWASAPI_FILTER_PEAK };
+                ext.band_type[i] = if t <= 2 { t } else { LASAPI_FILTER_PEAK };
             }
         }
     } else {
-        ext.band_type = [LWASAPI_FILTER_PEAK; LWASAPI_EQ_BANDS];
+        ext.band_type = [LASAPI_FILTER_PEAK; LASAPI_EQ_BANDS];
     }
 
     ext.crossfeed_enabled = u32::from(
@@ -308,15 +308,15 @@ pub struct SavedAutoEqPreset {
     pub name: String,
     pub source_path: String,
     pub preamp_db: f32,
-    pub bands: [SavedAutoEqBand; LWASAPI_EQ_BANDS],
+    pub bands: [SavedAutoEqBand; LASAPI_EQ_BANDS],
 }
 
-fn default_saved_bands() -> [SavedAutoEqBand; LWASAPI_EQ_BANDS] {
+fn default_saved_bands() -> [SavedAutoEqBand; LASAPI_EQ_BANDS] {
     core::array::from_fn(|i| SavedAutoEqBand {
         freq_hz: DEFAULT_BAND_FREQS_HZ[i],
         gain_db: 0.0,
         q: 1.414,
-        filter_type: LWASAPI_FILTER_PEAK,
+        filter_type: LASAPI_FILTER_PEAK,
     })
 }
 
@@ -384,7 +384,7 @@ pub fn unique_autoeq_name_for_list(
 
 pub fn saved_autoeq_from_parsed(prof: &AutoEqProfile, source_path: &str) -> SavedAutoEqPreset {
     let mut bands = default_saved_bands();
-    for (i, b) in prof.bands.iter().take(LWASAPI_EQ_BANDS).enumerate() {
+    for (i, b) in prof.bands.iter().take(LASAPI_EQ_BANDS).enumerate() {
         bands[i] = SavedAutoEqBand {
             freq_hz: b.freq_hz.clamp(15.0, 22_000.0),
             gain_db: b.gain_db.clamp(-18.0, 18.0),
@@ -396,7 +396,7 @@ pub fn saved_autoeq_from_parsed(prof: &AutoEqProfile, source_path: &str) -> Save
             filter_type: if b.filter_type <= 2 {
                 b.filter_type
             } else {
-                LWASAPI_FILTER_PEAK
+                LASAPI_FILTER_PEAK
             },
         };
     }
@@ -474,7 +474,7 @@ pub fn load_saved_autoeq_presets(settings: &JsonValue) -> Vec<SavedAutoEqPreset>
             .clamp(-18.0, 12.0);
         let mut bands = default_saved_bands();
         if let Some(barr) = item.get("bands").and_then(JsonValue::as_array) {
-            for (i, bv) in barr.iter().take(LWASAPI_EQ_BANDS).enumerate() {
+            for (i, bv) in barr.iter().take(LASAPI_EQ_BANDS).enumerate() {
                 let freq = (bv
                     .get("freq_hz")
                     .and_then(JsonValue::as_f64)
@@ -495,12 +495,12 @@ pub fn load_saved_autoeq_presets(settings: &JsonValue) -> Vec<SavedAutoEqPreset>
                 let ft = bv
                     .get("filter_type")
                     .and_then(JsonValue::as_u64)
-                    .unwrap_or(u64::from(LWASAPI_FILTER_PEAK)) as u32;
+                    .unwrap_or(u64::from(LASAPI_FILTER_PEAK)) as u32;
                 bands[i] = SavedAutoEqBand {
                     freq_hz: freq,
                     gain_db: gain,
                     q,
-                    filter_type: if ft <= 2 { ft } else { LWASAPI_FILTER_PEAK },
+                    filter_type: if ft <= 2 { ft } else { LASAPI_FILTER_PEAK },
                 };
             }
         }
@@ -558,8 +558,8 @@ pub fn find_saved_autoeq_preset<'a>(
 
 pub fn apply_saved_autoeq_to_cfg(
     preset: &SavedAutoEqPreset,
-    cfg: &mut LwasapiEqConfig,
-    ext: &mut LwasapiParamEqExt,
+    cfg: &mut LasapiEqConfig,
+    ext: &mut LasapiParamEqExt,
 ) {
     cfg.enabled = 1;
     cfg.preamp_db = preset.preamp_db.clamp(-18.0, 12.0);
@@ -575,15 +575,15 @@ pub fn apply_saved_autoeq_to_cfg(
         ext.band_type[i] = if b.filter_type <= 2 {
             b.filter_type
         } else {
-            LWASAPI_FILTER_PEAK
+            LASAPI_FILTER_PEAK
         };
     }
 }
 
 pub fn apply_builtin_preset_to_cfg(
     preset_name: &str,
-    cfg: &mut LwasapiEqConfig,
-    ext: &mut LwasapiParamEqExt,
+    cfg: &mut LasapiEqConfig,
+    ext: &mut LasapiParamEqExt,
 ) -> bool {
     let trimmed = preset_name.trim();
     let Some(preset) = EQ_PRESETS
@@ -600,9 +600,9 @@ pub fn apply_builtin_preset_to_cfg(
     cfg.dyn_ratio = preset.ratio;
     set_c_bytes(&mut cfg.preset_name, preset.name);
     cfg.band_gains_db = preset.gains;
-    cfg.band_q = [1.414; LWASAPI_EQ_BANDS];
+    cfg.band_q = [1.414; LASAPI_EQ_BANDS];
     ext.band_freq_hz = DEFAULT_BAND_FREQS_HZ;
-    ext.band_type = [LWASAPI_FILTER_PEAK; LWASAPI_EQ_BANDS];
+    ext.band_type = [LASAPI_FILTER_PEAK; LASAPI_EQ_BANDS];
     true
 }
 
@@ -807,8 +807,8 @@ mod tests {
 
     #[test]
     fn eq_json_roundtrip_preserves_parametric_and_crossfeed() {
-        let mut cfg: LwasapiEqConfig = unsafe { mem::zeroed() };
-        let mut ext: LwasapiParamEqExt = unsafe { mem::zeroed() };
+        let mut cfg: LasapiEqConfig = unsafe { mem::zeroed() };
+        let mut ext: LasapiParamEqExt = unsafe { mem::zeroed() };
         cfg.enabled = 1;
         cfg.dynamic_mode = 2;
         cfg.preamp_db = -2.5;
@@ -821,29 +821,29 @@ mod tests {
         ext.band_freq_hz = [
             105.0, 62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 10000.0,
         ];
-        ext.band_type[0] = LWASAPI_FILTER_LOW_SHELF;
-        ext.band_type[9] = LWASAPI_FILTER_HIGH_SHELF;
+        ext.band_type[0] = LASAPI_FILTER_LOW_SHELF;
+        ext.band_type[9] = LASAPI_FILTER_HIGH_SHELF;
         ext.crossfeed_enabled = 1;
         ext.crossfeed_level = 0.45;
         ext.crossfeed_cutoff_hz = 850;
 
         let j = eq_cfg_to_json(&cfg, &ext);
-        let mut cfg2: LwasapiEqConfig = unsafe { mem::zeroed() };
-        let mut ext2: LwasapiParamEqExt = unsafe { mem::zeroed() };
+        let mut cfg2: LasapiEqConfig = unsafe { mem::zeroed() };
+        let mut ext2: LasapiParamEqExt = unsafe { mem::zeroed() };
         apply_json_to_eq_cfg(&j, &mut cfg2, &mut ext2);
 
         assert_eq!(c_bytes_to_str(&cfg2.preset_name), "Bose Oratory");
         assert_eq!(cfg2.dynamic_mode, 2);
         assert!((cfg2.preamp_db - (-2.5)).abs() < 0.05);
-        assert_eq!(ext2.band_type[0], LWASAPI_FILTER_LOW_SHELF);
-        assert_eq!(ext2.band_type[9], LWASAPI_FILTER_HIGH_SHELF);
+        assert_eq!(ext2.band_type[0], LASAPI_FILTER_LOW_SHELF);
+        assert_eq!(ext2.band_type[9], LASAPI_FILTER_HIGH_SHELF);
         assert_eq!(ext2.crossfeed_cutoff_hz, 850);
         assert_eq!(
-            format_band_freq_short(105.0, LWASAPI_FILTER_LOW_SHELF),
+            format_band_freq_short(105.0, LASAPI_FILTER_LOW_SHELF),
             "105 Hz LS"
         );
         assert_eq!(
-            format_band_freq_short(10_000.0, LWASAPI_FILTER_HIGH_SHELF),
+            format_band_freq_short(10_000.0, LASAPI_FILTER_HIGH_SHELF),
             "10k HS"
         );
     }
@@ -879,19 +879,19 @@ Filter 3: ON HSC Fc 9500 Hz Gain 2.0 dB Q 0.85
         assert_eq!(loaded[0].source_path, tmp_path.to_string_lossy());
         assert!((loaded[0].bands[1].freq_hz - 1450.0).abs() < 0.5);
 
-        let mut cfg: LwasapiEqConfig = unsafe { mem::zeroed() };
-        let mut ext: LwasapiParamEqExt = unsafe { mem::zeroed() };
+        let mut cfg: LasapiEqConfig = unsafe { mem::zeroed() };
+        let mut ext: LasapiParamEqExt = unsafe { mem::zeroed() };
         apply_saved_autoeq_to_cfg(&loaded[0], &mut cfg, &mut ext);
         assert_eq!(c_bytes_to_str(&cfg.preset_name), saved.name);
-        assert_eq!(ext.band_type[0], LWASAPI_FILTER_LOW_SHELF);
-        assert_eq!(ext.band_type[2], LWASAPI_FILTER_HIGH_SHELF);
+        assert_eq!(ext.band_type[0], LASAPI_FILTER_LOW_SHELF);
+        assert_eq!(ext.band_type[2], LASAPI_FILTER_HIGH_SHELF);
 
         // Selecting a built-in preset must reset parametric freqs/types without erasing `loaded`
         let builtin = &EQ_PRESETS[1];
         assert!(apply_builtin_preset_to_cfg(builtin.name, &mut cfg, &mut ext));
         assert_eq!(c_bytes_to_str(&cfg.preset_name), builtin.name);
         assert_eq!(ext.band_freq_hz, DEFAULT_BAND_FREQS_HZ);
-        assert_eq!(ext.band_type, [LWASAPI_FILTER_PEAK; LWASAPI_EQ_BANDS]);
+        assert_eq!(ext.band_type, [LASAPI_FILTER_PEAK; LASAPI_EQ_BANDS]);
         assert!((cfg.preamp_db - builtin.preamp).abs() < 0.01);
         assert_eq!(
             find_saved_autoeq_preset(&loaded, &saved.name).map(|p| &p.name),
@@ -901,7 +901,7 @@ Filter 3: ON HSC Fc 9500 Hz Gain 2.0 dB Q 0.85
         // Switching back to the saved AutoEQ preset restores custom freqs/types/preamp
         apply_saved_autoeq_to_cfg(&loaded[0], &mut cfg, &mut ext);
         assert!((cfg.preamp_db - (-4.5)).abs() < 0.05);
-        assert_eq!(ext.band_type[0], LWASAPI_FILTER_LOW_SHELF);
+        assert_eq!(ext.band_type[0], LASAPI_FILTER_LOW_SHELF);
 
         // Modify file on disk and verify 1-click reload updates parameters from source_path
         let txt_v2 = "\
@@ -913,7 +913,7 @@ Filter 1: ON PK Fc 220 Hz Gain -4.0 dB Q 1.80
         assert_eq!(reloaded.name, saved.name);
         assert!((reloaded.preamp_db - (-6.0)).abs() < 0.01);
         assert!((reloaded.bands[0].freq_hz - 220.0).abs() < 0.1);
-        assert_eq!(reloaded.bands[0].filter_type, LWASAPI_FILTER_PEAK);
+        assert_eq!(reloaded.bands[0].filter_type, LASAPI_FILTER_PEAK);
 
         let _ = fs::remove_file(&tmp_path);
     }

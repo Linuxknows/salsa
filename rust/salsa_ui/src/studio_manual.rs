@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -10,7 +10,7 @@ use std::path::Path;
 
 use salsa_tools::host::read_text_lossy;
 use salsa_tools::ipc::{
-    LWASAPI_EQ_BANDS, LWASAPI_FILTER_HIGH_SHELF, LWASAPI_FILTER_LOW_SHELF, LWASAPI_FILTER_PEAK,
+    LASAPI_EQ_BANDS, LASAPI_FILTER_HIGH_SHELF, LASAPI_FILTER_LOW_SHELF, LASAPI_FILTER_PEAK,
 };
 
 use crate::theme::SalsaTheme;
@@ -204,7 +204,7 @@ pub fn parse_autoeq_txt(path_or_name: &str, content: &str) -> Option<AutoEqProfi
             continue;
         }
 
-        if lower.starts_with("filter") && bands.len() < LWASAPI_EQ_BANDS {
+        if lower.starts_with("filter") && bands.len() < LASAPI_EQ_BANDS {
             let Some((_lhs, rhs)) = line.split_once(':') else {
                 continue;
             };
@@ -214,9 +214,9 @@ pub fn parse_autoeq_txt(path_or_name: &str, content: &str) -> Option<AutoEqProfi
             }
             let ftype_tok = toks[1].to_ascii_uppercase();
             let filter_type = match ftype_tok.as_str() {
-                "LSC" | "LS" | "LSQ" => LWASAPI_FILTER_LOW_SHELF,
-                "HSC" | "HS" | "HSQ" => LWASAPI_FILTER_HIGH_SHELF,
-                "PK" | "LP" | "HP" => LWASAPI_FILTER_PEAK,
+                "LSC" | "LS" | "LSQ" => LASAPI_FILTER_LOW_SHELF,
+                "HSC" | "HS" | "HSQ" => LASAPI_FILTER_HIGH_SHELF,
+                "PK" | "LP" | "HP" => LASAPI_FILTER_PEAK,
                 _ => continue,
             };
             let is_pass_filter = matches!(ftype_tok.as_str(), "LP" | "HP");
@@ -335,28 +335,28 @@ pub fn render_manual_chapter_pango(key: &str, t: &SalsaTheme, host: &HostProfile
                 "Zero Wrapper Commands Needed — Automatic Desktop-Wide Interception",
                 "Every desktop program on your PC connects automatically to Stage 1 of the Salsa graph through three transparent mechanisms:".into(),
                 vec![
-                    format!("<b>1. Default ALSA &amp; OpenAL Routing ({} &amp; {}):</b> Defines {} as an asymmetrical full-duplex {} device backed by {}.", c("~/.asoundrc"), c("alsoft.conf"), c("pcm.!default"), c("type lwasapi"), c("libasound_module_pcm_lwasapi.so")),
+                    format!("<b>1. Default ALSA &amp; OpenAL Routing ({} &amp; {}):</b> Defines {} as an asymmetrical full-duplex {} device backed by {}.", c("~/.asoundrc"), c("alsoft.conf"), c("pcm.!default"), c("type lasapi"), c("libasound_module_pcm_lasapi.so")),
                     format!("<b>2. Hollow ABI Shims &amp; Native PA v35 Server ({} + {}):</b> Drop-in libraries for {}, {}, {}, {}, and {} plus the built-in PulseAudio Protocol v35 UNIX socket run browsers, Discord, Steam/Proton, KDE Plasma, and DAWs with zero PipeWire-Pulse.", c("build/shims/"), c("$XDG_RUNTIME_DIR/pulse/native"), c("libasound.so.2"), c("libpulse.so.0"), c("libpulse-simple.so.0"), c("libpulse-mainloop-glib.so.0"), c("libjack.so.0")),
-                    format!("<b>3. Native Windows WASAPI Client API ({}):</b> Exposes {}, {}, {}, and {} directly on Linux.", c("liblwasapi.so"), c("IAudioClient"), c("IAudioRenderClient"), c("IAudioCaptureClient"), c("IAudioClock")),
+                    format!("<b>3. Clean-Room Windows-Style LASAPI Client API (Linux Audio Session API, {}):</b> Exposes {}, {}, {}, and {} interfaces natively on Linux with zero proprietary Windows code.", c("liblasapi.so"), c("IAudioClient"), c("IAudioRenderClient"), c("IAudioCaptureClient"), c("IAudioClock")),
                 ],
             ),
             "mic_in" => (
                 "accent_mic",
                 "🎙️ Chapter 3: Full-Duplex Hardware Mic Capture & HFP BTPROTO_SCO",
                 "Hardware Mic Input -> Direct Raw WaveRT Capture -> Apps",
-                "Salsa LWASAPI operates a true <b>full-duplex WaveRT engine</b> that captures raw microphone audio cleanly while rendering playback:".into(),
+                "Salsa LASAPI operates a true <b>full-duplex WaveRT engine</b> that captures raw microphone audio cleanly while rendering playback:".into(),
                 vec![
                     "<b>Bit-Exact Raw Interface Capture:</b> USB/PCIe audio interfaces (such as Focusrite Scarlett 2i2) pass directly through the WaveRT capture ring with optional analog HW boost and split capture clock support.".into(),
-                    format!("<b>Desktop Mic Gain &amp; Mute Synchronization:</b> Adjusting microphone gain or mute in KDE Plasma, {}, Tray, or Salsa Studio syncs directly through Salsa's native PA v35 server and {} with zero WirePlumber dependency.", c("pactl"), c("lwasapi-audiodg")),
+                    format!("<b>Desktop Mic Gain &amp; Mute Synchronization:</b> Adjusting microphone gain or mute in KDE Plasma, {}, Tray, or Salsa Studio syncs directly through Salsa's native PA v35 server and {} with zero WirePlumber dependency.", c("pactl"), c("lasapi-audiodg")),
                 ],
             ),
             "midi_in" => (
                 "accent_midi",
                 "🎹 Chapter 4: Hardware MIDI Controller & Sample-Accurate DAW MIDI Hub",
                 "Hardware RawMIDI + ALSA Sequencer + Lock-Free JACK MIDI Ring",
-                format!("Salsa LWASAPI integrates a dedicated pure-Rust real-time MIDI hub ({}) directly alongside the audio engine:", c("midi_hub.rs")),
+                format!("Salsa LASAPI integrates a dedicated pure-Rust real-time MIDI hub ({}) directly alongside the audio engine:", c("midi_hub.rs")),
                 vec![
-                    format!("<b>Auto-Discovery of Hardware Controllers:</b> Automatically scans {} and ALSA Sequencer ports, binding controllers (e.g. <b>Novation FLkey 37</b>) and exposing the virtual {} port.", c("/dev/snd/midiC*D*"), c("LWASAPI-MIDI-Hub")),
+                    format!("<b>Auto-Discovery of Hardware Controllers:</b> Automatically scans {} and ALSA Sequencer ports, binding controllers (e.g. <b>Novation FLkey 37</b>) and exposing the virtual {} port.", c("/dev/snd/midiC*D*"), c("LASAPI-MIDI-Hub")),
                     format!("<b>Sample-Accurate Frame Offsets:</b> Incoming MIDI Note, Pitch Bend, and CC events are timestamped with {} and stamped with the exact {} inside the current audio quantum across each DAW session's lock-free {}.", c("CLOCK_MONOTONIC_RAW"), c("frame_offset"), c("midi_ring[512]")),
                 ],
             ),
@@ -364,9 +364,9 @@ pub fn render_manual_chapter_pango(key: &str, t: &SalsaTheme, host: &HostProfile
                 "accent_secondary",
                 "⚡ Chapter 5: Zero-Copy WaveRT Shared Memory Ring (memfd + eventfd)",
                 "75-Nanosecond Buffer Commits — 14,048x Faster Than Socket IPC",
-                "Audio PCM samples in Salsa LWASAPI <b>never travel over Unix sockets or pipes</b> during WaveRT streaming:".into(),
+                "Audio PCM samples in Salsa LASAPI <b>never travel over Unix sockets or pipes</b> during WaveRT streaming:".into(),
                 vec![
-                    format!("<b>Anonymous Shared Memory ({}):</b> {} allocates a 64-byte-aligned {} ring (32,768 stereo float32 frames for 192 kHz headroom) and passes the FD via {}.", c("memfd_create"), c("lwasapi-audiodg"), c("lwasapi_shm_ring_t"), c("SCM_RIGHTS")),
+                    format!("<b>Anonymous Shared Memory ({}):</b> {} allocates a 64-byte-aligned {} ring (32,768 stereo float32 frames for 192 kHz headroom) and passes the FD via {}.", c("memfd_create"), c("lasapi-audiodg"), c("lasapi_shm_ring_t"), c("SCM_RIGHTS")),
                     format!("<b>Zero-Copy Atomic Pointers:</b> Clients write float32 frames directly into L1/L2-cached shared memory and advance {} with a single atomic release store ({} commit latency).", c("write_frame"), c("0.075 µs")),
                     format!("<b>Kernel {} Wakeups:</b> Every hardware period quantum signals the client's kernel {}, waking event-driven DAWs and games with sub-millisecond jitter.", c("eventfd"), c("eventfd")),
                 ],
@@ -375,7 +375,7 @@ pub fn render_manual_chapter_pango(key: &str, t: &SalsaTheme, host: &HostProfile
                 "accent_primary",
                 "🚀 Chapter 6: MMCSS SCHED_FIFO Engine & Fixed Lossless Master Clock",
                 "Deterministic Sample Rate (44.1–192 kHz) & Bit-Depth Precision (16 / 24 / 32-bit)",
-                format!("At the center of the graph is the {} real-time audio graph thread, modeled after Windows MMCSS:", c("lwasapi-audiodg")),
+                format!("At the center of the graph is the {} real-time audio graph thread, using Windows-style MMCSS real-time scheduling:", c("lasapi-audiodg")),
                 vec![
                     format!("<b>Fixed Lossless Master &amp; Split Mic Clock:</b> Lock your studio master clock to {} and {}, while optionally pinning microphone capture independently (e.g. {} for Discord voice while headphones run at {}).", c("44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz"), c("16 / 24 / 32-bit"), c("48 kHz"), c("192 kHz")),
                     format!("<b>{} Priority 65 + {}:</b> All ring buffers and biquad states stay locked in RAM so page faults never cause XRUN dropouts.", c("SCHED_FIFO"), c("mlockall")),
@@ -399,16 +399,16 @@ pub fn render_manual_chapter_pango(key: &str, t: &SalsaTheme, host: &HostProfile
                 "After Parametric Dynamic EQ, Crossfeed, and Limiter processing, the 32-bit float master bus delivers directly to your active endpoint:".into(),
                 vec![
                     format!("<b>BlueZ Codec Switcher &amp; Adaptive Bitrate (ABR):</b> Inspect remote headset SEPs, view negotiation diagnostics, switch codecs live (Auto, LDAC, aptX HD, aptX, AAC, SBC), and scale LDAC ({}) or AAC ({}) automatically on RF congestion.", c("990 / 660 / 330 kbps"), c("256 / 192 / 128 kbps")),
-                    format!("<b>Echo-Free Loopback Monitor:</b> Copies clean post-EQ desktop audio directly to OBS ({}) with zero capture bleed.", c("lwasapi_default_sink.monitor")),
+                    format!("<b>Echo-Free Loopback Monitor:</b> Copies clean post-EQ desktop audio directly to OBS ({}) with zero capture bleed.", c("lasapi_default_sink.monitor")),
                 ],
             ),
             "autosync" => (
                 "accent_secondary",
                 "🔄 Chapter 9: Automatic Audio Module Update Watcher & ABI Self-Healing",
-                "Real-Time Package & Library Watcher (lwasapi-module-watcher.path + build/lwasapi-autosync)",
-                "When your Linux distribution updates system audio or Bluetooth libraries, Salsa LWASAPI adapts automatically:".into(),
+                "Real-Time Package & Library Watcher (lasapi-module-watcher.path + build/lasapi-autosync)",
+                "When your Linux distribution updates system audio or Bluetooth libraries, Salsa LASAPI adapts automatically:".into(),
                 vec![
-                    format!("<b>Systemd Path &amp; Pacman Hook ({} + {}):</b> Watches your package database and host libraries ({}, {}, {}) to trigger {} automatically.", c("lwasapi-module-watcher.path"), c("99-salsa-autosync.hook"), c("libasound.so.2"), c("libpulse.so.0"), c("libjack.so.0"), c("lwasapi-autosync")),
+                    format!("<b>Systemd Path &amp; Pacman Hook ({} + {}):</b> Watches your package database and host libraries ({}, {}, {}) to trigger {} automatically.", c("lasapi-module-watcher.path"), c("99-salsa-autosync.hook"), c("libasound.so.2"), c("libpulse.so.0"), c("libjack.so.0"), c("lasapi-autosync")),
                     format!("<b>ELF Symbol-Version Sync &amp; Proxy Regeneration:</b> Scans host libraries to keep {} / {} and the 200-stub {} reconnect proxy in lockstep with host updates.", c("src/alsa.version"), c("src/pulse.version"), c("pa_reconnect/libpulse.so.0")),
                 ],
             ),
@@ -416,9 +416,9 @@ pub fn render_manual_chapter_pango(key: &str, t: &SalsaTheme, host: &HostProfile
                 "accent_out",
                 "🌍 Chapter 10: Universal Cross-PC Hardware & Distro Adaptation",
                 "100% Pure Rust Stack • Zero External Crates • PipeWire/WirePlumber-Free Audio Ownership",
-                "Salsa — Linux WASAPI adapts automatically to any Linux desktop, workstation, or laptop:".into(),
+                "Salsa — LASAPI adapts automatically to any Linux desktop, workstation, or laptop:".into(),
                 vec![
-                    format!("<b>Zero Hardcoded Paths:</b> Every pure-Rust binary resolves its root dynamically via {} and {}, with reversible backups in {}.", c("/proc/self/exe"), c("$HOME"), c("~/.config/lwasapi/pw_backup/")),
+                    format!("<b>Zero Hardcoded Paths:</b> Every pure-Rust binary resolves its root dynamically via {} and {}, with reversible backups in {}.", c("/proc/self/exe"), c("$HOME"), c("~/.config/lasapi/pw_backup/")),
                     format!("<b>Direct Kernel &amp; BlueZ Hardware Scoring:</b> Communicates directly with {} D-Bus A2DP/HFP/AVRCP, kernel ALSA {}, HID dials, and {} with zero WirePlumber audio daemon.", c("org.bluez"), c("/dev/snd/pcmC*D*"), c("/dev/snd/midiC*D*")),
                     format!("<b>Live Detected Host PC Profile:</b> {} • {} • Watcher: {} • Soundcards: {} detected.", c(&format!("OS: {}", host.os)), c(&format!("CPU: {}", host.cpu)), c(&host.pkg_mgr), host.cards.len()),
                 ],
@@ -437,7 +437,7 @@ pub fn render_manual_chapter_pango(key: &str, t: &SalsaTheme, host: &HostProfile
                 "accent_secondary",
                 "🔌 Chapter 11B: Zero-PipeWire Native Rust Video Broker",
                 "$XDG_RUNTIME_DIR/pipewire-0 • Zero libpipewire / Zero WirePlumber / Audio Guard Active",
-                format!("{} embeds a standalone <b>Video-Only PipeWire Protocol Broker</b> ({}) listening directly on {} without linking {}:", c("lwasapi-audiodg"), c("pw_broker.rs"), c("$XDG_RUNTIME_DIR/pipewire-0"), c("libpipewire")),
+                format!("{} embeds a standalone <b>Video-Only PipeWire Protocol Broker</b> ({}) listening directly on {} without linking {}:", c("lasapi-audiodg"), c("pw_broker.rs"), c("$XDG_RUNTIME_DIR/pipewire-0"), c("libpipewire")),
                 vec![
                     format!("<b>Strict Video-Only Admission:</b> Only {}, {}, and {} nodes are routed; audio node attempts are rejected ({}) so Salsa retains 100% exclusive audio ownership.", c("Video/Source"), c("Stream/Output/Video"), c("Stream/Input/Video"), c("audio_rejects")),
                     "<b>Clean KWin Stability:</b> Enforces safe fractional framerate bounds and relays both DmaBuf and MemFd SPA pods for KDE Spectacle, Plasma previews, browsers, OBS, and Discord.".into(),
@@ -482,25 +482,25 @@ pub fn render_manual_chapter_pango(key: &str, t: &SalsaTheme, host: &HostProfile
                 "📜 Chapter 13: License, Warranty Notice & Third-Party Libraries (LGPL-3.0)",
                 "Copyright (C) 2026 Linuxknows — GNU Lesser General Public License v3.0 Only (LGPL-3.0-only)",
                 format!(
-                    "Salsa (LWASAPI) {} is free software released strictly under the <b>GNU Lesser General Public License, version 3.0 only</b> ({}), accompanied by GNU GPL-3.0 ({}), distributed <b>WITHOUT ANY WARRANTY</b>:",
+                    "Salsa (LASAPI) {} is free software released strictly under the <b>GNU Lesser General Public License, version 3.0 only</b> ({}), accompanied by GNU GPL-3.0 ({}), distributed <b>WITHOUT ANY WARRANTY</b>:",
                     salsa_wire::legal::salsa_version(),
                     c("COPYING.LESSER"),
                     c("COPYING"),
                 ),
                 vec![
-                    format!("<b>Copyleft Library &amp; Relinking Rights (LGPL-3.0 §4):</b> Complete Corresponding Source for {}, {}, {}, {}, {}, and Qt6 frontends lives in {}, enabling modification, static/dynamic rebuilding via {}, and in-place replacement.", c("liblwasapi.so"), c("build/shims/*.so"), c("libasound_module_pcm_lwasapi.so"), c("libsalsa_wire.a"), c("libsalsa_ui.a"), c("rust/ + qt6/"), c("make all")),
+                    format!("<b>Copyleft Library &amp; Relinking Rights (LGPL-3.0 §4):</b> Complete Corresponding Source for {}, {}, {}, {}, {}, and Qt6 frontends lives in {}, enabling modification, static/dynamic rebuilding via {}, and in-place replacement.", c("liblasapi.so"), c("build/shims/*.so"), c("libasound_module_pcm_lasapi.so"), c("libsalsa_wire.a"), c("libsalsa_ui.a"), c("rust/ + qt6/"), c("make all")),
                     format!("<b>Qt6 Framework &amp; Zero External Crates:</b> Salsa links dynamically to {} strictly under {}, and uses zero third-party {} dependencies.", c("Qt6 (qt6-base)"), c("LGPL-3.0-only"), c("crates.io")),
-                    format!("<b>Optional Host {} Codecs (Never Bundled):</b> Optional codecs such as {} (Fraunhofer FDK-AAC), {}, {}, {}, and {} are opened only at runtime via {} if already installed on your system, and fall back cleanly when absent. See {} and {}.", c("dlopen"), c("libfdk-aac.so.2"), c("libldacBT_enc.so.2"), c("libfreeaptx.so.0"), c("libsbc.so.1"), c("librnnoise.so.0"), c("dlopen()"), c("THIRD_PARTY_LICENSES.md"), c("~/.local/share/licenses/salsa/")),
+                    format!("<b>Optional Host {} Libraries (Never Bundled):</b> Optional codecs and Wayland helpers such as {} (Fraunhofer FDK-AAC), {}, {}, {}, and {} are opened only at runtime via {} if already installed on your system, and fall back cleanly when absent. See {} and {}.", c("dlopen"), c("libfdk-aac.so.2"), c("libldacBT_enc.so.2"), c("libfreeaptx.so.0"), c("libsbc.so.1"), c("libLayerShellQtInterface.so.6"), c("dlopen()"), c("THIRD_PARTY_LICENSES.md"), c("~/.local/share/licenses/salsa/")),
                 ],
             ),
             _ => (
                 "accent_primary",
                 "📘 Chapter 1: Philosophy — Why Salsa Needs Zero Manual Patching",
                 "Click any node in the live Signal Topology Graph above (or use the chapter buttons) to inspect how each stage works.",
-                format!("Unlike manual patchbays ({} / {}), <b>Salsa — Linux WASAPI ({})</b> is a <b>100% self-wiring Windows WASAPI / WaveRT Audio Device Graph</b> built in pure Rust:", c("qpwgraph"), c("QjackCtl"), c("lwasapi-audiodg")),
+                format!("Unlike manual patchbays ({} / {}), <b>Salsa — LASAPI (Linux Audio Session API, {})</b> is a <b>100% self-wiring Windows-style LASAPI / WaveRT Audio Device Graph</b> built from scratch in pure Rust:", c("qpwgraph"), c("QjackCtl"), c("lasapi-audiodg")),
                 vec![
                     format!("<b>Fixed Lossless Master Clock &amp; Bit Depth Control:</b> Lock hardware and BlueZ clocks cleanly across {} and {} without unpredictable sample-rate hunting.", c("44.1 – 192 kHz"), c("16 / 24 / 32-bit")),
-                    "<b>Automatic Session Discovery &amp; Per-App Routing:</b> Native WASAPI, ALSA, PulseAudio v35, SDL2/SDL3, OpenAL, Proton/Wine, and JACK apps register automatically with persistent per-app volume, mute, and device routing.".into(),
+                    "<b>Automatic Session Discovery &amp; Per-App Routing:</b> Native LASAPI, ALSA, PulseAudio v35, SDL2/SDL3, OpenAL, Proton/Wine, and JACK apps register automatically with persistent per-app volume, mute, and device routing.".into(),
                     format!("<b>130x Lower Round-Trip Latency:</b> Full-duplex loopback and capture complete in <b>0.33 ms</b> at {} (vs {} on legacy PipeWire-Pulse).", c("192 kHz / 64f"), c("42.67 ms")),
                 ],
             ),
@@ -746,12 +746,12 @@ Filter 4: ON HSC Fc 10000 Hz Gain 2.0 dB
         assert_eq!(prof.name, "Bose QC Ultra 2");
         assert!((prof.preamp_db - (-4.2)).abs() < 0.01);
         assert_eq!(prof.bands.len(), 3);
-        assert_eq!(prof.bands[0].filter_type, LWASAPI_FILTER_LOW_SHELF);
+        assert_eq!(prof.bands[0].filter_type, LASAPI_FILTER_LOW_SHELF);
         assert!((prof.bands[0].freq_hz - 105.0).abs() < 0.01);
         assert!((prof.bands[0].q - 0.71).abs() < 0.01);
-        assert_eq!(prof.bands[1].filter_type, LWASAPI_FILTER_PEAK);
+        assert_eq!(prof.bands[1].filter_type, LASAPI_FILTER_PEAK);
         assert!((prof.bands[1].gain_db - (-3.2)).abs() < 0.01);
-        assert_eq!(prof.bands[2].filter_type, LWASAPI_FILTER_HIGH_SHELF);
+        assert_eq!(prof.bands[2].filter_type, LASAPI_FILTER_HIGH_SHELF);
         assert!((prof.bands[2].q - 1.414).abs() < 0.01);
     }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -148,7 +148,7 @@ void SalsaLiveDebuggerWidget::setTheme(const SalsaThemeData& theme, int fontPct)
         lblConn_->setFont(cf);
     }
     const int rowH = scaledPx(24, fontPct_);
-    for (QTableWidget* tbl : {tblEvents_, tblProcs_, tblWasapi_, tblPaClients_, tblPaStreams_, tblUnits_, tblSockets_}) {
+    for (QTableWidget* tbl : {tblEvents_, tblProcs_, tblLasapi_, tblPaClients_, tblPaStreams_, tblUnits_, tblSockets_}) {
         if (tbl) tbl->verticalHeader()->setDefaultSectionSize(rowH);
     }
 
@@ -301,12 +301,12 @@ QWidget* SalsaLiveDebuggerWidget::buildEventsTab() {
     fbar->addWidget(chkAutoscroll_);
 
     chkJournal_ = new QCheckBox(QStringLiteral("+ journalctl"), w);
-    chkJournal_->setToolTip(QStringLiteral("Include journalctl — Tails `lwasapi-audiodg` and `lwasapi-tray` systemd journal lines alongside ring events."));
+    chkJournal_->setToolTip(QStringLiteral("Include journalctl — Tails `lasapi-audiodg` and `lasapi-tray` systemd journal lines alongside ring events."));
     connect(chkJournal_, &QCheckBox::toggled, this, [this]() { onPollTick(); });
     fbar->addWidget(chkJournal_);
 
     chkAutosync_ = new QCheckBox(QStringLiteral("+ autosync.log"), w);
-    chkAutosync_->setToolTip(QStringLiteral("Include autosync.log — Displays shim ABI rebuild and config healing entries from `~/.config/lwasapi/autosync.log`."));
+    chkAutosync_->setToolTip(QStringLiteral("Include autosync.log — Displays shim ABI rebuild and config healing entries from `~/.config/lasapi/autosync.log`."));
     connect(chkAutosync_, &QCheckBox::toggled, this, [this]() { onPollTick(); });
     fbar->addWidget(chkAutosync_);
 
@@ -457,15 +457,15 @@ QWidget* SalsaLiveDebuggerWidget::buildTelemetryTab() {
     makeCard(QStringLiteral("CAPTURE DUPLEX & DAW MIDI HUB"), &lblCapMidiSummary_);
     lay->addLayout(topCards);
 
-    tblWasapi_ = new QTableWidget(0, 8, w);
-    tblWasapi_->setHorizontalHeaderLabels({
+    tblLasapi_ = new QTableWidget(0, 8, w);
+    tblLasapi_->setHorizontalHeaderLabels({
         QStringLiteral("SID"), QStringLiteral("PID"), QStringLiteral("Client"),
         QStringLiteral("Dir"), QStringLiteral("Mode"), QStringLiteral("Rate / Ch"),
         QStringLiteral("Buffered"), QStringLiteral("XRUNs / Vol")});
-    tblWasapi_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
-    tblWasapi_->verticalHeader()->setVisible(false);
-    tblWasapi_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    lay->addWidget(tblWasapi_, 1);
+    tblLasapi_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    tblLasapi_->verticalHeader()->setVisible(false);
+    tblLasapi_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    lay->addWidget(tblLasapi_, 1);
 
     auto* paSplit = new QSplitter(Qt::Horizontal, w);
     tblPaClients_ = new QTableWidget(0, 5, paSplit);
@@ -524,7 +524,7 @@ QWidget* SalsaLiveDebuggerWidget::buildBoundaryTab() {
     prow->addStretch(1);
 
     auto* bPing = new QPushButton(QStringLiteral("IPC + Debug Ping RTT"), probeCard);
-    bPing->setToolTip(QStringLiteral("Debug Ping RTT — Measures round-trip latency across the UNIX debug socket to verify `lwasapi-audiodg` responsiveness."));
+    bPing->setToolTip(QStringLiteral("Debug Ping RTT — Measures round-trip latency across the UNIX debug socket to verify `lasapi-audiodg` responsiveness."));
     connect(bPing, &QPushButton::clicked, this, [this]() {
         const QJsonObject pong = parseJsonObj(SalsaStr(salsa_dbg_ping_json(dbg_, "ui")).toQString());
         if (pong.value(QStringLiteral("ok")).toBool()) {
@@ -538,15 +538,15 @@ QWidget* SalsaLiveDebuggerWidget::buildBoundaryTab() {
     });
     prow->addWidget(bPing);
 
-    auto* bTone = new QPushButton(QStringLiteral("Play 440Hz WASAPI Probe Tone"), probeCard);
-    bTone->setToolTip(QStringLiteral("440Hz Manual Audio Probe — Plays a short 440 Hz test tone via native WASAPI to verify physical audio output end-to-end."));
+    auto* bTone = new QPushButton(QStringLiteral("Play 440Hz LASAPI Probe Tone"), probeCard);
+    bTone->setToolTip(QStringLiteral("440Hz Manual Audio Probe — Plays a short 440 Hz test tone via native LASAPI to verify physical audio output end-to-end."));
     connect(bTone, &QPushButton::clicked, this, [this]() {
         txtProbeOut_->setPlainText(SalsaStr(salsa_dbg_play_tone()).toQString());
     });
     prow->addWidget(bTone);
 
     auto* bMidi = new QPushButton(QStringLiteral("Send MIDI Note Ping (C4)"), probeCard);
-    bMidi->setToolTip(QStringLiteral("MIDI C4 Probe — Injects a Note-On packet into the LWASAPI MIDI ring to confirm DAW MIDI Hub delivery."));
+    bMidi->setToolTip(QStringLiteral("MIDI C4 Probe — Injects a Note-On packet into the LASAPI MIDI ring to confirm DAW MIDI Hub delivery."));
     connect(bMidi, &QPushButton::clicked, this, [this]() {
         txtProbeOut_->setPlainText(SalsaStr(salsa_dbg_send_midi()).toQString());
     });
@@ -573,7 +573,7 @@ QWidget* SalsaLiveDebuggerWidget::buildBoundaryTab() {
     txtProbeOut_ = new QPlainTextEdit(probeCard);
     txtProbeOut_->setReadOnly(true);
     txtProbeOut_->setMaximumHeight(82);
-    txtProbeOut_->setPlaceholderText(QStringLiteral("Click any interactive probe button above to test IPC, WASAPI PCM audio, MIDI injection, or PA/PW sockets..."));
+    txtProbeOut_->setPlaceholderText(QStringLiteral("Click any interactive probe button above to test IPC, LASAPI PCM audio, MIDI injection, or PA/PW sockets..."));
     pCol->addWidget(txtProbeOut_);
     lay->addWidget(probeCard);
 
@@ -612,7 +612,7 @@ QWidget* SalsaLiveDebuggerWidget::buildBoundaryTab() {
         QStringLiteral("~/.config/OpenAL/alsoft.conf"),
         QStringLiteral("pipewire_zero_mode"),
         QStringLiteral("99-salsa-direct.conf"),
-        QStringLiteral("99-lwasapi-video-only.conf"),
+        QStringLiteral("99-lasapi-video-only.conf"),
         QStringLiteral("module_versions.state"),
         QStringLiteral("src/alsa.version"),
         QStringLiteral("src/pulse.version"),
@@ -755,7 +755,7 @@ QWidget* SalsaLiveDebuggerWidget::buildScreenCastTab() {
     btnScLive_ = new QPushButton(QStringLiteral("Enable Live Feed (OFF)"), ctrlCard);
     btnScLive_->setCheckable(true);
     btnScLive_->setObjectName(QStringLiteral("PrimaryBtn"));
-    btnScLive_->setToolTip(QStringLiteral("Toggle ScreenCast Live Feed — Maps `lwasapi-audiodg` SHM/DMA-BUF preview frames (or Wayland Portal capture) directly into this viewer at your target FPS."));
+    btnScLive_->setToolTip(QStringLiteral("Toggle ScreenCast Live Feed — Maps `lasapi-audiodg` SHM/DMA-BUF preview frames (or Wayland Portal capture) directly into this viewer at your target FPS."));
     connect(btnScLive_, &QPushButton::toggled, this, [this](bool on) {
         if (on) {
             btnScLive_->setText(QStringLiteral("Disable Live Feed (ON)"));
@@ -1119,18 +1119,18 @@ void SalsaLiveDebuggerWidget::renderTelemetryTab() {
             .arg(midi.value(QStringLiteral("seq_in_port")).toInteger(0))
             .arg(midi.value(QStringLiteral("events_routed")).toInteger(0)));
 
-    const QJsonArray wsArr = latestSnapshot_.value(QStringLiteral("wasapi_sessions")).toArray();
-    tblWasapi_->setRowCount(wsArr.size());
+    const QJsonArray wsArr = latestSnapshot_.value(QStringLiteral("lasapi_sessions")).toArray();
+    tblLasapi_->setRowCount(wsArr.size());
     for (int i = 0; i < wsArr.size(); ++i) {
         const QJsonObject s = wsArr[i].toObject();
-        tblWasapi_->setItem(i, 0, makeRoItem(QString::number(s.value(QStringLiteral("session_id")).toInteger())));
-        tblWasapi_->setItem(i, 1, makeRoItem(QString::number(s.value(QStringLiteral("pid")).toInteger())));
-        tblWasapi_->setItem(i, 2, makeRoItem(s.value(QStringLiteral("name")).toString()));
-        tblWasapi_->setItem(i, 3, makeRoItem(s.value(QStringLiteral("is_capture")).toInteger() ? QStringLiteral("CAP") : QStringLiteral("PB")));
-        tblWasapi_->setItem(i, 4, makeRoItem(s.value(QStringLiteral("share_mode")).toInteger() == 1 ? QStringLiteral("EXCL") : QStringLiteral("SHRD")));
-        tblWasapi_->setItem(i, 5, makeRoItem(QStringLiteral("%1 Hz / %2ch").arg(s.value(QStringLiteral("rate")).toInteger()).arg(s.value(QStringLiteral("channels")).toInteger())));
-        tblWasapi_->setItem(i, 6, makeRoItem(QStringLiteral("%1 / %2f").arg(s.value(QStringLiteral("buffered_frames")).toInteger()).arg(s.value(QStringLiteral("buffer_frames")).toInteger())));
-        tblWasapi_->setItem(i, 7, makeRoItem(QStringLiteral("xr=%1 vol=%2%").arg(s.value(QStringLiteral("xruns")).toInteger()).arg(s.value(QStringLiteral("volume_milli")).toInteger() / 10)));
+        tblLasapi_->setItem(i, 0, makeRoItem(QString::number(s.value(QStringLiteral("session_id")).toInteger())));
+        tblLasapi_->setItem(i, 1, makeRoItem(QString::number(s.value(QStringLiteral("pid")).toInteger())));
+        tblLasapi_->setItem(i, 2, makeRoItem(s.value(QStringLiteral("name")).toString()));
+        tblLasapi_->setItem(i, 3, makeRoItem(s.value(QStringLiteral("is_capture")).toInteger() ? QStringLiteral("CAP") : QStringLiteral("PB")));
+        tblLasapi_->setItem(i, 4, makeRoItem(s.value(QStringLiteral("share_mode")).toInteger() == 1 ? QStringLiteral("EXCL") : QStringLiteral("SHRD")));
+        tblLasapi_->setItem(i, 5, makeRoItem(QStringLiteral("%1 Hz / %2ch").arg(s.value(QStringLiteral("rate")).toInteger()).arg(s.value(QStringLiteral("channels")).toInteger())));
+        tblLasapi_->setItem(i, 6, makeRoItem(QStringLiteral("%1 / %2f").arg(s.value(QStringLiteral("buffered_frames")).toInteger()).arg(s.value(QStringLiteral("buffer_frames")).toInteger())));
+        tblLasapi_->setItem(i, 7, makeRoItem(QStringLiteral("xr=%1 vol=%2%").arg(s.value(QStringLiteral("xruns")).toInteger()).arg(s.value(QStringLiteral("volume_milli")).toInteger() / 10)));
     }
 
     const QJsonArray pcArr = latestSnapshot_.value(QStringLiteral("pa_clients")).toArray();
@@ -1325,7 +1325,7 @@ void SalsaLiveDebuggerWidget::onScreenCastTick() {
     const QJsonObject pw = latestSnapshot_.value(QStringLiteral("pw")).toObject();
     QByteArray shmName = pw.value(QStringLiteral("preview_shm_name")).toString().toUtf8();
     if (shmName.isEmpty()) {
-        shmName = QByteArrayLiteral("/run/user/") + QByteArray::number(static_cast<qint64>(::getuid())) + QByteArrayLiteral("/lwasapi/pw_preview");
+        shmName = QByteArrayLiteral("/run/user/") + QByteArray::number(static_cast<qint64>(::getuid())) + QByteArrayLiteral("/lasapi/pw_preview");
     }
 
     SalsaScFrameMeta meta{};

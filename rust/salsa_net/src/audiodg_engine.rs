@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -22,30 +22,30 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, ptr_to_opt_str, LwasapiBtCodecCfg, LwasapiDbgCallbacks,
-    LwasapiDbgRtStats, LwasapiDbgSnapshot, LwasapiDeviceList, LwasapiEngineStatus, LwasapiEqConfig,
-    LwasapiHwAnalogCfg, LwasapiIpcReq, LwasapiIpcResp, LwasapiMicApoCfg,
-    LwasapiMidiEvent, LwasapiMidiHub, LwasapiPaCallbacks, LwasapiParamEqExt,
-    LwasapiParamEqPayload, LwasapiPwBrokerOpts, LwasapiShmRing, SalsaBtSnapshot,
+    c_str_to_string, copy_str_to_c, ptr_to_opt_str, LasapiBtCodecCfg, LasapiDbgCallbacks,
+    LasapiDbgRtStats, LasapiDbgSnapshot, LasapiDeviceList, LasapiEngineStatus, LasapiEqConfig,
+    LasapiHwAnalogCfg, LasapiIpcReq, LasapiIpcResp, LasapiMicApoCfg,
+    LasapiMidiEvent, LasapiMidiHub, LasapiPaCallbacks, LasapiParamEqExt,
+    LasapiParamEqPayload, LasapiPwBrokerOpts, LasapiShmRing, SalsaBtSnapshot,
     SalsaMicCubicState, SalsaRuntimeState, AUDCLNT_E_DEVICE_IN_USE, AUDCLNT_SHAREMODE_EXCLUSIVE,
     AUDCLNT_STREAMFLAGS_CAPTURE, AUDCLNT_STREAMFLAGS_LOOPBACK, E_FAIL, E_INVALIDARG, E_OUTOFMEMORY,
-    LWASAPI_BT_CONN_CONNECT, LWASAPI_BT_CONN_DISCONNECT, LWASAPI_BT_CONN_QUERY,
-    LWASAPI_BT_CONN_SET_AUTOCONN, LWASAPI_BT_RING_FRAMES, LWASAPI_BT_STAT_CONNECTED,
-    LWASAPI_BT_STAT_OPTIONAL, LWASAPI_BT_STAT_TRANSPORT, LWASAPI_BT_STAT_USB_MATCHES_BT,
-    LWASAPI_CFG_FLAG_CAPTURE_RATE, LWASAPI_CMD_BT_CONNECTION, LWASAPI_CMD_CREATE_SESSION,
-    LWASAPI_CMD_GET_STATUS, LWASAPI_CMD_INJECT_MIDI, LWASAPI_CMD_LIST_DEVICES,
-    LWASAPI_CMD_RELOAD_CONFIG, LWASAPI_CMD_SAVE_CONFIG, LWASAPI_CMD_SET_BT_CODEC,
-    LWASAPI_CMD_SET_DEVICES, LWASAPI_CMD_SET_ENGINE_CONFIG,
-    LWASAPI_CMD_SET_EQ, LWASAPI_CMD_SET_HW_ANALOG, LWASAPI_CMD_SET_MIC_APO,
-    LWASAPI_CMD_SET_PARAM_EQ, LWASAPI_CMD_SET_SESSION_CONTROL, LWASAPI_CMD_SET_VOLUME,
-    LWASAPI_DBG_ALSA, LWASAPI_DBG_BLUEZ, LWASAPI_DBG_ENGINE, LWASAPI_DBG_ERR, LWASAPI_DBG_INFO,
-    LWASAPI_DBG_MIDI, LWASAPI_DBG_PA, LWASAPI_DBG_WARN, LWASAPI_DBG_WASAPI, LWASAPI_FMT_FLOAT32,
-    LWASAPI_MAX_CHANNELS, LWASAPI_MAX_DEVICES, LWASAPI_MAX_PERIOD, LWASAPI_MAX_SESSIONS,
-    LWASAPI_RING_FRAMES, LWASAPI_RING_MASK, LWASAPI_RING_MAGIC, LWASAPI_SOCKET_DEFAULT,
+    LASAPI_BT_CONN_CONNECT, LASAPI_BT_CONN_DISCONNECT, LASAPI_BT_CONN_QUERY,
+    LASAPI_BT_CONN_SET_AUTOCONN, LASAPI_BT_RING_FRAMES, LASAPI_BT_STAT_CONNECTED,
+    LASAPI_BT_STAT_OPTIONAL, LASAPI_BT_STAT_TRANSPORT, LASAPI_BT_STAT_USB_MATCHES_BT,
+    LASAPI_CFG_FLAG_CAPTURE_RATE, LASAPI_CMD_BT_CONNECTION, LASAPI_CMD_CREATE_SESSION,
+    LASAPI_CMD_GET_STATUS, LASAPI_CMD_INJECT_MIDI, LASAPI_CMD_LIST_DEVICES,
+    LASAPI_CMD_RELOAD_CONFIG, LASAPI_CMD_SAVE_CONFIG, LASAPI_CMD_SET_BT_CODEC,
+    LASAPI_CMD_SET_DEVICES, LASAPI_CMD_SET_ENGINE_CONFIG,
+    LASAPI_CMD_SET_EQ, LASAPI_CMD_SET_HW_ANALOG, LASAPI_CMD_SET_MIC_APO,
+    LASAPI_CMD_SET_PARAM_EQ, LASAPI_CMD_SET_SESSION_CONTROL, LASAPI_CMD_SET_VOLUME,
+    LASAPI_DBG_ALSA, LASAPI_DBG_BLUEZ, LASAPI_DBG_ENGINE, LASAPI_DBG_ERR, LASAPI_DBG_INFO,
+    LASAPI_DBG_MIDI, LASAPI_DBG_PA, LASAPI_DBG_WARN, LASAPI_DBG_LASAPI, LASAPI_FMT_FLOAT32,
+    LASAPI_MAX_CHANNELS, LASAPI_MAX_DEVICES, LASAPI_MAX_PERIOD, LASAPI_MAX_SESSIONS,
+    LASAPI_RING_FRAMES, LASAPI_RING_MASK, LASAPI_RING_MAGIC, LASAPI_SOCKET_DEFAULT,
     SALSA_PACK_F32_LE, SALSA_PACK_S16_LE, SALSA_PACK_S24_3LE, SALSA_PACK_S24_LE,
     SALSA_PACK_S32_LE, S_OK,
 };
-use crate::debug_server::{lwasapi_debug_record_rt_period, lwasapi_debug_start, lwasapi_debug_stop};
+use crate::debug_server::{lasapi_debug_record_rt_period, lasapi_debug_start, lasapi_debug_stop};
 use crate::dsp::{
     salsa_dsp_consume_session_frames, salsa_dsp_get_telem, salsa_dsp_pack_pcm,
     salsa_dsp_process_capture_mic_apo, salsa_dsp_process_dynamic_eq, salsa_dsp_resample_mic_cubic,
@@ -54,29 +54,29 @@ use crate::dsp::{
 use crate::failsafe::{record_trip, FS_MANUAL_RESET};
 use crate::hw_analog::{
     card_has_plugged_headphone_jack, is_headphone_playback_card,
-    lwasapi_hw_analog_clamp_cfg, lwasapi_hw_analog_create, lwasapi_hw_analog_destroy,
-    lwasapi_hw_analog_get_cap_makeup_linear, lwasapi_hw_analog_get_drive_linear,
-    lwasapi_hw_analog_get_info, lwasapi_hw_analog_is_dac_unity_active, lwasapi_hw_analog_poll_hid,
-    lwasapi_hw_analog_probe, lwasapi_hw_analog_score_card, lwasapi_hw_analog_softknee_active,
-    lwasapi_hw_analog_sync, LwasapiHwAnalogCtx,
+    lasapi_hw_analog_clamp_cfg, lasapi_hw_analog_create, lasapi_hw_analog_destroy,
+    lasapi_hw_analog_get_cap_makeup_linear, lasapi_hw_analog_get_drive_linear,
+    lasapi_hw_analog_get_info, lasapi_hw_analog_is_dac_unity_active, lasapi_hw_analog_poll_hid,
+    lasapi_hw_analog_probe, lasapi_hw_analog_score_card, lasapi_hw_analog_softknee_active,
+    lasapi_hw_analog_sync, LasapiHwAnalogCtx,
 };
 use crate::midi_hub::{
-    lwasapi_midi_close, lwasapi_midi_init, lwasapi_midi_poll_events, lwasapi_midi_push_to_ring,
+    lasapi_midi_close, lasapi_midi_init, lasapi_midi_poll_events, lasapi_midi_push_to_ring,
 };
 use crate::pa_server::{
-    lwasapi_pa_server_control_stream, lwasapi_pa_server_fill_debug, lwasapi_pa_server_fill_sessions,
-    lwasapi_pa_server_mix_playback, lwasapi_pa_server_notify_change,
-    lwasapi_pa_server_notify_volume, lwasapi_pa_server_poll_wasapi_ctl,
-    lwasapi_pa_server_push_capture, lwasapi_pa_server_push_wasapi_period,
-    lwasapi_pa_server_register_wasapi_session, lwasapi_pa_server_reset_clients,
-    lwasapi_pa_server_set_stream_volume, lwasapi_pa_server_start, lwasapi_pa_server_stop,
-    lwasapi_pa_server_unregister_wasapi_session, lwasapi_pa_server_update_wasapi_session_vol,
-    lwasapi_pa_server_wasapi_doi_mask, PaServerHandle,
+    lasapi_pa_server_control_stream, lasapi_pa_server_fill_debug, lasapi_pa_server_fill_sessions,
+    lasapi_pa_server_mix_playback, lasapi_pa_server_notify_change,
+    lasapi_pa_server_notify_volume, lasapi_pa_server_poll_lasapi_ctl,
+    lasapi_pa_server_push_capture, lasapi_pa_server_push_lasapi_period,
+    lasapi_pa_server_register_lasapi_session, lasapi_pa_server_reset_clients,
+    lasapi_pa_server_set_stream_volume, lasapi_pa_server_start, lasapi_pa_server_stop,
+    lasapi_pa_server_unregister_lasapi_session, lasapi_pa_server_update_lasapi_session_vol,
+    lasapi_pa_server_lasapi_doi_mask, PaServerHandle,
 };
 use crate::pw_broker::{
-    lwasapi_pw_broker_fill_debug, lwasapi_pw_broker_reset_clients, lwasapi_pw_broker_self_test,
-    lwasapi_pw_broker_set_cast_limits, lwasapi_pw_broker_set_preview_ex, lwasapi_pw_broker_start,
-    lwasapi_pw_broker_stop, lwasapi_pw_broker_sync_mode, PwBrokerHandle,
+    lasapi_pw_broker_fill_debug, lasapi_pw_broker_reset_clients, lasapi_pw_broker_self_test,
+    lasapi_pw_broker_set_cast_limits, lasapi_pw_broker_set_preview_ex, lasapi_pw_broker_start,
+    lasapi_pw_broker_stop, lasapi_pw_broker_sync_mode, PwBrokerHandle,
 };
 use crate::state_conf::{
     clamp_eq_cfg, default_runtime_state, salsa_dsp_clamp_mic_apo_cfg,
@@ -187,14 +187,14 @@ pub(crate) struct SndXferi {
 }
 
 use crate::c_abi::{
-    lwasapi_bluez_close, lwasapi_bluez_connection_ctl, lwasapi_bluez_enumerate_devices,
-    lwasapi_bluez_get_codec_config, lwasapi_bluez_hw_fingerprint, lwasapi_bluez_init_rates,
-    lwasapi_bluez_is_optional_mode, lwasapi_bluez_known_audio_aliases,
-    lwasapi_bluez_open_capture, lwasapi_bluez_read_capture_native,
-    lwasapi_bluez_reconfigure_rate, lwasapi_bluez_set_codec_config, lwasapi_bluez_set_mic_gain_ppm,
-    lwasapi_bluez_set_mic_volume, lwasapi_bluez_set_optional_mode,
-    lwasapi_bluez_set_preferred_target, lwasapi_bluez_set_sco_enabled,
-    lwasapi_bluez_set_tx_enabled, lwasapi_bluez_set_volume, lwasapi_bluez_write_period,
+    lasapi_bluez_close, lasapi_bluez_connection_ctl, lasapi_bluez_enumerate_devices,
+    lasapi_bluez_get_codec_config, lasapi_bluez_hw_fingerprint, lasapi_bluez_init_rates,
+    lasapi_bluez_is_optional_mode, lasapi_bluez_known_audio_aliases,
+    lasapi_bluez_open_capture, lasapi_bluez_read_capture_native,
+    lasapi_bluez_reconfigure_rate, lasapi_bluez_set_codec_config, lasapi_bluez_set_mic_gain_ppm,
+    lasapi_bluez_set_mic_volume, lasapi_bluez_set_optional_mode,
+    lasapi_bluez_set_preferred_target, lasapi_bluez_set_sco_enabled,
+    lasapi_bluez_set_tx_enabled, lasapi_bluez_set_volume, lasapi_bluez_write_period,
     salsa_audiodg_bt_ptr, salsa_bt_get_snapshot, salsa_bt_is_initialized, salsa_bt_rt_master_vol,
 };
 
@@ -312,28 +312,28 @@ impl EngineSession {
         }
     }
 
-    fn ring_ptr(&self) -> *mut LwasapiShmRing {
+    fn ring_ptr(&self) -> *mut LasapiShmRing {
         match &self.ring_map {
-            Some(m) => m.as_ptr() as *mut LwasapiShmRing,
+            Some(m) => m.as_ptr() as *mut LasapiShmRing,
             None => ptr::null_mut(),
         }
     }
 }
 
 struct SessionsState {
-    sessions: [EngineSession; LWASAPI_MAX_SESSIONS],
+    sessions: [EngineSession; LASAPI_MAX_SESSIONS],
     next_session_id: u32,
     exclusive_session_id: i32,
-    eq_cfg: LwasapiEqConfig,
-    param_eq: LwasapiParamEqExt,
-    mic_apo: LwasapiMicApoCfg,
-    hw_analog_cfg: LwasapiHwAnalogCfg,
+    eq_cfg: LasapiEqConfig,
+    param_eq: LasapiParamEqExt,
+    mic_apo: LasapiMicApoCfg,
+    hw_analog_cfg: LasapiHwAnalogCfg,
 }
 
 impl SessionsState {
     fn from_runtime(rt: &SalsaRuntimeState) -> Self {
         Self {
-            sessions: [const { EngineSession::empty() }; LWASAPI_MAX_SESSIONS],
+            sessions: [const { EngineSession::empty() }; LASAPI_MAX_SESSIONS],
             next_session_id: 1,
             exclusive_session_id: -1,
             eq_cfg: rt.eq_cfg,
@@ -345,7 +345,7 @@ impl SessionsState {
 }
 
 struct SavedBtState {
-    saved_bt_cfg: LwasapiBtCodecCfg,
+    saved_bt_cfg: LasapiBtCodecCfg,
     has_saved_vol_state: bool,
     saved_desktop_vol_pct: u32,
     saved_desktop_muted: u32,
@@ -370,7 +370,7 @@ impl SavedBtState {
     }
 }
 
-struct MidiHubBox(Box<LwasapiMidiHub>);
+struct MidiHubBox(Box<LasapiMidiHub>);
 unsafe impl Send for MidiHubBox {}
 
 #[derive(Clone, Copy)]
@@ -414,8 +414,8 @@ enum PlaybackHotplugAction {
     },
 }
 
-fn collect_playback_ids(dl: &LwasapiDeviceList) -> Vec<String> {
-    let n = (dl.num_devices as usize).min(LWASAPI_MAX_DEVICES);
+fn collect_playback_ids(dl: &LasapiDeviceList) -> Vec<String> {
+    let n = (dl.num_devices as usize).min(LASAPI_MAX_DEVICES);
     let mut ids = Vec::with_capacity(n);
     for e in dl.devices.iter().take(n) {
         if e.is_capture == 0 {
@@ -435,14 +435,14 @@ fn is_hdmi_playback_name(name: &str) -> bool {
 }
 
 fn any_usb_in_list_matches_bt_name<FUsb>(
-    dl: &LwasapiDeviceList,
+    dl: &LasapiDeviceList,
     bt_name: &str,
     is_usb_id: &FUsb,
 ) -> bool
 where
     FUsb: Fn(&str) -> bool,
 {
-    let n = (dl.num_devices as usize).min(LWASAPI_MAX_DEVICES);
+    let n = (dl.num_devices as usize).min(LASAPI_MAX_DEVICES);
     dl.devices.iter().take(n).any(|e| {
         if e.is_capture != 0 || e.is_bluetooth != 0 {
             return false;
@@ -465,7 +465,7 @@ fn evaluate_playback_hotplug_with<FUsb, FHp>(
     hw_is_bt: bool,
     bt_now: bool,
     usb_bt_active: bool,
-    dlist: &LwasapiDeviceList,
+    dlist: &LasapiDeviceList,
     card_hp_jacks: &[bool; 32],
     tracker: &mut HotplugTracker,
     is_usb_id: FUsb,
@@ -483,7 +483,7 @@ where
         return PlaybackHotplugAction::None;
     }
 
-    let n = (dlist.num_devices as usize).min(LWASAPI_MAX_DEVICES);
+    let n = (dlist.num_devices as usize).min(LASAPI_MAX_DEVICES);
     let mut newly_added_usb_hp: Option<String> = None;
     let mut newly_added_usb: Option<String> = None;
     let mut newly_added_bt: Option<String> = None;
@@ -656,7 +656,7 @@ struct AudiodgEngine {
     bt_ptr: AtomicPtr<c_void>,
     pa_srv: AtomicPtr<PaServerHandle>,
     pw_brk: AtomicPtr<PwBrokerHandle>,
-    hw_analog: AtomicPtr<LwasapiHwAnalogCtx>,
+    hw_analog: AtomicPtr<LasapiHwAnalogCtx>,
 
     running: AtomicBool,
     rt_priority: AtomicU32,
@@ -672,8 +672,8 @@ struct AudiodgEngine {
 
 impl AudiodgEngine {
     fn new(rt: &SalsaRuntimeState, bt: *mut c_void) -> Self {
-        let midi_box: Box<LwasapiMidiHub> = unsafe {
-            let mut u = Box::<LwasapiMidiHub>::new_uninit();
+        let midi_box: Box<LasapiMidiHub> = unsafe {
+            let mut u = Box::<LasapiMidiHub>::new_uninit();
             ptr::write_bytes(u.as_mut_ptr(), 0, 1);
             u.assume_init()
         };
@@ -719,7 +719,7 @@ impl AudiodgEngine {
         self.pw_brk.load(Ordering::Acquire)
     }
 
-    fn hwa(&self) -> *mut LwasapiHwAnalogCtx {
+    fn hwa(&self) -> *mut LasapiHwAnalogCtx {
         self.hw_analog.load(Ordering::Acquire)
     }
 
@@ -772,14 +772,14 @@ impl AudiodgEngine {
         {
             let mut sb = self.saved_bt.lock().unwrap_or_else(|e| e.into_inner());
             if bt_snap.initialized {
-                unsafe { lwasapi_bluez_get_codec_config(self.bt(), &mut st.bt_cfg) };
+                unsafe { lasapi_bluez_get_codec_config(self.bt(), &mut st.bt_cfg) };
                 sb.saved_bt_cfg = st.bt_cfg;
                 sb.saved_desktop_vol_pct = bt_snap.desktop_volume_pct;
                 sb.saved_desktop_muted = u32::from(bt_snap.desktop_muted);
                 sb.saved_mic_vol_pct = bt_snap.desktop_mic_volume_pct;
                 sb.saved_mic_muted = u32::from(bt_snap.desktop_mic_muted);
                 sb.saved_mic_gain_ppm = bt_snap.desktop_mic_gain_ppm;
-                let opt = unsafe { lwasapi_bluez_is_optional_mode(self.bt()) };
+                let opt = unsafe { lasapi_bluez_is_optional_mode(self.bt()) };
             if bt_snap.initialized {
                 st.bt_optional_mode = u32::from(opt);
                 sb.bt_optional_mode = st.bt_optional_mode;
@@ -825,10 +825,10 @@ impl AudiodgEngine {
         };
         let bt_snap = snapshot_bt(self.bt());
         if re_probe {
-            unsafe { lwasapi_hw_analog_probe(hwa, pb_card, cap_card) };
+            unsafe { lasapi_hw_analog_probe(hwa, pb_card, cap_card) };
         }
         unsafe {
-            lwasapi_hw_analog_sync(
+            lasapi_hw_analog_sync(
                 hwa,
                 &cfg,
                 bt_snap.desktop_volume_pct,
@@ -848,7 +848,7 @@ impl AudiodgEngine {
         req_bits: u32,
         force_virtual: bool,
         force_bt: bool,
-        pre_dl: Option<&LwasapiDeviceList>,
+        pre_dl: Option<&LasapiDeviceList>,
     ) -> i32 {
         let req = if requested_id.is_empty() {
             "auto"
@@ -900,13 +900,13 @@ impl AudiodgEngine {
             format_bits: target_bits,
         };
         let next_id: String;
-        let mut local_dl: LwasapiDeviceList = unsafe { mem::zeroed() };
-        let dlp: Option<&LwasapiDeviceList> = if !force_virtual && req != "virtual" {
+        let mut local_dl: LasapiDeviceList = unsafe { mem::zeroed() };
+        let dlp: Option<&LasapiDeviceList> = if !force_virtual && req != "virtual" {
             Some(match pre_dl {
                 Some(d) => d,
                 None => {
                     unsafe {
-                        lwasapi_bluez_enumerate_devices(
+                        lasapi_bluez_enumerate_devices(
                             self.bt(),
                             ptr::null(),
                             ptr::null(),
@@ -921,7 +921,7 @@ impl AudiodgEngine {
         };
 
         let mut bt_snap = snapshot_bt(self.bt());
-        let known_bt_aliases = unsafe { lwasapi_bluez_known_audio_aliases(self.bt()) };
+        let known_bt_aliases = unsafe { lasapi_bluez_known_audio_aliases(self.bt()) };
         let matching_usb_idx = dlp.and_then(|d| {
             let alias = c_str_to_string(&bt_snap.device_alias);
             find_matching_usb_pb_idx_for_list(d, &alias, &known_bt_aliases)
@@ -931,12 +931,12 @@ impl AudiodgEngine {
             if let (Some(d), Some(u_idx)) = (dlp, matching_usb_idx) {
                 let u_name = c_str_to_string(&d.devices[u_idx].name);
                 eprintln!(
-                    "[LWASAPI-audiodg] Dual USB+BT device detected ({}) — prioritizing USB endpoint",
+                    "[LASAPI-audiodg] Dual USB+BT device detected ({}) — prioritizing USB endpoint",
                     u_name
                 );
                 dbg_emit(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
                     0,
                     0,
                     "USB_BT_PRIORITY",
@@ -949,7 +949,7 @@ impl AudiodgEngine {
         let any_bt_in_list = dlp.is_some_and(|d| device_list_has_type(d, "bluetooth", 0));
         let mut auto_want_bt = false;
         if !force_virtual && !skip_bt_for_matching_usb && (want_bt || auto_mode) {
-            let bt_opt = unsafe { lwasapi_bluez_is_optional_mode(self.bt()) };
+            let bt_opt = unsafe { lasapi_bluez_is_optional_mode(self.bt()) };
             let mut bt_ready =
                 bt_snap.has_bluez_transport && bt_snap.direct_socket_mode && bt_snap.bt_fd >= 0;
             let mut bt_mac = c_str_to_string(&bt_snap.mac_address);
@@ -976,12 +976,12 @@ impl AudiodgEngine {
             );
 
             if bt_ready && !req_mac_ok(&bt_mac) {
-                unsafe { lwasapi_bluez_set_tx_enabled(self.bt(), false) };
+                unsafe { lasapi_bluez_set_tx_enabled(self.bt(), false) };
                 bt_ready = false;
             }
 
             if !bt_ready && (want_bt || auto_want_bt) {
-                unsafe { lwasapi_bluez_set_tx_enabled(self.bt(), true) };
+                unsafe { lasapi_bluez_set_tx_enabled(self.bt(), true) };
                 for _ in 0..140 {
                     std::thread::sleep(Duration::from_millis(25));
                     bt_snap = snapshot_bt(self.bt());
@@ -1023,8 +1023,8 @@ impl AudiodgEngine {
                 copy_str_to_c(&mut next_hw.device_path, &label);
                 next_id = pb_label;
                 unsafe {
-                    lwasapi_bluez_reconfigure_rate(self.bt(), rate);
-                    lwasapi_bluez_set_tx_enabled(self.bt(), true);
+                    lasapi_bluez_reconfigure_rate(self.bt(), rate);
+                    lasapi_bluez_set_tx_enabled(self.bt(), true);
                 }
                 {
                     let mut hws = self.hw_lock.lock().unwrap();
@@ -1033,12 +1033,12 @@ impl AudiodgEngine {
                 }
                 let codec_show = if bt_codec.is_empty() { "A2DP" } else { &bt_codec };
                 eprintln!(
-                    "[LWASAPI-audiodg] Active Pure BlueZ A2DP endpoint: {} ({} Hz -> BT {} Hz {})",
+                    "[LASAPI-audiodg] Active Pure BlueZ A2DP endpoint: {} ({} Hz -> BT {} Hz {})",
                     label, next_hw.sample_rate, bt_rate, codec_show
                 );
                 dbg_emit(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
                     0,
                     0,
                     "ENGINE_ENDPOINT",
@@ -1051,14 +1051,14 @@ impl AudiodgEngine {
                 return 0;
             }
             if force_bt {
-                eprintln!("[LWASAPI-audiodg] Notice: BlueZ A2DP transport not yet acquired, probing kernel endpoints...");
+                eprintln!("[LASAPI-audiodg] Notice: BlueZ A2DP transport not yet acquired, probing kernel endpoints...");
             }
         }
 
         // Preserve tx_paused=false when falling back transiently on explicit BT / connected-BT Auto so
         // an in-flight Acquire/ConnectProfile completes and sync_hotplug_topology restores BT automatically.
         if should_disable_bt_tx_on_fallback(want_bt, auto_want_bt) {
-            unsafe { lwasapi_bluez_set_tx_enabled(self.bt(), false) };
+            unsafe { lasapi_bluez_set_tx_enabled(self.bt(), false) };
         }
 
         if !force_virtual && !auto_mode && !want_bt && req != "virtual" {
@@ -1077,12 +1077,12 @@ impl AudiodgEngine {
                 }
                 let ms = (1000.0 * (next_hw.period_frames as f64)) / (next_hw.sample_rate as f64);
                 eprintln!(
-                    "[LWASAPI-audiodg] Opened direct kernel WaveRT endpoint: {} ({} Hz, {} ch, {}-bit, period={} frames / {:.2} ms)",
+                    "[LASAPI-audiodg] Opened direct kernel WaveRT endpoint: {} ({} Hz, {} ch, {}-bit, period={} frames / {:.2} ms)",
                     dev_path, next_hw.sample_rate, next_hw.channels, next_hw.format_bits, next_hw.period_frames, ms
                 );
                 dbg_emit(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
                     0,
                     0,
                     "ENGINE_ENDPOINT",
@@ -1101,12 +1101,12 @@ impl AudiodgEngine {
             }
             let err_str = std::io::Error::last_os_error().to_string();
             eprintln!(
-                "[LWASAPI-audiodg] Notice: {} busy or unavailable ({}), probing fallback endpoints...",
+                "[LASAPI-audiodg] Notice: {} busy or unavailable ({}), probing fallback endpoints...",
                 dev_path, err_str
             );
             dbg_emit(
-                LWASAPI_DBG_ENGINE,
-                LWASAPI_DBG_WARN,
+                LASAPI_DBG_ENGINE,
+                LASAPI_DBG_WARN,
                 0,
                 0,
                 "ENDPOINT_BUSY",
@@ -1116,13 +1116,13 @@ impl AudiodgEngine {
         }
 
         if let Some(dlp) = dlp {
-            let n = (dlp.num_devices as usize).min(LWASAPI_MAX_DEVICES);
+            let n = (dlp.num_devices as usize).min(LASAPI_MAX_DEVICES);
             let mut cands: Vec<(usize, i32)> = Vec::new();
             for (i, e) in dlp.devices.iter().enumerate().take(n) {
                 if e.is_capture != 0 || e.is_bluetooth != 0 {
                     continue;
                 }
-                let mut sc = unsafe { lwasapi_hw_analog_score_card(e.card_index, e.name.as_ptr().cast()) };
+                let mut sc = unsafe { lasapi_hw_analog_score_card(e.card_index, e.name.as_ptr().cast()) };
                 if e.device_index == 0 {
                     sc += 10;
                 }
@@ -1148,12 +1148,12 @@ impl AudiodgEngine {
                     let ms =
                         (1000.0 * (next_hw.period_frames as f64)) / (next_hw.sample_rate as f64);
                     eprintln!(
-                        "[LWASAPI-audiodg] Auto-bound direct kernel WaveRT endpoint: {} ({} | {} Hz, {} ch, {}-bit, period={} frames / {:.2} ms)",
+                        "[LASAPI-audiodg] Auto-bound direct kernel WaveRT endpoint: {} ({} | {} Hz, {} ch, {}-bit, period={} frames / {:.2} ms)",
                         dev_path, e_name, next_hw.sample_rate, next_hw.channels, next_hw.format_bits, next_hw.period_frames, ms
                     );
                     dbg_emit(
-                        LWASAPI_DBG_ENGINE,
-                        LWASAPI_DBG_INFO,
+                        LASAPI_DBG_ENGINE,
+                        LASAPI_DBG_INFO,
                         0,
                         0,
                         "ENGINE_ENDPOINT",
@@ -1191,15 +1191,15 @@ impl AudiodgEngine {
         }
         let ms = (1000.0 * (next_hw.period_frames as f64)) / (next_hw.sample_rate as f64);
         eprintln!(
-            "[LWASAPI-audiodg] Initialized deterministic WaveRT clock ({} Hz, period={} frames / {:.2} ms)",
+            "[LASAPI-audiodg] Initialized deterministic WaveRT clock ({} Hz, period={} frames / {:.2} ms)",
             next_hw.sample_rate, next_hw.period_frames, ms
         );
         dbg_emit(
-            LWASAPI_DBG_ENGINE,
+            LASAPI_DBG_ENGINE,
             if force_virtual {
-                LWASAPI_DBG_INFO
+                LASAPI_DBG_INFO
             } else {
-                LWASAPI_DBG_WARN
+                LASAPI_DBG_WARN
             },
             0,
             0,
@@ -1256,19 +1256,19 @@ impl AudiodgEngine {
                 )
             };
             unsafe {
-                lwasapi_bluez_set_optional_mode(self.bt(), bt_optional != 0);
-                lwasapi_bluez_init_rates(self.bt(), rate, cap_rate, c_cap.as_ptr(), c_pb.as_ptr());
-                lwasapi_bluez_set_sco_enabled(self.bt(), bt_cfg_saved.hfp_sco_enabled != 0);
-                lwasapi_bluez_set_codec_config(self.bt(), &bt_cfg_saved);
+                lasapi_bluez_set_optional_mode(self.bt(), bt_optional != 0);
+                lasapi_bluez_init_rates(self.bt(), rate, cap_rate, c_cap.as_ptr(), c_pb.as_ptr());
+                lasapi_bluez_set_sco_enabled(self.bt(), bt_cfg_saved.hfp_sco_enabled != 0);
+                lasapi_bluez_set_codec_config(self.bt(), &bt_cfg_saved);
                 if has_vol {
-                    lwasapi_bluez_set_volume(
+                    lasapi_bluez_set_volume(
                         self.bt(),
                         d_vol as c_int,
                         if d_muted != 0 { 1 } else { 0 },
                     );
                     dbg_emit_vals(
-                        LWASAPI_DBG_ENGINE,
-                        LWASAPI_DBG_INFO,
+                        LASAPI_DBG_ENGINE,
+                        LASAPI_DBG_INFO,
                         0,
                         0,
                         d_vol as i32,
@@ -1278,12 +1278,12 @@ impl AudiodgEngine {
                         "master_out",
                         &format!("restored vol={d_vol}% muted={}", i32::from(d_muted != 0)),
                     );
-                    lwasapi_bluez_set_mic_volume(
+                    lasapi_bluez_set_mic_volume(
                         self.bt(),
                         m_vol as c_int,
                         if m_muted != 0 { 1 } else { 0 },
                     );
-                    lwasapi_bluez_set_mic_gain_ppm(
+                    lasapi_bluez_set_mic_gain_ppm(
                         self.bt(),
                         m_gain,
                         m_vol as c_int,
@@ -1311,7 +1311,7 @@ impl AudiodgEngine {
         self.hw_analog_probe_and_sync(true);
     }
 
-    fn fill_engine_status_impl(&self, st: &mut LwasapiEngineStatus, include_pa_sessions: bool) {
+    fn fill_engine_status_impl(&self, st: &mut LasapiEngineStatus, include_pa_sessions: bool) {
         *st = unsafe { mem::zeroed() };
         let bt_snap = snapshot_bt(self.bt());
         let bt_has_tr = bt_snap.has_bluez_transport;
@@ -1363,7 +1363,7 @@ impl AudiodgEngine {
             copy_str_to_c(
                 &mut st.midi_device,
                 if mc.is_empty() {
-                    "LWASAPI-MIDI-Hub"
+                    "LASAPI-MIDI-Hub"
                 } else {
                     &mc
                 },
@@ -1446,7 +1446,7 @@ impl AudiodgEngine {
 
         let hwa = self.hwa();
         if !hwa.is_null() {
-            unsafe { lwasapi_hw_analog_get_info(hwa, &mut st.hw_analog_info) };
+            unsafe { lasapi_hw_analog_get_info(hwa, &mut st.hw_analog_info) };
         }
         st.hw_analog_info.reserved = if bt_has_cap && bt_cap_rate >= 8000 {
             bt_cap_rate
@@ -1455,7 +1455,7 @@ impl AudiodgEngine {
         };
 
         if bt_snap.initialized {
-            unsafe { lwasapi_bluez_get_codec_config(self.bt(), &mut st.bt_codec_cfg) };
+            unsafe { lasapi_bluez_get_codec_config(self.bt(), &mut st.bt_codec_cfg) };
         } else {
             let sb = self.saved_bt.lock().unwrap_or_else(|e| e.into_inner());
             st.bt_codec_cfg = sb.saved_bt_cfg;
@@ -1463,11 +1463,11 @@ impl AudiodgEngine {
 
         let pa = self.pa();
         if include_pa_sessions && !pa.is_null() {
-            unsafe { lwasapi_pa_server_fill_sessions(pa, st, &mut st.pa_clients) };
+            unsafe { lasapi_pa_server_fill_sessions(pa, st, &mut st.pa_clients) };
         }
     }
 
-    fn enumerate_devices_safe(&self, out_list: &mut LwasapiDeviceList) {
+    fn enumerate_devices_safe(&self, out_list: &mut LasapiDeviceList) {
         let (pb_id, cap_id) = {
             let hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
             (
@@ -1478,7 +1478,7 @@ impl AudiodgEngine {
         let c_pb = to_cstring_lossy(&pb_id);
         let c_cap = to_cstring_lossy(&cap_id);
         unsafe {
-            lwasapi_bluez_enumerate_devices(self.bt(), c_pb.as_ptr(), c_cap.as_ptr(), out_list);
+            lasapi_bluez_enumerate_devices(self.bt(), c_pb.as_ptr(), c_cap.as_ptr(), out_list);
         }
     }
 
@@ -1538,7 +1538,7 @@ impl AudiodgEngine {
             let bt_snap = snapshot_bt(self.bt());
             if bt_snap.initialized {
                 let c_pb = to_cstring_lossy(&target_pb);
-                unsafe { lwasapi_bluez_set_preferred_target(self.bt(), c_pb.as_ptr()) };
+                unsafe { lasapi_bluez_set_preferred_target(self.bt(), c_pb.as_ptr()) };
             }
             self.apply_playback_endpoint(&target_pb, rate, period, bits, false, false, None);
             let hws = self.hw_lock.lock().unwrap();
@@ -1550,7 +1550,7 @@ impl AudiodgEngine {
         if !target_cap.is_empty() {
             let c_cap = to_cstring_lossy(&target_cap);
             let eff_cap = resolve_cap_sample_rate(hw_rate, pref_cap);
-            unsafe { lwasapi_bluez_open_capture(self.bt(), c_cap.as_ptr(), eff_cap) };
+            unsafe { lasapi_bluez_open_capture(self.bt(), c_cap.as_ptr(), eff_cap) };
             let bt_snap = snapshot_bt(self.bt());
             let cap_id_now = c_str_to_string(&bt_snap.cap_device_id);
             let mut hws = self.hw_lock.lock().unwrap();
@@ -1573,7 +1573,7 @@ impl AudiodgEngine {
 
         let pa = self.pa();
         if notify_pa && !pa.is_null() {
-            unsafe { lwasapi_pa_server_notify_change(pa) };
+            unsafe { lasapi_pa_server_notify_change(pa) };
         }
         0
     }
@@ -1584,7 +1584,7 @@ impl AudiodgEngine {
         mut new_period: u32,
         mut new_bits: u32,
         update_pref: bool,
-    ) -> Result<(LwasapiIpcResp, u32), i32> {
+    ) -> Result<(LasapiIpcResp, u32), i32> {
         let _reconf = self.reconf_lock.lock().unwrap_or_else(|e| e.into_inner());
         let (rate_changed, period_changed, bits_changed, is_hw_kernel, was_virtual, target_pb, target_cap, pref_cap) = {
             let mut hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -1600,7 +1600,7 @@ impl AudiodgEngine {
             if !matches!(new_bits, 16 | 24 | 32) {
                 new_bits = cur_bits;
             }
-            if !(44_100..=192_000).contains(&new_rate) || !(64..=LWASAPI_MAX_PERIOD as u32).contains(&new_period) {
+            if !(44_100..=192_000).contains(&new_rate) || !(64..=LASAPI_MAX_PERIOD as u32).contains(&new_period) {
                 return Err(-1);
             }
             let was_virtual =
@@ -1632,7 +1632,7 @@ impl AudiodgEngine {
             if (hws.hw.is_virtual || hws.hw.is_bluetooth) && matches!(new_bits, 16 | 24 | 32) {
                 hws.hw.format_bits = new_bits;
             }
-            let resp = LwasapiIpcResp {
+            let resp = LasapiIpcResp {
                 hr: S_OK,
                 session_id: 0,
                 actual_sample_rate: hws.hw.sample_rate,
@@ -1646,13 +1646,13 @@ impl AudiodgEngine {
 
         let mut bt_snap = snapshot_bt(self.bt());
         if rate_changed && bt_snap.initialized {
-            unsafe { lwasapi_bluez_reconfigure_rate(self.bt(), resp.actual_sample_rate) };
+            unsafe { lasapi_bluez_reconfigure_rate(self.bt(), resp.actual_sample_rate) };
             bt_snap = snapshot_bt(self.bt());
             let cap_already_open = bt_snap.has_capture_hw && bt_snap.cap_pcm_fd >= 0;
             if !cap_already_open {
                 let c_cap = to_cstring_lossy(&target_cap);
                 unsafe {
-                    lwasapi_bluez_open_capture(
+                    lasapi_bluez_open_capture(
                         self.bt(),
                         c_cap.as_ptr(),
                         resolve_cap_sample_rate(resp.actual_sample_rate, pref_cap),
@@ -1685,12 +1685,12 @@ impl AudiodgEngine {
 
         let pa = self.pa();
         if !pa.is_null() {
-            unsafe { lwasapi_pa_server_notify_change(pa) };
+            unsafe { lasapi_pa_server_notify_change(pa) };
         }
         Ok((resp, actual_bits))
     }
 
-    fn reconfigure_capture_rate_impl(&self, new_cap_rate: u32) -> Option<LwasapiIpcResp> {
+    fn reconfigure_capture_rate_impl(&self, new_cap_rate: u32) -> Option<LasapiIpcResp> {
         if new_cap_rate != 0 && !(44_100..=192_000).contains(&new_cap_rate) {
             return None;
         }
@@ -1722,7 +1722,7 @@ impl AudiodgEngine {
             } else {
                 &target_cap
             });
-            unsafe { lwasapi_bluez_open_capture(self.bt(), c_cap.as_ptr(), eff_cap) };
+            unsafe { lasapi_bluez_open_capture(self.bt(), c_cap.as_ptr(), eff_cap) };
             let bt_snap = snapshot_bt(self.bt());
             has_cap_now = bt_snap.has_capture_hw;
             cap_rate_now = bt_snap.cap_hw_rate;
@@ -1749,10 +1749,10 @@ impl AudiodgEngine {
 
         let pa = self.pa();
         if !pa.is_null() {
-            unsafe { lwasapi_pa_server_notify_change(pa) };
+            unsafe { lasapi_pa_server_notify_change(pa) };
         }
 
-        Some(LwasapiIpcResp {
+        Some(LasapiIpcResp {
             hr: S_OK,
             session_id: 0,
             actual_sample_rate: if has_cap_now && cap_rate_now != 0 {
@@ -1778,7 +1778,7 @@ impl AudiodgEngine {
     }
 
     fn seed_hotplug_baseline(&self, clear_restore: bool) {
-        let mut dlist: LwasapiDeviceList = unsafe { mem::zeroed() };
+        let mut dlist: LasapiDeviceList = unsafe { mem::zeroed() };
         self.enumerate_devices_safe(&mut dlist);
         let hp_jacks = Self::probe_card_hp_jacks();
         let mut ht = self.hotplug_tracker.lock().unwrap_or_else(|e| e.into_inner());
@@ -1793,7 +1793,7 @@ impl AudiodgEngine {
     fn sync_hotplug_topology(&self, force_virtual: bool, bt_now: bool) -> bool {
         let mut cap_deferred = false;
         let _reconf = self.reconf_lock.lock().unwrap();
-        let mut dlist: LwasapiDeviceList = unsafe { mem::zeroed() };
+        let mut dlist: LasapiDeviceList = unsafe { mem::zeroed() };
         self.enumerate_devices_safe(&mut dlist);
         let hp_jacks = Self::probe_card_hp_jacks();
         let bt_has_cap = snapshot_bt(self.bt()).has_capture_hw;
@@ -1847,15 +1847,15 @@ impl AudiodgEngine {
                 }
                 if snapshot_bt(self.bt()).initialized {
                     let c_pb = to_cstring_lossy(updated_tgt);
-                    unsafe { lwasapi_bluez_set_preferred_target(self.bt(), c_pb.as_ptr()) };
+                    unsafe { lasapi_bluez_set_preferred_target(self.bt(), c_pb.as_ptr()) };
                 }
             }
             eprintln!(
-                "[LWASAPI-audiodg] Hotplug playback switch ({reason}): req={apply_req}"
+                "[LASAPI-audiodg] Hotplug playback switch ({reason}): req={apply_req}"
             );
             dbg_emit(
-                LWASAPI_DBG_ENGINE,
-                LWASAPI_DBG_INFO,
+                LASAPI_DBG_ENGINE,
+                LASAPI_DBG_INFO,
                 0,
                 0,
                 "HOTPLUG_PB",
@@ -1928,7 +1928,7 @@ impl AudiodgEngine {
                 };
                 let c_req_cap = to_cstring_lossy(req_cap);
                 let cap_rc = unsafe {
-                    lwasapi_bluez_open_capture(
+                    lasapi_bluez_open_capture(
                         self.bt(),
                         c_req_cap.as_ptr(),
                         resolve_cap_sample_rate(eng_rate, pref_cap),
@@ -1946,8 +1946,8 @@ impl AudiodgEngine {
                     copy_str_to_c(&mut hws.active_capture_id, &new_cap_id);
                 }
                 dbg_emit(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
                     0,
                     0,
                     "HOTPLUG_CAP",
@@ -1961,8 +1961,8 @@ impl AudiodgEngine {
         cap_deferred
     }
 
-    fn handle_create_session(&self, client_sock: UnixStream, req: &LwasapiIpcReq) {
-        let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+    fn handle_create_session(&self, client_sock: UnixStream, req: &LasapiIpcReq) {
+        let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
         let req_name = c_str_to_string(&req.client_name);
         let cname_dbg = if req_name.is_empty() {
             "session".to_string()
@@ -1970,7 +1970,7 @@ impl AudiodgEngine {
             req_name.clone()
         };
 
-        let Some(shm_fd) = create_memfd("lwasapi_ring", mem::size_of::<LwasapiShmRing>()) else {
+        let Some(shm_fd) = create_memfd("lasapi_ring", mem::size_of::<LasapiShmRing>()) else {
             resp.hr = E_OUTOFMEMORY;
             let _ = sendmsg_all_with_fds(client_sock.as_raw_fd(), as_bytes(&resp), &[]);
             return;
@@ -1981,7 +1981,7 @@ impl AudiodgEngine {
             return;
         };
         let Some(ring_map) =
-            MappedMem::map_fd(shm_fd.as_raw_fd(), mem::size_of::<LwasapiShmRing>(), true, 0)
+            MappedMem::map_fd(shm_fd.as_raw_fd(), mem::size_of::<LasapiShmRing>(), true, 0)
         else {
             resp.hr = E_OUTOFMEMORY;
             let _ = sendmsg_all_with_fds(client_sock.as_raw_fd(), as_bytes(&resp), &[]);
@@ -1989,7 +1989,7 @@ impl AudiodgEngine {
         };
 
         unsafe {
-            ptr::write_bytes(ring_map.as_ptr() as *mut u8, 0, offset_of!(LwasapiShmRing, pcm_data));
+            ptr::write_bytes(ring_map.as_ptr() as *mut u8, 0, offset_of!(LasapiShmRing, pcm_data));
         }
 
         let (hw_rate, hw_ch, hw_per) = {
@@ -2003,8 +2003,8 @@ impl AudiodgEngine {
             let holder = ss.exclusive_session_id;
             drop(ss);
             dbg_emit_vals(
-                LWASAPI_DBG_WASAPI,
-                LWASAPI_DBG_WARN,
+                LASAPI_DBG_LASAPI,
+                LASAPI_DBG_WARN,
                 req.client_pid,
                 0,
                 holder,
@@ -2025,7 +2025,7 @@ impl AudiodgEngine {
             return;
         };
 
-        let ring = ring_map.as_ptr() as *mut LwasapiShmRing;
+        let ring = ring_map.as_ptr() as *mut LasapiShmRing;
         let sid = ss.next_session_id;
         ss.next_session_id = ss.next_session_id.wrapping_add(1);
 
@@ -2041,20 +2041,20 @@ impl AudiodgEngine {
         } else {
             hw_rate
         };
-        let mut eff_ch = if req.channels != 0 && (req.channels as usize) <= LWASAPI_MAX_CHANNELS {
+        let mut eff_ch = if req.channels != 0 && (req.channels as usize) <= LASAPI_MAX_CHANNELS {
             req.channels
         } else {
             hw_ch
         };
-        if eff_ch == 0 || (eff_ch as usize) > LWASAPI_MAX_CHANNELS {
+        if eff_ch == 0 || (eff_ch as usize) > LASAPI_MAX_CHANNELS {
             eff_ch = 2;
         }
         let mut buf_frames = req.requested_buffer_frames;
         if buf_frames < hw_per.saturating_mul(2) {
             buf_frames = hw_per.saturating_mul(4);
         }
-        if buf_frames > LWASAPI_RING_FRAMES as u32 {
-            buf_frames = LWASAPI_RING_FRAMES as u32;
+        if buf_frames > LASAPI_RING_FRAMES as u32 {
+            buf_frames = LASAPI_RING_FRAMES as u32;
         }
         let is_cap_u32 = u32::from((req.stream_flags & AUDCLNT_STREAMFLAGS_CAPTURE) != 0);
         let s_name_str = if req_name.is_empty() {
@@ -2069,7 +2069,7 @@ impl AudiodgEngine {
             .unwrap_or(req.client_pid);
 
         unsafe {
-            ptr::addr_of_mut!((*ring).magic).write(LWASAPI_RING_MAGIC);
+            ptr::addr_of_mut!((*ring).magic).write(LASAPI_RING_MAGIC);
             ptr::addr_of_mut!((*ring).session_id).write(sid);
             ptr::addr_of_mut!((*ring).client_pid).write(auth_pid);
             copy_str_to_c(&mut *ptr::addr_of_mut!((*ring).client_name), s_name_str);
@@ -2078,7 +2078,7 @@ impl AudiodgEngine {
             ptr::addr_of_mut!((*ring).is_capture).write(is_cap_u32);
             ptr::addr_of_mut!((*ring).sample_rate).write(eff_rate);
             ptr::addr_of_mut!((*ring).channels).write(eff_ch);
-            ptr::addr_of_mut!((*ring).format).write(LWASAPI_FMT_FLOAT32);
+            ptr::addr_of_mut!((*ring).format).write(LASAPI_FMT_FLOAT32);
             ptr::addr_of_mut!((*ring).period_frames).write(hw_per);
             ptr::addr_of_mut!((*ring).buffer_frames).write(buf_frames);
             (*ptr::addr_of!((*ring).volume_milli)).store(1000, Ordering::SeqCst);
@@ -2136,7 +2136,7 @@ impl AudiodgEngine {
             if !pa.is_null() {
                 let c_nm = to_cstring_lossy(s_name_str);
                 unsafe {
-                    lwasapi_pa_server_register_wasapi_session(
+                    lasapi_pa_server_register_lasapi_session(
                         pa,
                         slot_idx as u32,
                         sid,
@@ -2151,12 +2151,12 @@ impl AudiodgEngine {
 
         if req.share_mode == AUDCLNT_SHAREMODE_EXCLUSIVE {
             eprintln!(
-                "[LWASAPI-audiodg] Session #{} ('{}', PID {}) acquired WASAPI EXCLUSIVE hardware lock ({} Hz, period={})",
+                "[LASAPI-audiodg] Session #{} ('{}', PID {}) acquired LASAPI EXCLUSIVE hardware lock ({} Hz, period={})",
                 sid, s_name_str, auth_pid, eff_rate, hw_per
             );
         } else {
             eprintln!(
-                "[LWASAPI-audiodg] Session #{} ('{}', PID {}) initialized in WASAPI {} mode ({} Hz -> {} Hz, {} ch, buf={})",
+                "[LASAPI-audiodg] Session #{} ('{}', PID {}) initialized in LASAPI {} mode ({} Hz -> {} Hz, {} ch, buf={})",
                 sid,
                 s_name_str,
                 auth_pid,
@@ -2169,14 +2169,14 @@ impl AudiodgEngine {
         }
 
         dbg_emit_vals(
-            LWASAPI_DBG_WASAPI,
-            LWASAPI_DBG_INFO,
+            LASAPI_DBG_LASAPI,
+            LASAPI_DBG_INFO,
             req.client_pid,
             sid,
             eff_rate as i32,
             eff_ch as i32,
             S_OK,
-            "WASAPI_SESSION",
+            "LASAPI_SESSION",
             s_name_str,
             &format!(
                 "mode={} cap={} rate={} ch={} buf={} per={}",
@@ -2194,21 +2194,21 @@ impl AudiodgEngine {
         );
     }
 
-    fn handle_client_cmd(&self, mut stream: UnixStream, req: &LwasapiIpcReq) {
+    fn handle_client_cmd(&self, mut stream: UnixStream, req: &LasapiIpcReq) {
         match req.cmd {
-            LWASAPI_CMD_CREATE_SESSION => self.handle_create_session(stream, req),
-            LWASAPI_CMD_GET_STATUS => {
-                let mut st: LwasapiEngineStatus = unsafe { mem::zeroed() };
+            LASAPI_CMD_CREATE_SESSION => self.handle_create_session(stream, req),
+            LASAPI_CMD_GET_STATUS => {
+                let mut st: LasapiEngineStatus = unsafe { mem::zeroed() };
                 self.fill_engine_status_impl(&mut st, true);
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&st));
             }
-            LWASAPI_CMD_LIST_DEVICES => {
-                let mut dlist: LwasapiDeviceList = unsafe { mem::zeroed() };
+            LASAPI_CMD_LIST_DEVICES => {
+                let mut dlist: LasapiDeviceList = unsafe { mem::zeroed() };
                 self.enumerate_devices_safe(&mut dlist);
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&dlist));
             }
-            LWASAPI_CMD_SET_DEVICES => {
-                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+            LASAPI_CMD_SET_DEVICES => {
+                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
                 let pb_s = c_str_to_string(&req.target_device);
                 let cap_s = c_str_to_string(&req.target_capture_device);
                 let pb = (!pb_s.is_empty()).then_some(pb_s.as_str());
@@ -2226,8 +2226,8 @@ impl AudiodgEngine {
                 }
                 let tgt = pb.or(cap).unwrap_or("none");
                 dbg_emit_vals(
-                    LWASAPI_DBG_ENGINE,
-                    if resp.hr == S_OK { LWASAPI_DBG_INFO } else { LWASAPI_DBG_WARN },
+                    LASAPI_DBG_ENGINE,
+                    if resp.hr == S_OK { LASAPI_DBG_INFO } else { LASAPI_DBG_WARN },
                     req.client_pid,
                     0,
                     resp.actual_sample_rate as i32,
@@ -2245,8 +2245,8 @@ impl AudiodgEngine {
                 );
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LWASAPI_CMD_SET_VOLUME => {
-                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+            LASAPI_CMD_SET_VOLUME => {
+                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
                 resp.hr = E_INVALIDARG;
                 if req.target_session_id == 0xFFFF_FFFF {
                     let vol_pct = if req.volume_milli <= 1500 {
@@ -2255,19 +2255,19 @@ impl AudiodgEngine {
                         -1
                     };
                     let mute_flag = (req.share_mode as c_int).wrapping_sub(1);
-                    unsafe { lwasapi_bluez_set_volume(self.bt(), vol_pct, mute_flag) };
+                    unsafe { lasapi_bluez_set_volume(self.bt(), vol_pct, mute_flag) };
                     self.hw_analog_probe_and_sync(false);
                     let pa = self.pa();
                     if !pa.is_null() {
-                        unsafe { lwasapi_pa_server_notify_volume(pa, false) };
+                        unsafe { lasapi_pa_server_notify_volume(pa, false) };
                     }
                     self.mark_state_dirty();
                     resp.hr = S_OK;
                     let cname = c_str_to_string(&req.client_name);
                     let src = if cname.is_empty() { "master_out" } else { &cname };
                     dbg_emit_vals(
-                        LWASAPI_DBG_ENGINE,
-                        LWASAPI_DBG_INFO,
+                        LASAPI_DBG_ENGINE,
+                        LASAPI_DBG_INFO,
                         req.client_pid,
                         0,
                         vol_pct,
@@ -2284,17 +2284,17 @@ impl AudiodgEngine {
                         -1
                     };
                     let mute_flag = (req.share_mode as c_int).wrapping_sub(1);
-                    unsafe { lwasapi_bluez_set_mic_volume(self.bt(), vol_pct, mute_flag) };
+                    unsafe { lasapi_bluez_set_mic_volume(self.bt(), vol_pct, mute_flag) };
                     self.hw_analog_probe_and_sync(false);
                     let pa = self.pa();
                     if !pa.is_null() {
-                        unsafe { lwasapi_pa_server_notify_volume(pa, true) };
+                        unsafe { lasapi_pa_server_notify_volume(pa, true) };
                     }
                     self.mark_state_dirty();
                     resp.hr = S_OK;
                     dbg_emit_vals(
-                        LWASAPI_DBG_ENGINE,
-                        LWASAPI_DBG_INFO,
+                        LASAPI_DBG_ENGINE,
+                        LASAPI_DBG_INFO,
                         req.client_pid,
                         0,
                         vol_pct,
@@ -2330,14 +2330,14 @@ impl AudiodgEngine {
                     if let Some((w_slot, w_sid, vm, mu)) = upd_pa {
                         if !pa.is_null() {
                             unsafe {
-                                lwasapi_pa_server_update_wasapi_session_vol(pa, w_slot, w_sid, vm, mu);
+                                lasapi_pa_server_update_lasapi_session_vol(pa, w_slot, w_sid, vm, mu);
                             }
                         }
                     }
                     if !found
                         && !pa.is_null()
                         && unsafe {
-                            lwasapi_pa_server_set_stream_volume(
+                            lasapi_pa_server_set_stream_volume(
                                 pa,
                                 req.target_session_id,
                                 req.volume_milli / 10,
@@ -2347,8 +2347,8 @@ impl AudiodgEngine {
                         resp.hr = S_OK;
                     }
                     dbg_emit_vals(
-                        LWASAPI_DBG_WASAPI,
-                        if resp.hr == S_OK { LWASAPI_DBG_INFO } else { LWASAPI_DBG_WARN },
+                        LASAPI_DBG_LASAPI,
+                        if resp.hr == S_OK { LASAPI_DBG_INFO } else { LASAPI_DBG_WARN },
                         req.client_pid,
                         req.target_session_id,
                         req.volume_milli as i32,
@@ -2356,13 +2356,13 @@ impl AudiodgEngine {
                         resp.hr,
                         "VOL_CHG",
                         "stream",
-                        &format!("milli={} wasapi={}", req.volume_milli, i32::from(found)),
+                        &format!("milli={} lasapi={}", req.volume_milli, i32::from(found)),
                     );
                 }
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LWASAPI_CMD_SET_SESSION_CONTROL => {
-                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+            LASAPI_CMD_SET_SESSION_CONTROL => {
+                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
                 resp.hr = E_INVALIDARG;
                 let tgt_dev = c_str_to_string(&req.target_device);
                 if req.target_session_id < 10_000 {
@@ -2402,7 +2402,7 @@ impl AudiodgEngine {
                         let pa = self.pa();
                         if !pa.is_null() {
                             unsafe {
-                                lwasapi_pa_server_update_wasapi_session_vol(pa, w_slot, w_sid, vm, mu);
+                                lasapi_pa_server_update_lasapi_session_vol(pa, w_slot, w_sid, vm, mu);
                             }
                         }
                     }
@@ -2426,7 +2426,7 @@ impl AudiodgEngine {
                             c_dev.as_ptr()
                         };
                         if unsafe {
-                            lwasapi_pa_server_control_stream(
+                            lasapi_pa_server_control_stream(
                                 pa,
                                 req.target_session_id,
                                 vol_pct,
@@ -2440,8 +2440,8 @@ impl AudiodgEngine {
                 }
                 let tshow = if tgt_dev.is_empty() { "-" } else { &tgt_dev };
                 dbg_emit_vals(
-                    LWASAPI_DBG_WASAPI,
-                    if resp.hr == S_OK { LWASAPI_DBG_INFO } else { LWASAPI_DBG_WARN },
+                    LASAPI_DBG_LASAPI,
+                    if resp.hr == S_OK { LASAPI_DBG_INFO } else { LASAPI_DBG_WARN },
                     req.client_pid,
                     req.target_session_id,
                     req.volume_milli as i32,
@@ -2456,8 +2456,8 @@ impl AudiodgEngine {
                 );
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LWASAPI_CMD_INJECT_MIDI => {
-                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+            LASAPI_CMD_INJECT_MIDI => {
+                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
                 let mut ev = req.midi_ev;
                 if ev.size == 0 || ev.size > 3 {
                     resp.hr = E_INVALIDARG;
@@ -2470,7 +2470,7 @@ impl AudiodgEngine {
                         for slot in &ss.sessions {
                             let r = slot.ring_ptr();
                             if slot.in_use && !r.is_null() {
-                                unsafe { lwasapi_midi_push_to_ring(r, &ev) };
+                                unsafe { lasapi_midi_push_to_ring(r, &ev) };
                             }
                         }
                     }
@@ -2480,8 +2480,8 @@ impl AudiodgEngine {
                     resp.hr = S_OK;
                 }
                 dbg_emit_vals(
-                    LWASAPI_DBG_MIDI,
-                    if resp.hr == S_OK { LWASAPI_DBG_INFO } else { LWASAPI_DBG_WARN },
+                    LASAPI_DBG_MIDI,
+                    if resp.hr == S_OK { LASAPI_DBG_INFO } else { LASAPI_DBG_WARN },
                     req.client_pid,
                     0,
                     ev.data[0] as i32,
@@ -2496,8 +2496,8 @@ impl AudiodgEngine {
                 );
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LWASAPI_CMD_SET_ENGINE_CONFIG => {
-                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+            LASAPI_CMD_SET_ENGINE_CONFIG => {
+                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
                 let (cur_rate, cur_period, cur_bits, active_pb_copy) = {
                     let hws = self.hw_lock.lock().unwrap();
                     (
@@ -2507,11 +2507,11 @@ impl AudiodgEngine {
                         c_str_to_string(&hws.active_playback_id),
                     )
                 };
-                if req.stream_flags == LWASAPI_CFG_FLAG_CAPTURE_RATE {
+                if req.stream_flags == LASAPI_CFG_FLAG_CAPTURE_RATE {
                     if let Some(r) = self.reconfigure_capture_rate_impl(req.sample_rate) {
                         resp = r;
                         eprintln!(
-                            "[LWASAPI-Salsa] Capture/Mic Clock reconfigured -> {} Hz ({})",
+                            "[LASAPI-Salsa] Capture/Mic Clock reconfigured -> {} Hz ({})",
                             resp.actual_sample_rate,
                             if req.sample_rate == 0 {
                                 "Auto/Follow Master"
@@ -2520,8 +2520,8 @@ impl AudiodgEngine {
                             }
                         );
                         dbg_emit_vals(
-                            LWASAPI_DBG_ENGINE,
-                            LWASAPI_DBG_INFO,
+                            LASAPI_DBG_ENGINE,
+                            LASAPI_DBG_INFO,
                             req.client_pid,
                             0,
                             resp.actual_sample_rate as i32,
@@ -2558,12 +2558,12 @@ impl AudiodgEngine {
                         let ms = (1000.0 * (resp.actual_period_frames as f64))
                             / (resp.actual_sample_rate as f64);
                         eprintln!(
-                            "[LWASAPI-Salsa] Engine reconfigured -> {} Hz | {}-bit | Quantum {} frames ({:.2} ms)",
+                            "[LASAPI-Salsa] Engine reconfigured -> {} Hz | {}-bit | Quantum {} frames ({:.2} ms)",
                             resp.actual_sample_rate, actual_bits, resp.actual_period_frames, ms
                         );
                         dbg_emit_vals(
-                            LWASAPI_DBG_ENGINE,
-                            LWASAPI_DBG_INFO,
+                            LASAPI_DBG_ENGINE,
+                            LASAPI_DBG_INFO,
                             req.client_pid,
                             0,
                             resp.actual_sample_rate as i32,
@@ -2580,8 +2580,8 @@ impl AudiodgEngine {
                     Err(_) => {
                         resp.hr = E_INVALIDARG;
                         dbg_emit_vals(
-                            LWASAPI_DBG_ENGINE,
-                            LWASAPI_DBG_WARN,
+                            LASAPI_DBG_ENGINE,
+                            LASAPI_DBG_WARN,
                             req.client_pid,
                             0,
                             req_rate as i32,
@@ -2595,8 +2595,8 @@ impl AudiodgEngine {
                 }
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LWASAPI_CMD_SET_EQ => {
-                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+            LASAPI_CMD_SET_EQ => {
+                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
                 let eq_copy = {
                     let mut ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
                     ss.eq_cfg = req.eq_cfg;
@@ -2609,8 +2609,8 @@ impl AudiodgEngine {
                 }
                 let pname = c_str_to_string(&eq_copy.preset_name);
                 dbg_emit_vals(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
                     req.client_pid,
                     0,
                     eq_copy.enabled as i32,
@@ -2626,10 +2626,10 @@ impl AudiodgEngine {
                 resp.hr = S_OK;
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LWASAPI_CMD_SET_PARAM_EQ => {
-                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
-                let mut pay: LwasapiParamEqPayload = unsafe { mem::zeroed() };
-                if req.requested_buffer_frames as usize != mem::size_of::<LwasapiParamEqPayload>()
+            LASAPI_CMD_SET_PARAM_EQ => {
+                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
+                let mut pay: LasapiParamEqPayload = unsafe { mem::zeroed() };
+                if req.requested_buffer_frames as usize != mem::size_of::<LasapiParamEqPayload>()
                     || stream.read_exact(as_bytes_mut(&mut pay)).is_err()
                 {
                     resp.hr = E_INVALIDARG;
@@ -2649,8 +2649,8 @@ impl AudiodgEngine {
                 }
                 let pname = c_str_to_string(&pay.eq.preset_name);
                 dbg_emit_vals(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
                     0,
                     0,
                     pay.eq.enabled as i32,
@@ -2669,10 +2669,10 @@ impl AudiodgEngine {
                 resp.hr = S_OK;
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LWASAPI_CMD_SET_MIC_APO => {
-                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
-                let mut cfg: LwasapiMicApoCfg = unsafe { mem::zeroed() };
-                if req.requested_buffer_frames as usize != mem::size_of::<LwasapiMicApoCfg>()
+            LASAPI_CMD_SET_MIC_APO => {
+                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
+                let mut cfg: LasapiMicApoCfg = unsafe { mem::zeroed() };
+                if req.requested_buffer_frames as usize != mem::size_of::<LasapiMicApoCfg>()
                     || stream.read_exact(as_bytes_mut(&mut cfg)).is_err()
                 {
                     resp.hr = E_INVALIDARG;
@@ -2689,8 +2689,8 @@ impl AudiodgEngine {
                     self.save_state();
                 }
                 dbg_emit_vals(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
                     0,
                     0,
                     cfg.enabled as i32,
@@ -2710,10 +2710,10 @@ impl AudiodgEngine {
                 resp.hr = S_OK;
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LWASAPI_CMD_SET_BT_CODEC => {
-                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
-                let mut cfg: LwasapiBtCodecCfg = unsafe { mem::zeroed() };
-                if req.requested_buffer_frames as usize != mem::size_of::<LwasapiBtCodecCfg>()
+            LASAPI_CMD_SET_BT_CODEC => {
+                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
+                let mut cfg: LasapiBtCodecCfg = unsafe { mem::zeroed() };
+                if req.requested_buffer_frames as usize != mem::size_of::<LasapiBtCodecCfg>()
                     || stream.read_exact(as_bytes_mut(&mut cfg)).is_err()
                 {
                     resp.hr = E_INVALIDARG;
@@ -2723,11 +2723,11 @@ impl AudiodgEngine {
                 let bt_init = unsafe { salsa_bt_is_initialized(self.bt()) };
                 let bt_show = if bt_init {
                     unsafe {
-                        lwasapi_bluez_set_sco_enabled(self.bt(), cfg.hfp_sco_enabled != 0);
-                        lwasapi_bluez_set_codec_config(self.bt(), &cfg);
+                        lasapi_bluez_set_sco_enabled(self.bt(), cfg.hfp_sco_enabled != 0);
+                        lasapi_bluez_set_codec_config(self.bt(), &cfg);
                     }
                     let mut out_cfg = cfg;
-                    unsafe { lwasapi_bluez_get_codec_config(self.bt(), &mut out_cfg) };
+                    unsafe { lasapi_bluez_get_codec_config(self.bt(), &mut out_cfg) };
                     {
                         let mut sb = self.saved_bt.lock().unwrap();
                         sb.saved_bt_cfg = out_cfg;
@@ -2764,11 +2764,11 @@ impl AudiodgEngine {
                 }
                 let pa = self.pa();
                 if !pa.is_null() {
-                    unsafe { lwasapi_pa_server_notify_change(pa) };
+                    unsafe { lasapi_pa_server_notify_change(pa) };
                 }
                 dbg_emit_vals(
-                    LWASAPI_DBG_BLUEZ,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_BLUEZ,
+                    LASAPI_DBG_INFO,
                     0,
                     0,
                     bt_show.preferred_codec as i32,
@@ -2788,15 +2788,15 @@ impl AudiodgEngine {
                 resp.hr = S_OK;
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LWASAPI_CMD_BT_CONNECTION => {
-                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+            LASAPI_CMD_BT_CONNECTION => {
+                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
                 let action = req.requested_period_frames;
                 let mac = c_str_to_string(&req.target_device);
                 let c_mac = to_cstring_lossy(&mac);
                 let mut flags: u32 = 0;
                 let mut msg_buf = [0u8; 256];
                 let rc = unsafe {
-                    lwasapi_bluez_connection_ctl(
+                    lasapi_bluez_connection_ctl(
                         self.bt(),
                         action,
                         c_mac.as_ptr(),
@@ -2805,16 +2805,16 @@ impl AudiodgEngine {
                         &mut flags,
                     )
                 };
-                let mut dlist: LwasapiDeviceList = unsafe { mem::zeroed() };
+                let mut dlist: LasapiDeviceList = unsafe { mem::zeroed() };
                 self.enumerate_devices_safe(&mut dlist);
                 let usb_matches_bt = unsafe { any_usb_matches_bt(&dlist, self.bt()) };
                 if usb_matches_bt {
-                    flags |= LWASAPI_BT_STAT_USB_MATCHES_BT;
+                    flags |= LASAPI_BT_STAT_USB_MATCHES_BT;
                 }
-                if action != LWASAPI_BT_CONN_QUERY {
+                if action != LASAPI_BT_CONN_QUERY {
                     {
                         let mut sb = self.saved_bt.lock().unwrap();
-                        sb.bt_optional_mode = u32::from((flags & LWASAPI_BT_STAT_OPTIONAL) != 0);
+                        sb.bt_optional_mode = u32::from((flags & LASAPI_BT_STAT_OPTIONAL) != 0);
                     }
                     let (target_pb, pref_r, pref_p, pref_b, hw_is_bt) = {
                         let hws = self.hw_lock.lock().unwrap();
@@ -2832,11 +2832,11 @@ impl AudiodgEngine {
                         && ((target_pb == "auto" && !usb_matches_bt) || want_bt_target);
                     let reeval_disconnect = hw_is_bt;
                     let should_reapply = match action {
-                        LWASAPI_BT_CONN_CONNECT => reeval_connect,
-                        LWASAPI_BT_CONN_SET_AUTOCONN => {
-                            reeval_connect && (flags & LWASAPI_BT_STAT_CONNECTED) != 0
+                        LASAPI_BT_CONN_CONNECT => reeval_connect,
+                        LASAPI_BT_CONN_SET_AUTOCONN => {
+                            reeval_connect && (flags & LASAPI_BT_STAT_CONNECTED) != 0
                         }
-                        LWASAPI_BT_CONN_DISCONNECT => reeval_disconnect,
+                        LASAPI_BT_CONN_DISCONNECT => reeval_disconnect,
                         _ => false,
                     };
                     {
@@ -2851,38 +2851,38 @@ impl AudiodgEngine {
                                 false,
                                 Some(&dlist),
                             );
-                        } else if action == LWASAPI_BT_CONN_CONNECT && !hw_is_bt {
+                        } else if action == LASAPI_BT_CONN_CONNECT && !hw_is_bt {
                             // Keep A2DP linked in standby without acquiring L2CAP when pinned to TV/wired/USB.
-                            unsafe { lwasapi_bluez_set_tx_enabled(self.bt(), false) };
+                            unsafe { lasapi_bluez_set_tx_enabled(self.bt(), false) };
                         }
                         self.save_state();
                     }
                     let pa = self.pa();
                     if !pa.is_null() {
-                        unsafe { lwasapi_pa_server_notify_change(pa) };
+                        unsafe { lasapi_pa_server_notify_change(pa) };
                     }
                     let snap_after = snapshot_bt(self.bt());
                     flags = 0;
-                    if unsafe { lwasapi_bluez_is_optional_mode(self.bt()) } {
-                        flags |= LWASAPI_BT_STAT_OPTIONAL;
+                    if unsafe { lasapi_bluez_is_optional_mode(self.bt()) } {
+                        flags |= LASAPI_BT_STAT_OPTIONAL;
                     }
                     if snap_after.has_bluez_transport || !c_str_to_string(&snap_after.device_path).is_empty() {
-                        flags |= LWASAPI_BT_STAT_CONNECTED;
+                        flags |= LASAPI_BT_STAT_CONNECTED;
                     }
                     if snap_after.has_bluez_transport
                         && snap_after.direct_socket_mode
                         && snap_after.bt_fd >= 0
                     {
-                        flags |= LWASAPI_BT_STAT_TRANSPORT;
+                        flags |= LASAPI_BT_STAT_TRANSPORT;
                     }
                     if usb_matches_bt {
-                        flags |= LWASAPI_BT_STAT_USB_MATCHES_BT;
+                        flags |= LASAPI_BT_STAT_USB_MATCHES_BT;
                     }
                 }
-                if action != LWASAPI_BT_CONN_QUERY || rc < 0 {
+                if action != LASAPI_BT_CONN_QUERY || rc < 0 {
                     dbg_emit_vals(
-                        LWASAPI_DBG_BLUEZ,
-                        if rc >= 0 { LWASAPI_DBG_INFO } else { LWASAPI_DBG_WARN },
+                        LASAPI_DBG_BLUEZ,
+                        if rc >= 0 { LASAPI_DBG_INFO } else { LASAPI_DBG_WARN },
                         0,
                         0,
                         action as i32,
@@ -2897,17 +2897,17 @@ impl AudiodgEngine {
                 resp.session_id = flags;
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LWASAPI_CMD_SET_HW_ANALOG => {
-                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
-                let mut cfg: LwasapiHwAnalogCfg = unsafe { mem::zeroed() };
-                if req.requested_buffer_frames as usize != mem::size_of::<LwasapiHwAnalogCfg>()
+            LASAPI_CMD_SET_HW_ANALOG => {
+                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
+                let mut cfg: LasapiHwAnalogCfg = unsafe { mem::zeroed() };
+                if req.requested_buffer_frames as usize != mem::size_of::<LasapiHwAnalogCfg>()
                     || stream.read_exact(as_bytes_mut(&mut cfg)).is_err()
                 {
                     resp.hr = E_INVALIDARG;
                     let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
                     return;
                 }
-                unsafe { lwasapi_hw_analog_clamp_cfg(&mut cfg) };
+                unsafe { lasapi_hw_analog_clamp_cfg(&mut cfg) };
                 {
                     let mut ss = self.sessions_lock.lock().unwrap();
                     ss.hw_analog_cfg = cfg;
@@ -2919,11 +2919,11 @@ impl AudiodgEngine {
                 }
                 let pa = self.pa();
                 if !pa.is_null() {
-                    unsafe { lwasapi_pa_server_notify_change(pa) };
+                    unsafe { lasapi_pa_server_notify_change(pa) };
                 }
                 dbg_emit_vals(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
                     0,
                     0,
                     cfg.hp_amp_tier as i32,
@@ -2944,15 +2944,15 @@ impl AudiodgEngine {
                 resp.hr = S_OK;
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LWASAPI_CMD_SAVE_CONFIG => {
-                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+            LASAPI_CMD_SAVE_CONFIG => {
+                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
                 {
                     let _reconf = self.reconf_lock.lock().unwrap_or_else(|e| e.into_inner());
                     self.save_state();
                 }
                 dbg_emit(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
                     req.client_pid,
                     0,
                     "CFG_SAVE",
@@ -2962,8 +2962,8 @@ impl AudiodgEngine {
                 resp.hr = S_OK;
                 let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LWASAPI_CMD_RELOAD_CONFIG => {
-                let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+            LASAPI_CMD_RELOAD_CONFIG => {
+                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
                 let mut rt = default_runtime_state();
                 unsafe {
                     salsa_state_init_defaults(&mut rt);
@@ -2973,7 +2973,7 @@ impl AudiodgEngine {
                 unsafe {
                     salsa_dsp_clamp_param_eq_ext(&mut rt.param_eq);
                     salsa_dsp_clamp_mic_apo_cfg(&mut rt.mic_apo);
-                    lwasapi_hw_analog_clamp_cfg(&mut rt.hw_analog_cfg);
+                    lasapi_hw_analog_clamp_cfg(&mut rt.hw_analog_cfg);
                 }
 
                 {
@@ -3000,16 +3000,16 @@ impl AudiodgEngine {
                 }
                 if bt_init {
                     unsafe {
-                        lwasapi_bluez_set_optional_mode(self.bt(), rt.bt_optional_mode != 0);
-                        lwasapi_bluez_set_sco_enabled(self.bt(), rt.bt_cfg.hfp_sco_enabled != 0);
-                        lwasapi_bluez_set_codec_config(self.bt(), &rt.bt_cfg);
+                        lasapi_bluez_set_optional_mode(self.bt(), rt.bt_optional_mode != 0);
+                        lasapi_bluez_set_sco_enabled(self.bt(), rt.bt_cfg.hfp_sco_enabled != 0);
+                        lasapi_bluez_set_codec_config(self.bt(), &rt.bt_cfg);
                         if rt.has_saved_vol_state {
-                            lwasapi_bluez_set_volume(
+                            lasapi_bluez_set_volume(
                                 self.bt(),
                                 rt.desktop_volume_pct as c_int,
                                 if rt.desktop_muted != 0 { 1 } else { 0 },
                             );
-                            lwasapi_bluez_set_mic_gain_ppm(
+                            lasapi_bluez_set_mic_gain_ppm(
                                 self.bt(),
                                 rt.desktop_mic_gain_ppm,
                                 rt.desktop_mic_volume_pct as c_int,
@@ -3054,13 +3054,13 @@ impl AudiodgEngine {
                 let pa = self.pa();
                 if !pa.is_null() {
                     unsafe {
-                        lwasapi_pa_server_notify_change(pa);
-                        lwasapi_pa_server_notify_volume(pa, false);
+                        lasapi_pa_server_notify_change(pa);
+                        lasapi_pa_server_notify_volume(pa, false);
                     }
                 }
                 dbg_emit(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
                     req.client_pid,
                     0,
                     "CFG_RELOAD",
@@ -3080,26 +3080,26 @@ impl AudiodgEngine {
             if try_realtime_fifo(p) {
                 prio_set = p as u32;
                 eprintln!(
-                    "[LWASAPI-MMCSS] Real-time SCHED_FIFO priority {} enabled for audio graph thread.",
+                    "[LASAPI-MMCSS] Real-time SCHED_FIFO priority {} enabled for audio graph thread.",
                     prio_set
                 );
                 break;
             }
         }
         if prio_set == 0 {
-            eprintln!("[LWASAPI-MMCSS] Running in standard scheduler priority (grant rtprio for SCHED_FIFO).");
+            eprintln!("[LASAPI-MMCSS] Running in standard scheduler priority (grant rtprio for SCHED_FIFO).");
         }
         self.rt_priority.store(prio_set, Ordering::Relaxed);
 
-        let mut mix_buf = vec![0.0f32; LWASAPI_MAX_PERIOD * LWASAPI_MAX_CHANNELS];
-        let mut wasapi_doi_buf = vec![0.0f32; LWASAPI_MAX_PERIOD * LWASAPI_MAX_CHANNELS];
-        let mut pa_stereo = vec![0.0f32; LWASAPI_MAX_PERIOD * 2];
-        let mut mic_buf = vec![0.0f32; LWASAPI_MAX_PERIOD * 2];
-        let mut native_mic_buf = vec![0.0f32; LWASAPI_MAX_PERIOD * 2];
-        let mut s32_buf = vec![0i32; LWASAPI_MAX_PERIOD * LWASAPI_MAX_CHANNELS];
-        let mut s24_buf = vec![0u8; LWASAPI_MAX_PERIOD * LWASAPI_MAX_CHANNELS * 3];
-        let mut s16_buf = vec![0i16; LWASAPI_MAX_PERIOD * LWASAPI_MAX_CHANNELS];
-        let mut midi_ev: [LwasapiMidiEvent; 64] = [LwasapiMidiEvent::default(); 64];
+        let mut mix_buf = vec![0.0f32; LASAPI_MAX_PERIOD * LASAPI_MAX_CHANNELS];
+        let mut lasapi_doi_buf = vec![0.0f32; LASAPI_MAX_PERIOD * LASAPI_MAX_CHANNELS];
+        let mut pa_stereo = vec![0.0f32; LASAPI_MAX_PERIOD * 2];
+        let mut mic_buf = vec![0.0f32; LASAPI_MAX_PERIOD * 2];
+        let mut native_mic_buf = vec![0.0f32; LASAPI_MAX_PERIOD * 2];
+        let mut s32_buf = vec![0i32; LASAPI_MAX_PERIOD * LASAPI_MAX_CHANNELS];
+        let mut s24_buf = vec![0u8; LASAPI_MAX_PERIOD * LASAPI_MAX_CHANNELS * 3];
+        let mut s16_buf = vec![0i16; LASAPI_MAX_PERIOD * LASAPI_MAX_CHANNELS];
+        let mut midi_ev: [LasapiMidiEvent; 64] = [LasapiMidiEvent::default(); 64];
 
         let mut mic_read_cursor = 0u64;
         let mut mic_up_st = SalsaMicCubicState {
@@ -3124,11 +3124,11 @@ impl AudiodgEngine {
             if period < 64 {
                 period = 64;
             }
-            if (period as usize) > LWASAPI_MAX_PERIOD {
-                period = LWASAPI_MAX_PERIOD as u32;
+            if (period as usize) > LASAPI_MAX_PERIOD {
+                period = LASAPI_MAX_PERIOD as u32;
             }
-            if (ch as usize) > LWASAPI_MAX_CHANNELS {
-                ch = LWASAPI_MAX_CHANNELS as u32;
+            if (ch as usize) > LASAPI_MAX_CHANNELS {
+                ch = LASAPI_MAX_CHANNELS as u32;
             }
             let p_us = period as usize;
             let ch_us = ch as usize;
@@ -3146,10 +3146,10 @@ impl AudiodgEngine {
             let mut mic_frames = period;
             let mut mic_rate = rate;
             unsafe {
-                lwasapi_bluez_read_capture_native(
+                lasapi_bluez_read_capture_native(
                     self.bt(),
                     native_mic_buf.as_mut_ptr(),
-                    LWASAPI_MAX_PERIOD as u32,
+                    LASAPI_MAX_PERIOD as u32,
                     &mut mic_frames,
                     &mut mic_rate,
                     period,
@@ -3157,8 +3157,8 @@ impl AudiodgEngine {
                     &mut mic_read_cursor,
                 );
             }
-            if (mic_frames as usize) > LWASAPI_MAX_PERIOD {
-                mic_frames = LWASAPI_MAX_PERIOD as u32;
+            if (mic_frames as usize) > LASAPI_MAX_PERIOD {
+                mic_frames = LASAPI_MAX_PERIOD as u32;
             }
             self.cap_read_cursor.store(mic_read_cursor, Ordering::Relaxed);
             if mic_rate != last_mic_up_rate {
@@ -3171,7 +3171,7 @@ impl AudiodgEngine {
             }
             let hwa = self.hwa();
             if !hwa.is_null() {
-                let cap_makeup = unsafe { lwasapi_hw_analog_get_cap_makeup_linear(hwa) };
+                let cap_makeup = unsafe { lasapi_hw_analog_get_cap_makeup_linear(hwa) };
                 unsafe {
                     salsa_dsp_scale_cap_clip(native_mic_buf.as_mut_ptr(), mic_frames * 2, cap_makeup);
                 }
@@ -3193,7 +3193,7 @@ impl AudiodgEngine {
             let num_midi = {
                 let mut mh = self.midi_hub.lock().unwrap_or_else(|e| e.into_inner());
                 let n = unsafe {
-                    lwasapi_midi_poll_events(
+                    lasapi_midi_poll_events(
                         &mut *mh.0,
                         midi_ev.as_mut_ptr(),
                         64,
@@ -3217,7 +3217,7 @@ impl AudiodgEngine {
                         let r = slot.ring_ptr();
                         if slot.in_use && !r.is_null() {
                             for ev in &midi_ev[..num_midi] {
-                                unsafe { lwasapi_midi_push_to_ring(r, ev) };
+                                unsafe { lasapi_midi_push_to_ring(r, ev) };
                             }
                         }
                     }
@@ -3226,7 +3226,7 @@ impl AudiodgEngine {
                 let exclusive_id = ss.exclusive_session_id;
                 let pa = self.pa();
                 let doi_mask = if !pa.is_null() {
-                    unsafe { lwasapi_pa_server_wasapi_doi_mask(pa) }
+                    unsafe { lasapi_pa_server_lasapi_doi_mask(pa) }
                 } else {
                     0
                 };
@@ -3237,13 +3237,13 @@ impl AudiodgEngine {
                             unsafe {
                                 (*ptr::addr_of!((*r).hw_clock_ns)).store(now_ns, Ordering::Relaxed);
                             }
-                            consume_wasapi_playback_slot(
+                            consume_lasapi_playback_slot(
                                 slot_idx,
                                 slot,
                                 r,
                                 pa,
                                 doi_mask,
-                                &mut wasapi_doi_buf,
+                                &mut lasapi_doi_buf,
                                 &mut mix_buf,
                                 (period, ch, rate, now_ns),
                                 true,
@@ -3259,13 +3259,13 @@ impl AudiodgEngine {
                                 (*ptr::addr_of!((*r).hw_clock_ns)).store(now_ns, Ordering::Relaxed);
                             }
                             if !slot.is_capture && !slot.is_loopback {
-                                consume_wasapi_playback_slot(
+                                consume_lasapi_playback_slot(
                                     slot_idx,
                                     slot,
                                     r,
                                     pa,
                                     doi_mask,
-                                    &mut wasapi_doi_buf,
+                                    &mut lasapi_doi_buf,
                                     &mut mix_buf,
                                     (period, ch, rate, now_ns),
                                     false,
@@ -3277,12 +3277,12 @@ impl AudiodgEngine {
                         let t_pa0 = mono_ns();
                         if ch == 2 {
                             unsafe {
-                                lwasapi_pa_server_mix_playback(pa, mix_buf.as_mut_ptr(), period, rate);
+                                lasapi_pa_server_mix_playback(pa, mix_buf.as_mut_ptr(), period, rate);
                             }
                         } else {
                             pa_stereo[..p_us * 2].fill(0.0);
                             unsafe {
-                                lwasapi_pa_server_mix_playback(pa, pa_stereo.as_mut_ptr(), period, rate);
+                                lasapi_pa_server_mix_playback(pa, pa_stereo.as_mut_ptr(), period, rate);
                             }
                             for f in 0..p_us {
                                 if ch_us == 1 {
@@ -3326,7 +3326,7 @@ impl AudiodgEngine {
                     monitor_is_pa_stereo = false;
                 }
 
-                // 4. Mic upsample + WASAPI capture push
+                // 4. Mic upsample + LASAPI capture push
                 let mut need_eng_mic =
                     mic_cfg.enabled != 0 && mic_cfg.sidetone_enabled != 0 && mic_cfg.sidetone_pct > 0;
                 if !need_eng_mic {
@@ -3367,7 +3367,7 @@ impl AudiodgEngine {
                                 let cw = cwf.load(Ordering::Relaxed);
                                 let cap_base = ptr::addr_of_mut!((*r).cap_pcm_data.0) as *mut f32;
                                 for f in 0..p_us {
-                                    let idx = ((cw.wrapping_add(f as u64) as usize) & LWASAPI_RING_MASK) * 2;
+                                    let idx = ((cw.wrapping_add(f as u64) as usize) & LASAPI_RING_MASK) * 2;
                                     cap_base.add(idx).write(cap_src[f * 2]);
                                     cap_base.add(idx + 1).write(cap_src[f * 2 + 1]);
                                 }
@@ -3390,7 +3390,7 @@ impl AudiodgEngine {
                     mix_buf.as_ptr()
                 };
                 unsafe {
-                    lwasapi_pa_server_push_capture(
+                    lasapi_pa_server_push_capture(
                         pa,
                         native_mic_buf.as_ptr(),
                         mic_frames,
@@ -3436,8 +3436,8 @@ impl AudiodgEngine {
                         let (drive_gain, softknee) = if !hwa.is_null() {
                             unsafe {
                                 (
-                                    lwasapi_hw_analog_get_drive_linear(hwa),
-                                    lwasapi_hw_analog_softknee_active(hwa),
+                                    lasapi_hw_analog_get_drive_linear(hwa),
+                                    lasapi_hw_analog_softknee_active(hwa),
                                 )
                             }
                         } else {
@@ -3445,7 +3445,7 @@ impl AudiodgEngine {
                         };
                         apply_bt_hw_analog_drive(&mut mix_buf[..p_us * ch_us], drive_gain, softknee);
                         unsafe {
-                            lwasapi_bluez_write_period(self.bt(), mix_buf.as_ptr(), period, ch);
+                            lasapi_bluez_write_period(self.bt(), mix_buf.as_ptr(), period, ch);
                         }
                     } else if !hw_snap.is_virtual && hw_snap.fd >= 0 {
                         let mut d_vol = 100u32;
@@ -3458,7 +3458,7 @@ impl AudiodgEngine {
                         };
                         let mut softknee = false;
                         if !hwa.is_null() {
-                            if unsafe { lwasapi_hw_analog_is_dac_unity_active(hwa) } {
+                            if unsafe { lasapi_hw_analog_is_dac_unity_active(hwa) } {
                                 master_gain = if d_muted {
                                     0.0
                                 } else if d_vol <= 100 {
@@ -3467,8 +3467,8 @@ impl AudiodgEngine {
                                     (d_vol as f32) / 100.0
                                 };
                             }
-                            master_gain *= unsafe { lwasapi_hw_analog_get_drive_linear(hwa) };
-                            softknee = unsafe { lwasapi_hw_analog_softknee_active(hwa) };
+                            master_gain *= unsafe { lasapi_hw_analog_get_drive_linear(hwa) };
+                            softknee = unsafe { lasapi_hw_analog_softknee_active(hwa) };
                         }
 
                         let (pack_fmt, pack_dst): (u32, *mut u8) = match hw_snap.sndrv_format {
@@ -3510,8 +3510,8 @@ impl AudiodgEngine {
                                 if xc <= 16 || xc.is_power_of_two() || xc.is_multiple_of(256) {
                                     let dp = c_str_to_string(&hw_snap.device_path);
                                     dbg_emit_vals(
-                                        LWASAPI_DBG_ALSA,
-                                        LWASAPI_DBG_WARN,
+                                        LASAPI_DBG_ALSA,
+                                        LASAPI_DBG_WARN,
                                         0,
                                         0,
                                         xc as i32,
@@ -3549,8 +3549,8 @@ impl AudiodgEngine {
                             {
                                 let dp = c_str_to_string(&hw_snap.device_path);
                                 dbg_emit_vals(
-                                    LWASAPI_DBG_ALSA,
-                                    LWASAPI_DBG_ERR,
+                                    LASAPI_DBG_ALSA,
+                                    LASAPI_DBG_ERR,
                                     0,
                                     0,
                                     dead_err,
@@ -3563,7 +3563,7 @@ impl AudiodgEngine {
                                     ),
                                 );
                                 eprintln!(
-                                    "[LWASAPI-audiodg] Kernel playback device {} removed (errno={}), dropping to virtual clock until failover.",
+                                    "[LASAPI-audiodg] Kernel playback device {} removed (errno={}), dropping to virtual clock until failover.",
                                     dp, dead_err
                                 );
                                 let mut hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -3592,7 +3592,7 @@ impl AudiodgEngine {
             } else {
                 t_hw0.saturating_sub(now_ns)
             };
-            lwasapi_debug_record_rt_period(
+            lasapi_debug_record_rt_period(
                 cycle_ns,
                 wake_jitter_ns,
                 period_ns,
@@ -3621,7 +3621,7 @@ impl AudiodgEngine {
 }
 
 fn destroy_session_slot(ss: &mut SessionsState, slot_idx: usize) {
-    if slot_idx >= LWASAPI_MAX_SESSIONS || !ss.sessions[slot_idx].in_use {
+    if slot_idx >= LASAPI_MAX_SESSIONS || !ss.sessions[slot_idx].in_use {
         return;
     }
     let sid = ss.sessions[slot_idx].session_id;
@@ -3635,12 +3635,12 @@ fn destroy_session_slot(ss: &mut SessionsState, slot_idx: usize) {
     if (sid as i32) == ss.exclusive_session_id {
         ss.exclusive_session_id = -1;
         eprintln!(
-            "[LWASAPI-audiodg] Exclusive mode released by session {}; Shared Mode restored.",
+            "[LASAPI-audiodg] Exclusive mode released by session {}; Shared Mode restored.",
             sid
         );
         dbg_emit(
-            LWASAPI_DBG_WASAPI,
-            LWASAPI_DBG_INFO,
+            LASAPI_DBG_LASAPI,
+            LASAPI_DBG_INFO,
             cpid,
             sid,
             "EXCL_RELEASE",
@@ -3649,11 +3649,11 @@ fn destroy_session_slot(ss: &mut SessionsState, slot_idx: usize) {
         );
     }
     dbg_emit(
-        LWASAPI_DBG_WASAPI,
-        LWASAPI_DBG_INFO,
+        LASAPI_DBG_LASAPI,
+        LASAPI_DBG_INFO,
         cpid,
         sid,
-        "WASAPI_DESTROY",
+        "LASAPI_DESTROY",
         &label,
         &format!("session slot={slot_idx} closed"),
     );
@@ -3662,13 +3662,13 @@ fn destroy_session_slot(ss: &mut SessionsState, slot_idx: usize) {
 
 #[inline]
 #[allow(clippy::too_many_arguments)]
-fn consume_wasapi_playback_slot(
+fn consume_lasapi_playback_slot(
     slot_idx: usize,
     slot: &mut EngineSession,
-    r: *mut LwasapiShmRing,
+    r: *mut LasapiShmRing,
     pa: *mut PaServerHandle,
     doi_mask: u32,
-    wasapi_doi_buf: &mut [f32],
+    lasapi_doi_buf: &mut [f32],
     mix_buf: &mut [f32],
     spec: (u32, u32, u32, u64),
     exclusive: bool,
@@ -3678,7 +3678,7 @@ fn consume_wasapi_playback_slot(
         let mut new_vol = 0u32;
         let mut new_mut = 0u32;
         if unsafe {
-            lwasapi_pa_server_poll_wasapi_ctl(
+            lasapi_pa_server_poll_lasapi_ctl(
                 pa,
                 slot_idx as u32,
                 &mut slot.last_pa_ctl_seq,
@@ -3694,8 +3694,8 @@ fn consume_wasapi_playback_slot(
     }
     let watch_doi = !pa.is_null() && slot_idx < 32 && ((doi_mask >> slot_idx) & 1) != 0;
     let total_samples = (period as usize) * (ch as usize);
-    if watch_doi && total_samples <= wasapi_doi_buf.len() && total_samples <= mix_buf.len() {
-        let doi_slice = &mut wasapi_doi_buf[..total_samples];
+    if watch_doi && total_samples <= lasapi_doi_buf.len() && total_samples <= mix_buf.len() {
+        let doi_slice = &mut lasapi_doi_buf[..total_samples];
         doi_slice.fill(0.0);
         unsafe {
             salsa_dsp_consume_session_frames(
@@ -3713,7 +3713,7 @@ fn consume_wasapi_playback_slot(
                 true,
                 now_ns,
             );
-            lwasapi_pa_server_push_wasapi_period(pa, slot_idx as u32, doi_slice.as_ptr(), period, ch);
+            lasapi_pa_server_push_lasapi_period(pa, slot_idx as u32, doi_slice.as_ptr(), period, ch);
         }
         if exclusive {
             mix_buf[..total_samples].copy_from_slice(doi_slice);
@@ -3743,7 +3743,7 @@ fn consume_wasapi_playback_slot(
     }
 }
 
-unsafe extern "C" fn pa_cb_get_status(ctx: *mut c_void, out_st: *mut LwasapiEngineStatus) {
+unsafe extern "C" fn pa_cb_get_status(ctx: *mut c_void, out_st: *mut LasapiEngineStatus) {
     if ctx.is_null() || out_st.is_null() {
         return;
     }
@@ -3751,7 +3751,7 @@ unsafe extern "C" fn pa_cb_get_status(ctx: *mut c_void, out_st: *mut LwasapiEngi
     eng.fill_engine_status_impl(unsafe { &mut *out_st }, false);
 }
 
-unsafe extern "C" fn pa_cb_get_devices(ctx: *mut c_void, out_list: *mut LwasapiDeviceList) {
+unsafe extern "C" fn pa_cb_get_devices(ctx: *mut c_void, out_list: *mut LasapiDeviceList) {
     if ctx.is_null() || out_list.is_null() {
         return;
     }
@@ -3785,14 +3785,14 @@ unsafe extern "C" fn pa_cb_set_master_volume(
     let eng = unsafe { &*(ctx as *const AudiodgEngine) };
     let rc = unsafe {
         if is_capture != 0 {
-            lwasapi_bluez_set_mic_volume(eng.bt(), vol_pct, mute_flag)
+            lasapi_bluez_set_mic_volume(eng.bt(), vol_pct, mute_flag)
         } else {
-            lwasapi_bluez_set_volume(eng.bt(), vol_pct, mute_flag)
+            lasapi_bluez_set_volume(eng.bt(), vol_pct, mute_flag)
         }
     };
     dbg_emit_vals(
-        LWASAPI_DBG_PA,
-        LWASAPI_DBG_INFO,
+        LASAPI_DBG_PA,
+        LASAPI_DBG_INFO,
         0,
         is_capture as u32,
         vol_pct,
@@ -3819,7 +3819,7 @@ unsafe extern "C" fn pa_cb_set_mic_gain_ppm(
         return -1;
     }
     let eng = unsafe { &*(ctx as *const AudiodgEngine) };
-    let rc = unsafe { lwasapi_bluez_set_mic_gain_ppm(eng.bt(), gain_ppm, vol_pct, mute_flag) };
+    let rc = unsafe { lasapi_bluez_set_mic_gain_ppm(eng.bt(), gain_ppm, vol_pct, mute_flag) };
     eng.hw_analog_probe_and_sync(false);
     if rc == 0 {
         eng.mark_state_dirty();
@@ -3827,13 +3827,13 @@ unsafe extern "C" fn pa_cb_set_mic_gain_ppm(
     rc
 }
 
-unsafe extern "C" fn dbg_fill_snapshot_cb(ctx: *mut c_void, snap: *mut LwasapiDbgSnapshot) {
+unsafe extern "C" fn dbg_fill_snapshot_cb(ctx: *mut c_void, snap: *mut LasapiDbgSnapshot) {
     if ctx.is_null() || snap.is_null() {
         return;
     }
     let eng = unsafe { &*(ctx as *const AudiodgEngine) };
     let snap_ref = unsafe { &mut *snap };
-    let saved_rt: LwasapiDbgRtStats = snap_ref.rt;
+    let saved_rt: LasapiDbgRtStats = snap_ref.rt;
     unsafe { ptr::write_bytes(snap_ref, 0, 1) };
     snap_ref.rt = saved_rt;
 
@@ -3866,7 +3866,7 @@ unsafe extern "C" fn dbg_fill_snapshot_cb(ctx: *mut c_void, snap: *mut LwasapiDb
     snap_ref.bt_mtu_w = bt_snap.write_mtu;
     snap_ref.bt_avrcp_vol = bt_snap.avrcp_volume;
     snap_ref.bt_tx_ring_fill = bt_snap.tx_ring_fill;
-    snap_ref.bt_tx_ring_cap = LWASAPI_BT_RING_FRAMES;
+    snap_ref.bt_tx_ring_cap = LASAPI_BT_RING_FRAMES;
     snap_ref.bt_tx_packets = bt_snap.tx_packets_sent;
     snap_ref.bt_tx_underruns = bt_snap.tx_underruns;
     snap_ref.bt_tx_errors = bt_snap.tx_errors;
@@ -3917,8 +3917,8 @@ unsafe extern "C" fn dbg_fill_snapshot_cb(ctx: *mut c_void, snap: *mut LwasapiDb
         let mut wcnt = 0usize;
         for slot in &ss.sessions {
             let r = slot.ring_ptr();
-            if slot.in_use && !r.is_null() && wcnt < LWASAPI_MAX_SESSIONS {
-                let ws = &mut snap_ref.wasapi[wcnt];
+            if slot.in_use && !r.is_null() && wcnt < LASAPI_MAX_SESSIONS {
+                let ws = &mut snap_ref.lasapi[wcnt];
                 wcnt += 1;
                 unsafe {
                     ws.session_id = slot.session_id;
@@ -3950,16 +3950,16 @@ unsafe extern "C" fn dbg_fill_snapshot_cb(ctx: *mut c_void, snap: *mut LwasapiDb
                 }
             }
         }
-        snap_ref.num_wasapi = wcnt as u32;
+        snap_ref.num_lasapi = wcnt as u32;
     }
 
     let pa = eng.pa();
     if !pa.is_null() {
-        unsafe { lwasapi_pa_server_fill_debug(pa, &mut snap_ref.pa) };
+        unsafe { lasapi_pa_server_fill_debug(pa, &mut snap_ref.pa) };
     }
     let pw = eng.pw();
     if !pw.is_null() {
-        unsafe { lwasapi_pw_broker_fill_debug(pw, &mut snap_ref.pw) };
+        unsafe { lasapi_pw_broker_fill_debug(pw, &mut snap_ref.pw) };
     }
 }
 
@@ -3986,12 +3986,12 @@ unsafe extern "C" fn dbg_handle_cmd_cb(
         let pa = eng.pa();
         let pw = eng.pw();
         let pa_n = if !pa.is_null() {
-            unsafe { lwasapi_pa_server_reset_clients(pa) }
+            unsafe { lasapi_pa_server_reset_clients(pa) }
         } else {
             0
         };
         let pw_n = if !pw.is_null() {
-            unsafe { lwasapi_pw_broker_reset_clients(pw) }
+            unsafe { lasapi_pw_broker_reset_clients(pw) }
         } else {
             0
         };
@@ -4000,8 +4000,8 @@ unsafe extern "C" fn dbg_handle_cmd_cb(
             "Flushed {pa_n} PA + {pw_n} PW network clients (audio engine uninterrupted)"
         );
         dbg_emit(
-            LWASAPI_DBG_ENGINE,
-            LWASAPI_DBG_INFO,
+            LASAPI_DBG_ENGINE,
+            LASAPI_DBG_INFO,
             current_pid(),
             0,
             "NET_FAILSAFE_RESET",
@@ -4016,7 +4016,7 @@ unsafe extern "C" fn dbg_handle_cmd_cb(
     if cmd == "RESET_PA_CLIENTS" {
         let pa = eng.pa();
         let pa_n = if !pa.is_null() {
-            unsafe { lwasapi_pa_server_reset_clients(pa) }
+            unsafe { lasapi_pa_server_reset_clients(pa) }
         } else {
             0
         };
@@ -4028,8 +4028,8 @@ unsafe extern "C" fn dbg_handle_cmd_cb(
             "Flushed {pa_n} PA audio clients (ScreenCast & audio engine preserved)"
         );
         dbg_emit(
-            LWASAPI_DBG_ENGINE,
-            LWASAPI_DBG_INFO,
+            LASAPI_DBG_ENGINE,
+            LASAPI_DBG_INFO,
             current_pid(),
             0,
             "NET_FAILSAFE_RESET",
@@ -4061,7 +4061,7 @@ unsafe extern "C" fn dbg_handle_cmd_cb(
             let mw = if vals.len() >= 4 { vals[2] } else { 0 };
             let mh = if vals.len() >= 4 { vals[3] } else { 0 };
             let fps = if vals.len() >= 5 { vals[4] } else { 0 };
-            unsafe { lwasapi_pw_broker_set_preview_ex(pw, en, ttl, mw, mh, fps) };
+            unsafe { lasapi_pw_broker_set_preview_ex(pw, en, ttl, mw, mh, fps) };
             if let Some(out) = reply_slice {
                 copy_str_to_c(
                     out,
@@ -4090,7 +4090,7 @@ unsafe extern "C" fn dbg_handle_cmd_cb(
             .collect();
         if vals.len() >= 3 {
             let (mw, mh, fps) = (vals[0], vals[1], vals[2]);
-            unsafe { lwasapi_pw_broker_set_cast_limits(pw, mw, mh, fps) };
+            unsafe { lasapi_pw_broker_set_cast_limits(pw, mw, mh, fps) };
             if let Some(out) = reply_slice {
                 copy_str_to_c(out, &format!("cast_limits={mw}x{mh}@{fps}fps"));
             }
@@ -4106,11 +4106,11 @@ unsafe extern "C" fn dbg_handle_cmd_cb(
         let (ptr, cap) = reply_slice
             .map(|s| (s.as_mut_ptr().cast::<c_char>(), s.len()))
             .unwrap_or((ptr::null_mut(), 0));
-        return unsafe { lwasapi_pw_broker_self_test(pw, ptr, cap) };
+        return unsafe { lasapi_pw_broker_self_test(pw, ptr, cap) };
     }
 
     if cmd == "PW_SYNC_MODE" {
-        let rc = unsafe { lwasapi_pw_broker_sync_mode(pw) };
+        let rc = unsafe { lasapi_pw_broker_sync_mode(pw) };
         if let Some(out) = reply_slice {
             copy_str_to_c(out, &format!("sync_mode rc={rc}"));
         }
@@ -4142,13 +4142,13 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
 
     for arg in args.iter().skip(1) {
         if matches!(arg.as_str(), "--version" | "-V" | "--license" | "--legal") {
-            if let Some(rc) = crate::legal::handle_common_cli_flag("lwasapi-audiodg", arg) {
+            if let Some(rc) = crate::legal::handle_common_cli_flag("lasapi-audiodg", arg) {
                 return rc;
             }
         }
     }
 
-    let mut sock_path = resolve_sock_path_common("LWASAPI_SOCKET", "audiodg.sock", LWASAPI_SOCKET_DEFAULT);
+    let mut sock_path = resolve_sock_path_common("LASAPI_SOCKET", "audiodg.sock", LASAPI_SOCKET_DEFAULT);
 
     let mut rt = default_runtime_state();
     unsafe {
@@ -4173,7 +4173,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                 match args[i + 1].trim().parse::<u32>() {
                     Ok(r) if (44_100..=192_000).contains(&r) => rate_arg = r,
                     _ => eprintln!(
-                        "[LWASAPI-audiodg] Ignoring invalid --rate '{}', keeping {} Hz",
+                        "[LASAPI-audiodg] Ignoring invalid --rate '{}', keeping {} Hz",
                         args[i + 1], rate_arg
                     ),
                 }
@@ -4181,9 +4181,9 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
             }
             "--period" if i + 1 < args.len() => {
                 match args[i + 1].trim().parse::<u32>() {
-                    Ok(p) if (64..=(LWASAPI_MAX_PERIOD as u32)).contains(&p) => period_arg = p,
+                    Ok(p) if (64..=(LASAPI_MAX_PERIOD as u32)).contains(&p) => period_arg = p,
                     _ => eprintln!(
-                        "[LWASAPI-audiodg] Ignoring invalid --period '{}', keeping {} frames",
+                        "[LASAPI-audiodg] Ignoring invalid --period '{}', keeping {} frames",
                         args[i + 1], period_arg
                     ),
                 }
@@ -4208,16 +4208,16 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     if !(44_100..=192_000).contains(&rate_arg) {
         rate_arg = 48_000;
     }
-    if !(64..=(LWASAPI_MAX_PERIOD as u32)).contains(&period_arg) {
+    if !(64..=(LASAPI_MAX_PERIOD as u32)).contains(&period_arg) {
         period_arg = if period_arg == 0 {
             512
         } else {
-            period_arg.clamp(64, LWASAPI_MAX_PERIOD as u32)
+            period_arg.clamp(64, LASAPI_MAX_PERIOD as u32)
         };
     }
 
-    if !force_virtual && sock_path != LWASAPI_SOCKET_DEFAULT {
-        let _ = fs::remove_file(LWASAPI_SOCKET_DEFAULT);
+    if !force_virtual && sock_path != LASAPI_SOCKET_DEFAULT {
+        let _ = fs::remove_file(LASAPI_SOCKET_DEFAULT);
     }
 
     install_term_signals();
@@ -4227,7 +4227,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
 
     let bt_ptr = unsafe { salsa_audiodg_bt_ptr() };
     let engine = Arc::new(AudiodgEngine::new(&rt, bt_ptr));
-    let hwa_ptr = lwasapi_hw_analog_create();
+    let hwa_ptr = lasapi_hw_analog_create();
     engine.hw_analog.store(hwa_ptr, Ordering::Release);
 
     // Start the Video-Only PipeWire-0 ScreenCast broker BEFORE `init_hardware()` so
@@ -4235,11 +4235,11 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     // across daemon restarts complete their PipeWire handshake immediately without
     // waiting on ALSA/BlueZ RFCOMM/L2CAP negotiation.
     let mut pw_ptr: *mut PwBrokerHandle = ptr::null_mut();
-    if unsafe { lwasapi_pw_broker_start(&mut pw_ptr, ptr::null::<LwasapiPwBrokerOpts>()) == 0 }
+    if unsafe { lasapi_pw_broker_start(&mut pw_ptr, ptr::null::<LasapiPwBrokerOpts>()) == 0 }
         && !pw_ptr.is_null()
     {
         engine.pw_brk.store(pw_ptr, Ordering::Release);
-        eprintln!("[LWASAPI-audiodg] Built-in Video-Only PipeWire ScreenCast broker initialized.");
+        eprintln!("[LASAPI-audiodg] Built-in Video-Only PipeWire ScreenCast broker initialized.");
     }
 
     engine.init_hardware(
@@ -4252,9 +4252,9 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     );
     engine.seed_hotplug_baseline(true);
 
-    if !(force_virtual && std::env::var("LWASAPI_VIRTUAL_NO_MIDI").as_deref() == Ok("1")) {
+    if !(force_virtual && std::env::var("LASAPI_VIRTUAL_NO_MIDI").as_deref() == Ok("1")) {
         let mut mh = engine.midi_hub.lock().unwrap();
-        let _ = unsafe { lwasapi_midi_init(&mut *mh.0) };
+        let _ = unsafe { lasapi_midi_init(&mut *mh.0) };
         let mut mm = engine.midi_meta.lock().unwrap();
         mm.initialized = mh.0.initialized;
         mm.rawmidi_open = mh.0.rawmidi_fd >= 0;
@@ -4268,13 +4268,13 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         eprintln!("bind failed for {sock_path}");
         let pw_cleanup = engine.pw_brk.swap(ptr::null_mut(), Ordering::AcqRel);
         if !pw_cleanup.is_null() {
-            unsafe { lwasapi_pw_broker_stop(pw_cleanup) };
+            unsafe { lasapi_pw_broker_stop(pw_cleanup) };
         }
         return 1;
     };
 
     let ctx_ptr = Arc::as_ptr(&engine) as *mut c_void;
-    let pa_cbs = LwasapiPaCallbacks {
+    let pa_cbs = LasapiPaCallbacks {
         user_ctx: ctx_ptr,
         get_status: Some(pa_cb_get_status),
         get_devices: Some(pa_cb_get_devices),
@@ -4283,25 +4283,25 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         set_mic_gain_ppm: Some(pa_cb_set_mic_gain_ppm),
     };
     let mut pa_ptr: *mut PaServerHandle = ptr::null_mut();
-    if unsafe { lwasapi_pa_server_start(&mut pa_ptr, pa_cbs) == 0 } && !pa_ptr.is_null() {
+    if unsafe { lasapi_pa_server_start(&mut pa_ptr, pa_cbs) == 0 } && !pa_ptr.is_null() {
         engine.pa_srv.store(pa_ptr, Ordering::Release);
-        eprintln!("[LWASAPI-audiodg] Built-in PulseAudio native protocol v35 server active.");
+        eprintln!("[LASAPI-audiodg] Built-in PulseAudio native protocol v35 server active.");
     }
 
-    let dbg_cbs = LwasapiDbgCallbacks {
+    let dbg_cbs = LasapiDbgCallbacks {
         user_ctx: ctx_ptr,
         fill_snapshot: Some(dbg_fill_snapshot_cb),
         handle_cmd: Some(dbg_handle_cmd_cb),
     };
-    lwasapi_debug_start(dbg_cbs);
+    lasapi_debug_start(dbg_cbs);
     {
         let hws = engine.hw_lock.lock().unwrap();
         let pb_id = c_str_to_string(&hws.active_playback_id);
         let devp = c_str_to_string(&hws.hw.device_path);
         let cap_id = c_str_to_string(&hws.active_capture_id);
         dbg_emit(
-            LWASAPI_DBG_ENGINE,
-            LWASAPI_DBG_INFO,
+            LASAPI_DBG_ENGINE,
+            LASAPI_DBG_INFO,
             current_pid(),
             0,
             "ENGINE_START",
@@ -4325,7 +4325,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         .ok();
 
     eprintln!(
-        "[LWASAPI-audiodg] Listening on {} (Ready for WASAPI Shared/Exclusive, MIDI Hub & Native PA/ALSA/JACK)",
+        "[LASAPI-audiodg] Listening on {} (Ready for LASAPI Shared/Exclusive, MIDI Hub & Native PA/ALSA/JACK)",
         sock_path
     );
 
@@ -4344,8 +4344,8 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
 
     let my_uid = current_uid();
     while engine.is_running() {
-        let mut pfd: Vec<PollFd> = Vec::with_capacity(1 + LWASAPI_MAX_SESSIONS);
-        let mut slot_map: Vec<isize> = Vec::with_capacity(1 + LWASAPI_MAX_SESSIONS);
+        let mut pfd: Vec<PollFd> = Vec::with_capacity(1 + LASAPI_MAX_SESSIONS);
+        let mut slot_map: Vec<isize> = Vec::with_capacity(1 + LASAPI_MAX_SESSIONS);
         pfd.push(PollFd {
             fd: listener.as_raw_fd(),
             events: POLLIN,
@@ -4401,16 +4401,16 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                             let mut ss = engine.sessions_lock.lock().unwrap();
                             if ss.sessions[slot_idx].in_use {
                                 let sid = ss.sessions[slot_idx].session_id;
-                                let is_pb_wasapi =
+                                let is_pb_lasapi =
                                     !ss.sessions[slot_idx].is_capture && !ss.sessions[slot_idx].is_loopback;
                                 let cpid = ss.sessions[slot_idx].client_pid;
                                 let cname = c_str_to_string(&ss.sessions[slot_idx].client_name);
                                 eprintln!(
-                                    "[LWASAPI-audiodg] Session #{} ('{}', PID {}) closed.",
+                                    "[LASAPI-audiodg] Session #{} ('{}', PID {}) closed.",
                                     sid, cname, cpid
                                 );
                                 destroy_session_slot(&mut ss, slot_idx);
-                                if is_pb_wasapi {
+                                if is_pb_lasapi {
                                     unreg_sid = sid;
                                 }
                             }
@@ -4419,7 +4419,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                             let pa = engine.pa();
                             if !pa.is_null() {
                                 unsafe {
-                                    lwasapi_pa_server_unregister_wasapi_session(
+                                    lasapi_pa_server_unregister_lasapi_session(
                                         pa,
                                         slot_idx as u32,
                                         unreg_sid,
@@ -4443,7 +4443,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                     }
                     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-                    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
+                    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
                     let mut stream = stream;
                     if stream.read_exact(as_bytes_mut(&mut req)).is_ok() {
                         engine.handle_client_cmd(stream, &req);
@@ -4469,7 +4469,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         let bt_codec = c_str_to_string(&bt_snap.codec_name);
         let bt_rate = bt_snap.bt_sample_rate;
 
-        let hw_fp = unsafe { lwasapi_bluez_hw_fingerprint(engine.bt()) };
+        let hw_fp = unsafe { lasapi_bluez_hw_fingerprint(engine.bt()) };
         let hw_changed = hw_fp_init && hw_fp != prev_hw_fp;
         if !hw_fp_init {
             prev_hw_fp = hw_fp;
@@ -4487,8 +4487,8 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         if hw_changed || bt_now != prev_bt_has || pending_usb_cap_settle || need_virtual_failover {
             if bt_now != prev_bt_has {
                 dbg_emit(
-                    LWASAPI_DBG_BLUEZ,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_BLUEZ,
+                    LASAPI_DBG_INFO,
                     0,
                     0,
                     "BT_STATE",
@@ -4503,8 +4503,8 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
             }
             if hw_changed {
                 dbg_emit(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
                     0,
                     0,
                     "HW_TOPOLOGY",
@@ -4513,7 +4513,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                 );
             }
             pending_usb_cap_settle = engine.sync_hotplug_topology(force_virtual, bt_now);
-            prev_hw_fp = unsafe { lwasapi_bluez_hw_fingerprint(engine.bt()) };
+            prev_hw_fp = unsafe { lasapi_bluez_hw_fingerprint(engine.bt()) };
             if stranded_virtual {
                 last_virtual_failover_fp = Some(prev_hw_fp);
             }
@@ -4522,12 +4522,12 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
             prev_muted = muted_now;
             let pa = engine.pa();
             if !pa.is_null() && !pending_usb_cap_settle {
-                unsafe { lwasapi_pa_server_notify_change(pa) };
+                unsafe { lasapi_pa_server_notify_change(pa) };
             }
         } else if avrcp_now != prev_bt_avrcp || muted_now != prev_muted {
             dbg_emit(
-                LWASAPI_DBG_BLUEZ,
-                LWASAPI_DBG_INFO,
+                LASAPI_DBG_BLUEZ,
+                LASAPI_DBG_INFO,
                 0,
                 0,
                 "BT_AVRCP_STATE",
@@ -4538,7 +4538,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
             prev_muted = muted_now;
             let pa = engine.pa();
             if !pa.is_null() {
-                unsafe { lwasapi_pa_server_notify_volume(pa, false) };
+                unsafe { lasapi_pa_server_notify_volume(pa, false) };
             }
             engine.mark_state_dirty();
         }
@@ -4547,7 +4547,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         if !hwa.is_null() {
             let mut hid_delta = 0i32;
             let mut hid_mute = 0i32;
-            if unsafe { lwasapi_hw_analog_poll_hid(hwa, &mut hid_delta, &mut hid_mute) > 0 }
+            if unsafe { lasapi_hw_analog_poll_hid(hwa, &mut hid_delta, &mut hid_mute) > 0 }
                 && (hid_delta != 0 || hid_mute != 0)
             {
                 let bt_cur = snapshot_bt(engine.bt());
@@ -4558,15 +4558,15 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                     -1
                 };
                 unsafe {
-                    lwasapi_bluez_set_volume(
+                    lasapi_bluez_set_volume(
                         engine.bt(),
                         if hid_delta != 0 { new_v } else { -1 },
                         mute_op,
                     );
                 }
                 dbg_emit_vals(
-                    LWASAPI_DBG_ENGINE,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
                     0,
                     0,
                     if hid_delta != 0 { new_v } else { -1 },
@@ -4579,7 +4579,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                 engine.hw_analog_probe_and_sync(false);
                 let pa = engine.pa();
                 if !pa.is_null() {
-                    unsafe { lwasapi_pa_server_notify_volume(pa, false) };
+                    unsafe { lasapi_pa_server_notify_volume(pa, false) };
                 }
                 engine.mark_state_dirty();
             }
@@ -4603,33 +4603,33 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         let _reconf = engine.reconf_lock.lock().unwrap();
         engine.save_state();
     }
-    lwasapi_debug_stop();
+    lasapi_debug_stop();
 
     let pw = engine.pw_brk.swap(ptr::null_mut(), Ordering::AcqRel);
     if !pw.is_null() {
-        unsafe { lwasapi_pw_broker_stop(pw) };
+        unsafe { lasapi_pw_broker_stop(pw) };
     }
     let pa = engine.pa_srv.swap(ptr::null_mut(), Ordering::AcqRel);
     if !pa.is_null() {
-        unsafe { lwasapi_pa_server_stop(pa) };
+        unsafe { lasapi_pa_server_stop(pa) };
     }
 
     {
         let mut ss = engine.sessions_lock.lock().unwrap();
-        for idx in 0..LWASAPI_MAX_SESSIONS {
+        for idx in 0..LASAPI_MAX_SESSIONS {
             destroy_session_slot(&mut ss, idx);
         }
     }
     {
         let mut mh = engine.midi_hub.lock().unwrap();
-        unsafe { lwasapi_midi_close(&mut *mh.0) };
+        unsafe { lasapi_midi_close(&mut *mh.0) };
     }
     let hwa_old = engine.hw_analog.swap(ptr::null_mut(), Ordering::AcqRel);
     if !hwa_old.is_null() {
-        unsafe { lwasapi_hw_analog_destroy(hwa_old) };
+        unsafe { lasapi_hw_analog_destroy(hwa_old) };
     }
     if snapshot_bt(engine.bt()).initialized {
-        unsafe { lwasapi_bluez_close(engine.bt()) };
+        unsafe { lasapi_bluez_close(engine.bt()) };
     }
     {
         let mut hws = engine.hw_lock.lock().unwrap();
@@ -4674,7 +4674,7 @@ pub fn resolve_cap_sample_rate(engine_rate: u32, pref_cap_rate: u32) -> u32 {
 }
 
 #[inline]
-fn midi_is_key_press(ev: &LwasapiMidiEvent) -> bool {
+fn midi_is_key_press(ev: &LasapiMidiEvent) -> bool {
     ev.size >= 3
         && (ev.data[0] & 0xF0) == 0x90
         && (ev.data[1] & 0x80) == 0
@@ -4764,12 +4764,12 @@ pub fn dev_id_is_usb_card(dev_id: &str) -> bool {
     Path::new(&format!("/proc/asound/card{c}/usbid")).exists()
 }
 
-pub fn device_list_has_type(dl: &LwasapiDeviceList, dev_id: &str, want_capture: u32) -> bool {
+pub fn device_list_has_type(dl: &LasapiDeviceList, dev_id: &str, want_capture: u32) -> bool {
     if dev_id.is_empty() {
         return false;
     }
     let want_any_bt = dev_id == "bluetooth";
-    let n = (dl.num_devices as usize).min(LWASAPI_MAX_DEVICES);
+    let n = (dl.num_devices as usize).min(LASAPI_MAX_DEVICES);
     for e in dl.devices.iter().take(n) {
         if e.is_capture != want_capture {
             continue;
@@ -4785,11 +4785,11 @@ pub fn device_list_has_type(dl: &LwasapiDeviceList, dev_id: &str, want_capture: 
 }
 
 pub fn device_list_has_any_type(
-    dl: &LwasapiDeviceList,
+    dl: &LasapiDeviceList,
     want_capture: u32,
     usb_only: bool,
 ) -> bool {
-    let n = (dl.num_devices as usize).min(LWASAPI_MAX_DEVICES);
+    let n = (dl.num_devices as usize).min(LASAPI_MAX_DEVICES);
     for e in dl.devices.iter().take(n) {
         if e.is_capture != want_capture {
             continue;
@@ -4945,7 +4945,7 @@ fn open_kernel_pcm_device(
                     hw_param_set_mask(&mut params, SNDRV_PCM_HW_PARAM_FORMAT, fmt as u32);
                     hw_param_set_minmax(&mut params, SNDRV_PCM_HW_PARAM_CHANNELS, ch, ch);
                     hw_param_set_minmax(&mut params, SNDRV_PCM_HW_PARAM_RATE, cand_r, cand_r);
-                    let max_p = LWASAPI_MAX_PERIOD as u32;
+                    let max_p = LASAPI_MAX_PERIOD as u32;
                     let min_per = req_period.clamp(64, max_p);
                     let max_per = req_period.saturating_mul(2).clamp(min_per, max_p);
                     hw_param_set_minmax(
@@ -5037,7 +5037,7 @@ fn open_kernel_pcm_device(
     })
 }
 
-fn is_usb_device_entry(dev: &crate::c_abi::LwasapiDeviceEntry) -> bool {
+fn is_usb_device_entry(dev: &crate::c_abi::LasapiDeviceEntry) -> bool {
     if dev.is_bluetooth != 0 {
         return false;
     }
@@ -5139,11 +5139,11 @@ fn should_disable_bt_tx_on_fallback(want_bt: bool, auto_want_bt: bool) -> bool {
 }
 
 fn find_matching_usb_pb_idx_for_list(
-    dlist: &LwasapiDeviceList,
+    dlist: &LasapiDeviceList,
     bt_alias: &str,
     extra_bt_aliases: &[String],
 ) -> Option<usize> {
-    let n = (dlist.num_devices as usize).min(LWASAPI_MAX_DEVICES);
+    let n = (dlist.num_devices as usize).min(LASAPI_MAX_DEVICES);
     let mut bt_names: Vec<String> = Vec::new();
     let trimmed_alias = bt_alias.trim();
     if !trimmed_alias.is_empty() {
@@ -5182,7 +5182,7 @@ fn find_matching_usb_pb_idx_for_list(
     None
 }
 
-unsafe fn any_usb_matches_bt(dlist: &LwasapiDeviceList, bt: *const c_void) -> bool {
+unsafe fn any_usb_matches_bt(dlist: &LasapiDeviceList, bt: *const c_void) -> bool {
     let snap = if bt.is_null() {
         String::new()
     } else {
@@ -5190,7 +5190,7 @@ unsafe fn any_usb_matches_bt(dlist: &LwasapiDeviceList, bt: *const c_void) -> bo
         unsafe { salsa_bt_get_snapshot(bt, &mut s) };
         c_str_to_string(&s.device_alias)
     };
-    let extra = unsafe { lwasapi_bluez_known_audio_aliases(bt) };
+    let extra = unsafe { lasapi_bluez_known_audio_aliases(bt) };
     find_matching_usb_pb_idx_for_list(dlist, &snap, &extra).is_some()
 }
 
@@ -5283,7 +5283,7 @@ mod tests {
 
     #[test]
     fn device_list_matching_and_midi_press_work() {
-        let mut dl: LwasapiDeviceList = unsafe { mem::zeroed() };
+        let mut dl: LasapiDeviceList = unsafe { mem::zeroed() };
         dl.num_devices = 2;
         copy_str_to_c(&mut dl.devices[0].id, "hw:0,0");
         dl.devices[0].is_capture = 1;
@@ -5294,14 +5294,14 @@ mod tests {
         assert!(!device_list_has_type(&dl, "hw:0,0", 0));
         assert!(device_list_has_type(&dl, "bluetooth", 0));
 
-        let note_on = LwasapiMidiEvent {
+        let note_on = LasapiMidiEvent {
             frame_offset: 0,
             size: 3,
             port: 0,
             data: [0x90, 60, 100, 0],
             timestamp_ns: 0,
         };
-        let note_off_vel0 = LwasapiMidiEvent {
+        let note_off_vel0 = LasapiMidiEvent {
             frame_offset: 0,
             size: 3,
             port: 0,
@@ -5345,8 +5345,8 @@ mod tests {
         assert_eq!(unity[1], -1.0);
     }
 
-    fn make_pb_list(devs: &[(&str, &str, bool)]) -> LwasapiDeviceList {
-        let mut dl: LwasapiDeviceList = unsafe { mem::zeroed() };
+    fn make_pb_list(devs: &[(&str, &str, bool)]) -> LasapiDeviceList {
+        let mut dl: LasapiDeviceList = unsafe { mem::zeroed() };
         for &(id, name, is_bt) in devs {
             let i = dl.num_devices as usize;
             dl.num_devices += 1;

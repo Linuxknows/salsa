@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -19,17 +19,17 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
-use lwasapi::{
+use lasapi::{
     IAudioCaptureClient_GetNextPacketSize, IAudioCaptureClient_ReadFrames, IAudioClient,
     IAudioClient_GetMixFormat, IAudioClient_Initialize, IAudioClient_Release, IAudioClient_Start,
     IAudioClient_WriteMidiEvent, IAudioRenderClient_WriteFrames, ISimpleAudioVolume_SetMasterVolume,
-    LWASAPI_ActivateAudioClient, LWASAPI_GetEngineStatus, LWASAPI_SetBtCodecConfig,
-    LWASAPI_SetEngineConfig, LWASAPI_SetHwAnalog, LWASAPI_SetMicAPO, LWASAPI_SetParametricEQ,
+    LASAPI_ActivateAudioClient, LASAPI_GetEngineStatus, LASAPI_SetBtCodecConfig,
+    LASAPI_SetEngineConfig, LASAPI_SetHwAnalog, LASAPI_SetMicAPO, LASAPI_SetParametricEQ,
 };
 use salsa_wire::c_abi::{
     AUDCLNT_E_DEVICE_IN_USE, AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_SHAREMODE_SHARED,
-    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, LWASAPI_FILTER_LOW_SHELF,
-    LWASAPI_FMT_FLOAT32, LwasapiEngineStatus, LwasapiMidiEvent, WaveFormatEx, S_OK,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, LASAPI_FILTER_LOW_SHELF,
+    LASAPI_FMT_FLOAT32, LasapiEngineStatus, LasapiMidiEvent, WaveFormatEx, S_OK,
 };
 use salsa_wire::unix_sys::reset_sigpipe_default;
 
@@ -77,18 +77,18 @@ fn fill_sine_stereo(
     *phase += f64::from(frames);
 }
 
-fn test_wasapi_shared_and_resampling() -> i32 {
-    println!("[Test 1/6] Native WASAPI Shared Mode + Real-Time 44.1kHz -> 48kHz Resampling...");
+fn test_lasapi_shared_and_resampling() -> i32 {
+    println!("[Test 1/6] Native LASAPI Shared Mode + Real-Time 44.1kHz -> 48kHz Resampling...");
     let mut c1: *mut IAudioClient = ptr::null_mut();
     let mut c2: *mut IAudioClient = ptr::null_mut();
-    let n1 = c"WASAPI-Native-48kHz";
-    let n2 = c"WASAPI-Resampled-44.1kHz";
+    let n1 = c"LASAPI-Native-48kHz";
+    let n2 = c"LASAPI-Resampled-44.1kHz";
 
     unsafe {
-        if LWASAPI_ActivateAudioClient(n1.as_ptr(), &mut c1) != S_OK {
+        if LASAPI_ActivateAudioClient(n1.as_ptr(), &mut c1) != S_OK {
             return 1;
         }
-        if LWASAPI_ActivateAudioClient(n2.as_ptr(), &mut c2) != S_OK {
+        if LASAPI_ActivateAudioClient(n2.as_ptr(), &mut c2) != S_OK {
             return 1;
         }
         let mut wfx48 = WaveFormatEx::default();
@@ -131,13 +131,13 @@ fn test_wasapi_shared_and_resampling() -> i32 {
                 c1,
                 chunk48.as_ptr().cast(),
                 512,
-                LWASAPI_FMT_FLOAT32,
+                LASAPI_FMT_FLOAT32,
             );
             IAudioRenderClient_WriteFrames(
                 c2,
                 chunk44.as_ptr().cast(),
                 512,
-                LWASAPI_FMT_FLOAT32,
+                LASAPI_FMT_FLOAT32,
             );
         }
 
@@ -148,16 +148,16 @@ fn test_wasapi_shared_and_resampling() -> i32 {
     0
 }
 
-fn test_wasapi_exclusive_mode() -> i32 {
-    println!("[Test 2/6] Native WASAPI Exclusive Mode Hardware Lock & Contention Check...");
+fn test_lasapi_exclusive_mode() -> i32 {
+    println!("[Test 2/6] Native LASAPI Exclusive Mode Hardware Lock & Contention Check...");
     let mut excl: *mut IAudioClient = ptr::null_mut();
     let mut contender: *mut IAudioClient = ptr::null_mut();
-    let n1 = c"DAW-WASAPI-Exclusive";
+    let n1 = c"DAW-LASAPI-Exclusive";
     let n2 = c"Competing-Shared-App";
 
     unsafe {
-        LWASAPI_ActivateAudioClient(n1.as_ptr(), &mut excl);
-        LWASAPI_ActivateAudioClient(n2.as_ptr(), &mut contender);
+        LASAPI_ActivateAudioClient(n1.as_ptr(), &mut excl);
+        LASAPI_ActivateAudioClient(n2.as_ptr(), &mut contender);
 
         let mut wfx = WaveFormatEx::default();
         IAudioClient_GetMixFormat(excl, &mut wfx);
@@ -187,7 +187,7 @@ fn test_wasapi_exclusive_mode() -> i32 {
         IAudioClient_Start(excl);
         let buf = [0.0f32; 256 * 2];
         for _ in 0..12 {
-            IAudioRenderClient_WriteFrames(excl, buf.as_ptr().cast(), 256, LWASAPI_FMT_FLOAT32);
+            IAudioRenderClient_WriteFrames(excl, buf.as_ptr().cast(), 256, LASAPI_FMT_FLOAT32);
         }
 
         IAudioClient_Release(excl);
@@ -251,7 +251,7 @@ fn test_alsa_shim(shim_dir: &str) -> i32 {
         dlclose(h);
     }
     println!(
-        "  -> PASS: Unmodified ALSA snd_pcm_open/snd_pcm_writei routed directly into LWASAPI."
+        "  -> PASS: Unmodified ALSA snd_pcm_open/snd_pcm_writei routed directly into LASAPI."
     );
     0
 }
@@ -326,7 +326,7 @@ fn test_pulse_shim(shim_dir: &str) -> i32 {
         dlclose(h);
     }
     println!(
-        "  -> PASS: Unmodified PulseAudio pa_simple_new/pa_simple_write routed directly into LWASAPI."
+        "  -> PASS: Unmodified PulseAudio pa_simple_new/pa_simple_write routed directly into LASAPI."
     );
     0
 }
@@ -484,13 +484,13 @@ fn test_jack_and_daw_midi_shim(shim_dir: &str) -> i32 {
             return 1;
         }
         println!(
-            "  -> PASS: JACK real-time process() callback fired {fired} times directly off LWASAPI eventfd clock."
+            "  -> PASS: JACK real-time process() callback fired {fired} times directly off LASAPI eventfd clock."
         );
 
         println!(
             "[Test 6/6] DAW MIDI Hub & Sample-Accurate JACK MIDI Routing (Note-On 0x90 60 120)..."
         );
-        let ev = LwasapiMidiEvent {
+        let ev = LasapiMidiEvent {
             frame_offset: 64,
             size: 3,
             port: 0,
@@ -513,7 +513,7 @@ fn test_jack_and_daw_midi_shim(shim_dir: &str) -> i32 {
             return 1;
         }
         println!(
-            "  -> PASS: DAW received MIDI Note-On (Note={rx_note} C4, Velocity={rx_vel}) via lock-free LWASAPI MIDI ring!"
+            "  -> PASS: DAW received MIDI Note-On (Note={rx_note} C4, Velocity={rx_vel}) via lock-free LASAPI MIDI ring!"
         );
     }
     0
@@ -526,12 +526,12 @@ fn test_capture_and_loopback(shim_dir: &str) -> i32 {
     let mut render: *mut IAudioClient = ptr::null_mut();
     let mut loopback: *mut IAudioClient = ptr::null_mut();
     unsafe {
-        if LWASAPI_ActivateAudioClient(c"Loopback-Tone-Source".as_ptr(), &mut render)
+        if LASAPI_ActivateAudioClient(c"Loopback-Tone-Source".as_ptr(), &mut render)
             != S_OK
         {
             return 1;
         }
-        if LWASAPI_ActivateAudioClient(c"OBS-Desktop-Loopback".as_ptr(), &mut loopback)
+        if LASAPI_ActivateAudioClient(c"OBS-Desktop-Loopback".as_ptr(), &mut loopback)
             != S_OK
         {
             return 1;
@@ -571,13 +571,13 @@ fn test_capture_and_loopback(shim_dir: &str) -> i32 {
         let mut phase = 0.0f64;
         for _ in 0..6 {
             fill_sine_stereo(&mut tx, 512, 48000, 19_800.0, 19_800.0, 0.01, &mut phase);
-            IAudioRenderClient_WriteFrames(render, tx.as_ptr().cast(), 512, LWASAPI_FMT_FLOAT32);
+            IAudioRenderClient_WriteFrames(render, tx.as_ptr().cast(), 512, LASAPI_FMT_FLOAT32);
         }
         thread::sleep(Duration::from_millis(30));
 
         let mut pkt = 0u32;
         IAudioCaptureClient_GetNextPacketSize(loopback, &mut pkt);
-        if IAudioCaptureClient_ReadFrames(loopback, rx.as_mut_ptr().cast(), 256, LWASAPI_FMT_FLOAT32)
+        if IAudioCaptureClient_ReadFrames(loopback, rx.as_mut_ptr().cast(), 256, LASAPI_FMT_FLOAT32)
             != S_OK
         {
             return 1;
@@ -686,7 +686,7 @@ fn test_capture_and_loopback(shim_dir: &str) -> i32 {
         dlclose(ph);
 
         println!(
-            "  -> PASS: WASAPI Loopback (peak={peak:.3}), ALSA snd_pcm_readi & PulseAudio pa_simple_read verified!"
+            "  -> PASS: LASAPI Loopback (peak={peak:.3}), ALSA snd_pcm_readi & PulseAudio pa_simple_read verified!"
         );
     }
     0
@@ -695,9 +695,9 @@ fn test_capture_and_loopback(shim_dir: &str) -> i32 {
 fn test_rev61_studio_features() -> i32 {
     println!("[Test 7/7] v6.x-beta Fixed Clock, Parametric EQ, Mic APO & BT Codec APIs...");
     unsafe {
-        let mut orig: LwasapiEngineStatus = mem::zeroed();
-        if LWASAPI_GetEngineStatus(&mut orig) != S_OK {
-            eprintln!("  -> FAIL: LWASAPI_GetEngineStatus failed");
+        let mut orig: LasapiEngineStatus = mem::zeroed();
+        if LASAPI_GetEngineStatus(&mut orig) != S_OK {
+            eprintln!("  -> FAIL: LASAPI_GetEngineStatus failed");
             return 1;
         }
 
@@ -708,11 +708,11 @@ fn test_rev61_studio_features() -> i32 {
         eq.band_gains_db[0] = 3.0;
         eq.band_q[0] = 0.71;
         ext.band_freq_hz[0] = 105.0;
-        ext.band_type[0] = LWASAPI_FILTER_LOW_SHELF;
+        ext.band_type[0] = LASAPI_FILTER_LOW_SHELF;
         ext.crossfeed_enabled = 1;
         ext.crossfeed_level = 0.35;
         ext.crossfeed_cutoff_hz = 700;
-        if LWASAPI_SetParametricEQ(&eq, &ext) != S_OK {
+        if LASAPI_SetParametricEQ(&eq, &ext) != S_OK {
             rc = 1;
         }
 
@@ -723,23 +723,23 @@ fn test_rev61_studio_features() -> i32 {
         mic.rnnoise_enabled = 1;
         mic.sidetone_enabled = 1;
         mic.sidetone_pct = 20;
-        if LWASAPI_SetMicAPO(&mic) != S_OK {
+        if LASAPI_SetMicAPO(&mic) != S_OK {
             rc = 1;
         }
 
-        if LWASAPI_SetEngineConfig(48000, orig.hw_period_frames, 16) != S_OK {
+        if LASAPI_SetEngineConfig(48000, orig.hw_period_frames, 16) != S_OK {
             rc = 1;
         }
 
         let mut bt = orig.bt_codec_cfg;
         bt.wireless_abr_enabled = 1;
-        if LWASAPI_SetBtCodecConfig(&bt) != S_OK {
+        if LASAPI_SetBtCodecConfig(&bt) != S_OK {
             rc = 1;
         }
 
-        let mut cur: LwasapiEngineStatus = mem::zeroed();
-        if LWASAPI_GetEngineStatus(&mut cur) != S_OK
-            || cur.param_eq.band_type[0] != LWASAPI_FILTER_LOW_SHELF
+        let mut cur: LasapiEngineStatus = mem::zeroed();
+        if LASAPI_GetEngineStatus(&mut cur) != S_OK
+            || cur.param_eq.band_type[0] != LASAPI_FILTER_LOW_SHELF
             || cur.param_eq.crossfeed_enabled != 1
             || cur.mic_apo.enabled != 1
             || cur.mic_apo.sidetone_pct != 20
@@ -758,10 +758,10 @@ fn test_rev61_studio_features() -> i32 {
             rc = 1;
         }
 
-        LWASAPI_SetParametricEQ(&orig.eq_cfg, &orig.param_eq);
-        LWASAPI_SetMicAPO(&orig.mic_apo);
-        LWASAPI_SetBtCodecConfig(&orig.bt_codec_cfg);
-        LWASAPI_SetEngineConfig(
+        LASAPI_SetParametricEQ(&orig.eq_cfg, &orig.param_eq);
+        LASAPI_SetMicAPO(&orig.mic_apo);
+        LASAPI_SetBtCodecConfig(&orig.bt_codec_cfg);
+        LASAPI_SetEngineConfig(
             orig.hw_sample_rate,
             orig.hw_period_frames,
             orig.hw_format_bits,
@@ -777,8 +777,8 @@ fn test_rev61_studio_features() -> i32 {
 fn test_rev62_hw_analog() -> i32 {
     println!("[Test 8/8] Testing v6.2-beta Hardware DAC Unity, Analog Soft-Knee & Amp Architecture...");
     unsafe {
-        let mut orig: LwasapiEngineStatus = mem::zeroed();
-        if LWASAPI_GetEngineStatus(&mut orig) != S_OK {
+        let mut orig: LasapiEngineStatus = mem::zeroed();
+        if LASAPI_GetEngineStatus(&mut orig) != S_OK {
             println!("  -> SKIP: Daemon not active for standalone v6.2-beta HW analog test.");
             return 0;
         }
@@ -787,12 +787,12 @@ fn test_rev62_hw_analog() -> i32 {
         let mut cfg = orig.hw_analog_cfg;
         cfg.analog_boost_db = 3.5;
         cfg.mic_hw_boost_db = 6.0;
-        if LWASAPI_SetHwAnalog(&cfg) != S_OK {
+        if LASAPI_SetHwAnalog(&cfg) != S_OK {
             rc = 1;
         }
 
-        let mut cur: LwasapiEngineStatus = mem::zeroed();
-        if LWASAPI_GetEngineStatus(&mut cur) != S_OK
+        let mut cur: LasapiEngineStatus = mem::zeroed();
+        if LASAPI_GetEngineStatus(&mut cur) != S_OK
             || cur.hw_analog_cfg.analog_boost_db < 3.4
             || cur.hw_analog_cfg.mic_hw_boost_db < 5.9
         {
@@ -803,7 +803,7 @@ fn test_rev62_hw_analog() -> i32 {
             rc = 1;
         }
 
-        LWASAPI_SetHwAnalog(&orig.hw_analog_cfg);
+        LASAPI_SetHwAnalog(&orig.hw_analog_cfg);
         if rc == 0 {
             let arch = salsa_wire::c_abi::c_str_to_string(&cur.hw_analog_info.card_arch_name);
             let arch_disp = if arch.is_empty() { "Virtual" } else { &arch };
@@ -821,13 +821,13 @@ fn main() -> ExitCode {
         .nth(1)
         .unwrap_or_else(|| "./build/shims".to_string());
     println!("========================================================================");
-    println!(" Running LWASAPI Universal Windows-Style Audio & MIDI Verification Suite");
+    println!(" Running LASAPI Universal Windows-Style Audio & MIDI Verification Suite");
     println!("========================================================================");
 
-    if test_wasapi_shared_and_resampling() != 0 {
+    if test_lasapi_shared_and_resampling() != 0 {
         return ExitCode::FAILURE;
     }
-    if test_wasapi_exclusive_mode() != 0 {
+    if test_lasapi_exclusive_mode() != 0 {
         return ExitCode::FAILURE;
     }
     if test_alsa_shim(&shim_dir) != 0 {
@@ -850,7 +850,7 @@ fn main() -> ExitCode {
     }
 
     println!("========================================================================");
-    println!(" ALL 8 LWASAPI FULL-DUPLEX AUDIO, ABI SHIM & v6.2-beta TESTS PASSED!");
+    println!(" ALL 8 LASAPI FULL-DUPLEX AUDIO, ABI SHIM & v6.2-beta TESTS PASSED!");
     println!("========================================================================");
     ExitCode::SUCCESS
 }

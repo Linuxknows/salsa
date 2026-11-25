@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -115,9 +115,9 @@ void SalsaAutoGraphCanvas::mouseMoveEvent(QMouseEvent* event) {
             for (const auto& n : hitNodes_) {
                 if (n.key == hit) {
                     if (n.manualKey == QLatin1String("apps") || hit == QLatin1String("play")) {
-                        desc = QStringLiteral("Active Playback & App Clients — Native WASAPI, Pulse v35, ALSA, and JACK client streams entering Salsa's lock-free mixer. Click to open manual details.");
+                        desc = QStringLiteral("Active Playback & App Clients — Native LASAPI, Pulse v35, ALSA, and JACK client streams entering Salsa's lock-free mixer. Click to open manual details.");
                     } else if (n.manualKey == QLatin1String("cap") || hit == QLatin1String("capt")) {
-                        desc = QStringLiteral("Capture & Microphone Input — Direct ALSA capture hardware, loopback monitors, RNNoise/HPF/gate Mic APO, and HFP SCO. Click to open manual details.");
+                        desc = QStringLiteral("Capture & Microphone Input — Direct ALSA capture hardware, loopback monitors, and HFP SCO. Click to open manual details.");
                     } else if (n.manualKey == QLatin1String("dsp") || hit == QLatin1String("dsp")) {
                         desc = QStringLiteral("10-Band Dynamic EQ & Spatial DSP — Real-time biquad parametric EQ, dynamic compress/expand, crossfeed, and limiter stage. Click to open manual details.");
                     } else if (n.manualKey == QLatin1String("out") || hit == QLatin1String("sink")) {
@@ -390,7 +390,7 @@ void SalsaAutoGraphCanvas::paintEvent(QPaintEvent*) {
     for (int i = 0; i < std::min<int>(3, data_.playApps.size()); ++i) {
         appsLines.append(QStringLiteral("• %1").arg(data_.playApps[i]));
     }
-    appsLines.append(QStringLiteral("ABI: WASAPI / ALSA / PA v35 / JACK"));
+    appsLines.append(QStringLiteral("ABI: LASAPI / ALSA / PA v35 / JACK"));
     drawNode(p, QStringLiteral("apps_in"), QStringLiteral("apps_in"), rApps,
              QStringLiteral("Audio Applications"),
              QStringLiteral("%1 LIVE").arg(livePlayCount),
@@ -427,7 +427,7 @@ void SalsaAutoGraphCanvas::paintEvent(QPaintEvent*) {
 
     const double latMs = data_.rate > 0 ? (static_cast<double>(data_.period) * 1000.0 / data_.rate) : 5.33;
     drawNode(p, QStringLiteral("engine_core"), QStringLiteral("engine_core"), rEng,
-             QStringLiteral("lwasapi-audiodg"), QStringLiteral("FIXED MASTER"),
+             QStringLiteral("lasapi-audiodg"), QStringLiteral("FIXED MASTER"),
              {QStringLiteral("Master: %1 kHz / %2-bit").arg(data_.rate / 1000.0, 0, 'f', 1).arg(data_.bits),
               QStringLiteral("Quantum: %1f (%2 ms)").arg(data_.period).arg(latMs, 0, 'f', 2),
               QStringLiteral("SCHED_FIFO (mlock)"),
@@ -445,7 +445,7 @@ void SalsaAutoGraphCanvas::paintEvent(QPaintEvent*) {
 
     drawNode(p, QStringLiteral("midi_hub"), QStringLiteral("midi_in"), rMidiHub,
              QStringLiteral("DAW MIDI Hub"), QStringLiteral("LOCK-FREE"),
-             {QStringLiteral("Seq Port: LWASAPI-MIDI-Hub"),
+             {QStringLiteral("Seq Port: LASAPI-MIDI-Hub"),
               QStringLiteral("Ring: 512 Sample-Accurate Ev"),
               QStringLiteral("Clients: JACK + ALSA Seq"),
               QStringLiteral("Routed Total: %1").arg(data_.midiCount)},
@@ -515,7 +515,7 @@ void SalsaAutoGraphCanvas::paintEvent(QPaintEvent*) {
     if (vidLive) {
         consLines = {QStringLiteral("Active Video Consumer"),
                      QStringLiteral("Handoff: OpenPipeWireRemote OK"),
-                     QStringLiteral("Audio: Native Salsa PA/WASAPI")};
+                     QStringLiteral("Audio: Native Salsa PA/LASAPI")};
     } else {
         consLines = {QStringLiteral("Discord / OBS / WebRTC Ready"),
                      QStringLiteral("OpenPipeWireRemote OK"),
@@ -1030,7 +1030,7 @@ MiniSalsaPreview::MiniSalsaPreview(const SalsaThemeData& theme, QWidget* parent)
 
     auto* tCol = new QVBoxLayout();
     tCol->setSpacing(1);
-    auto* lblT = new QLabel(QStringLiteral("SALSA — LINUX WASAPI STUDIO"), topCard);
+    auto* lblT = new QLabel(QStringLiteral("SALSA — LASAPI STUDIO"), topCard);
     lblT->setObjectName(QStringLiteral("TitleBanner"));
     auto* lblSub = new QLabel(QStringLiteral("WaveRT Zero-Copy • 192 kHz / 32-Bit • 10-Band Dynamic EQ"), topCard);
     lblSub->setObjectName(QStringLiteral("SubBanner"));

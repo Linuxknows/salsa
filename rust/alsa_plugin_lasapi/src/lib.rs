@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -19,8 +19,8 @@ use std::path::Path;
 
 use salsa_wire::c_abi::{
     AUDCLNT_E_ALREADY_INITIALIZED, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_CAPTURE,
-    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, LWASAPI_DBG_ERR, LWASAPI_DBG_INFO, LWASAPI_DBG_SHIM,
-    LWASAPI_DBG_WARN, LWASAPI_FMT_FLOAT32, LWASAPI_FMT_S16_LE, LWASAPI_FMT_S32_LE, WaveFormatEx,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, LASAPI_DBG_ERR, LASAPI_DBG_INFO, LASAPI_DBG_SHIM,
+    LASAPI_DBG_WARN, LASAPI_FMT_FLOAT32, LASAPI_FMT_S16_LE, LASAPI_FMT_S32_LE, WaveFormatEx,
     S_OK,
 };
 use salsa_wire::unix_sys::{
@@ -123,7 +123,7 @@ pub struct SndPcmIoplugCallback {
 unsafe impl Sync for SndPcmIoplugCallback {}
 
 #[repr(C)]
-struct LwasapiAlsaIoplug {
+struct LasapiAlsaIoplug {
     io: SndPcmIoplug,
     client: *mut c_void,
     hw_frames: u64,
@@ -143,7 +143,7 @@ extern "C" {
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
 
-    fn LWASAPI_DebugTraceClient(
+    fn LASAPI_DebugTraceClient(
         sub: u8,
         lvl: u8,
         sid: u32,
@@ -151,7 +151,7 @@ extern "C" {
         target: *const c_char,
         detail: *const c_char,
     );
-    fn LWASAPI_ActivateAudioClient(
+    fn LASAPI_ActivateAudioClient(
         client_name: *const c_char,
         pp_audio_client: *mut *mut c_void,
     ) -> i32;
@@ -225,16 +225,16 @@ fn is_system_audio_daemon() -> bool {
             | "wireplumber"
             | "pipewire-pulse"
             | "pulseaudio"
-            | "lwasapi-audiodg"
+            | "lasapi-audiodg"
             | "plasmashell"
     )
 }
 
-unsafe extern "C" fn lwasapi_io_start(io: *mut SndPcmIoplug) -> c_int {
+unsafe extern "C" fn lasapi_io_start(io: *mut SndPcmIoplug) -> c_int {
     if io.is_null() {
         return -EIO;
     }
-    let p = unsafe { (*io).private_data.cast::<LwasapiAlsaIoplug>() };
+    let p = unsafe { (*io).private_data.cast::<LasapiAlsaIoplug>() };
     if p.is_null() || unsafe { (*p).client.is_null() } {
         return -EIO;
     }
@@ -242,11 +242,11 @@ unsafe extern "C" fn lwasapi_io_start(io: *mut SndPcmIoplug) -> c_int {
     0
 }
 
-unsafe extern "C" fn lwasapi_io_stop(io: *mut SndPcmIoplug) -> c_int {
+unsafe extern "C" fn lasapi_io_stop(io: *mut SndPcmIoplug) -> c_int {
     if io.is_null() {
         return -EIO;
     }
-    let p = unsafe { (*io).private_data.cast::<LwasapiAlsaIoplug>() };
+    let p = unsafe { (*io).private_data.cast::<LasapiAlsaIoplug>() };
     if p.is_null() || unsafe { (*p).client.is_null() } {
         return -EIO;
     }
@@ -254,12 +254,12 @@ unsafe extern "C" fn lwasapi_io_stop(io: *mut SndPcmIoplug) -> c_int {
     0
 }
 
-unsafe extern "C" fn lwasapi_io_pointer(io: *mut SndPcmIoplug) -> c_long {
+unsafe extern "C" fn lasapi_io_pointer(io: *mut SndPcmIoplug) -> c_long {
     if io.is_null() {
         return 0;
     }
     let io_ref = unsafe { &*io };
-    let p = io_ref.private_data.cast::<LwasapiAlsaIoplug>();
+    let p = io_ref.private_data.cast::<LasapiAlsaIoplug>();
     if p.is_null() || unsafe { (*p).client.is_null() } || io_ref.buffer_size == 0 {
         return 0;
     }
@@ -277,7 +277,7 @@ unsafe extern "C" fn lwasapi_io_pointer(io: *mut SndPcmIoplug) -> c_long {
     (played % io_ref.buffer_size) as c_long
 }
 
-unsafe extern "C" fn lwasapi_io_transfer(
+unsafe extern "C" fn lasapi_io_transfer(
     io: *mut SndPcmIoplug,
     areas: *const SndPcmChannelArea,
     offset: c_ulong,
@@ -287,7 +287,7 @@ unsafe extern "C" fn lwasapi_io_transfer(
         return -c_long::from(EIO);
     }
     let io_ref = unsafe { &*io };
-    let p = io_ref.private_data.cast::<LwasapiAlsaIoplug>();
+    let p = io_ref.private_data.cast::<LasapiAlsaIoplug>();
     if p.is_null() || unsafe { (*p).client.is_null() } {
         return -c_long::from(EIO);
     }
@@ -315,23 +315,23 @@ unsafe extern "C" fn lwasapi_io_transfer(
     size as c_long
 }
 
-unsafe extern "C" fn lwasapi_io_hw_params(io: *mut SndPcmIoplug, _params: *mut c_void) -> c_int {
+unsafe extern "C" fn lasapi_io_hw_params(io: *mut SndPcmIoplug, _params: *mut c_void) -> c_int {
     if io.is_null() {
         return -EIO;
     }
     let io_ref = unsafe { &*io };
-    let p = io_ref.private_data.cast::<LwasapiAlsaIoplug>();
+    let p = io_ref.private_data.cast::<LasapiAlsaIoplug>();
     if p.is_null() {
         return -EIO;
     }
     let p_ref = unsafe { &mut *p };
 
     p_ref.fmt = if io_ref.format == SND_PCM_FORMAT_S16_LE {
-        LWASAPI_FMT_S16_LE
+        LASAPI_FMT_S16_LE
     } else if io_ref.format == SND_PCM_FORMAT_S32_LE {
-        LWASAPI_FMT_S32_LE
+        LASAPI_FMT_S32_LE
     } else {
-        LWASAPI_FMT_FLOAT32
+        LASAPI_FMT_FLOAT32
     };
 
     let ch = if io_ref.channels != 0 {
@@ -340,7 +340,7 @@ unsafe extern "C" fn lwasapi_io_hw_params(io: *mut SndPcmIoplug, _params: *mut c
         2
     };
     let rate = if io_ref.rate != 0 { io_ref.rate } else { 48000 };
-    let bits: u16 = if p_ref.fmt == LWASAPI_FMT_S16_LE { 16 } else { 32 };
+    let bits: u16 = if p_ref.fmt == LASAPI_FMT_S16_LE { 16 } else { 32 };
     let block_align = ch * (bits / 8);
     let wfx = WaveFormatEx {
         w_format_tag: p_ref.fmt as u16,
@@ -385,7 +385,7 @@ unsafe extern "C" fn lwasapi_io_hw_params(io: *mut SndPcmIoplug, _params: *mut c
         p_ref.initialized = false;
     }
     if p_ref.client.is_null()
-        && unsafe { LWASAPI_ActivateAudioClient(ptr::null(), &mut p_ref.client) } != S_OK
+        && unsafe { LASAPI_ActivateAudioClient(ptr::null(), &mut p_ref.client) } != S_OK
     {
         return -EIO;
     }
@@ -402,12 +402,12 @@ unsafe extern "C" fn lwasapi_io_hw_params(io: *mut SndPcmIoplug, _params: *mut c
     };
     if hr != S_OK && hr != AUDCLNT_E_ALREADY_INITIALIZED {
         unsafe {
-            LWASAPI_DebugTraceClient(
-                LWASAPI_DBG_SHIM,
-                LWASAPI_DBG_ERR,
+            LASAPI_DebugTraceClient(
+                LASAPI_DBG_SHIM,
+                LASAPI_DBG_ERR,
                 0,
                 c"ALSA_PLG_ERR".as_ptr(),
-                c"lwasapi-ioplug".as_ptr(),
+                c"lasapi-ioplug".as_ptr(),
                 c"IAudioClient_Initialize failed in hw_params".as_ptr(),
             );
         }
@@ -431,9 +431,9 @@ unsafe extern "C" fn lwasapi_io_hw_params(io: *mut SndPcmIoplug, _params: *mut c
         io_ref.buffer_size, io_ref.period_size
     );
     unsafe {
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"ALSA_PLG_HW".as_ptr(),
             p_ref.io.name,
@@ -453,11 +453,11 @@ unsafe extern "C" fn lwasapi_io_hw_params(io: *mut SndPcmIoplug, _params: *mut c
     0
 }
 
-unsafe extern "C" fn lwasapi_io_prepare(io: *mut SndPcmIoplug) -> c_int {
+unsafe extern "C" fn lasapi_io_prepare(io: *mut SndPcmIoplug) -> c_int {
     if io.is_null() {
         return -EIO;
     }
-    let p = unsafe { (*io).private_data.cast::<LwasapiAlsaIoplug>() };
+    let p = unsafe { (*io).private_data.cast::<LasapiAlsaIoplug>() };
     if p.is_null() || unsafe { (*p).client.is_null() } {
         return -EIO;
     }
@@ -474,12 +474,12 @@ unsafe extern "C" fn lwasapi_io_prepare(io: *mut SndPcmIoplug) -> c_int {
     0
 }
 
-unsafe extern "C" fn lwasapi_io_drain(io: *mut SndPcmIoplug) -> c_int {
+unsafe extern "C" fn lasapi_io_drain(io: *mut SndPcmIoplug) -> c_int {
     if io.is_null() {
         return 0;
     }
     let io_ref = unsafe { &*io };
-    let p = io_ref.private_data.cast::<LwasapiAlsaIoplug>();
+    let p = io_ref.private_data.cast::<LasapiAlsaIoplug>();
     if p.is_null() || unsafe { (*p).client.is_null() } {
         return 0;
     }
@@ -511,7 +511,7 @@ unsafe extern "C" fn lwasapi_io_drain(io: *mut SndPcmIoplug) -> c_int {
     0
 }
 
-unsafe extern "C" fn lwasapi_io_poll_revents(
+unsafe extern "C" fn lasapi_io_poll_revents(
     io: *mut SndPcmIoplug,
     pfd: *mut PollFd,
     nfds: c_uint,
@@ -542,27 +542,27 @@ unsafe extern "C" fn lwasapi_io_poll_revents(
     0
 }
 
-unsafe extern "C" fn lwasapi_io_close(io: *mut SndPcmIoplug) -> c_int {
+unsafe extern "C" fn lasapi_io_close(io: *mut SndPcmIoplug) -> c_int {
     if io.is_null() {
         return 0;
     }
-    let p = unsafe { (*io).private_data.cast::<LwasapiAlsaIoplug>() };
+    let p = unsafe { (*io).private_data.cast::<LasapiAlsaIoplug>() };
     if !p.is_null() {
         let io_name = unsafe {
             if (*p).io.name.is_null() {
-                c"lwasapi".as_ptr()
+                c"lasapi".as_ptr()
             } else {
                 (*p).io.name
             }
         };
         unsafe {
-            LWASAPI_DebugTraceClient(
-                LWASAPI_DBG_SHIM,
-                LWASAPI_DBG_INFO,
+            LASAPI_DebugTraceClient(
+                LASAPI_DBG_SHIM,
+                LASAPI_DBG_INFO,
                 0,
                 c"ALSA_PLG_CLOSE".as_ptr(),
                 io_name,
-                c"lwasapi_io_close".as_ptr(),
+                c"lasapi_io_close".as_ptr(),
             );
             if !(*p).client.is_null() {
                 IAudioClient_Release((*p).client);
@@ -573,11 +573,11 @@ unsafe extern "C" fn lwasapi_io_close(io: *mut SndPcmIoplug) -> c_int {
     0
 }
 
-unsafe extern "C" fn lwasapi_io_hw_free(io: *mut SndPcmIoplug) -> c_int {
+unsafe extern "C" fn lasapi_io_hw_free(io: *mut SndPcmIoplug) -> c_int {
     if io.is_null() {
         return 0;
     }
-    let p = unsafe { (*io).private_data.cast::<LwasapiAlsaIoplug>() };
+    let p = unsafe { (*io).private_data.cast::<LasapiAlsaIoplug>() };
     if p.is_null() {
         return 0;
     }
@@ -596,22 +596,22 @@ unsafe extern "C" fn lwasapi_io_hw_free(io: *mut SndPcmIoplug) -> c_int {
     0
 }
 
-static LWASAPI_IO_CALLBACKS: SndPcmIoplugCallback = SndPcmIoplugCallback {
-    start: Some(lwasapi_io_start),
-    stop: Some(lwasapi_io_stop),
-    pointer: Some(lwasapi_io_pointer),
-    transfer: Some(lwasapi_io_transfer),
-    close: Some(lwasapi_io_close),
-    hw_params: Some(lwasapi_io_hw_params),
-    hw_free: Some(lwasapi_io_hw_free),
+static LASAPI_IO_CALLBACKS: SndPcmIoplugCallback = SndPcmIoplugCallback {
+    start: Some(lasapi_io_start),
+    stop: Some(lasapi_io_stop),
+    pointer: Some(lasapi_io_pointer),
+    transfer: Some(lasapi_io_transfer),
+    close: Some(lasapi_io_close),
+    hw_params: Some(lasapi_io_hw_params),
+    hw_free: Some(lasapi_io_hw_free),
     sw_params: None,
-    prepare: Some(lwasapi_io_prepare),
-    drain: Some(lwasapi_io_drain),
+    prepare: Some(lasapi_io_prepare),
+    drain: Some(lasapi_io_drain),
     pause: None,
     resume: None,
     poll_descriptors_count: None,
     poll_descriptors: None,
-    poll_revents: Some(lwasapi_io_poll_revents),
+    poll_revents: Some(lasapi_io_poll_revents),
     dump: None,
     delay: None,
     query_chmaps: None,
@@ -620,7 +620,7 @@ static LWASAPI_IO_CALLBACKS: SndPcmIoplugCallback = SndPcmIoplugCallback {
 };
 
 #[no_mangle]
-pub unsafe extern "C" fn _snd_pcm_lwasapi_open(
+pub unsafe extern "C" fn _snd_pcm_lasapi_open(
     pcmp: *mut *mut c_void,
     name: *const c_char,
     _root: *mut c_void,
@@ -636,9 +636,9 @@ pub unsafe extern "C" fn _snd_pcm_lwasapi_open(
     };
     if is_system_audio_daemon() || !Path::new(&sock_path).exists() {
         unsafe {
-            LWASAPI_DebugTraceClient(
-                LWASAPI_DBG_SHIM,
-                LWASAPI_DBG_WARN,
+            LASAPI_DebugTraceClient(
+                LASAPI_DBG_SHIM,
+                LASAPI_DBG_WARN,
                 0,
                 c"ALSA_PLG_FALLBACK".as_ptr(),
                 target_name,
@@ -648,16 +648,16 @@ pub unsafe extern "C" fn _snd_pcm_lwasapi_open(
         }
     }
 
-    let p = unsafe { calloc(1, mem::size_of::<LwasapiAlsaIoplug>()) }.cast::<LwasapiAlsaIoplug>();
+    let p = unsafe { calloc(1, mem::size_of::<LasapiAlsaIoplug>()) }.cast::<LasapiAlsaIoplug>();
     if p.is_null() {
         return -ENOMEM;
     }
     let p_ref = unsafe { &mut *p };
-    if unsafe { LWASAPI_ActivateAudioClient(ptr::null(), &mut p_ref.client) } != S_OK {
+    if unsafe { LASAPI_ActivateAudioClient(ptr::null(), &mut p_ref.client) } != S_OK {
         unsafe {
-            LWASAPI_DebugTraceClient(
-                LWASAPI_DBG_SHIM,
-                LWASAPI_DBG_WARN,
+            LASAPI_DebugTraceClient(
+                LASAPI_DBG_SHIM,
+                LASAPI_DBG_WARN,
                 0,
                 c"ALSA_PLG_FALLBACK".as_ptr(),
                 target_name,
@@ -671,25 +671,25 @@ pub unsafe extern "C" fn _snd_pcm_lwasapi_open(
     p_ref.event_fd = -1;
     p_ref.io.version = SND_PCM_IOPLUG_VERSION;
     p_ref.io.name = if stream == SND_PCM_STREAM_CAPTURE {
-        c"LWASAPI Direct WaveRT Capture Engine".as_ptr()
+        c"LASAPI Direct WaveRT Capture Engine".as_ptr()
     } else {
-        c"LWASAPI Direct WaveRT Render Engine".as_ptr()
+        c"LASAPI Direct WaveRT Render Engine".as_ptr()
     };
     p_ref.io.poll_fd = -1;
     p_ref.io.poll_events = 0;
-    p_ref.io.callback = &LWASAPI_IO_CALLBACKS;
+    p_ref.io.callback = &LASAPI_IO_CALLBACKS;
     p_ref.io.private_data = p.cast::<c_void>();
 
     let open_tgt = if name.is_null() {
-        c"lwasapi".as_ptr()
+        c"lasapi".as_ptr()
     } else {
         let _ = unsafe { CStr::from_ptr(name) };
         name
     };
     unsafe {
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"ALSA_PLG_OPEN".as_ptr(),
             open_tgt,
@@ -738,4 +738,4 @@ pub unsafe extern "C" fn _snd_pcm_lwasapi_open(
 
 #[used]
 #[no_mangle]
-pub static mut __snd_pcm_lwasapi_open_dlsym_pcm_001: u8 = 0;
+pub static mut __snd_pcm_lasapi_open_dlsym_pcm_001: u8 = 0;

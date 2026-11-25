@@ -1,6 +1,6 @@
 # Third-Party Libraries, Linking & LGPL-3.0 Compliance
 
-Salsa (LWASAPI) is Copyright (C) 2026 Linuxknows and is licensed under the
+Salsa (LASAPI) is Copyright (C) 2026 Linuxknows and is licensed under the
 **GNU Lesser General Public License, version 3.0 only (`LGPL-3.0-only`)**.
 The complete license terms consist of [COPYING.LESSER](COPYING.LESSER) (LGPL-3.0
 additional permissions) together with [COPYING](COPYING) (GNU GPL-3.0 base terms).
@@ -10,7 +10,7 @@ additional permissions) together with [COPYING](COPYING) (GNU GPL-3.0 base terms
 ## 1. Rust Workspace (`rust/Cargo.lock`)
 
 - **Zero external `crates.io` dependencies.** All 10 crates in `rust/`
-  (`alsa_plugin_lwasapi`, `lwasapi_client`, `salsa_net`, `salsa_pa_reconnect`,
+  (`alsa_plugin_lasapi`, `lasapi_client`, `salsa_net`, `salsa_pa_reconnect`,
   `salsa_pa_reconnect_proxy`, `salsa_tools`, `salsa_ui`, `shim_alsa`, `shim_jack`,
   `shim_pulse`) are authored within this repository and declare
   `license = "LGPL-3.0-only"`.
@@ -50,7 +50,7 @@ degrades gracefully with safe fallbacks if any library is absent:
 | **`libdbus-1.so.3`** (`dbus`) | `AFL-2.1 OR GPL-2.0-or-later` | Runtime `dlopen` for BlueZ D-Bus A2DP MediaEndpoint / MediaTransport coordination. |
 | **`libglib-2.0.so.0`, `libgobject-2.0.so.0`, `libgio-2.0.so.0`** (`glib2`) | `LGPL-2.1-or-later` | Runtime `dlopen` for StatusNotifierItem tray integration and xdg-desktop-portal ScreenCast D-Bus coordination. |
 | **`libgbm.so.1`, `libEGL.so.1`, `libGLESv2.so.2`** (`mesa`, `libglvnd`) | `MIT` / `BSD-3-Clause` | Runtime `dlopen` for zero-copy DMA-BUF Wayland ScreenCast preview conversion. |
-| **`libLayerShellQtInterface.so.6`** (`layer-shell-qt`) | `LGPL-3.0-only` / `LGPL-2.1-only` | Optional runtime `dlopen` in `qt6/lwasapi_tray.cpp` for native Wayland `zwlr_layer_shell_v1` tray popups, menus, and click-through OSD overlays (zero panel taskbar icon); falls back to standard Qt/EWMH windows if absent. |
+| **`libLayerShellQtInterface.so.6`** (`layer-shell-qt`) | `LGPL-3.0-only` / `LGPL-2.1-only` | Optional runtime `dlopen` in `qt6/lasapi_tray.cpp` for native Wayland `zwlr_layer_shell_v1` tray popups, menus, and click-through OSD overlays (zero panel taskbar icon); falls back to standard Qt/EWMH windows if absent. |
 | **`libKF6WindowSystem.so.6`** (`kwindowsystem`) | `LGPL-2.1-only OR LGPL-3.0-only` | Optional runtime `dlopen` in `qt6/salsa_common.cpp` to mint Wayland `XDG_ACTIVATION_TOKEN` focus tokens when raising single-instance windows. |
 | **`libX11.so.6`, `libXrandr.so.2`** (`libx11`, `libxrandr`) | `MIT` / `X11` | Optional runtime `dlopen` used exclusively on X11/XCB fallback sessions (`window_uses_x11()`) for EWMH popup hints and X11 monitor geometry; never opened during native Wayland execution. |
 | **`libz.so.1`** (`zlib`) | `Zlib` | Runtime `dlopen` for PNG asset encoding/decoding in installer & tray icons. |
@@ -59,8 +59,8 @@ degrades gracefully with safe fallbacks if any library is absent:
 
 ## 4. Library Relinking & Corresponding Source (`LGPL-3.0` §4)
 
-Every library and binary in Salsa — including `build/liblwasapi.so`,
-`build/libasound_module_pcm_lwasapi.so`, `build/libsalsa_pa_reconnect.so`,
+Every library and binary in Salsa — including `build/liblasapi.so`,
+`build/libasound_module_pcm_lasapi.so`, `build/libsalsa_pa_reconnect.so`,
 `build/shims/*.so`, `build/libsalsa_wire.a`, `build/libsalsa_ui.a`, and all Qt6
 frontends — builds cleanly offline from the complete source tree in this
 repository:
@@ -69,6 +69,6 @@ repository:
 make -j"$(nproc)" all
 ```
 
-Shared components (`liblwasapi.so`, `libasound_module_pcm_lwasapi.so`,
+Shared components (`liblasapi.so`, `libasound_module_pcm_lasapi.so`,
 `libsalsa_pa_reconnect.so`, `build/shims/*.so`) are standard ELF shared objects
 that users can modify, recompile, and replace directly in-place.

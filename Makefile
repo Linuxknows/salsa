@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # Copyright (C) 2026 Linuxknows
 #
-# Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+# Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 # under the terms of the GNU Lesser General Public License as published by
 # the Free Software Foundation, version 3 of the License.
 
@@ -55,10 +55,10 @@ endif
 .PHONY: all clean test rust-test fuzz-wire test-sanitized installer dist
 
 all: $(WIRE_LIB) \
-     $(BUILD_DIR)/lwasapi-audiodg \
+     $(BUILD_DIR)/lasapi-audiodg \
      $(BUILD_DIR)/salsa-gen-pa-proxy \
-     $(BUILD_DIR)/liblwasapi.so \
-     $(BUILD_DIR)/libasound_module_pcm_lwasapi.so \
+     $(BUILD_DIR)/liblasapi.so \
+     $(BUILD_DIR)/libasound_module_pcm_lasapi.so \
      $(BUILD_DIR)/libsalsa_pa_reconnect.so \
      $(PA_RECONNECT_DIR)/libpulse.so.0 \
      $(OPT_PA32) \
@@ -67,16 +67,16 @@ all: $(WIRE_LIB) \
      $(SHIM_DIR)/libpulse.so.0 \
      $(SHIM_DIR)/libpulse-mainloop-glib.so.0 \
      $(SHIM_DIR)/libjack.so.0 \
-     $(BUILD_DIR)/lwasapi-ctl \
-     $(BUILD_DIR)/lwasapi-test \
-     $(BUILD_DIR)/lwasapi-bench \
-     $(BUILD_DIR)/lwasapi-run \
-     $(BUILD_DIR)/lwasapi-autosync \
+     $(BUILD_DIR)/lasapi-ctl \
+     $(BUILD_DIR)/lasapi-test \
+     $(BUILD_DIR)/lasapi-bench \
+     $(BUILD_DIR)/lasapi-run \
+     $(BUILD_DIR)/lasapi-autosync \
      $(BUILD_DIR)/salsa-installer \
      $(BUILD_DIR)/salsa-dist \
      $(BUILD_DIR)/salsa-debug-cli \
      $(BUILD_DIR)/salsa-regression \
-     $(BUILD_DIR)/lwasapi-tray \
+     $(BUILD_DIR)/lasapi-tray \
      $(BUILD_DIR)/salsa-debug \
      $(BUILD_DIR)/salsa-studio
 
@@ -96,8 +96,8 @@ $(WIRE_LIB): $(RUST_SRCS) | $(BUILD_DIR)
 	SALSA_HOST_LIBPULSE="$(HOST_LIBPULSE)" RUSTFLAGS="-C relocation-model=pic -C link-arg=-Wl,-z,relro,-z,now -C link-arg=-Wl,-z,noexecstack" PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) build --manifest-path rust/Cargo.toml --workspace --release --offline --target-dir $(RUST_TARGET_DIR)
 	if [ -f $@ ] && cmp -s $(RUST_REL_DIR)/libsalsa_wire.a $@; then :; else cp $(RUST_REL_DIR)/libsalsa_wire.a $@.tmp && mv -f $@.tmp $@; fi
 
-$(BUILD_DIR)/lwasapi-audiodg: $(WIRE_LIB) | $(BUILD_DIR)
-	cp $(RUST_REL_DIR)/lwasapi-audiodg $@.tmp && mv -f $@.tmp $@
+$(BUILD_DIR)/lasapi-audiodg: $(WIRE_LIB) | $(BUILD_DIR)
+	cp $(RUST_REL_DIR)/lasapi-audiodg $@.tmp && mv -f $@.tmp $@
 
 $(BUILD_DIR)/salsa-gen-pa-proxy: $(WIRE_LIB) | $(BUILD_DIR)
 	cp $(RUST_REL_DIR)/salsa-gen-pa-proxy $@.tmp && mv -f $@.tmp $@
@@ -105,18 +105,18 @@ $(BUILD_DIR)/salsa-gen-pa-proxy: $(WIRE_LIB) | $(BUILD_DIR)
 $(BUILD_DIR)/fuzz_wire: $(WIRE_LIB) | $(BUILD_DIR)
 	cp $(RUST_REL_DIR)/fuzz_wire $@.tmp && mv -f $@.tmp $@
 
-$(BUILD_DIR)/liblwasapi.so: $(WIRE_LIB) src/lwasapi.version | $(BUILD_DIR)
-	$(CC) -shared -Wl,-soname,liblwasapi.so \
-		-Wl,--version-script=src/lwasapi.version \
-		-Wl,--whole-archive $(RUST_REL_DIR)/liblwasapi.a -Wl,--no-whole-archive \
+$(BUILD_DIR)/liblasapi.so: $(WIRE_LIB) src/lasapi.version | $(BUILD_DIR)
+	$(CC) -shared -Wl,-soname,liblasapi.so \
+		-Wl,--version-script=src/lasapi.version \
+		-Wl,--whole-archive $(RUST_REL_DIR)/liblasapi.a -Wl,--no-whole-archive \
 		-ldl -o $@.tmp $(SO_LDFLAGS) && mv -f $@.tmp $@
 
-$(BUILD_DIR)/libasound_module_pcm_lwasapi.so: $(WIRE_LIB) $(BUILD_DIR)/liblwasapi.so src/alsa_plugin.version | $(BUILD_DIR)
-	$(CC) -shared -Wl,-soname,libasound_module_pcm_lwasapi.so \
+$(BUILD_DIR)/libasound_module_pcm_lasapi.so: $(WIRE_LIB) $(BUILD_DIR)/liblasapi.so src/alsa_plugin.version | $(BUILD_DIR)
+	$(CC) -shared -Wl,-soname,libasound_module_pcm_lasapi.so \
 		-Wl,--version-script=src/alsa_plugin.version \
 		-Wl,-rpath,'$$ORIGIN' \
-		-Wl,--whole-archive $(RUST_REL_DIR)/libalsa_plugin_lwasapi.a -Wl,--no-whole-archive \
-		-L$(BUILD_DIR) -llwasapi $(HOST_LIBASOUND) -ldl -o $@.tmp $(SO_LDFLAGS) && mv -f $@.tmp $@
+		-Wl,--whole-archive $(RUST_REL_DIR)/libalsa_plugin_lasapi.a -Wl,--no-whole-archive \
+		-L$(BUILD_DIR) -llasapi $(HOST_LIBASOUND) -ldl -o $@.tmp $(SO_LDFLAGS) && mv -f $@.tmp $@
 
 $(BUILD_DIR)/libsalsa_pa_reconnect.so: $(WIRE_LIB) src/pa_reconnect.version | $(BUILD_DIR)
 	$(CC) -shared -Wl,-soname,libsalsa_pa_reconnect.so \
@@ -151,62 +151,62 @@ $(PA_RECONNECT32_DIR)/libpulse.so.0: $(BUILD_DIR)/rust_target32/i686-unknown-lin
 	ln -sf libpulse.so.0 $(PA_RECONNECT32_DIR)/libpulse.so.tmp && mv -f $(PA_RECONNECT32_DIR)/libpulse.so.tmp $(PA_RECONNECT32_DIR)/libpulse.so
 endif
 
-$(SHIM_DIR)/libasound.so.2: $(WIRE_LIB) $(BUILD_DIR)/liblwasapi.so src/alsa.version | $(SHIM_DIR)
+$(SHIM_DIR)/libasound.so.2: $(WIRE_LIB) $(BUILD_DIR)/liblasapi.so src/alsa.version | $(SHIM_DIR)
 	$(CC) -shared -Wl,-soname,libasound.so.2 \
 		-Wl,--version-script=src/alsa.version \
 		-Wl,-rpath,'$$ORIGIN/..' \
 		-Wl,--whole-archive $(RUST_REL_DIR)/libshim_alsa.a -Wl,--no-whole-archive \
-		-L$(BUILD_DIR) -llwasapi -ldl -o $@.tmp $(SO_LDFLAGS) && mv -f $@.tmp $@
+		-L$(BUILD_DIR) -llasapi -ldl -o $@.tmp $(SO_LDFLAGS) && mv -f $@.tmp $@
 	ln -sf libasound.so.2 $(SHIM_DIR)/libasound.so.tmp && mv -f $(SHIM_DIR)/libasound.so.tmp $(SHIM_DIR)/libasound.so
 
-$(SHIM_DIR)/libpulse-simple.so.0: $(WIRE_LIB) $(BUILD_DIR)/liblwasapi.so src/pulse.version | $(SHIM_DIR)
+$(SHIM_DIR)/libpulse-simple.so.0: $(WIRE_LIB) $(BUILD_DIR)/liblasapi.so src/pulse.version | $(SHIM_DIR)
 	$(CC) -shared -Wl,-soname,libpulse-simple.so.0 \
 		-Wl,--version-script=src/pulse.version \
 		-Wl,-rpath,'$$ORIGIN/..' \
 		-Wl,--whole-archive $(RUST_REL_DIR)/libshim_pulse.a -Wl,--no-whole-archive \
-		-L$(BUILD_DIR) -llwasapi -ldl -o $@.tmp $(SO_LDFLAGS) && mv -f $@.tmp $@
+		-L$(BUILD_DIR) -llasapi -ldl -o $@.tmp $(SO_LDFLAGS) && mv -f $@.tmp $@
 	ln -sf libpulse-simple.so.0 $(SHIM_DIR)/libpulse-simple.so.tmp && mv -f $(SHIM_DIR)/libpulse-simple.so.tmp $(SHIM_DIR)/libpulse-simple.so
 
-$(SHIM_DIR)/libpulse.so.0: $(WIRE_LIB) $(BUILD_DIR)/liblwasapi.so src/pulse.version | $(SHIM_DIR)
+$(SHIM_DIR)/libpulse.so.0: $(WIRE_LIB) $(BUILD_DIR)/liblasapi.so src/pulse.version | $(SHIM_DIR)
 	$(CC) -shared -Wl,-soname,libpulse.so.0 \
 		-Wl,--version-script=src/pulse.version \
 		-Wl,-rpath,'$$ORIGIN/..' \
 		-Wl,--whole-archive $(RUST_REL_DIR)/libshim_pulse.a -Wl,--no-whole-archive \
-		-L$(BUILD_DIR) -llwasapi -ldl -o $@.tmp $(SO_LDFLAGS) && mv -f $@.tmp $@
+		-L$(BUILD_DIR) -llasapi -ldl -o $@.tmp $(SO_LDFLAGS) && mv -f $@.tmp $@
 	ln -sf libpulse.so.0 $(SHIM_DIR)/libpulse.so.tmp && mv -f $(SHIM_DIR)/libpulse.so.tmp $(SHIM_DIR)/libpulse.so
 
-$(SHIM_DIR)/libpulse-mainloop-glib.so.0: $(WIRE_LIB) $(BUILD_DIR)/liblwasapi.so src/pulse.version | $(SHIM_DIR)
+$(SHIM_DIR)/libpulse-mainloop-glib.so.0: $(WIRE_LIB) $(BUILD_DIR)/liblasapi.so src/pulse.version | $(SHIM_DIR)
 	$(CC) -shared -Wl,-soname,libpulse-mainloop-glib.so.0 \
 		-Wl,--version-script=src/pulse.version \
 		-Wl,-rpath,'$$ORIGIN/..' \
 		-Wl,--whole-archive $(RUST_REL_DIR)/libshim_pulse.a -Wl,--no-whole-archive \
-		-L$(BUILD_DIR) -llwasapi -ldl -o $@.tmp $(SO_LDFLAGS) && mv -f $@.tmp $@
+		-L$(BUILD_DIR) -llasapi -ldl -o $@.tmp $(SO_LDFLAGS) && mv -f $@.tmp $@
 	ln -sf libpulse-mainloop-glib.so.0 $(SHIM_DIR)/libpulse-mainloop-glib.so.tmp && mv -f $(SHIM_DIR)/libpulse-mainloop-glib.so.tmp $(SHIM_DIR)/libpulse-mainloop-glib.so
 
-$(SHIM_DIR)/libjack.so.0: $(WIRE_LIB) $(BUILD_DIR)/liblwasapi.so src/jack.version | $(SHIM_DIR)
+$(SHIM_DIR)/libjack.so.0: $(WIRE_LIB) $(BUILD_DIR)/liblasapi.so src/jack.version | $(SHIM_DIR)
 	$(CC) -shared -Wl,-soname,libjack.so.0 \
 		-Wl,--version-script=src/jack.version \
 		-Wl,-rpath,'$$ORIGIN/..' \
 		-Wl,--whole-archive $(RUST_REL_DIR)/libshim_jack.a -Wl,--no-whole-archive \
-		-L$(BUILD_DIR) -llwasapi -ldl -o $@.tmp $(SO_LDFLAGS) && mv -f $@.tmp $@
+		-L$(BUILD_DIR) -llasapi -ldl -o $@.tmp $(SO_LDFLAGS) && mv -f $@.tmp $@
 	ln -sf libjack.so.0 $(SHIM_DIR)/libjack.so.tmp && mv -f $(SHIM_DIR)/libjack.so.tmp $(SHIM_DIR)/libjack.so
 
 .PHONY: fuzz-wire
 
-$(BUILD_DIR)/lwasapi-ctl: $(WIRE_LIB) | $(BUILD_DIR)
-	cp $(RUST_REL_DIR)/lwasapi-ctl $@.tmp && mv -f $@.tmp $@
+$(BUILD_DIR)/lasapi-ctl: $(WIRE_LIB) | $(BUILD_DIR)
+	cp $(RUST_REL_DIR)/lasapi-ctl $@.tmp && mv -f $@.tmp $@
 
-$(BUILD_DIR)/lwasapi-test: $(WIRE_LIB) $(BUILD_DIR)/liblwasapi.so $(BUILD_DIR)/libasound_module_pcm_lwasapi.so $(SHIM_DIR)/libasound.so.2 $(SHIM_DIR)/libpulse.so.0 $(SHIM_DIR)/libjack.so.0 | $(BUILD_DIR)
-	cp $(RUST_REL_DIR)/lwasapi-test $@.tmp && mv -f $@.tmp $@
+$(BUILD_DIR)/lasapi-test: $(WIRE_LIB) $(BUILD_DIR)/liblasapi.so $(BUILD_DIR)/libasound_module_pcm_lasapi.so $(SHIM_DIR)/libasound.so.2 $(SHIM_DIR)/libpulse.so.0 $(SHIM_DIR)/libjack.so.0 | $(BUILD_DIR)
+	cp $(RUST_REL_DIR)/lasapi-test $@.tmp && mv -f $@.tmp $@
 
-$(BUILD_DIR)/lwasapi-bench: $(WIRE_LIB) $(BUILD_DIR)/liblwasapi.so | $(BUILD_DIR)
-	cp $(RUST_REL_DIR)/lwasapi-bench $@.tmp && mv -f $@.tmp $@
+$(BUILD_DIR)/lasapi-bench: $(WIRE_LIB) $(BUILD_DIR)/liblasapi.so | $(BUILD_DIR)
+	cp $(RUST_REL_DIR)/lasapi-bench $@.tmp && mv -f $@.tmp $@
 
-$(BUILD_DIR)/lwasapi-run: $(WIRE_LIB) | $(BUILD_DIR)
-	cp $(RUST_REL_DIR)/lwasapi-run $@.tmp && mv -f $@.tmp $@
+$(BUILD_DIR)/lasapi-run: $(WIRE_LIB) | $(BUILD_DIR)
+	cp $(RUST_REL_DIR)/lasapi-run $@.tmp && mv -f $@.tmp $@
 
-$(BUILD_DIR)/lwasapi-autosync: $(WIRE_LIB) | $(BUILD_DIR)
-	cp $(RUST_REL_DIR)/lwasapi-autosync $@.tmp && mv -f $@.tmp $@
+$(BUILD_DIR)/lasapi-autosync: $(WIRE_LIB) | $(BUILD_DIR)
+	cp $(RUST_REL_DIR)/lasapi-autosync $@.tmp && mv -f $@.tmp $@
 
 $(BUILD_DIR)/salsa-installer: $(WIRE_LIB) | $(BUILD_DIR)
 	cp $(RUST_REL_DIR)/salsa-installer $@.tmp && mv -f $@.tmp $@
@@ -214,10 +214,10 @@ $(BUILD_DIR)/salsa-installer: $(WIRE_LIB) | $(BUILD_DIR)
 $(BUILD_DIR)/salsa-dist: $(WIRE_LIB) | $(BUILD_DIR)
 	cp $(RUST_REL_DIR)/salsa-dist $@.tmp && mv -f $@.tmp $@
 
-$(BUILD_DIR)/salsa-debug-cli: $(WIRE_LIB) $(BUILD_DIR)/liblwasapi.so | $(BUILD_DIR)
+$(BUILD_DIR)/salsa-debug-cli: $(WIRE_LIB) $(BUILD_DIR)/liblasapi.so | $(BUILD_DIR)
 	cp $(RUST_REL_DIR)/salsa-debug-cli $@.tmp && mv -f $@.tmp $@
 
-$(BUILD_DIR)/salsa-regression: $(WIRE_LIB) $(BUILD_DIR)/liblwasapi.so | $(BUILD_DIR)
+$(BUILD_DIR)/salsa-regression: $(WIRE_LIB) $(BUILD_DIR)/liblasapi.so | $(BUILD_DIR)
 	cp $(RUST_REL_DIR)/salsa-regression $@.tmp && mv -f $@.tmp $@
 
 QT6_OBJ_DIR := $(BUILD_DIR)/qt6_obj
@@ -243,7 +243,7 @@ $(QT6_OBJ_DIR)/moc_salsa_widgets.cpp: qt6/salsa_widgets.hpp | $(QT6_OBJ_DIR)
 $(QT6_OBJ_DIR)/salsa_studio.moc: qt6/salsa_studio.cpp | $(QT6_OBJ_DIR)
 	$(QT6_MOC) $< -o $@
 
-$(QT6_OBJ_DIR)/lwasapi_tray.moc: qt6/lwasapi_tray.cpp | $(QT6_OBJ_DIR)
+$(QT6_OBJ_DIR)/lasapi_tray.moc: qt6/lasapi_tray.cpp | $(QT6_OBJ_DIR)
 	$(QT6_MOC) $< -o $@
 
 $(QT6_OBJ_DIR)/salsa_debug.moc: qt6/salsa_debug.cpp | $(QT6_OBJ_DIR)
@@ -267,14 +267,14 @@ $(QT6_OBJ_DIR)/salsa_debugger_widget.o: qt6/salsa_debugger_widget.cpp $(QT6_COMM
 $(QT6_OBJ_DIR)/salsa_studio.o: qt6/salsa_studio.cpp $(QT6_OBJ_DIR)/salsa_studio.moc $(QT6_COMMON_HDRS) | $(QT6_OBJ_DIR)
 	$(CXX) -std=c++20 $(HARDEN_CXXFLAGS) -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) -c $< -o $@
 
-$(QT6_OBJ_DIR)/lwasapi_tray.o: qt6/lwasapi_tray.cpp $(QT6_OBJ_DIR)/lwasapi_tray.moc $(QT6_COMMON_HDRS) | $(QT6_OBJ_DIR)
+$(QT6_OBJ_DIR)/lasapi_tray.o: qt6/lasapi_tray.cpp $(QT6_OBJ_DIR)/lasapi_tray.moc $(QT6_COMMON_HDRS) | $(QT6_OBJ_DIR)
 	$(CXX) -std=c++20 $(HARDEN_CXXFLAGS) -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) $(QT6_TRAY_CFLAGS) -c $< -o $@
 
 $(QT6_OBJ_DIR)/salsa_debug.o: qt6/salsa_debug.cpp $(QT6_OBJ_DIR)/salsa_debug.moc $(QT6_COMMON_HDRS) | $(QT6_OBJ_DIR)
 	$(CXX) -std=c++20 $(HARDEN_CXXFLAGS) -Wall -Wextra -fPIC -Iqt6 -I$(QT6_OBJ_DIR) $(QT6_CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/lwasapi-tray: $(WIRE_LIB) $(QT6_COMMON_OBJS) $(QT6_OBJ_DIR)/lwasapi_tray.o | $(BUILD_DIR)
-	$(CXX) $(QT6_COMMON_OBJS) $(QT6_OBJ_DIR)/lwasapi_tray.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) $(QT6_TRAY_LIBS) $(HARDEN_LDFLAGS) -Wl,-S -o $@.tmp && mv -f $@.tmp $@
+$(BUILD_DIR)/lasapi-tray: $(WIRE_LIB) $(QT6_COMMON_OBJS) $(QT6_OBJ_DIR)/lasapi_tray.o | $(BUILD_DIR)
+	$(CXX) $(QT6_COMMON_OBJS) $(QT6_OBJ_DIR)/lasapi_tray.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) $(QT6_TRAY_LIBS) $(HARDEN_LDFLAGS) -Wl,-S -o $@.tmp && mv -f $@.tmp $@
 
 $(BUILD_DIR)/salsa-debug: $(WIRE_LIB) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_debug.o | $(BUILD_DIR)
 	$(CXX) $(QT6_STUDIO_OBJS) $(QT6_OBJ_DIR)/salsa_debug.o $(RUST_REL_DIR)/libsalsa_ui.a $(QT6_LIBS) $(HARDEN_LDFLAGS) -Wl,-S -o $@.tmp && mv -f $@.tmp $@

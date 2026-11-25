@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -675,12 +675,12 @@ QString singleInstanceSockPath(const QString& sockFileName) {
     };
     const QByteArray xdg = qgetenv("XDG_RUNTIME_DIR");
     if (!xdg.isEmpty()) {
-        const QString dir = QString::fromLocal8Bit(xdg) + QStringLiteral("/lwasapi");
+        const QString dir = QString::fromLocal8Bit(xdg) + QStringLiteral("/lasapi");
         if (ensurePrivateDir(dir)) return dir + QStringLiteral("/") + sockFileName;
     }
-    const QString runDir = QStringLiteral("/run/user/%1/lwasapi").arg(static_cast<qulonglong>(myUid));
+    const QString runDir = QStringLiteral("/run/user/%1/lasapi").arg(static_cast<qulonglong>(myUid));
     if (ensurePrivateDir(runDir)) return runDir + QStringLiteral("/") + sockFileName;
-    const QString tmpDir = QStringLiteral("/tmp/lwasapi-%1").arg(static_cast<qulonglong>(myUid));
+    const QString tmpDir = QStringLiteral("/tmp/lasapi-%1").arg(static_cast<qulonglong>(myUid));
     if (ensurePrivateDir(tmpDir)) return tmpDir + QStringLiteral("/") + sockFileName;
     return QString();
 }
@@ -862,11 +862,11 @@ void spawnDetachedWaylandBinary(const QString& binName, const QStringList& args,
     // Clear any in-process QT_QPA_PLATFORM override (e.g. XCB fallback on compositors
     // without zwlr_layer_shell_v1) so child Salsa apps connect natively to Wayland.
     env.remove(QStringLiteral("QT_QPA_PLATFORM"));
-    env.remove(QStringLiteral("LWASAPI_TRAY_REPLACED"));
+    env.remove(QStringLiteral("LASAPI_TRAY_REPLACED"));
     if (env.value(QStringLiteral("XDG_ACTIVATION_TOKEN")).isEmpty()) {
         const QString appId = binName == QLatin1String("salsa-debug")
                                   ? QStringLiteral("salsa-debug")
-                                  : QStringLiteral("salsa-lwasapi");
+                                  : QStringLiteral("salsa-lasapi");
         const QByteArray minted = mintWaylandActivationToken(sourceWidget, appId);
         if (!minted.isEmpty()) {
             env.insert(QStringLiteral("XDG_ACTIVATION_TOKEN"), QString::fromUtf8(minted));
@@ -1071,7 +1071,7 @@ void showAboutLicenseDialog(
     lay->setSpacing(8);
 
     auto* hdr = new QLabel(
-        QStringLiteral("<b>Salsa (LWASAPI) %1 — %2</b><br>"
+        QStringLiteral("<b>Salsa (LASAPI) %1 — %2</b><br>"
                        "Copyright (C) 2026 Linuxknows &nbsp;|&nbsp; "
                        "License: <b>GNU Lesser General Public License v3.0 only (LGPL-3.0-only)</b><br>"
                        "<span style=\"color:%3;\">Distributed WITHOUT ANY WARRANTY; without even the implied warranty of "

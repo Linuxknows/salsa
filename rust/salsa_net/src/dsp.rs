@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -17,9 +17,9 @@ use std::f64::consts::PI;
 use std::sync::Mutex;
 
 use crate::c_abi::{
-    LwasapiEqConfig, LwasapiMicApoCfg, LwasapiParamEqExt, LwasapiShmRing, SalsaMicCubicState,
-    LWASAPI_EQ_BANDS, LWASAPI_FILTER_HIGH_SHELF, LWASAPI_FILTER_LOW_SHELF, LWASAPI_MAX_CHANNELS,
-    LWASAPI_RING_FRAMES, LWASAPI_RING_MASK, SALSA_PACK_F32_LE, SALSA_PACK_S16_LE, SALSA_PACK_S24_3LE, SALSA_PACK_S24_LE,
+    LasapiEqConfig, LasapiMicApoCfg, LasapiParamEqExt, LasapiShmRing, SalsaMicCubicState,
+    LASAPI_EQ_BANDS, LASAPI_FILTER_HIGH_SHELF, LASAPI_FILTER_LOW_SHELF, LASAPI_MAX_CHANNELS,
+    LASAPI_RING_FRAMES, LASAPI_RING_MASK, SALSA_PACK_F32_LE, SALSA_PACK_S16_LE, SALSA_PACK_S24_3LE, SALSA_PACK_S24_LE,
     SALSA_PACK_S32_LE,
 };
 use crate::state_conf::K_EQ_FREQS;
@@ -37,8 +37,8 @@ struct BiquadFilter {
     b2: f64,
     a1: f64,
     a2: f64,
-    z1: [f64; LWASAPI_MAX_CHANNELS],
-    z2: [f64; LWASAPI_MAX_CHANNELS],
+    z1: [f64; LASAPI_MAX_CHANNELS],
+    z2: [f64; LASAPI_MAX_CHANNELS],
     last_rate: u32,
     last_type: u32,
     last_freq_hz: f32,
@@ -55,8 +55,8 @@ impl BiquadFilter {
             b2: 0.0,
             a1: 0.0,
             a2: 0.0,
-            z1: [0.0; LWASAPI_MAX_CHANNELS],
-            z2: [0.0; LWASAPI_MAX_CHANNELS],
+            z1: [0.0; LASAPI_MAX_CHANNELS],
+            z2: [0.0; LASAPI_MAX_CHANNELS],
             last_rate: 0,
             last_type: 0,
             last_freq_hz: 0.0,
@@ -67,8 +67,8 @@ impl BiquadFilter {
     }
 
     fn reset_state(&mut self) {
-        self.z1 = [0.0; LWASAPI_MAX_CHANNELS];
-        self.z2 = [0.0; LWASAPI_MAX_CHANNELS];
+        self.z1 = [0.0; LASAPI_MAX_CHANNELS];
+        self.z2 = [0.0; LASAPI_MAX_CHANNELS];
         self.coeffs_valid = false;
     }
 
@@ -102,7 +102,7 @@ impl BiquadFilter {
         let sin_w0 = w0.sin();
         let alpha = sin_w0 / (2.0 * q);
 
-        let (b0, b1, b2, a0, a1, a2) = if ftype == LWASAPI_FILTER_LOW_SHELF {
+        let (b0, b1, b2, a0, a1, a2) = if ftype == LASAPI_FILTER_LOW_SHELF {
             let two_sqrt_a_alpha = 2.0 * a.sqrt() * alpha;
             (
                 a * ((a + 1.0) - (a - 1.0) * cos_w0 + two_sqrt_a_alpha),
@@ -112,7 +112,7 @@ impl BiquadFilter {
                 -2.0 * ((a - 1.0) + (a + 1.0) * cos_w0),
                 (a + 1.0) + (a - 1.0) * cos_w0 - two_sqrt_a_alpha,
             )
-        } else if ftype == LWASAPI_FILTER_HIGH_SHELF {
+        } else if ftype == LASAPI_FILTER_HIGH_SHELF {
             let two_sqrt_a_alpha = 2.0 * a.sqrt() * alpha;
             (
                 a * ((a + 1.0) + (a - 1.0) * cos_w0 + two_sqrt_a_alpha),
@@ -228,8 +228,8 @@ impl BiquadFilter {
 }
 
 struct DspTelem {
-    band_levels_db: [AtomicU32; LWASAPI_EQ_BANDS],
-    dyn_delta_db: [AtomicU32; LWASAPI_EQ_BANDS],
+    band_levels_db: [AtomicU32; LASAPI_EQ_BANDS],
+    dyn_delta_db: [AtomicU32; LASAPI_EQ_BANDS],
     output_peak_l: AtomicU32,
     output_peak_r: AtomicU32,
     mic_apo_peak_in: AtomicU32,
@@ -240,8 +240,8 @@ struct DspTelem {
 impl DspTelem {
     const fn new() -> Self {
         Self {
-            band_levels_db: [const { AtomicU32::new(INIT_NEG60_BITS) }; LWASAPI_EQ_BANDS],
-            dyn_delta_db: [const { AtomicU32::new(0) }; LWASAPI_EQ_BANDS],
+            band_levels_db: [const { AtomicU32::new(INIT_NEG60_BITS) }; LASAPI_EQ_BANDS],
+            dyn_delta_db: [const { AtomicU32::new(0) }; LASAPI_EQ_BANDS],
             output_peak_l: AtomicU32::new(0),
             output_peak_r: AtomicU32::new(0),
             mic_apo_peak_in: AtomicU32::new(0),
@@ -254,13 +254,13 @@ impl DspTelem {
 static GLOBAL_TELEM: DspTelem = DspTelem::new();
 
 struct EqDspState {
-    eq_filters: [BiquadFilter; LWASAPI_EQ_BANDS],
-    spec_filters: [BiquadFilter; LWASAPI_EQ_BANDS],
-    spec_last_freqs: [f32; LWASAPI_EQ_BANDS],
+    eq_filters: [BiquadFilter; LASAPI_EQ_BANDS],
+    spec_filters: [BiquadFilter; LASAPI_EQ_BANDS],
+    spec_last_freqs: [f32; LASAPI_EQ_BANDS],
     spec_last_rate: u32,
-    band_env: [f32; LWASAPI_EQ_BANDS],
-    eq_band_levels_db: [f32; LWASAPI_EQ_BANDS],
-    eq_dyn_delta_db: [f32; LWASAPI_EQ_BANDS],
+    band_env: [f32; LASAPI_EQ_BANDS],
+    eq_band_levels_db: [f32; LASAPI_EQ_BANDS],
+    eq_dyn_delta_db: [f32; LASAPI_EQ_BANDS],
     output_peak_l: f32,
     output_peak_r: f32,
     xfeed_lp_l: f64,
@@ -273,13 +273,13 @@ struct EqDspState {
 impl EqDspState {
     const fn new() -> Self {
         Self {
-            eq_filters: [BiquadFilter::new(); LWASAPI_EQ_BANDS],
-            spec_filters: [BiquadFilter::new(); LWASAPI_EQ_BANDS],
-            spec_last_freqs: [0.0; LWASAPI_EQ_BANDS],
+            eq_filters: [BiquadFilter::new(); LASAPI_EQ_BANDS],
+            spec_filters: [BiquadFilter::new(); LASAPI_EQ_BANDS],
+            spec_last_freqs: [0.0; LASAPI_EQ_BANDS],
             spec_last_rate: 0,
-            band_env: [0.0; LWASAPI_EQ_BANDS],
-            eq_band_levels_db: [-60.0; LWASAPI_EQ_BANDS],
-            eq_dyn_delta_db: [0.0; LWASAPI_EQ_BANDS],
+            band_env: [0.0; LASAPI_EQ_BANDS],
+            eq_band_levels_db: [-60.0; LASAPI_EQ_BANDS],
+            eq_dyn_delta_db: [0.0; LASAPI_EQ_BANDS],
             output_peak_l: 0.0,
             output_peak_r: 0.0,
             xfeed_lp_l: 0.0,
@@ -380,7 +380,7 @@ impl MicRnnoiseCtx {
         }
         if self.available {
             eprintln!(
-                "[LWASAPI-Salsa] Capture Mic APO: Neural RNNoise denoiser loaded (librnnoise.so.0)."
+                "[LASAPI-Salsa] Capture Mic APO: Neural RNNoise denoiser loaded (librnnoise.so.0)."
             );
         }
     }
@@ -611,8 +611,8 @@ fn process_crossfeed(
     frames: usize,
     ch: usize,
     rate: u32,
-    eq_cfg: &LwasapiEqConfig,
-    param_eq: &LwasapiParamEqExt,
+    eq_cfg: &LasapiEqConfig,
+    param_eq: &LasapiParamEqExt,
 ) {
     if ch < 2 || eq_cfg.enabled == 0 || param_eq.crossfeed_enabled == 0 {
         st.xfeed_lp_l = 0.0;
@@ -671,8 +671,8 @@ fn process_dynamic_eq_inner(
     frames: usize,
     ch: usize,
     mut rate: u32,
-    eq_cfg: &LwasapiEqConfig,
-    param_eq: &LwasapiParamEqExt,
+    eq_cfg: &LasapiEqConfig,
+    param_eq: &LasapiParamEqExt,
 ) {
     if frames == 0 || ch == 0 || buf.len() < frames * ch {
         return;
@@ -682,7 +682,7 @@ fn process_dynamic_eq_inner(
     }
     let d_rate = rate as f64;
 
-    for b in 0..LWASAPI_EQ_BANDS {
+    for b in 0..LASAPI_EQ_BANDS {
         let f_in = param_eq.band_freq_hz[b];
         let bfreq = if (20.0..=20_000.0).contains(&f_in) {
             f_in
@@ -716,7 +716,7 @@ fn process_dynamic_eq_inner(
         }
     }
 
-    for b in 0..LWASAPI_EQ_BANDS {
+    for b in 0..LASAPI_EQ_BANDS {
         let sf = &mut st.spec_filters[b];
         let mut z1 = if sf.z1[0].is_finite() { sf.z1[0] } else { 0.0 };
         let mut z2 = if sf.z2[0].is_finite() { sf.z2[0] } else { 0.0 };
@@ -789,7 +789,7 @@ fn process_dynamic_eq_inner(
         telem.dyn_delta_db[b].store(st.eq_dyn_delta_db[b].to_bits(), Ordering::Relaxed);
     }
 
-    for b in 0..LWASAPI_EQ_BANDS {
+    for b in 0..LASAPI_EQ_BANDS {
         let ef = &mut st.eq_filters[b];
         if eq_cfg.enabled != 0 {
             let raw_gain = if eq_cfg.band_gains_db[b].is_finite() {
@@ -821,7 +821,7 @@ fn process_dynamic_eq_inner(
                     ef.last_gain_db = eff_gain;
                     ef.coeffs_valid = true;
                 }
-                let max_c = ch.min(LWASAPI_MAX_CHANNELS);
+                let max_c = ch.min(LASAPI_MAX_CHANNELS);
                 for c in 0..max_c {
                     let mut ez1 = if ef.z1[c].is_finite() { ef.z1[c] } else { 0.0 };
                     let mut ez2 = if ef.z2[c].is_finite() { ef.z2[c] } else { 0.0 };
@@ -903,7 +903,7 @@ fn process_capture_mic_apo_inner(
     mic_buf: &mut [f32],
     frames: usize,
     mut rate: u32,
-    cfg: &LwasapiMicApoCfg,
+    cfg: &LasapiMicApoCfg,
 ) {
     if frames == 0 || mic_buf.len() < frames * 2 {
         return;
@@ -1120,7 +1120,7 @@ fn process_capture_mic_apo_inner(
     if cfg.comp_enabled != 0 {
         if !st.demud_flt.coeffs_valid || st.demud_flt.last_rate != rate {
             st.demud_flt
-                .compute_parametric(crate::c_abi::LWASAPI_FILTER_PEAK, 250.0, rate as f64, 1.10, -1.4);
+                .compute_parametric(crate::c_abi::LASAPI_FILTER_PEAK, 250.0, rate as f64, 1.10, -1.4);
             st.demud_flt.last_rate = rate;
             st.demud_flt.coeffs_valid = true;
         }
@@ -1153,7 +1153,7 @@ fn process_capture_mic_apo_inner(
                 || (st.pres_flt.last_gain_db - clarity_db).abs() > 0.05
             {
                 st.pres_flt.compute_parametric(
-                    crate::c_abi::LWASAPI_FILTER_PEAK,
+                    crate::c_abi::LASAPI_FILTER_PEAK,
                     3400.0,
                     rate as f64,
                     0.80,
@@ -1168,7 +1168,7 @@ fn process_capture_mic_apo_inner(
                 || (st.clarity_flt.last_gain_db - clarity_db).abs() > 0.05
             {
                 st.clarity_flt.compute_parametric(
-                    LWASAPI_FILTER_HIGH_SHELF,
+                    LASAPI_FILTER_HIGH_SHELF,
                     6800.0,
                     rate as f64,
                     0.707,
@@ -1456,8 +1456,8 @@ pub unsafe extern "C" fn salsa_dsp_process_dynamic_eq(
     frames: u32,
     ch: u32,
     rate: u32,
-    eq_cfg: *const LwasapiEqConfig,
-    param_eq: *const LwasapiParamEqExt,
+    eq_cfg: *const LasapiEqConfig,
+    param_eq: *const LasapiParamEqExt,
 ) {
     if buf.is_null() || frames == 0 || ch == 0 || eq_cfg.is_null() || param_eq.is_null() {
         return;
@@ -1478,7 +1478,7 @@ pub unsafe extern "C" fn salsa_dsp_process_capture_mic_apo(
     mic_buf: *mut f32,
     frames: u32,
     rate: u32,
-    cfg: *const LwasapiMicApoCfg,
+    cfg: *const LasapiMicApoCfg,
 ) {
     if mic_buf.is_null() || frames == 0 || cfg.is_null() {
         return;
@@ -1511,13 +1511,13 @@ pub unsafe extern "C" fn salsa_dsp_get_telem(
     out_rnnoise_active: *mut u32,
 ) {
     if !out_band_levels_db.is_null() {
-        let out = unsafe { slice::from_raw_parts_mut(out_band_levels_db, LWASAPI_EQ_BANDS) };
+        let out = unsafe { slice::from_raw_parts_mut(out_band_levels_db, LASAPI_EQ_BANDS) };
         for (dst, src) in out.iter_mut().zip(GLOBAL_TELEM.band_levels_db.iter()) {
             *dst = f32::from_bits(src.load(Ordering::Relaxed));
         }
     }
     if !out_dyn_delta_db.is_null() {
-        let out = unsafe { slice::from_raw_parts_mut(out_dyn_delta_db, LWASAPI_EQ_BANDS) };
+        let out = unsafe { slice::from_raw_parts_mut(out_dyn_delta_db, LASAPI_EQ_BANDS) };
         for (dst, src) in out.iter_mut().zip(GLOBAL_TELEM.dyn_delta_db.iter()) {
             *dst = f32::from_bits(src.load(Ordering::Relaxed));
         }
@@ -1545,7 +1545,7 @@ pub unsafe extern "C" fn salsa_dsp_get_telem(
 
 #[no_mangle]
 pub unsafe extern "C" fn salsa_dsp_consume_session_frames(
-    r: *mut LwasapiShmRing,
+    r: *mut LasapiShmRing,
     io_phase: *mut f64,
     s_rate: u32,
     s_ch: u32,
@@ -1588,7 +1588,7 @@ pub unsafe extern "C" fn salsa_dsp_consume_session_frames(
     }
 
     let ch = s_ch as usize;
-    if ch == 0 || ch > LWASAPI_MAX_CHANNELS {
+    if ch == 0 || ch > LASAPI_MAX_CHANNELS {
         return;
     }
     let out_ch = out_channels as usize;
@@ -1628,8 +1628,8 @@ pub unsafe extern "C" fn salsa_dsp_consume_session_frames(
         return;
     }
     let mut avail = w - rd;
-    if avail > LWASAPI_RING_FRAMES as u64 {
-        let keep = (out_fr as u64).saturating_mul(2).min(LWASAPI_RING_FRAMES as u64);
+    if avail > LASAPI_RING_FRAMES as u64 {
+        let keep = (out_fr as u64).saturating_mul(2).min(LASAPI_RING_FRAMES as u64);
         rd = w.saturating_sub(keep);
         avail = w - rd;
         unsafe { (*rf_ptr).store(rd, Ordering::Release) };
@@ -1671,7 +1671,7 @@ pub unsafe extern "C" fn salsa_dsp_consume_session_frames(
     if client_rate == hw_rate {
         let to_read = (avail.min(out_fr as u64)) as usize;
         for f in 0..to_read {
-            let slot = ((rd.wrapping_add(f as u64) as usize) & LWASAPI_RING_MASK) * ch;
+            let slot = ((rd.wrapping_add(f as u64) as usize) & LASAPI_RING_MASK) * ch;
             for c in 0..out_ch {
                 let raw = unsafe { pcm_base.add(slot + (c % ch)).read() };
                 let sample = if raw.is_finite() { raw * vol } else { 0.0 };
@@ -1693,8 +1693,8 @@ pub unsafe extern "C" fn salsa_dsp_consume_session_frames(
                 break;
             }
             let frac = (phase - (i0 as f64)) as f32;
-            let slot0 = ((rd.wrapping_add(i0) as usize) & LWASAPI_RING_MASK) * ch;
-            let slot1 = ((rd.wrapping_add(i0 + 1) as usize) & LWASAPI_RING_MASK) * ch;
+            let slot0 = ((rd.wrapping_add(i0) as usize) & LASAPI_RING_MASK) * ch;
+            let slot1 = ((rd.wrapping_add(i0 + 1) as usize) & LASAPI_RING_MASK) * ch;
             for c in 0..out_ch {
                 let ch_idx = c % ch;
                 let s0_raw = unsafe { pcm_base.add(slot0 + ch_idx).read() };
@@ -1786,7 +1786,7 @@ pub unsafe extern "C" fn salsa_dsp_pack_pcm(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::c_abi::LWASAPI_RING_FRAMES;
+    use crate::c_abi::LASAPI_RING_FRAMES;
     use crate::state_conf::default_runtime_state;
 
     #[test]
@@ -1893,15 +1893,15 @@ mod tests {
 
     #[test]
     fn consume_session_frames_native_and_resample() {
-        let mut ring: Box<LwasapiShmRing> = unsafe {
-            let mut u = Box::<LwasapiShmRing>::new_uninit();
+        let mut ring: Box<LasapiShmRing> = unsafe {
+            let mut u = Box::<LasapiShmRing>::new_uninit();
             ptr::write_bytes(u.as_mut_ptr(), 0, 1);
             u.assume_init()
         };
         ring.active.store(1, Ordering::Release);
         ring.volume_milli.store(500, Ordering::Release); // 0.5x gain
         for i in 0..256 {
-            let slot = (i & LWASAPI_RING_MASK) * 2;
+            let slot = (i & LASAPI_RING_MASK) * 2;
             ring.pcm_data.0[slot] = 0.8;
             ring.pcm_data.0[slot + 1] = -0.4;
         }
@@ -1977,7 +1977,7 @@ mod tests {
         }
         assert!(underrun);
         for i in 256..300 {
-            let slot = (i & LWASAPI_RING_MASK) * 2;
+            let slot = (i & LASAPI_RING_MASK) * 2;
             ring.pcm_data.0[slot] = 0.2;
             ring.pcm_data.0[slot + 1] = 0.2;
         }
@@ -2001,13 +2001,13 @@ mod tests {
         }
         assert!(!underrun);
         assert_eq!(ring.xruns.load(Ordering::Relaxed), 1);
-        assert_eq!(LWASAPI_RING_FRAMES, 32_768);
+        assert_eq!(LASAPI_RING_FRAMES, 32_768);
     }
 
     #[test]
     fn consume_session_frames_filters_nan_and_recovers_read_ahead() {
-        let mut ring: Box<LwasapiShmRing> = unsafe {
-            let mut u = Box::<LwasapiShmRing>::new_uninit();
+        let mut ring: Box<LasapiShmRing> = unsafe {
+            let mut u = Box::<LasapiShmRing>::new_uninit();
             ptr::write_bytes(u.as_mut_ptr(), 0, 1);
             u.assume_init()
         };

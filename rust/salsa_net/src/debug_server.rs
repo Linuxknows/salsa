@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -21,10 +21,10 @@ use std::sync::{Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, LwasapiDbgCallbacks, LwasapiDbgDgram, LwasapiDbgRtStats,
-    LwasapiDbgSnapshot, LWASAPI_DEBUG_MAX_PA_CLIENTS, LWASAPI_DEBUG_MAX_PA_STREAMS,
-    LWASAPI_DEBUG_MAX_PW_CLIENTS, LWASAPI_DEBUG_MAX_PW_LINKS, LWASAPI_DEBUG_MAX_PW_NODES,
-    LWASAPI_MAX_SESSIONS,
+    c_str_to_string, copy_str_to_c, LasapiDbgCallbacks, LasapiDbgDgram, LasapiDbgRtStats,
+    LasapiDbgSnapshot, LASAPI_DEBUG_MAX_PA_CLIENTS, LASAPI_DEBUG_MAX_PA_STREAMS,
+    LASAPI_DEBUG_MAX_PW_CLIENTS, LASAPI_DEBUG_MAX_PW_LINKS, LASAPI_DEBUG_MAX_PW_NODES,
+    LASAPI_MAX_SESSIONS,
 };
 use crate::failsafe;
 use crate::unix_sys::{
@@ -33,9 +33,9 @@ use crate::unix_sys::{
     socket_peercred, PollFd, RecvDgramCred, POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT,
 };
 
-pub const LWASAPI_DEBUG_SOCK_DEFAULT: &str = "/tmp/lwasapi-debug.sock";
-pub const LWASAPI_DEBUG_IN_SOCK_DEFAULT: &str = "/tmp/lwasapi-debug-in.sock";
-pub const LWASAPI_DEBUG_DGRAM_MAGIC: u32 = 0x4C44_4247;
+pub const LASAPI_DEBUG_SOCK_DEFAULT: &str = "/tmp/lasapi-debug.sock";
+pub const LASAPI_DEBUG_IN_SOCK_DEFAULT: &str = "/tmp/lasapi-debug-in.sock";
+pub const LASAPI_DEBUG_DGRAM_MAGIC: u32 = 0x4C44_4247;
 
 pub const DBG_RING_CAP: usize = 2048;
 pub const DBG_HISTORY_CAP: usize = 512;
@@ -139,7 +139,7 @@ pub(crate) fn is_dbg_running() -> bool {
 }
 
 struct ServerRuntime {
-    cbs: LwasapiDbgCallbacks,
+    cbs: LasapiDbgCallbacks,
     sock_path: String,
     in_sock_path: String,
     join: Option<JoinHandle<()>>,
@@ -150,9 +150,9 @@ static G_RUNTIME: OnceLock<Mutex<ServerRuntime>> = OnceLock::new();
 fn runtime_lock() -> &'static Mutex<ServerRuntime> {
     G_RUNTIME.get_or_init(|| {
         Mutex::new(ServerRuntime {
-            cbs: LwasapiDbgCallbacks::default(),
-            sock_path: LWASAPI_DEBUG_SOCK_DEFAULT.to_string(),
-            in_sock_path: LWASAPI_DEBUG_IN_SOCK_DEFAULT.to_string(),
+            cbs: LasapiDbgCallbacks::default(),
+            sock_path: LASAPI_DEBUG_SOCK_DEFAULT.to_string(),
+            in_sock_path: LASAPI_DEBUG_IN_SOCK_DEFAULT.to_string(),
             join: None,
         })
     })
@@ -161,7 +161,7 @@ fn runtime_lock() -> &'static Mutex<ServerRuntime> {
 fn sub_name(sub: u8) -> &'static str {
     match sub {
         0 => "ENGINE",
-        1 => "WASAPI",
+        1 => "LASAPI",
         2 => "PA",
         3 => "BLUEZ",
         4 => "MIDI",
@@ -253,22 +253,22 @@ pub fn trim_cmd_line(raw: &[u8]) -> &[u8] {
     &raw[..end]
 }
 
-pub fn parse_dgram_bytes(raw: &[u8]) -> Option<LwasapiDbgDgram> {
-    if raw.len() < mem::size_of::<LwasapiDbgDgram>() {
+pub fn parse_dgram_bytes(raw: &[u8]) -> Option<LasapiDbgDgram> {
+    if raw.len() < mem::size_of::<LasapiDbgDgram>() {
         return None;
     }
     let magic = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
-    if magic != LWASAPI_DEBUG_DGRAM_MAGIC {
+    if magic != LASAPI_DEBUG_DGRAM_MAGIC {
         return None;
     }
-    let mut dg: LwasapiDbgDgram = unsafe { mem::zeroed() };
+    let mut dg: LasapiDbgDgram = unsafe { mem::zeroed() };
     let dst = unsafe {
         core::slice::from_raw_parts_mut(
-            (&mut dg as *mut LwasapiDbgDgram).cast::<u8>(),
-            mem::size_of::<LwasapiDbgDgram>(),
+            (&mut dg as *mut LasapiDbgDgram).cast::<u8>(),
+            mem::size_of::<LasapiDbgDgram>(),
         )
     };
-    dst.copy_from_slice(&raw[..mem::size_of::<LwasapiDbgDgram>()]);
+    dst.copy_from_slice(&raw[..mem::size_of::<LasapiDbgDgram>()]);
     dg.op[dg.op.len() - 1] = 0;
     dg.target[dg.target.len() - 1] = 0;
     dg.detail[dg.detail.len() - 1] = 0;
@@ -279,7 +279,7 @@ fn peer_uid_allowed(peer_uid: u32) -> bool {
     if peer_uid == current_uid() || peer_uid == 0 {
         return true;
     }
-    std::env::var("LWASAPI_DEBUG_ALLOW_ALL")
+    std::env::var("LASAPI_DEBUG_ALLOW_ALL")
         .map(|v| v == "1")
         .unwrap_or(false)
 }
@@ -419,10 +419,10 @@ pub fn record_rt_period(
     }
 }
 
-pub fn get_rt_stats() -> LwasapiDbgRtStats {
+pub fn get_rt_stats() -> LasapiDbgRtStats {
     let count = G_RT_CYCLE_COUNT.load(Ordering::Relaxed);
     let min_v = G_RT_MIN_CYCLE_NS.load(Ordering::Relaxed);
-    LwasapiDbgRtStats {
+    LasapiDbgRtStats {
         cycle_count: count,
         last_cycle_ns: G_RT_LAST_CYCLE_NS.load(Ordering::Relaxed),
         avg_cycle_ns: G_RT_AVG_CYCLE_NS.load(Ordering::Relaxed),
@@ -479,7 +479,7 @@ fn serialize_event_json(ev: &DbgEvent, out: &mut String) {
     out.push('}');
 }
 
-fn serialize_snapshot_json(snap: &LwasapiDbgSnapshot, out: &mut String) {
+fn serialize_snapshot_json(snap: &LasapiDbgSnapshot, out: &mut String) {
     out.clear();
     let st = &snap.engine_st;
     let rt = &snap.rt;
@@ -649,9 +649,9 @@ fn serialize_snapshot_json(snap: &LwasapiDbgSnapshot, out: &mut String) {
     append_c_json_str(out, &snap.midi_dev_path);
     out.push_str("},");
 
-    out.push_str("\"wasapi_sessions\":[");
-    let nw = (snap.num_wasapi as usize).min(LWASAPI_MAX_SESSIONS);
-    for (i, ws) in snap.wasapi[..nw].iter().enumerate() {
+    out.push_str("\"lasapi_sessions\":[");
+    let nw = (snap.num_lasapi as usize).min(LASAPI_MAX_SESSIONS);
+    for (i, ws) in snap.lasapi[..nw].iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
@@ -684,7 +684,7 @@ fn serialize_snapshot_json(snap: &LwasapiDbgSnapshot, out: &mut String) {
     out.push_str("],");
 
     out.push_str("\"pa_clients\":[");
-    let nc = (snap.pa.num_clients as usize).min(LWASAPI_DEBUG_MAX_PA_CLIENTS);
+    let nc = (snap.pa.num_clients as usize).min(LASAPI_DEBUG_MAX_PA_CLIENTS);
     for (i, pc) in snap.pa.clients[..nc].iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -702,7 +702,7 @@ fn serialize_snapshot_json(snap: &LwasapiDbgSnapshot, out: &mut String) {
     out.push_str("],");
 
     out.push_str("\"pa_streams\":[");
-    let ns = (snap.pa.num_streams as usize).min(LWASAPI_DEBUG_MAX_PA_STREAMS);
+    let ns = (snap.pa.num_streams as usize).min(LASAPI_DEBUG_MAX_PA_STREAMS);
     for (i, ps) in snap.pa.streams[..ns].iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -788,7 +788,7 @@ fn serialize_snapshot_json(snap: &LwasapiDbgSnapshot, out: &mut String) {
     append_c_json_str(out, &pw.preview_shm_name);
 
     out.push_str(",\"clients\":[");
-    let pwc = (pw.num_clients as usize).min(LWASAPI_DEBUG_MAX_PW_CLIENTS);
+    let pwc = (pw.num_clients as usize).min(LASAPI_DEBUG_MAX_PW_CLIENTS);
     for (i, pc) in pw.clients[..pwc].iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -807,7 +807,7 @@ fn serialize_snapshot_json(snap: &LwasapiDbgSnapshot, out: &mut String) {
     }
 
     out.push_str("],\"nodes\":[");
-    let pwn = (pw.num_nodes as usize).min(LWASAPI_DEBUG_MAX_PW_NODES);
+    let pwn = (pw.num_nodes as usize).min(LASAPI_DEBUG_MAX_PW_NODES);
     for (i, pn) in pw.nodes[..pwn].iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -847,7 +847,7 @@ fn serialize_snapshot_json(snap: &LwasapiDbgSnapshot, out: &mut String) {
     }
 
     out.push_str("],\"links\":[");
-    let pwl = (pw.num_links as usize).min(LWASAPI_DEBUG_MAX_PW_LINKS);
+    let pwl = (pw.num_links as usize).min(LASAPI_DEBUG_MAX_PW_LINKS);
     for (i, pl) in pw.links[..pwl].iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -938,7 +938,7 @@ impl DbgClient {
 }
 
 struct ServerLoopState {
-    cbs: LwasapiDbgCallbacks,
+    cbs: LasapiDbgCallbacks,
     sock_path: String,
     listener: Option<UnixListener>,
     dgram: Option<UnixDatagram>,
@@ -947,17 +947,17 @@ struct ServerLoopState {
     trace_hist: VecDeque<HistEntry>,
     ring_tail: u64,
     json_scratch: String,
-    snap_box: Box<LwasapiDbgSnapshot>,
+    snap_box: Box<LasapiDbgSnapshot>,
 }
 
 impl ServerLoopState {
     fn new(
-        cbs: LwasapiDbgCallbacks,
+        cbs: LasapiDbgCallbacks,
         sock_path: String,
         listener: Option<UnixListener>,
         dgram: Option<UnixDatagram>,
     ) -> Self {
-        let zero_snap = unsafe { mem::zeroed::<LwasapiDbgSnapshot>() };
+        let zero_snap = unsafe { mem::zeroed::<LasapiDbgSnapshot>() };
         Self {
             cbs,
             sock_path,
@@ -1334,7 +1334,7 @@ impl ServerLoopState {
     }
 }
 
-pub fn debug_start(cbs: LwasapiDbgCallbacks) -> i32 {
+pub fn debug_start(cbs: LasapiDbgCallbacks) -> i32 {
     if G_DBG_RUNNING.load(Ordering::Relaxed) {
         return 0;
     }
@@ -1353,14 +1353,14 @@ pub fn debug_start(cbs: LwasapiDbgCallbacks) -> i32 {
     }
     reset_rt_stats();
 
-    let sock_path = resolve_sock_path_common("LWASAPI_DEBUG_SOCK", "debug.sock", LWASAPI_DEBUG_SOCK_DEFAULT);
+    let sock_path = resolve_sock_path_common("LASAPI_DEBUG_SOCK", "debug.sock", LASAPI_DEBUG_SOCK_DEFAULT);
     let in_sock_path =
-        resolve_sock_path_common("LWASAPI_DEBUG_IN_SOCK", "debug-in.sock", LWASAPI_DEBUG_IN_SOCK_DEFAULT);
-    if sock_path != LWASAPI_DEBUG_SOCK_DEFAULT {
-        let _ = fs::remove_file(LWASAPI_DEBUG_SOCK_DEFAULT);
+        resolve_sock_path_common("LASAPI_DEBUG_IN_SOCK", "debug-in.sock", LASAPI_DEBUG_IN_SOCK_DEFAULT);
+    if sock_path != LASAPI_DEBUG_SOCK_DEFAULT {
+        let _ = fs::remove_file(LASAPI_DEBUG_SOCK_DEFAULT);
     }
-    if in_sock_path != LWASAPI_DEBUG_IN_SOCK_DEFAULT {
-        let _ = fs::remove_file(LWASAPI_DEBUG_IN_SOCK_DEFAULT);
+    if in_sock_path != LASAPI_DEBUG_IN_SOCK_DEFAULT {
+        let _ = fs::remove_file(LASAPI_DEBUG_IN_SOCK_DEFAULT);
     }
 
     let listener = bind_unix_listener_0600(&sock_path);
@@ -1450,7 +1450,7 @@ pub unsafe extern "C" fn salsa_dbg_emit_raw(
 pub unsafe extern "C" fn salsa_dbg_parse_dgram(
     buf: *const u8,
     len: usize,
-    out: *mut LwasapiDbgDgram,
+    out: *mut LasapiDbgDgram,
 ) -> bool {
     if buf.is_null() || out.is_null() {
         return false;
@@ -1487,17 +1487,17 @@ pub unsafe extern "C" fn salsa_dbg_escape_json_str(
 }
 
 #[no_mangle]
-pub extern "C" fn lwasapi_debug_start(cbs: LwasapiDbgCallbacks) -> c_int {
+pub extern "C" fn lasapi_debug_start(cbs: LasapiDbgCallbacks) -> c_int {
     debug_start(cbs)
 }
 
 #[no_mangle]
-pub extern "C" fn lwasapi_debug_stop() {
+pub extern "C" fn lasapi_debug_stop() {
     debug_stop();
 }
 
 #[no_mangle]
-pub extern "C" fn lwasapi_debug_record_rt_period(
+pub extern "C" fn lasapi_debug_record_rt_period(
     cycle_ns: u64,
     wake_jitter_ns: i64,
     budget_ns: u64,
@@ -1509,7 +1509,7 @@ pub extern "C" fn lwasapi_debug_record_rt_period(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_debug_get_rt_stats(out_rt: *mut LwasapiDbgRtStats) {
+pub unsafe extern "C" fn lasapi_debug_get_rt_stats(out_rt: *mut LasapiDbgRtStats) {
     if out_rt.is_null() {
         return;
     }
@@ -1519,7 +1519,7 @@ pub unsafe extern "C" fn lwasapi_debug_get_rt_stats(out_rt: *mut LwasapiDbgRtSta
 }
 
 #[no_mangle]
-pub extern "C" fn lwasapi_debug_reset_rt_stats() {
+pub extern "C" fn lasapi_debug_reset_rt_stats() {
     reset_rt_stats();
 }
 
@@ -1535,13 +1535,13 @@ mod tests {
 
     static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-    unsafe extern "C" fn test_fill_snapshot(_ctx: *mut c_void, out: *mut LwasapiDbgSnapshot) {
+    unsafe extern "C" fn test_fill_snapshot(_ctx: *mut c_void, out: *mut LasapiDbgSnapshot) {
         let s = unsafe { &mut *out };
         copy_str_to_c(&mut s.engine_st.hw_device, "Rust Test Sink");
         s.engine_st.hw_sample_rate = 192_000;
         s.engine_st.hw_channels = 2;
         s.pw.broker_running = 1;
-        s.num_wasapi = 0;
+        s.num_lasapi = 0;
     }
 
     unsafe extern "C" fn test_handle_cmd(
@@ -1564,13 +1564,13 @@ mod tests {
     #[test]
     fn dgram_and_json_escape_validation() {
         assert!(parse_dgram_bytes(&[0u8; 20]).is_none());
-        let mut raw = [0u8; mem::size_of::<LwasapiDbgDgram>()];
-        raw[0..4].copy_from_slice(&LWASAPI_DEBUG_DGRAM_MAGIC.to_le_bytes());
+        let mut raw = [0u8; mem::size_of::<LasapiDbgDgram>()];
+        raw[0..4].copy_from_slice(&LASAPI_DEBUG_DGRAM_MAGIC.to_le_bytes());
         raw[24] = 2;
         raw[25] = 1;
         raw[28..32].copy_from_slice(b"PING");
         let parsed = parse_dgram_bytes(&raw).unwrap();
-        assert_eq!(parsed.magic, LWASAPI_DEBUG_DGRAM_MAGIC);
+        assert_eq!(parsed.magic, LASAPI_DEBUG_DGRAM_MAGIC);
         assert_eq!(parsed.sub, 2);
 
         let mut escaped = String::new();
@@ -1591,14 +1591,14 @@ mod tests {
         assert_eq!(st.max_cycle_ns, 4000);
         assert_eq!(st.max_jitter_ns, 350);
 
-        let tmp = format!("/tmp/lwasapi-dbg-rust-test-{}", std::process::id());
+        let tmp = format!("/tmp/lasapi-dbg-rust-test-{}", std::process::id());
         let _ = fs::create_dir_all(&tmp);
         let sock = format!("{tmp}/dbg.sock");
         let in_sock = format!("{tmp}/dbg-in.sock");
-        std::env::set_var("LWASAPI_DEBUG_SOCK", &sock);
-        std::env::set_var("LWASAPI_DEBUG_IN_SOCK", &in_sock);
+        std::env::set_var("LASAPI_DEBUG_SOCK", &sock);
+        std::env::set_var("LASAPI_DEBUG_IN_SOCK", &in_sock);
 
-        let cbs = LwasapiDbgCallbacks {
+        let cbs = LasapiDbgCallbacks {
             user_ctx: core::ptr::null_mut(),
             fill_snapshot: Some(test_fill_snapshot),
             handle_cmd: Some(test_handle_cmd),
@@ -1659,8 +1659,8 @@ mod tests {
         assert!(saw_pong && saw_reply && saw_reset);
 
         debug_stop();
-        std::env::remove_var("LWASAPI_DEBUG_SOCK");
-        std::env::remove_var("LWASAPI_DEBUG_IN_SOCK");
+        std::env::remove_var("LASAPI_DEBUG_SOCK");
+        std::env::remove_var("LASAPI_DEBUG_IN_SOCK");
         let _ = fs::remove_dir_all(&tmp);
     }
 }

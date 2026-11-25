@@ -4,8 +4,8 @@
 
 ## Affected Areas
 
-- [ ] Core Audio / DSP / Wire Protocols (`rust/salsa_net/`, `rust/lwasapi_client/`)
-- [ ] Shims / Reconnect Proxy (`rust/salsa_pa_reconnect*`, `rust/alsa_plugin_lwasapi/`, `rust/shim_*`)
+- [ ] Core Audio / DSP / Wire Protocols (`rust/salsa_net/`, `rust/lasapi_client/`)
+- [ ] Shims / Reconnect Proxy (`rust/salsa_pa_reconnect*`, `rust/alsa_plugin_lasapi/`, `rust/shim_*`)
 - [ ] Native Qt6 / Wayland UI (`qt6/`, `rust/salsa_ui/`)
 - [ ] Installer / Autosync / Diagnostics (`rust/salsa_tools/`, `install-salsa.sh`, `Makefile`)
 - [ ] Documentation (`README.md`, `PATCH_NOTES.md`, `SALSA Architecture Breakdown.md`)

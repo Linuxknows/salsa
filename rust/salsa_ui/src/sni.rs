@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -355,12 +355,12 @@ impl TrayIconBank {
         ensure_dir_0700(&base_rt).map_err(|e| format!("mkdir {}: {e}", base_rt.display()))?;
         ensure_dir_0700(&hicolor).map_err(|e| format!("mkdir {}: {e}", hicolor.display()))?;
 
-        // Clean stale salsa-lwasapi-* tray icon files from older versions
+        // Clean stale salsa-lasapi-* tray icon files from older versions
         for old_name in [
-            "salsa-lwasapi-active.png",
-            "salsa-lwasapi-glow.png",
-            "salsa-lwasapi-muted.png",
-            "salsa-lwasapi-inactive.png",
+            "salsa-lasapi-active.png",
+            "salsa-lasapi-glow.png",
+            "salsa-lasapi-muted.png",
+            "salsa-lasapi-inactive.png",
         ] {
             let _ = fs::remove_file(base_rt.join(old_name));
         }
@@ -373,10 +373,10 @@ impl TrayIconBank {
             ensure_dir_0700(&sz_dir).map_err(|e| format!("mkdir {}: {e}", sz_dir.display()))?;
             ensure_dir_0700(&apps_dir).map_err(|e| format!("mkdir {}: {e}", apps_dir.display()))?;
             for old_name in [
-                "salsa-lwasapi-active.png",
-                "salsa-lwasapi-glow.png",
-                "salsa-lwasapi-muted.png",
-                "salsa-lwasapi-inactive.png",
+                "salsa-lasapi-active.png",
+                "salsa-lasapi-glow.png",
+                "salsa-lasapi-muted.png",
+                "salsa-lasapi-inactive.png",
             ] {
                 let _ = fs::remove_file(apps_dir.join(old_name));
             }
@@ -395,9 +395,9 @@ impl TrayIconBank {
             .map_err(|e| format!("write index.theme: {e}"))?;
 
         let repo = install_root();
-        let active_plain_128 = load_cropped_asset(&repo.join("assets/salsa-lwasapi.png"), 128, 16)
+        let active_plain_128 = load_cropped_asset(&repo.join("assets/salsa-lasapi.png"), 128, 16)
             .unwrap_or_else(|| fallback_logo(128));
-        let glow_path = repo.join("assets/salsa-lwasapi-glow.png");
+        let glow_path = repo.join("assets/salsa-lasapi-glow.png");
         let glow_asset = glow_path
             .is_file()
             .then(|| load_cropped_asset(&glow_path, 128, 48))
@@ -629,7 +629,7 @@ unsafe extern "C" fn sni_get_property(
             "ToolTip" => {
                 let c_ico = cstr(&st.icon_name);
                 let c_title = cstr(&st.title);
-                let c_sub = cstr("Salsa — Linux WASAPI Studio");
+                let c_sub = cstr("Salsa — LASAPI Studio");
                 let empty_pix_ty = (gl.g_variant_type_checked_)(c"(iiay)".as_ptr());
                 let ch0 = (gl.g_variant_new_string)(c_ico.as_ptr());
                 let ch1 = (gl.g_variant_new_array)(empty_pix_ty, ptr::null(), 0);

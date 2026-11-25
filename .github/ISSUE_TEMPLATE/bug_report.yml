@@ -6,11 +6,11 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting an issue with **Salsa (`lwasapi`)**! For security vulnerabilities, please stop here and use [Private Vulnerability Reporting](https://github.com/Linuxknows/salsa/security/advisories/new) instead.
+        Thanks for reporting an issue with **Salsa (`lasapi`)**! For security vulnerabilities, please stop here and use [Private Vulnerability Reporting](https://github.com/Linuxknows/salsa/security/advisories/new) instead.
 
         ### Use the Salsa Live Debugger (`salsa-debug`) First
         Salsa includes a built-in real-time debugger (**`salsa-debug`**) designed to pinpoint audio, routing, Bluetooth, RT timing, and Wayland `ScreenCast` issues automatically:
-        - **GUI Workflow**: Launch **`salsa-debug`** (from your app launcher, the tray Quick Mixer **`Debug`** button, or terminal), reproduce the issue while watching **Live Event Stream** / **App & Process Routing Audit**, run the relevant probe on **Boundary, Configs & Probes** (`Run All Socket & PA/PW Probes`, `Play 440Hz WASAPI Probe Tone`, `Send MIDI Note Ping (C4)`) or **ScreenCast Broker** (`Run PW Self-Test`), and click **`Export Bundle`** in the top bar to save a timestamped diagnostic `.zip` you can drag-and-drop into this issue.
+        - **GUI Workflow**: Launch **`salsa-debug`** (from your app launcher, the tray Quick Mixer **`Debug`** button, or terminal), reproduce the issue while watching **Live Event Stream** / **App & Process Routing Audit**, run the relevant probe on **Boundary, Configs & Probes** (`Run All Socket & PA/PW Probes`, `Play 440Hz LASAPI Probe Tone`, `Send MIDI Note Ping (C4)`) or **ScreenCast Broker** (`Run PW Self-Test`), and click **`Export Bundle`** in the top bar to save a timestamped diagnostic `.zip` you can drag-and-drop into this issue.
         - **CLI Workflow**:
           ```bash
           salsa-debug --export          # Generates a complete diagnostic .zip bundle (includes report.txt, JSON snapshots & logs)
@@ -23,7 +23,7 @@ body:
     id: salsa_version
     attributes:
       label: Salsa Version
-      description: Output of `lwasapi-ctl --version` or `salsa-debug --version` (e.g., `V1.24.14`)
+      description: Output of `lasapi-ctl --version` or `salsa-debug --version` (e.g., `V1.24.14`)
       placeholder: "V1.24.14"
     validations:
       required: true
@@ -33,13 +33,13 @@ body:
     attributes:
       label: Affected Component
       options:
-        - Audio Engine / WaveRT / ALSA Direct (`lwasapi-audiodg`)
+        - Audio Engine / WaveRT / ALSA Direct (`lasapi-audiodg`)
         - PulseAudio v35 Compatibility / App Audio (`pa_server` / `pa_reconnect`)
         - Bluetooth Audio (`BlueZ` LDAC / aptX / AAC / SBC / HFP / AVRCP)
         - Wayland ScreenCast `pipewire-0` Video Broker (`pw_broker`)
         - Salsa Studio / Live Debugger / System Tray (`qt6/` Wayland & X11 UI)
-        - Installer / Autosync / CLI (`install-salsa.sh` / `salsa-installer` / `lwasapi-ctl`)
-        - DAW MIDI Hub / Shims (`lwasapi-run`)
+        - Installer / Autosync / CLI (`install-salsa.sh` / `salsa-installer` / `lasapi-ctl`)
+        - DAW MIDI Hub / Shims (`lasapi-run`)
     validations:
       required: true
 
@@ -76,7 +76,7 @@ body:
         - label: Clicked **Export Bundle** in `salsa-debug` (or ran `salsa-debug --export`) and attached the `.zip` below
         - label: Checked **App & Process Routing Audit** (`--tab 1` / `salsa-debug --audit`) to verify how the affected app is routed
         - label: Ran **Run All Socket & PA/PW Probes** (`--tab 3` / `salsa-debug --probe`)
-        - label: Tested physical output via **Play 440Hz WASAPI Probe Tone** (`salsa-debug --tone`) or **Run PW Self-Test** (`--tab 4`)
+        - label: Tested physical output via **Play 440Hz LASAPI Probe Tone** (`salsa-debug --tone`) or **Run PW Self-Test** (`--tab 4`)
 
   - type: textarea
     id: debugger_output

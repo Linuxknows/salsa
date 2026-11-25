@@ -10,12 +10,12 @@ name = "salsa_tools"
 path = "src/lib.rs"
 
 [[bin]]
-name = "lwasapi-run"
-path = "src/bin/lwasapi_run.rs"
+name = "lasapi-run"
+path = "src/bin/lasapi_run.rs"
 
 [[bin]]
-name = "lwasapi-autosync"
-path = "src/bin/lwasapi_autosync.rs"
+name = "lasapi-autosync"
+path = "src/bin/lasapi_autosync.rs"
 
 [[bin]]
 name = "salsa-installer"
@@ -35,4 +35,4 @@ path = "src/bin/salsa_regression.rs"
 
 [dependencies]
 salsa_net = { path = "../salsa_net" }
-lwasapi_client = { path = "../lwasapi_client" }
+lasapi_client = { path = "../lasapi_client" }

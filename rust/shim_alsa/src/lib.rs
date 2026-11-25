@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -18,8 +18,8 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use salsa_wire::c_abi::{
     AUDCLNT_E_ALREADY_INITIALIZED, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_CAPTURE,
-    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, LWASAPI_DBG_ERR, LWASAPI_DBG_INFO, LWASAPI_DBG_SHIM,
-    LWASAPI_FMT_FLOAT32, LWASAPI_FMT_S16_LE, LWASAPI_FMT_S32_LE, WaveFormatEx, S_OK,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, LASAPI_DBG_ERR, LASAPI_DBG_INFO, LASAPI_DBG_SHIM,
+    LASAPI_FMT_FLOAT32, LASAPI_FMT_S16_LE, LASAPI_FMT_S32_LE, WaveFormatEx, S_OK,
 };
 use salsa_wire::unix_sys::POLLIN;
 
@@ -84,7 +84,7 @@ extern "C" {
     fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
 
-    fn LWASAPI_DebugTraceClient(
+    fn LASAPI_DebugTraceClient(
         sub: u8,
         lvl: u8,
         sid: u32,
@@ -92,7 +92,7 @@ extern "C" {
         target: *const c_char,
         detail: *const c_char,
     );
-    fn LWASAPI_ActivateAudioClient(
+    fn LASAPI_ActivateAudioClient(
         client_name: *const c_char,
         pp_audio_client: *mut *mut c_void,
     ) -> i32;
@@ -348,7 +348,7 @@ resolve_asound!(usize, snd_seq_client_info_sizeof, (), 256);
 resolve_asound!(c_int, snd_seq_client_info_malloc, (ptr: *mut *mut c_void), -12);
 resolve_asound_void!(snd_seq_client_info_free, (ptr: *mut c_void));
 resolve_asound!(c_int, snd_seq_client_info_get_client, (info: *const c_void), -19);
-resolve_asound!(*const c_char, snd_seq_client_info_get_name, (info: *mut c_void), c"LWASAPI-Seq".as_ptr());
+resolve_asound!(*const c_char, snd_seq_client_info_get_name, (info: *mut c_void), c"LASAPI-Seq".as_ptr());
 resolve_asound_void!(snd_seq_client_info_set_client, (info: *mut c_void, client: c_int));
 
 resolve_asound!(usize, snd_seq_port_info_sizeof, (), 256);
@@ -423,8 +423,8 @@ resolve_asound!(c_int, snd_ctl_card_info, (ctl: *mut c_void, info: *mut c_void),
 resolve_asound!(usize, snd_ctl_card_info_sizeof, (), 512);
 resolve_asound!(c_int, snd_ctl_card_info_malloc, (ptr: *mut *mut c_void), -12);
 resolve_asound_void!(snd_ctl_card_info_free, (obj: *mut c_void));
-resolve_asound!(*const c_char, snd_ctl_card_info_get_name, (obj: *const c_void), c"LWASAPI".as_ptr());
-resolve_asound!(*const c_char, snd_ctl_card_info_get_id, (obj: *const c_void), c"lwasapi".as_ptr());
+resolve_asound!(*const c_char, snd_ctl_card_info_get_name, (obj: *const c_void), c"LASAPI".as_ptr());
+resolve_asound!(*const c_char, snd_ctl_card_info_get_id, (obj: *const c_void), c"lasapi".as_ptr());
 resolve_asound!(c_int, snd_ctl_pcm_next_device, (ctl: *mut c_void, device: *mut c_int), -19);
 resolve_asound!(c_int, snd_ctl_pcm_info, (ctl: *mut c_void, info: *mut c_void), -19);
 
@@ -445,15 +445,15 @@ resolve_asound!(c_int, snd_mixer_selem_set_playback_volume_all, (elem: *mut c_vo
 
 fn map_alsa_fmt(alsa_fmt: c_int) -> u32 {
     if alsa_fmt == SND_PCM_FORMAT_S16_LE {
-        LWASAPI_FMT_S16_LE
+        LASAPI_FMT_S16_LE
     } else if alsa_fmt == SND_PCM_FORMAT_S32_LE {
-        LWASAPI_FMT_S32_LE
+        LASAPI_FMT_S32_LE
     } else {
-        LWASAPI_FMT_FLOAT32
+        LASAPI_FMT_FLOAT32
     }
 }
 
-unsafe fn ensure_lwasapi_initialized(pcm: *mut snd_pcm_t) -> c_int {
+unsafe fn ensure_lasapi_initialized(pcm: *mut snd_pcm_t) -> c_int {
     if pcm.is_null() {
         return -22;
     }
@@ -502,13 +502,13 @@ unsafe fn ensure_lwasapi_initialized(pcm: *mut snd_pcm_t) -> c_int {
         } else {
             c"ALSA-Play(default)".as_ptr()
         };
-        if unsafe { LWASAPI_ActivateAudioClient(cname, ptr::addr_of_mut!((*pcm).client)) } != S_OK
+        if unsafe { LASAPI_ActivateAudioClient(cname, ptr::addr_of_mut!((*pcm).client)) } != S_OK
         {
             return -19;
         }
     }
     let p = unsafe { &mut *pcm };
-    let bits: u16 = if fmt == LWASAPI_FMT_S16_LE { 16 } else { 32 };
+    let bits: u16 = if fmt == LASAPI_FMT_S16_LE { 16 } else { 32 };
     let block_align = (channels as u16) * (bits / 8);
     let wfx = WaveFormatEx {
         w_format_tag: fmt as u16,
@@ -577,15 +577,15 @@ pub unsafe extern "C" fn snd_pcm_open(
         "ALSA-{}({name_str})\0",
         if p.is_capture { "Cap" } else { "Play" }
     );
-    if unsafe { LWASAPI_ActivateAudioClient(cname.as_ptr().cast(), &mut p.client) } != S_OK {
+    if unsafe { LASAPI_ActivateAudioClient(cname.as_ptr().cast(), &mut p.client) } != S_OK {
         unsafe {
-            LWASAPI_DebugTraceClient(
-                LWASAPI_DBG_SHIM,
-                LWASAPI_DBG_ERR,
+            LASAPI_DebugTraceClient(
+                LASAPI_DBG_SHIM,
+                LASAPI_DBG_ERR,
                 0,
                 c"SHIM_ALSA_ERR".as_ptr(),
                 cname.as_ptr().cast(),
-                c"LWASAPI_ActivateAudioClient failed".as_ptr(),
+                c"LASAPI_ActivateAudioClient failed".as_ptr(),
             );
             free(pcm.cast());
         }
@@ -593,9 +593,9 @@ pub unsafe extern "C" fn snd_pcm_open(
     }
 
     unsafe {
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"SHIM_ALSA_OPEN".as_ptr(),
             cname.as_ptr().cast(),
@@ -610,7 +610,7 @@ pub unsafe extern "C" fn snd_pcm_open(
     p.event_fd = -1;
     p.sample_rate = 48000;
     p.channels = 2;
-    p.fmt = LWASAPI_FMT_FLOAT32;
+    p.fmt = LASAPI_FMT_FLOAT32;
     p.buffer_frames = 2048;
     p.period_frames = 256;
     unsafe { *pcmp = pcm };
@@ -635,9 +635,9 @@ pub unsafe extern "C" fn snd_pcm_close(pcm: *mut snd_pcm_t) -> c_int {
     }
     let p = unsafe { &mut *pcm };
     unsafe {
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"SHIM_ALSA_CLOSE".as_ptr(),
             if p.is_capture {
@@ -688,7 +688,7 @@ pub unsafe extern "C" fn snd_pcm_set_params(
         }
         p.period_frames = 256;
     }
-    unsafe { ensure_lwasapi_initialized(pcm) }
+    unsafe { ensure_lasapi_initialized(pcm) }
 }
 
 #[no_mangle]
@@ -937,9 +937,9 @@ pub unsafe extern "C" fn snd_pcm_hw_params(
         if is_cap { "CAPTURE" } else { "PLAYBACK" },
     );
     unsafe {
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"SHIM_ALSA_HW".as_ptr(),
             if is_cap {
@@ -949,7 +949,7 @@ pub unsafe extern "C" fn snd_pcm_hw_params(
             },
             detail.as_ptr().cast(),
         );
-        ensure_lwasapi_initialized(pcm)
+        ensure_lasapi_initialized(pcm)
     }
 }
 
@@ -996,7 +996,7 @@ pub unsafe extern "C" fn snd_pcm_prepare(pcm: *mut snd_pcm_t) -> c_int {
         return -22;
     }
     if unsafe { !(*pcm).started } {
-        return unsafe { ensure_lwasapi_initialized(pcm) };
+        return unsafe { ensure_lasapi_initialized(pcm) };
     }
     0
 }
@@ -1006,7 +1006,7 @@ pub unsafe extern "C" fn snd_pcm_start(pcm: *mut snd_pcm_t) -> c_int {
     if pcm.is_null() {
         return -22;
     }
-    if unsafe { !(*pcm).started } && unsafe { ensure_lwasapi_initialized(pcm) } < 0 {
+    if unsafe { !(*pcm).started } && unsafe { ensure_lasapi_initialized(pcm) } < 0 {
         return -5;
     }
     let p = unsafe { &mut *pcm };
@@ -1064,7 +1064,7 @@ pub unsafe extern "C" fn snd_pcm_frames_to_bytes(pcm: *mut snd_pcm_t, frames: c_
         return 0;
     }
     let p = unsafe { &*pcm };
-    let bps: isize = if p.fmt == LWASAPI_FMT_S16_LE { 2 } else { 4 };
+    let bps: isize = if p.fmt == LASAPI_FMT_S16_LE { 2 } else { 4 };
     (frames as isize) * (p.channels as isize) * bps
 }
 
@@ -1083,7 +1083,7 @@ pub unsafe extern "C" fn snd_pcm_poll_descriptors(
         return -22;
     }
     if unsafe { !(*pcm).started } {
-        let _ = unsafe { ensure_lwasapi_initialized(pcm) };
+        let _ = unsafe { ensure_lasapi_initialized(pcm) };
     }
     let p = unsafe { &*pcm };
     unsafe {
@@ -1133,7 +1133,7 @@ pub unsafe extern "C" fn snd_pcm_writei(
     if pcm.is_null() || buffer.is_null() {
         return -22;
     }
-    if unsafe { !(*pcm).started } && unsafe { ensure_lwasapi_initialized(pcm) } < 0 {
+    if unsafe { !(*pcm).started } && unsafe { ensure_lasapi_initialized(pcm) } < 0 {
         return -5;
     }
     let p = unsafe { &*pcm };
@@ -1152,7 +1152,7 @@ pub unsafe extern "C" fn snd_pcm_readi(
     if pcm.is_null() || buffer.is_null() {
         return -22;
     }
-    if unsafe { !(*pcm).started } && unsafe { ensure_lwasapi_initialized(pcm) } < 0 {
+    if unsafe { !(*pcm).started } && unsafe { ensure_lasapi_initialized(pcm) } < 0 {
         return -5;
     }
     let p = unsafe { &*pcm };

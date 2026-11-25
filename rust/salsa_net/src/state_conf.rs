@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -16,12 +16,12 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, LwasapiBtCodecCfg, LwasapiEqConfig, LwasapiHwAnalogCfg,
-    LwasapiMicApoCfg, LwasapiParamEqExt, SalsaRuntimeState, LWASAPI_BT_PREF_AUTO,
-    LWASAPI_BT_PREF_SBC, LWASAPI_EQ_BANDS, LWASAPI_FILTER_HIGH_SHELF, LWASAPI_FILTER_PEAK,
-    LWASAPI_LDAC_MODE_330, LWASAPI_LDAC_MODE_ADAPTIVE,
+    c_str_to_string, copy_str_to_c, LasapiBtCodecCfg, LasapiEqConfig, LasapiHwAnalogCfg,
+    LasapiMicApoCfg, LasapiParamEqExt, SalsaRuntimeState, LASAPI_BT_PREF_AUTO,
+    LASAPI_BT_PREF_SBC, LASAPI_EQ_BANDS, LASAPI_FILTER_HIGH_SHELF, LASAPI_FILTER_PEAK,
+    LASAPI_LDAC_MODE_330, LASAPI_LDAC_MODE_ADAPTIVE,
 };
-use crate::hw_analog::{lwasapi_hw_analog_clamp_cfg, lwasapi_hw_analog_default_cfg};
+use crate::hw_analog::{lasapi_hw_analog_clamp_cfg, lasapi_hw_analog_default_cfg};
 use crate::json::JsonValue;
 use crate::unix_sys::{
     current_pid, current_uid, ensure_dir_0700_safe, flock_fd, funlock_fd, is_safe_owner_dir,
@@ -33,7 +33,7 @@ pub const SALSA_SETTINGS_FILENAME: &str = "salsa_settings.json";
 pub const SALSA_SETTINGS_SCHEMA_VERSION: i64 = 1;
 const MAX_SETTINGS_JSON_BYTES: usize = 524_288;
 
-pub const K_EQ_FREQS: [f32; LWASAPI_EQ_BANDS] = [
+pub const K_EQ_FREQS: [f32; LASAPI_EQ_BANDS] = [
     31.25, 62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
 ];
 
@@ -55,28 +55,28 @@ pub fn default_runtime_state() -> SalsaRuntimeState {
     let mut preset_name = [0u8; 32];
     copy_str_to_c(&mut preset_name, "Flat / Studio Reference");
 
-    let eq_cfg = LwasapiEqConfig {
+    let eq_cfg = LasapiEqConfig {
         enabled: 1,
         dynamic_mode: 0,
         preamp_db: 0.0,
         dyn_threshold_db: -16.0,
         dyn_ratio: 2.2,
         limiter_enabled: 1,
-        band_gains_db: [0.0; LWASAPI_EQ_BANDS],
-        band_q: [1.414; LWASAPI_EQ_BANDS],
+        band_gains_db: [0.0; LASAPI_EQ_BANDS],
+        band_q: [1.414; LASAPI_EQ_BANDS],
         preset_name,
     };
 
-    let param_eq = LwasapiParamEqExt {
+    let param_eq = LasapiParamEqExt {
         band_freq_hz: K_EQ_FREQS,
-        band_type: [LWASAPI_FILTER_PEAK; LWASAPI_EQ_BANDS],
+        band_type: [LASAPI_FILTER_PEAK; LASAPI_EQ_BANDS],
         crossfeed_enabled: 0,
         crossfeed_level: 0.45,
         crossfeed_cutoff_hz: 700,
         reserved: 0,
     };
 
-    let mic_apo = LwasapiMicApoCfg {
+    let mic_apo = LasapiMicApoCfg {
         enabled: 0,
         hpf_enabled: 1,
         hpf_hz: 80.0,
@@ -91,9 +91,9 @@ pub fn default_runtime_state() -> SalsaRuntimeState {
         sidetone_pct: 0,
     };
 
-    let bt_cfg = LwasapiBtCodecCfg {
-        preferred_codec: LWASAPI_BT_PREF_AUTO,
-        ldac_mode: LWASAPI_LDAC_MODE_ADAPTIVE,
+    let bt_cfg = LasapiBtCodecCfg {
+        preferred_codec: LASAPI_BT_PREF_AUTO,
+        ldac_mode: LASAPI_LDAC_MODE_ADAPTIVE,
         wireless_abr_enabled: 1,
         effective_kbps: 0,
         supported_codecs_mask: 0,
@@ -103,8 +103,8 @@ pub fn default_runtime_state() -> SalsaRuntimeState {
         neg_reason: [0u8; 64],
     };
 
-    let mut hw_analog_cfg: LwasapiHwAnalogCfg = unsafe { mem::zeroed() };
-    unsafe { lwasapi_hw_analog_default_cfg(&mut hw_analog_cfg) };
+    let mut hw_analog_cfg: LasapiHwAnalogCfg = unsafe { mem::zeroed() };
+    unsafe { lasapi_hw_analog_default_cfg(&mut hw_analog_cfg) };
 
     let mut target_playback_id = [0u8; 64];
     let mut target_capture_id = [0u8; 64];
@@ -133,7 +133,7 @@ pub fn default_runtime_state() -> SalsaRuntimeState {
     }
 }
 
-pub fn clamp_eq_cfg(eq: &mut LwasapiEqConfig) {
+pub fn clamp_eq_cfg(eq: &mut LasapiEqConfig) {
     eq.enabled = u32::from(eq.enabled != 0);
     if eq.dynamic_mode > 2 {
         eq.dynamic_mode = 1;
@@ -171,14 +171,14 @@ pub fn clamp_eq_cfg(eq: &mut LwasapiEqConfig) {
     }
 }
 
-pub fn clamp_param_eq_ext(ext: &mut LwasapiParamEqExt) {
-    for i in 0..LWASAPI_EQ_BANDS {
+pub fn clamp_param_eq_ext(ext: &mut LasapiParamEqExt) {
+    for i in 0..LASAPI_EQ_BANDS {
         let f = ext.band_freq_hz[i];
         if !(15.0..=22_000.0).contains(&f) {
             ext.band_freq_hz[i] = K_EQ_FREQS[i];
         }
-        if ext.band_type[i] > LWASAPI_FILTER_HIGH_SHELF {
-            ext.band_type[i] = LWASAPI_FILTER_PEAK;
+        if ext.band_type[i] > LASAPI_FILTER_HIGH_SHELF {
+            ext.band_type[i] = LASAPI_FILTER_PEAK;
         }
     }
     ext.crossfeed_enabled = u32::from(ext.crossfeed_enabled != 0);
@@ -190,7 +190,7 @@ pub fn clamp_param_eq_ext(ext: &mut LwasapiParamEqExt) {
     }
 }
 
-pub fn clamp_mic_apo_cfg(m: &mut LwasapiMicApoCfg) {
+pub fn clamp_mic_apo_cfg(m: &mut LasapiMicApoCfg) {
     m.enabled = u32::from(m.enabled != 0);
     m.hpf_enabled = u32::from(m.hpf_enabled != 0);
     m.gate_enabled = u32::from(m.gate_enabled != 0);
@@ -271,14 +271,14 @@ pub fn decode_persisted_state_bytes(bytes: &[u8], out: &mut SalsaRuntimeState) -
         st.format_bits = fb;
     }
 
-    // Offset 16..152: LwasapiEqConfig (136 bytes)
+    // Offset 16..152: LasapiEqConfig (136 bytes)
     st.eq_cfg.enabled = read_u32(bytes, 16);
     st.eq_cfg.dynamic_mode = read_u32(bytes, 20);
     st.eq_cfg.preamp_db = read_f32(bytes, 24);
     st.eq_cfg.dyn_threshold_db = read_f32(bytes, 28);
     st.eq_cfg.dyn_ratio = read_f32(bytes, 32);
     st.eq_cfg.limiter_enabled = read_u32(bytes, 36);
-    for i in 0..LWASAPI_EQ_BANDS {
+    for i in 0..LASAPI_EQ_BANDS {
         st.eq_cfg.band_gains_db[i] = read_f32(bytes, 40 + i * 4);
         let q = read_f32(bytes, 80 + i * 4);
         st.eq_cfg.band_q[i] = if (0.2..=10.0).contains(&q) { q } else { 1.414 };
@@ -299,8 +299,8 @@ pub fn decode_persisted_state_bytes(bytes: &[u8], out: &mut SalsaRuntimeState) -
 
     if valid_v6 || valid_v5 || valid_v4 || valid_v3 {
         // Offset 280..284: reserved_0, Offset 284..288: reserved_1
-        // Offset 288..384: LwasapiParamEqExt (96 bytes)
-        for i in 0..LWASAPI_EQ_BANDS {
+        // Offset 288..384: LasapiParamEqExt (96 bytes)
+        for i in 0..LASAPI_EQ_BANDS {
             st.param_eq.band_freq_hz[i] = read_f32(bytes, 288 + i * 4);
             st.param_eq.band_type[i] = read_u32(bytes, 328 + i * 4);
         }
@@ -310,7 +310,7 @@ pub fn decode_persisted_state_bytes(bytes: &[u8], out: &mut SalsaRuntimeState) -
         st.param_eq.reserved = read_u32(bytes, 380);
         clamp_param_eq_ext(&mut st.param_eq);
 
-        // Offset 384..432: LwasapiMicApoCfg (48 bytes)
+        // Offset 384..432: LasapiMicApoCfg (48 bytes)
         st.mic_apo.enabled = read_u32(bytes, 384);
         st.mic_apo.hpf_enabled = read_u32(bytes, 388);
         st.mic_apo.hpf_hz = read_f32(bytes, 392);
@@ -325,14 +325,14 @@ pub fn decode_persisted_state_bytes(bytes: &[u8], out: &mut SalsaRuntimeState) -
         st.mic_apo.sidetone_pct = read_u32(bytes, 428);
         clamp_mic_apo_cfg(&mut st.mic_apo);
 
-        // Offset 432..532: LwasapiBtCodecCfg (100 bytes)
+        // Offset 432..532: LasapiBtCodecCfg (100 bytes)
         st.bt_cfg.preferred_codec = read_u32(bytes, 432);
-        if st.bt_cfg.preferred_codec > LWASAPI_BT_PREF_SBC {
-            st.bt_cfg.preferred_codec = LWASAPI_BT_PREF_AUTO;
+        if st.bt_cfg.preferred_codec > LASAPI_BT_PREF_SBC {
+            st.bt_cfg.preferred_codec = LASAPI_BT_PREF_AUTO;
         }
         st.bt_cfg.ldac_mode = read_u32(bytes, 436);
-        if st.bt_cfg.ldac_mode > LWASAPI_LDAC_MODE_330 {
-            st.bt_cfg.ldac_mode = LWASAPI_LDAC_MODE_ADAPTIVE;
+        if st.bt_cfg.ldac_mode > LASAPI_LDAC_MODE_330 {
+            st.bt_cfg.ldac_mode = LASAPI_LDAC_MODE_ADAPTIVE;
         }
         st.bt_cfg.wireless_abr_enabled = read_u32(bytes, 440);
         st.bt_cfg.effective_kbps = read_u32(bytes, 444);
@@ -346,14 +346,14 @@ pub fn decode_persisted_state_bytes(bytes: &[u8], out: &mut SalsaRuntimeState) -
     }
 
     if valid_v6 || valid_v5 || valid_v4 {
-        // Offset 532..556: LwasapiHwAnalogCfg (24 bytes)
+        // Offset 532..556: LasapiHwAnalogCfg (24 bytes)
         st.hw_analog_cfg.hw_dac_unity_vol = read_u32(bytes, 532);
         st.hw_analog_cfg.hp_amp_tier = read_u32(bytes, 536);
         st.hw_analog_cfg.output_route = read_u32(bytes, 540);
         st.hw_analog_cfg.unlock_0db_rails = read_u32(bytes, 544);
         st.hw_analog_cfg.analog_boost_db = read_f32(bytes, 548);
         st.hw_analog_cfg.mic_hw_boost_db = read_f32(bytes, 552);
-        unsafe { lwasapi_hw_analog_clamp_cfg(&mut st.hw_analog_cfg) };
+        unsafe { lasapi_hw_analog_clamp_cfg(&mut st.hw_analog_cfg) };
     }
 
     if valid_v6 || valid_v5 {
@@ -417,7 +417,7 @@ pub fn encode_persisted_state_v5(st: &SalsaRuntimeState) -> [u8; PERSISTED_V5_SI
     write_f32(&mut out, 28, st.eq_cfg.dyn_threshold_db);
     write_f32(&mut out, 32, st.eq_cfg.dyn_ratio);
     write_u32(&mut out, 36, st.eq_cfg.limiter_enabled);
-    for i in 0..LWASAPI_EQ_BANDS {
+    for i in 0..LASAPI_EQ_BANDS {
         write_f32(&mut out, 40 + i * 4, st.eq_cfg.band_gains_db[i]);
         write_f32(&mut out, 80 + i * 4, st.eq_cfg.band_q[i]);
     }
@@ -443,7 +443,7 @@ pub fn encode_persisted_state_v5(st: &SalsaRuntimeState) -> [u8; PERSISTED_V5_SI
     write_u32(&mut out, 280, r0);
     write_u32(&mut out, 284, 0);
 
-    for i in 0..LWASAPI_EQ_BANDS {
+    for i in 0..LASAPI_EQ_BANDS {
         write_f32(&mut out, 288 + i * 4, st.param_eq.band_freq_hz[i]);
         write_u32(&mut out, 328 + i * 4, st.param_eq.band_type[i]);
     }
@@ -494,10 +494,10 @@ pub fn encode_persisted_state_v5(st: &SalsaRuntimeState) -> [u8; PERSISTED_V5_SI
 pub fn config_dir_path() -> PathBuf {
     if let Ok(cfg) = std::env::var("XDG_CONFIG_HOME") {
         if cfg.starts_with('/') {
-            return PathBuf::from(cfg).join("lwasapi");
+            return PathBuf::from(cfg).join("lasapi");
         }
     }
-    PathBuf::from(user_home_dir()).join(".config").join("lwasapi")
+    PathBuf::from(user_home_dir()).join(".config").join("lasapi")
 }
 
 pub fn salsa_settings_file_path() -> PathBuf {
@@ -574,7 +574,7 @@ fn json_bool(val: Option<&JsonValue>, default: bool) -> bool {
 }
 
 /// Serializes an EQ + parametric extension pair to the canonical JSON object format.
-pub fn eq_cfg_to_json_value(cfg: &LwasapiEqConfig, ext: &LwasapiParamEqExt) -> JsonValue {
+pub fn eq_cfg_to_json_value(cfg: &LasapiEqConfig, ext: &LasapiParamEqExt) -> JsonValue {
     let pname_raw = c_str_to_string(&cfg.preset_name);
     let pname = if pname_raw.trim().is_empty() {
         "Custom".to_string()
@@ -610,7 +610,7 @@ pub fn eq_cfg_to_json_value(cfg: &LwasapiEqConfig, ext: &LwasapiParamEqExt) -> J
     let types: Vec<JsonValue> = ext
         .band_type
         .iter()
-        .map(|&t| JsonValue::Int(i64::from(if t <= LWASAPI_FILTER_HIGH_SHELF { t } else { 0 })))
+        .map(|&t| JsonValue::Int(i64::from(if t <= LASAPI_FILTER_HIGH_SHELF { t } else { 0 })))
         .collect();
     let xf_cut = if (300..=1500).contains(&ext.crossfeed_cutoff_hz) {
         ext.crossfeed_cutoff_hz
@@ -639,8 +639,8 @@ pub fn eq_cfg_to_json_value(cfg: &LwasapiEqConfig, ext: &LwasapiParamEqExt) -> J
 /// Parses and strictly clamps an EQ + parametric extension JSON object into C structs.
 pub fn apply_json_to_eq_cfg_pair(
     eq_obj: &JsonValue,
-    cfg: &mut LwasapiEqConfig,
-    ext: &mut LwasapiParamEqExt,
+    cfg: &mut LasapiEqConfig,
+    ext: &mut LasapiParamEqExt,
 ) {
     let pname = eq_obj
         .get("preset_name")
@@ -668,21 +668,21 @@ pub fn apply_json_to_eq_cfg_pair(
     cfg.limiter_enabled = u32::from(json_bool(eq_obj.get("limiter_enabled"), true));
 
     if let Some(arr) = eq_obj.get("band_gains_db").and_then(JsonValue::as_array) {
-        if arr.len() == LWASAPI_EQ_BANDS {
+        if arr.len() == LASAPI_EQ_BANDS {
             for (i, v) in arr.iter().enumerate() {
                 cfg.band_gains_db[i] = v.as_f64().map_or(0.0, |x| x as f32);
             }
         }
     }
     if let Some(arr) = eq_obj.get("band_q").and_then(JsonValue::as_array) {
-        if arr.len() == LWASAPI_EQ_BANDS {
+        if arr.len() == LASAPI_EQ_BANDS {
             for (i, v) in arr.iter().enumerate() {
                 cfg.band_q[i] = v.as_f64().map_or(1.414, |x| x as f32);
             }
         }
     }
     if let Some(arr) = eq_obj.get("band_freq_hz").and_then(JsonValue::as_array) {
-        if arr.len() == LWASAPI_EQ_BANDS {
+        if arr.len() == LASAPI_EQ_BANDS {
             for (i, v) in arr.iter().enumerate() {
                 ext.band_freq_hz[i] = v.as_f64().map_or(K_EQ_FREQS[i], |x| x as f32);
             }
@@ -691,13 +691,13 @@ pub fn apply_json_to_eq_cfg_pair(
         ext.band_freq_hz = K_EQ_FREQS;
     }
     if let Some(arr) = eq_obj.get("band_type").and_then(JsonValue::as_array) {
-        if arr.len() == LWASAPI_EQ_BANDS {
+        if arr.len() == LASAPI_EQ_BANDS {
             for (i, v) in arr.iter().enumerate() {
                 ext.band_type[i] = v.as_u64().unwrap_or(0) as u32;
             }
         }
     } else {
-        ext.band_type = [LWASAPI_FILTER_PEAK; LWASAPI_EQ_BANDS];
+        ext.band_type = [LASAPI_FILTER_PEAK; LASAPI_EQ_BANDS];
     }
 
     ext.crossfeed_enabled = u32::from(json_bool(eq_obj.get("crossfeed_enabled"), false));
@@ -774,7 +774,7 @@ pub fn merge_runtime_state_into_json(root: &mut JsonValue, st: &SalsaRuntimeStat
     );
 
     let mut hwa = st.hw_analog_cfg;
-    unsafe { lwasapi_hw_analog_clamp_cfg(&mut hwa) };
+    unsafe { lasapi_hw_analog_clamp_cfg(&mut hwa) };
     root.set(
         "hw_analog",
         JsonValue::obj(vec![
@@ -787,15 +787,15 @@ pub fn merge_runtime_state_into_json(root: &mut JsonValue, st: &SalsaRuntimeStat
         ]),
     );
 
-    let pref_codec = if st.bt_cfg.preferred_codec <= LWASAPI_BT_PREF_SBC {
+    let pref_codec = if st.bt_cfg.preferred_codec <= LASAPI_BT_PREF_SBC {
         st.bt_cfg.preferred_codec
     } else {
-        LWASAPI_BT_PREF_AUTO
+        LASAPI_BT_PREF_AUTO
     };
-    let ldac_mode = if st.bt_cfg.ldac_mode <= LWASAPI_LDAC_MODE_330 {
+    let ldac_mode = if st.bt_cfg.ldac_mode <= LASAPI_LDAC_MODE_330 {
         st.bt_cfg.ldac_mode
     } else {
-        LWASAPI_LDAC_MODE_ADAPTIVE
+        LASAPI_LDAC_MODE_ADAPTIVE
     };
     root.set(
         "bluetooth",
@@ -954,24 +954,24 @@ pub fn apply_json_to_runtime_state(root: &JsonValue, out: &mut SalsaRuntimeState
         if let Some(mb) = hwa.get("mic_hw_boost_db").and_then(JsonValue::as_f64) {
             st.hw_analog_cfg.mic_hw_boost_db = mb as f32;
         }
-        unsafe { lwasapi_hw_analog_clamp_cfg(&mut st.hw_analog_cfg) };
+        unsafe { lasapi_hw_analog_clamp_cfg(&mut st.hw_analog_cfg) };
     }
 
     if let Some(bt) = root.get("bluetooth") {
         if let Some(c) = bt.get("preferred_codec").and_then(JsonValue::as_u64) {
             let c = c as u32;
-            st.bt_cfg.preferred_codec = if c <= LWASAPI_BT_PREF_SBC {
+            st.bt_cfg.preferred_codec = if c <= LASAPI_BT_PREF_SBC {
                 c
             } else {
-                LWASAPI_BT_PREF_AUTO
+                LASAPI_BT_PREF_AUTO
             };
         }
         if let Some(m) = bt.get("ldac_mode").and_then(JsonValue::as_u64) {
             let m = m as u32;
-            st.bt_cfg.ldac_mode = if m <= LWASAPI_LDAC_MODE_330 {
+            st.bt_cfg.ldac_mode = if m <= LASAPI_LDAC_MODE_330 {
                 m
             } else {
-                LWASAPI_LDAC_MODE_ADAPTIVE
+                LASAPI_LDAC_MODE_ADAPTIVE
             };
         }
         st.bt_cfg.wireless_abr_enabled = u32::from(json_bool(bt.get("wireless_abr_enabled"), true));
@@ -1262,21 +1262,21 @@ pub fn save_state_to_path(dir: &Path, path: &Path, st: &SalsaRuntimeState) -> bo
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn salsa_dsp_clamp_eq_cfg(eq: *mut LwasapiEqConfig) {
+pub unsafe extern "C" fn salsa_dsp_clamp_eq_cfg(eq: *mut LasapiEqConfig) {
     if !eq.is_null() {
         clamp_eq_cfg(unsafe { &mut *eq });
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn salsa_dsp_clamp_param_eq_ext(ext: *mut LwasapiParamEqExt) {
+pub unsafe extern "C" fn salsa_dsp_clamp_param_eq_ext(ext: *mut LasapiParamEqExt) {
     if !ext.is_null() {
         clamp_param_eq_ext(unsafe { &mut *ext });
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn salsa_dsp_clamp_mic_apo_cfg(m: *mut LwasapiMicApoCfg) {
+pub unsafe extern "C" fn salsa_dsp_clamp_mic_apo_cfg(m: *mut LasapiMicApoCfg) {
     if !m.is_null() {
         clamp_mic_apo_cfg(unsafe { &mut *m });
     }
@@ -1318,7 +1318,7 @@ mod tests {
         sample_rate: u32,
         period_frames: u32,
         format_bits: u32,
-        eq_cfg: LwasapiEqConfig,
+        eq_cfg: LasapiEqConfig,
     }
 
     #[repr(C)]
@@ -1333,15 +1333,15 @@ mod tests {
         v2: CPersistedV2,
         reserved_0: u32,
         reserved_1: u32,
-        param_eq: LwasapiParamEqExt,
-        mic_apo: LwasapiMicApoCfg,
-        bt_cfg: LwasapiBtCodecCfg,
+        param_eq: LasapiParamEqExt,
+        mic_apo: LasapiMicApoCfg,
+        bt_cfg: LasapiBtCodecCfg,
     }
 
     #[repr(C)]
     struct CPersistedV4 {
         v3: CPersistedV3,
-        hw_analog_cfg: LwasapiHwAnalogCfg,
+        hw_analog_cfg: LasapiHwAnalogCfg,
     }
 
     #[repr(C)]
@@ -1438,7 +1438,7 @@ mod tests {
         write_f32(&mut v5, 372, f32::NAN); // bad crossfeed_level
         write_f32(&mut v5, 392, 999.0); // bad hpf_hz
         assert!(decode_persisted_state_bytes(&v5[..PERSISTED_V3_SIZE], &mut loaded));
-        assert_eq!(loaded.bt_cfg.preferred_codec, LWASAPI_BT_PREF_AUTO);
+        assert_eq!(loaded.bt_cfg.preferred_codec, LASAPI_BT_PREF_AUTO);
         assert!((loaded.param_eq.crossfeed_level - 0.45).abs() < 1e-6);
         assert!((loaded.mic_apo.hpf_hz - 80.0).abs() < 1e-6);
         assert!(!loaded.has_saved_vol_state);
@@ -1456,7 +1456,7 @@ mod tests {
         clamp_param_eq_ext(&mut ext);
         assert!((ext.band_freq_hz[0] - K_EQ_FREQS[0]).abs() < 1e-6);
         assert!((ext.band_freq_hz[1] - K_EQ_FREQS[1]).abs() < 1e-6);
-        assert_eq!(ext.band_type[2], LWASAPI_FILTER_PEAK);
+        assert_eq!(ext.band_type[2], LASAPI_FILTER_PEAK);
         assert_eq!(ext.crossfeed_enabled, 1);
         assert!((ext.crossfeed_level - 0.45).abs() < 1e-6);
         assert_eq!(ext.crossfeed_cutoff_hz, 700);
@@ -1489,7 +1489,7 @@ mod tests {
 
     #[test]
     fn file_roundtrip_and_security_guards() {
-        let base = std::env::temp_dir().join(format!("lwasapi_state_test_{}", current_pid()));
+        let base = std::env::temp_dir().join(format!("lasapi_state_test_{}", current_pid()));
         let _ = fs::remove_dir_all(&base);
         let file = base.join("salsa_state.bin");
 
@@ -1521,7 +1521,7 @@ mod tests {
 
     #[test]
     fn unified_settings_json_migration_roundtrip_and_security() {
-        let base = std::env::temp_dir().join(format!("lwasapi_unified_test_{}", current_pid()));
+        let base = std::env::temp_dir().join(format!("lasapi_unified_test_{}", current_pid()));
         let _ = fs::remove_dir_all(&base);
         ensure_dir_0700_safe(&base).unwrap();
 

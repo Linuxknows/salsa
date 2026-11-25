@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -78,7 +78,7 @@ inline qint64 nowMs() { return QDateTime::currentMSecsSinceEpoch(); }
 inline constexpr int TRAY_SAMPLE_RATES[6] = {44100, 48000, 88200, 96000, 176400, 192000};
 inline constexpr int TRAY_FONT_STEPS[7] = {80, 90, 100, 110, 120, 135, 150};
 
-// Runtime `dlopen` bridge to `LayerShellQt::Window` (`zwlr_layer_shell_v1`) so `lwasapi-tray`
+// Runtime `dlopen` bridge to `LayerShellQt::Window` (`zwlr_layer_shell_v1`) so `lasapi-tray`
 // runs as a 100% pure native Wayland surface (zero X11/XWayland, zero panel taskbar icon) on
 // KDE Plasma Wayland, Hyprland, Sway, COSMIC, Niri, River, and Labwc without requiring
 // `layer-shell-qt` headers at compile time on minimal distros.
@@ -2250,7 +2250,7 @@ void TrayController::buildPopup() {
     auto* btnRst = new QPushButton(QStringLiteral("Restart"), card_);
     btnRst->setObjectName(QStringLiteral("WarnBtn"));
     btnRst->setCursor(Qt::PointingHandCursor);
-    btnRst->setToolTip(QStringLiteral("Restart Audio Engine — Restarts `lwasapi-audiodg.service` via systemd user control without signing out."));
+    btnRst->setToolTip(QStringLiteral("Restart Audio Engine — Restarts `lasapi-audiodg.service` via systemd user control without signing out."));
     connect(btnRst, &QPushButton::clicked, this, [this]() {
         runSystemdAction("restart");
     });
@@ -2321,7 +2321,7 @@ void TrayController::buildContextMenu() {
     actGlow_ = ctxMenu_->addAction(QStringLiteral("Green Glow on Active Icon"));
     actGlow_->setCheckable(true);
     actGlow_->setChecked(trayGlow_);
-    actGlow_->setToolTip(QStringLiteral("Draws a status glow ring on the tray icon when `lwasapi-audiodg` is active."));
+    actGlow_->setToolTip(QStringLiteral("Draws a status glow ring on the tray icon when `lasapi-audiodg` is active."));
     connect(actGlow_, &QAction::toggled, this, [this](bool on) {
         trayGlow_ = on;
         updateGuiSettingsPatch(QJsonObject{
@@ -2381,13 +2381,13 @@ void TrayController::buildContextMenu() {
 
     ctxMenu_->addSeparator();
     actStartEng_ = ctxMenu_->addAction(QStringLiteral("Start Engine"));
-    actStartEng_->setToolTip(QStringLiteral("Starts `lwasapi-audiodg.service` via systemd user control."));
+    actStartEng_->setToolTip(QStringLiteral("Starts `lasapi-audiodg.service` via systemd user control."));
     connect(actStartEng_, &QAction::triggered, this, [this]() { runSystemdAction("start"); });
     actRestartEng_ = ctxMenu_->addAction(QStringLiteral("Restart Engine"));
-    actRestartEng_->setToolTip(QStringLiteral("Restarts `lwasapi-audiodg.service` to reload devices or recover cleanly."));
+    actRestartEng_->setToolTip(QStringLiteral("Restarts `lasapi-audiodg.service` to reload devices or recover cleanly."));
     connect(actRestartEng_, &QAction::triggered, this, [this]() { runSystemdAction("restart"); });
     actStopEng_ = ctxMenu_->addAction(QStringLiteral("Stop Engine"));
-    actStopEng_->setToolTip(QStringLiteral("Stops `lwasapi-audiodg.service` cleanly via systemd."));
+    actStopEng_->setToolTip(QStringLiteral("Stops `lasapi-audiodg.service` cleanly via systemd."));
     connect(actStopEng_, &QAction::triggered, this, [this]() { runSystemdAction("stop"); });
 
     ctxMenu_->addSeparator();
@@ -2397,14 +2397,14 @@ void TrayController::buildContextMenu() {
         showAboutLicenseDialog(nullptr, QStringLiteral("Salsa Tray"), theme_, fontPct_);
     });
     auto* aQuit = ctxMenu_->addAction(QStringLiteral("Quit Tray"));
-    aQuit->setToolTip(QStringLiteral("Closes `lwasapi-tray` from the system tray (the background audio engine stays running)."));
+    aQuit->setToolTip(QStringLiteral("Closes `lasapi-tray` from the system tray (the background audio engine stays running)."));
     connect(aQuit, &QAction::triggered, qApp, &QApplication::quit);
 }
 
 void TrayController::runSystemdAction(const char* action) {
     const QByteArray actBytes(action ? action : "restart");
     std::thread([this, actBytes]() {
-        salsa_ctl_systemd("lwasapi-audiodg.service", actBytes.constData());
+        salsa_ctl_systemd("lasapi-audiodg.service", actBytes.constData());
         QMetaObject::invokeMethod(this, [this]() {
             lastDevSig_.clear();
             QTimer::singleShot(300, this, [this]() { syncFromEngine(false); });
@@ -3433,11 +3433,11 @@ bool TrayController::verifyLayoutSelfTest(QString* errOut) {
 
 }  // namespace salsa
 
-#include "lwasapi_tray.moc"
+#include "lasapi_tray.moc"
 
 int main(int argc, char** argv) {
     salsa_reset_sigpipe();
-    if (const int cliRc = salsa::handleLegalCliArgs(argc, argv, "lwasapi-tray"); cliRc >= 0) {
+    if (const int cliRc = salsa::handleLegalCliArgs(argc, argv, "lasapi-tray"); cliRc >= 0) {
         return cliRc;
     }
     bool selfTest = false;
@@ -3474,7 +3474,7 @@ int main(int argc, char** argv) {
 
     // Prefer 100% pure native Wayland (`zwlr_layer_shell_v1` via LayerShellQt) whenever
     // supported by the compositor (KDE Plasma Wayland, Hyprland, Sway, COSMIC, Niri, River,
-    // Labwc, LXQt) so `lwasapi-tray` needs zero X11/XWayland and never creates a panel icon.
+    // Labwc, LXQt) so `lasapi-tray` needs zero X11/XWayland and never creates a panel icon.
     // Fall back to XCB only on pure X11 sessions or Wayland compositors without layer-shell (GNOME).
     if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
         if (salsa::compositorSupportsLayerShellEnv()) {
@@ -3493,8 +3493,8 @@ int main(int argc, char** argv) {
 
     QApplication app(argc, argv);
     salsa::syncResolvedPlatformEnv();
-    app.setApplicationName(QStringLiteral("lwasapi-tray"));
-    app.setDesktopFileName(QStringLiteral("lwasapi-tray"));
+    app.setApplicationName(QStringLiteral("lasapi-tray"));
+    app.setDesktopFileName(QStringLiteral("lasapi-tray"));
     app.setQuitOnLastWindowClosed(false);
 
     salsa::TrayController ctrl(true);

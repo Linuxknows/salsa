@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -15,9 +15,9 @@ use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use salsa_wire::c_abi::{
-    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, LWASAPI_DBG_ERR,
-    LWASAPI_DBG_INFO, LWASAPI_DBG_SHIM, LWASAPI_FMT_FLOAT32, LWASAPI_MAX_CHANNELS,
-    LwasapiMidiEvent, WaveFormatEx, S_OK,
+    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, LASAPI_DBG_ERR,
+    LASAPI_DBG_INFO, LASAPI_DBG_SHIM, LASAPI_FMT_FLOAT32, LASAPI_MAX_CHANNELS,
+    LasapiMidiEvent, WaveFormatEx, S_OK,
 };
 
 const JACK_MAX_PORT_MIDI_EVENTS: usize = 128;
@@ -43,9 +43,9 @@ pub struct jack_midi_event_t {
 #[repr(C)]
 struct jack_midi_buf_t {
     magic: u32,
-    lwasapi_client: *mut c_void,
+    lasapi_client: *mut c_void,
     count: u32,
-    events: [LwasapiMidiEvent; JACK_MAX_PORT_MIDI_EVENTS],
+    events: [LasapiMidiEvent; JACK_MAX_PORT_MIDI_EVENTS],
 }
 
 #[repr(C)]
@@ -62,12 +62,12 @@ pub struct jack_port_t {
 #[repr(C)]
 pub struct jack_client_t {
     name: [u8; 64],
-    lwasapi_client: *mut c_void,
+    lasapi_client: *mut c_void,
     sample_rate: u32,
     period_frames: u32,
     process_cb: JackProcessCallback,
     process_arg: *mut c_void,
-    ports: [jack_port_t; LWASAPI_MAX_CHANNELS * 2],
+    ports: [jack_port_t; LASAPI_MAX_CHANNELS * 2],
     num_ports: AtomicI32,
     active: AtomicI32,
     transport_rolling: AtomicI32,
@@ -87,7 +87,7 @@ extern "C" {
     ) -> c_int;
     fn pthread_join(thread: c_ulong, retval: *mut *mut c_void) -> c_int;
 
-    fn LWASAPI_DebugTraceClient(
+    fn LASAPI_DebugTraceClient(
         sub: u8,
         lvl: u8,
         sid: u32,
@@ -95,7 +95,7 @@ extern "C" {
         target: *const c_char,
         detail: *const c_char,
     );
-    fn LWASAPI_ActivateAudioClient(
+    fn LASAPI_ActivateAudioClient(
         client_name: *const c_char,
         pp_audio_client: *mut *mut c_void,
     ) -> i32;
@@ -132,10 +132,10 @@ extern "C" {
     ) -> i32;
     fn IAudioClient_ReadMidiEvents(
         client: *mut c_void,
-        events_out: *mut LwasapiMidiEvent,
+        events_out: *mut LasapiMidiEvent,
         max_events: u32,
     ) -> u32;
-    fn IAudioClient_WriteMidiEvent(client: *mut c_void, ev: *const LwasapiMidiEvent) -> i32;
+    fn IAudioClient_WriteMidiEvent(client: *mut c_void, ev: *const LasapiMidiEvent) -> i32;
 }
 
 fn copy_cstr_buf(dst: &mut [u8], src: &str) {
@@ -169,25 +169,25 @@ unsafe extern "C" fn jack_wavert_callback_thread(arg: *mut c_void) -> *mut c_voi
 
     while jc.active.load(Ordering::Acquire) != 0 {
         let mut pad = 0u32;
-        unsafe { IAudioClient_GetCurrentPadding(jc.lwasapi_client, &mut pad) };
+        unsafe { IAudioClient_GetCurrentPadding(jc.lasapi_client, &mut pad) };
         if pad > nframes * 2 {
-            unsafe { IAudioClient_WaitForPeriod(jc.lwasapi_client, 15) };
+            unsafe { IAudioClient_WaitForPeriod(jc.lasapi_client, 15) };
             continue;
         }
 
         unsafe {
             IAudioCaptureClient_ReadFrames(
-                jc.lwasapi_client,
+                jc.lasapi_client,
                 cap_interleaved.cast(),
                 nframes,
-                LWASAPI_FMT_FLOAT32,
+                LASAPI_FMT_FLOAT32,
             );
         }
 
-        let mut incoming_midi = [LwasapiMidiEvent::default(); JACK_MAX_PORT_MIDI_EVENTS];
+        let mut incoming_midi = [LasapiMidiEvent::default(); JACK_MAX_PORT_MIDI_EVENTS];
         let midi_count = unsafe {
             IAudioClient_ReadMidiEvents(
-                jc.lwasapi_client,
+                jc.lasapi_client,
                 incoming_midi.as_mut_ptr(),
                 JACK_MAX_PORT_MIDI_EVENTS as u32,
             )
@@ -248,10 +248,10 @@ unsafe extern "C" fn jack_wavert_callback_thread(arg: *mut c_void) -> *mut c_voi
 
         unsafe {
             IAudioRenderClient_WriteFrames(
-                jc.lwasapi_client,
+                jc.lasapi_client,
                 interleaved.cast(),
                 nframes,
-                LWASAPI_FMT_FLOAT32,
+                LASAPI_FMT_FLOAT32,
             );
         }
         jc.frame_counter += u64::from(nframes);
@@ -282,17 +282,17 @@ pub unsafe extern "C" fn jack_client_open(
     };
     copy_cstr_buf(&mut j.name, &format!("JACK({cname})"));
 
-    if unsafe { LWASAPI_ActivateAudioClient(j.name.as_ptr().cast(), &mut j.lwasapi_client) }
+    if unsafe { LASAPI_ActivateAudioClient(j.name.as_ptr().cast(), &mut j.lasapi_client) }
         != S_OK
     {
         unsafe {
-            LWASAPI_DebugTraceClient(
-                LWASAPI_DBG_SHIM,
-                LWASAPI_DBG_ERR,
+            LASAPI_DebugTraceClient(
+                LASAPI_DBG_SHIM,
+                LASAPI_DBG_ERR,
                 0,
                 c"SHIM_JACK_ERR".as_ptr(),
                 j.name.as_ptr().cast(),
-                c"LWASAPI_ActivateAudioClient failed".as_ptr(),
+                c"LASAPI_ActivateAudioClient failed".as_ptr(),
             );
             free(jc.cast());
         }
@@ -300,10 +300,10 @@ pub unsafe extern "C" fn jack_client_open(
     }
 
     let mut wfx = WaveFormatEx::default();
-    unsafe { IAudioClient_GetMixFormat(j.lwasapi_client, &mut wfx) };
+    unsafe { IAudioClient_GetMixFormat(j.lasapi_client, &mut wfx) };
     if unsafe {
         IAudioClient_Initialize(
-            j.lwasapi_client,
+            j.lasapi_client,
             AUDCLNT_SHAREMODE_SHARED,
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
             1024,
@@ -313,31 +313,31 @@ pub unsafe extern "C" fn jack_client_open(
     } != S_OK
     {
         unsafe {
-            LWASAPI_DebugTraceClient(
-                LWASAPI_DBG_SHIM,
-                LWASAPI_DBG_ERR,
+            LASAPI_DebugTraceClient(
+                LASAPI_DBG_SHIM,
+                LASAPI_DBG_ERR,
                 0,
                 c"SHIM_JACK_ERR".as_ptr(),
                 j.name.as_ptr().cast(),
                 c"IAudioClient_Initialize failed".as_ptr(),
             );
-            IAudioClient_Release(j.lwasapi_client);
+            IAudioClient_Release(j.lasapi_client);
             free(jc.cast());
         }
         return ptr::null_mut();
     }
 
     let mut def_per = 256u32;
-    unsafe { IAudioClient_GetDevicePeriod(j.lwasapi_client, &mut def_per, ptr::null_mut()) };
+    unsafe { IAudioClient_GetDevicePeriod(j.lasapi_client, &mut def_per, ptr::null_mut()) };
     j.sample_rate = wfx.n_samples_per_sec;
     j.period_frames = def_per;
     j.transport_rolling.store(1, Ordering::Release);
 
     let detail = format!("rate={} period={}\0", j.sample_rate, j.period_frames);
     unsafe {
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"SHIM_JACK_OPEN".as_ptr(),
             j.name.as_ptr().cast(),
@@ -357,9 +357,9 @@ pub unsafe extern "C" fn jack_client_close(jc: *mut jack_client_t) -> c_int {
     }
     let j = unsafe { &mut *jc };
     unsafe {
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"SHIM_JACK_CLOSE".as_ptr(),
             j.name.as_ptr().cast(),
@@ -372,8 +372,8 @@ pub unsafe extern "C" fn jack_client_close(jc: *mut jack_client_t) -> c_int {
     for port in j.ports.iter().take(j.num_ports.load(Ordering::Acquire) as usize) {
         unsafe { free(port.audio_buffer.cast()) };
     }
-    if !j.lwasapi_client.is_null() {
-        unsafe { IAudioClient_Release(j.lwasapi_client) };
+    if !j.lasapi_client.is_null() {
+        unsafe { IAudioClient_Release(j.lasapi_client) };
     }
     unsafe { free(jc.cast()) };
     0
@@ -382,7 +382,7 @@ pub unsafe extern "C" fn jack_client_close(jc: *mut jack_client_t) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn jack_get_client_name(jc: *mut jack_client_t) -> *mut c_char {
     if jc.is_null() {
-        c"LWASAPI-JACK".as_ptr().cast_mut()
+        c"LASAPI-JACK".as_ptr().cast_mut()
     } else {
         unsafe { (*jc).name.as_mut_ptr().cast() }
     }
@@ -476,12 +476,12 @@ pub unsafe extern "C" fn jack_port_register(
     }
     let j = unsafe { &mut *jc };
     let idx = j.num_ports.load(Ordering::Acquire) as usize;
-    if idx >= (LWASAPI_MAX_CHANNELS * 2) {
+    if idx >= (LASAPI_MAX_CHANNELS * 2) {
         return ptr::null_mut();
     }
     let cname = cbuf_to_str(&j.name).to_string();
     let per_frames = j.period_frames as usize;
-    let client_ptr = j.lwasapi_client;
+    let client_ptr = j.lasapi_client;
     let p_ptr = {
         let p = &mut j.ports[idx];
         unsafe { ptr::write_bytes(p, 0, 1) };
@@ -504,7 +504,7 @@ pub unsafe extern "C" fn jack_port_register(
         if pt.contains("midi") || pt.contains("MIDI") {
             p.is_midi = true;
             p.midi_buffer.magic = JACK_MIDI_MAGIC;
-            p.midi_buffer.lwasapi_client = client_ptr;
+            p.midi_buffer.lasapi_client = client_ptr;
         } else {
             p.is_midi = false;
             p.audio_buffer = unsafe { calloc(per_frames, mem::size_of::<f32>()) }.cast::<f32>();
@@ -717,7 +717,7 @@ pub unsafe extern "C" fn jack_activate(jc: *mut jack_client_t) -> c_int {
     {
         return -1;
     }
-    unsafe { IAudioClient_Start(j.lwasapi_client) };
+    unsafe { IAudioClient_Start(j.lasapi_client) };
     let rc = unsafe {
         pthread_create(
             &mut j.rt_thread,
@@ -728,13 +728,13 @@ pub unsafe extern "C" fn jack_activate(jc: *mut jack_client_t) -> c_int {
     };
     if rc != 0 {
         j.active.store(0, Ordering::Release);
-        unsafe { IAudioClient_Stop(j.lwasapi_client) };
+        unsafe { IAudioClient_Stop(j.lasapi_client) };
         return -1;
     }
     unsafe {
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"SHIM_JACK_ACT".as_ptr(),
             j.name.as_ptr().cast(),
@@ -754,10 +754,10 @@ pub unsafe extern "C" fn jack_deactivate(jc: *mut jack_client_t) -> c_int {
         unsafe { pthread_join(j.rt_thread, ptr::null_mut()) };
     }
     unsafe {
-        IAudioClient_Stop(j.lwasapi_client);
-        LWASAPI_DebugTraceClient(
-            LWASAPI_DBG_SHIM,
-            LWASAPI_DBG_INFO,
+        IAudioClient_Stop(j.lasapi_client);
+        LASAPI_DebugTraceClient(
+            LASAPI_DBG_SHIM,
+            LASAPI_DBG_INFO,
             0,
             c"SHIM_JACK_DEACT".as_ptr(),
             j.name.as_ptr().cast(),
@@ -854,7 +854,7 @@ pub unsafe extern "C" fn jack_midi_event_reserve(
     let idx = mb.count as usize;
     mb.count += 1;
     let ev = &mut mb.events[idx];
-    *ev = LwasapiMidiEvent::default();
+    *ev = LasapiMidiEvent::default();
     ev.frame_offset = time;
     ev.size = data_size as u8;
     ev.data.as_mut_ptr()
@@ -880,9 +880,9 @@ pub unsafe extern "C" fn jack_midi_event_write(
     }
     unsafe { ptr::copy_nonoverlapping(data, dst, data_size) };
     let mb = unsafe { &*mb_ptr };
-    if !mb.lwasapi_client.is_null() && mb.count > 0 {
+    if !mb.lasapi_client.is_null() && mb.count > 0 {
         let ev = &mb.events[(mb.count - 1) as usize];
-        unsafe { IAudioClient_WriteMidiEvent(mb.lwasapi_client, ev) };
+        unsafe { IAudioClient_WriteMidiEvent(mb.lasapi_client, ev) };
     }
     0
 }

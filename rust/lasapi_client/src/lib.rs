@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -23,18 +23,18 @@ use std::sync::OnceLock;
 use salsa_wire::c_abi::{
     copy_str_to_c, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_ALREADY_INITIALIZED,
     AUDCLNT_E_BUFFER_TOO_LARGE, AUDCLNT_E_NOT_INITIALIZED, E_FAIL, E_INVALIDARG, E_OUTOFMEMORY,
-    LWASAPI_CFG_FLAG_CAPTURE_RATE, LWASAPI_CMD_BT_CONNECTION, LWASAPI_CMD_CREATE_SESSION,
-    LWASAPI_CMD_GET_STATUS, LWASAPI_CMD_INJECT_MIDI, LWASAPI_CMD_LIST_DEVICES,
-    LWASAPI_CMD_RELOAD_CONFIG, LWASAPI_CMD_SAVE_CONFIG, LWASAPI_CMD_SET_BT_CODEC,
-    LWASAPI_CMD_SET_DEVICES, LWASAPI_CMD_SET_ENGINE_CONFIG, LWASAPI_CMD_SET_EQ,
-    LWASAPI_CMD_SET_HW_ANALOG, LWASAPI_CMD_SET_MIC_APO, LWASAPI_CMD_SET_PARAM_EQ,
-    LWASAPI_CMD_SET_SESSION_CONTROL, LWASAPI_DBG_INFO, LWASAPI_DBG_SHIM, LWASAPI_DBG_TRACE,
-    LWASAPI_DBG_WARN, LWASAPI_DBG_WASAPI, LWASAPI_DEBUG_DGRAM_MAGIC, LWASAPI_FMT_FLOAT32,
-    LWASAPI_FMT_S16_LE, LWASAPI_FMT_S32_LE, LWASAPI_MAX_CHANNELS, LWASAPI_MIDI_RING_EVENTS,
-    LWASAPI_MIDI_RING_MASK, LWASAPI_RING_FRAMES, LWASAPI_RING_MAGIC, LWASAPI_RING_MASK,
-    LwasapiBtCodecCfg, LwasapiDbgDgram, LwasapiDeviceList, LwasapiEngineStatus, LwasapiEqConfig,
-    LwasapiHwAnalogCfg, LwasapiIpcReq, LwasapiIpcResp, LwasapiMicApoCfg, LwasapiMidiEvent,
-    LwasapiParamEqExt, LwasapiParamEqPayload, LwasapiShmRing, WaveFormatEx, S_OK,
+    LASAPI_CFG_FLAG_CAPTURE_RATE, LASAPI_CMD_BT_CONNECTION, LASAPI_CMD_CREATE_SESSION,
+    LASAPI_CMD_GET_STATUS, LASAPI_CMD_INJECT_MIDI, LASAPI_CMD_LIST_DEVICES,
+    LASAPI_CMD_RELOAD_CONFIG, LASAPI_CMD_SAVE_CONFIG, LASAPI_CMD_SET_BT_CODEC,
+    LASAPI_CMD_SET_DEVICES, LASAPI_CMD_SET_ENGINE_CONFIG, LASAPI_CMD_SET_EQ,
+    LASAPI_CMD_SET_HW_ANALOG, LASAPI_CMD_SET_MIC_APO, LASAPI_CMD_SET_PARAM_EQ,
+    LASAPI_CMD_SET_SESSION_CONTROL, LASAPI_DBG_INFO, LASAPI_DBG_SHIM, LASAPI_DBG_TRACE,
+    LASAPI_DBG_WARN, LASAPI_DBG_LASAPI, LASAPI_DEBUG_DGRAM_MAGIC, LASAPI_FMT_FLOAT32,
+    LASAPI_FMT_S16_LE, LASAPI_FMT_S32_LE, LASAPI_MAX_CHANNELS, LASAPI_MIDI_RING_EVENTS,
+    LASAPI_MIDI_RING_MASK, LASAPI_RING_FRAMES, LASAPI_RING_MAGIC, LASAPI_RING_MASK,
+    LasapiBtCodecCfg, LasapiDbgDgram, LasapiDeviceList, LasapiEngineStatus, LasapiEqConfig,
+    LasapiHwAnalogCfg, LasapiIpcReq, LasapiIpcResp, LasapiMicApoCfg, LasapiMidiEvent,
+    LasapiParamEqExt, LasapiParamEqPayload, LasapiShmRing, WaveFormatEx, S_OK,
 };
 use salsa_wire::unix_sys::{
     audiodg_sock_path, close_raw_fd, connect_unix_stream_blocking, current_pid, debug_in_sock_path,
@@ -45,7 +45,7 @@ use salsa_wire::unix_sys::{
 
 pub type HRESULT = i32;
 pub type AUDCLNT_SHAREMODE = u32;
-pub type lwasapi_sample_format_t = u32;
+pub type lasapi_sample_format_t = u32;
 
 pub struct IAudioClient {
     client_name: [u8; 64],
@@ -96,8 +96,8 @@ fn dbg_emit_dgram(
         }
     }
 
-    let mut dg: LwasapiDbgDgram = unsafe { mem::zeroed() };
-    dg.magic = LWASAPI_DEBUG_DGRAM_MAGIC;
+    let mut dg: LasapiDbgDgram = unsafe { mem::zeroed() };
+    dg.magic = LASAPI_DEBUG_DGRAM_MAGIC;
     dg.pid = current_pid();
     dg.session_id = sid;
     dg.v1 = v1;
@@ -112,8 +112,8 @@ fn dbg_emit_dgram(
     let path = DBG_IN_SOCK_CACHE.get_or_init(debug_in_sock_path);
     let bytes = unsafe {
         slice::from_raw_parts(
-            (&dg as *const LwasapiDbgDgram).cast::<u8>(),
-            mem::size_of::<LwasapiDbgDgram>(),
+            (&dg as *const LasapiDbgDgram).cast::<u8>(),
+            mem::size_of::<LasapiDbgDgram>(),
         )
     };
     let _ = sendto_unix_dgram_nonblock(fd, path, bytes);
@@ -159,15 +159,15 @@ unsafe fn as_bytes_mut<T>(val: &mut T) -> &mut [u8] {
 }
 
 #[inline]
-unsafe fn ring_ptr(client: &IAudioClient) -> *mut LwasapiShmRing {
+unsafe fn ring_ptr(client: &IAudioClient) -> *mut LasapiShmRing {
     client
         .ring
         .as_ref()
-        .map_or(ptr::null_mut(), |m| m.as_ptr().cast::<LwasapiShmRing>().cast_mut())
+        .map_or(ptr::null_mut(), |m| m.as_ptr().cast::<LasapiShmRing>().cast_mut())
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_DebugTraceClient(
+pub unsafe extern "C" fn LASAPI_DebugTraceClient(
     sub: u8,
     lvl: u8,
     sid: u32,
@@ -189,7 +189,7 @@ pub unsafe extern "C" fn LWASAPI_DebugTraceClient(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_ActivateAudioClient(
+pub unsafe extern "C" fn LASAPI_ActivateAudioClient(
     client_name: *const c_char,
     ppAudioClient: *mut *mut IAudioClient,
 ) -> HRESULT {
@@ -201,7 +201,7 @@ pub unsafe extern "C" fn LWASAPI_ActivateAudioClient(
     let cname_str = unsafe { cstr_to_str(client_name) };
     let final_name = if cname_str.is_empty()
         || cname_str == "default"
-        || cname_str == "LWASAPI-Client"
+        || cname_str == "LASAPI-Client"
         || cname_str == proc_comm
     {
         proc_comm
@@ -239,7 +239,7 @@ pub unsafe extern "C" fn IAudioClient_GetMixFormat(
         return E_INVALIDARG;
     }
     let fmt = WaveFormatEx {
-        w_format_tag: LWASAPI_FMT_FLOAT32 as u16,
+        w_format_tag: LASAPI_FMT_FLOAT32 as u16,
         n_channels: 2,
         n_samples_per_sec: 48000,
         w_bits_per_sample: 32,
@@ -274,21 +274,21 @@ pub unsafe extern "C" fn IAudioClient_Initialize(
     let Some(sock) = connect_unix_stream_blocking(&sock_path) else {
         let err = last_errno();
         dbg_emit_dgram(
-            LWASAPI_DBG_WASAPI,
-            salsa_wire::c_abi::LWASAPI_DBG_ERR,
+            LASAPI_DBG_LASAPI,
+            salsa_wire::c_abi::LASAPI_DBG_ERR,
             0,
             fmt.n_samples_per_sec as i32,
             i32::from(fmt.n_channels),
             E_FAIL,
-            "WASAPI_INIT_FAIL",
+            "LASAPI_INIT_FAIL",
             &cname,
             &format!("connect({sock_path}) failed: errno={err}"),
         );
         return E_FAIL;
     };
 
-    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LWASAPI_CMD_CREATE_SESSION;
+    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
+    req.cmd = LASAPI_CMD_CREATE_SESSION;
     req.client_name = c.client_name;
     req.client_pid = c.client_pid;
     req.share_mode = ShareMode;
@@ -306,7 +306,7 @@ pub unsafe extern "C" fn IAudioClient_Initialize(
     req.format = if fmt.w_format_tag != 0 {
         u32::from(fmt.w_format_tag)
     } else {
-        LWASAPI_FMT_FLOAT32
+        LASAPI_FMT_FLOAT32
     };
     req.requested_buffer_frames = if BufferFrameCount != 0 {
         BufferFrameCount
@@ -321,31 +321,31 @@ pub unsafe extern "C" fn IAudioClient_Initialize(
 
     if send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) }).is_err() {
         dbg_emit_dgram(
-            LWASAPI_DBG_WASAPI,
-            salsa_wire::c_abi::LWASAPI_DBG_ERR,
+            LASAPI_DBG_LASAPI,
+            salsa_wire::c_abi::LASAPI_DBG_ERR,
             0,
             req.sample_rate as i32,
             req.channels as i32,
             E_FAIL,
-            "WASAPI_INIT_FAIL",
+            "LASAPI_INIT_FAIL",
             &cname,
             "IPC send CREATE_SESSION failed",
         );
         return E_FAIL;
     }
 
-    let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
     let Some((opt_shm, opt_ev)) =
         recv_blocking_exact_with_2fds(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) })
     else {
         dbg_emit_dgram(
-            LWASAPI_DBG_WASAPI,
-            salsa_wire::c_abi::LWASAPI_DBG_ERR,
+            LASAPI_DBG_LASAPI,
+            salsa_wire::c_abi::LASAPI_DBG_ERR,
             0,
             req.sample_rate as i32,
             req.channels as i32,
             E_FAIL,
-            "WASAPI_INIT_FAIL",
+            "LASAPI_INIT_FAIL",
             &cname,
             "recv_response_with_fds failed",
         );
@@ -355,13 +355,13 @@ pub unsafe extern "C" fn IAudioClient_Initialize(
     let (Some(shm_fd), Some(ev_fd)) = (opt_shm, opt_ev) else {
         let fail_hr = if resp.hr != S_OK { resp.hr } else { E_FAIL };
         dbg_emit_dgram(
-            LWASAPI_DBG_WASAPI,
-            salsa_wire::c_abi::LWASAPI_DBG_ERR,
+            LASAPI_DBG_LASAPI,
+            salsa_wire::c_abi::LASAPI_DBG_ERR,
             resp.session_id,
             req.sample_rate as i32,
             req.channels as i32,
             fail_hr,
-            "WASAPI_INIT_FAIL",
+            "LASAPI_INIT_FAIL",
             &cname,
             &format!("audiodg rejected hr=0x{:08x}", resp.hr as u32),
         );
@@ -370,13 +370,13 @@ pub unsafe extern "C" fn IAudioClient_Initialize(
 
     if resp.hr != S_OK {
         dbg_emit_dgram(
-            LWASAPI_DBG_WASAPI,
-            salsa_wire::c_abi::LWASAPI_DBG_ERR,
+            LASAPI_DBG_LASAPI,
+            salsa_wire::c_abi::LASAPI_DBG_ERR,
             resp.session_id,
             req.sample_rate as i32,
             req.channels as i32,
             resp.hr,
-            "WASAPI_INIT_FAIL",
+            "LASAPI_INIT_FAIL",
             &cname,
             &format!("audiodg rejected hr=0x{:08x}", resp.hr as u32),
         );
@@ -386,39 +386,39 @@ pub unsafe extern "C" fn IAudioClient_Initialize(
     if !memfd_size_valid(
         shm_fd.as_raw_fd(),
         0,
-        mem::size_of::<LwasapiShmRing>() as u64,
+        mem::size_of::<LasapiShmRing>() as u64,
     ) {
         dbg_emit_dgram(
-            LWASAPI_DBG_WASAPI,
-            salsa_wire::c_abi::LWASAPI_DBG_ERR,
+            LASAPI_DBG_LASAPI,
+            salsa_wire::c_abi::LASAPI_DBG_ERR,
             resp.session_id,
             0,
             0,
             E_FAIL,
-            "WASAPI_INIT_FAIL",
+            "LASAPI_INIT_FAIL",
             &cname,
             "shm ring size validation failed",
         );
         return E_FAIL;
     }
 
-    let Some(ring) = MappedMem::map_fd(shm_fd.as_raw_fd(), mem::size_of::<LwasapiShmRing>(), true, 0)
+    let Some(ring) = MappedMem::map_fd(shm_fd.as_raw_fd(), mem::size_of::<LasapiShmRing>(), true, 0)
     else {
         dbg_emit_dgram(
-            LWASAPI_DBG_WASAPI,
-            salsa_wire::c_abi::LWASAPI_DBG_ERR,
+            LASAPI_DBG_LASAPI,
+            salsa_wire::c_abi::LASAPI_DBG_ERR,
             resp.session_id,
             0,
             0,
             E_OUTOFMEMORY,
-            "WASAPI_INIT_FAIL",
+            "LASAPI_INIT_FAIL",
             &cname,
             "mmap shm ring failed",
         );
         return E_OUTOFMEMORY;
     };
 
-    let ring_hdr = ring.as_ptr().cast::<LwasapiShmRing>();
+    let ring_hdr = ring.as_ptr().cast::<LasapiShmRing>();
     let (ring_magic, ring_ch, ring_buf_frames) = unsafe {
         (
             ptr::addr_of!((*ring_hdr).magic).read(),
@@ -426,20 +426,20 @@ pub unsafe extern "C" fn IAudioClient_Initialize(
             ptr::addr_of!((*ring_hdr).buffer_frames).read(),
         )
     };
-    if ring_magic != LWASAPI_RING_MAGIC
+    if ring_magic != LASAPI_RING_MAGIC
         || ring_ch == 0
-        || ring_ch as usize > LWASAPI_MAX_CHANNELS
+        || ring_ch as usize > LASAPI_MAX_CHANNELS
         || ring_buf_frames == 0
-        || ring_buf_frames as usize > LWASAPI_RING_FRAMES
+        || ring_buf_frames as usize > LASAPI_RING_FRAMES
     {
         dbg_emit_dgram(
-            LWASAPI_DBG_WASAPI,
-            salsa_wire::c_abi::LWASAPI_DBG_ERR,
+            LASAPI_DBG_LASAPI,
+            salsa_wire::c_abi::LASAPI_DBG_ERR,
             resp.session_id,
             ring_ch as i32,
             ring_buf_frames as i32,
             E_FAIL,
-            "WASAPI_INIT_FAIL",
+            "LASAPI_INIT_FAIL",
             &cname,
             "shm ring header validation failed",
         );
@@ -471,13 +471,13 @@ pub unsafe extern "C" fn IAudioClient_Initialize(
     c.initialized = true;
 
     dbg_emit_dgram(
-        LWASAPI_DBG_WASAPI,
-        LWASAPI_DBG_INFO,
+        LASAPI_DBG_LASAPI,
+        LASAPI_DBG_INFO,
         resp.session_id,
         resp.actual_sample_rate as i32,
         resp.actual_period_frames as i32,
         S_OK,
-        "WASAPI_INIT",
+        "LASAPI_INIT",
         &cname,
         &format!(
             "rate={} ch={} buf={} per={} flags=0x{:x} mode={}",
@@ -595,13 +595,13 @@ pub unsafe extern "C" fn IAudioClient_Start(client: *mut IAudioClient) -> HRESUL
     let r = unsafe { &*r_ptr };
     r.active.store(1, Ordering::Release);
     dbg_emit_dgram(
-        LWASAPI_DBG_WASAPI,
-        LWASAPI_DBG_INFO,
+        LASAPI_DBG_LASAPI,
+        LASAPI_DBG_INFO,
         c.session_id,
         0,
         0,
         S_OK,
-        "WASAPI_START",
+        "LASAPI_START",
         cbuf_to_str(&c.client_name),
         "stream active=1",
     );
@@ -624,13 +624,13 @@ pub unsafe extern "C" fn IAudioClient_Stop(client: *mut IAudioClient) -> HRESULT
     let r = unsafe { &*r_ptr };
     r.active.store(0, Ordering::Release);
     dbg_emit_dgram(
-        LWASAPI_DBG_WASAPI,
-        LWASAPI_DBG_INFO,
+        LASAPI_DBG_LASAPI,
+        LASAPI_DBG_INFO,
         c.session_id,
         0,
         0,
         S_OK,
-        "WASAPI_STOP",
+        "LASAPI_STOP",
         cbuf_to_str(&c.client_name),
         "stream active=0",
     );
@@ -655,13 +655,13 @@ pub unsafe extern "C" fn IAudioClient_Reset(client: *mut IAudioClient) -> HRESUL
         let cw = r.cap_write_frame.load(Ordering::Acquire);
         r.cap_read_frame.store(cw, Ordering::Release);
         dbg_emit_dgram(
-            LWASAPI_DBG_WASAPI,
-            LWASAPI_DBG_TRACE,
+            LASAPI_DBG_LASAPI,
+            LASAPI_DBG_TRACE,
             c.session_id,
             0,
             0,
             S_OK,
-            "WASAPI_RESET",
+            "LASAPI_RESET",
             cbuf_to_str(&c.client_name),
             &format!("cap_read_frame=cap_write_frame={cw}"),
         );
@@ -669,13 +669,13 @@ pub unsafe extern "C" fn IAudioClient_Reset(client: *mut IAudioClient) -> HRESUL
         let rd = r.read_frame.load(Ordering::Acquire);
         r.write_frame.store(rd, Ordering::Release);
         dbg_emit_dgram(
-            LWASAPI_DBG_WASAPI,
-            LWASAPI_DBG_TRACE,
+            LASAPI_DBG_LASAPI,
+            LASAPI_DBG_TRACE,
             c.session_id,
             0,
             0,
             S_OK,
-            "WASAPI_RESET",
+            "LASAPI_RESET",
             cbuf_to_str(&c.client_name),
             &format!("write_frame=read_frame={rd}"),
         );
@@ -753,8 +753,8 @@ pub unsafe extern "C" fn IAudioRenderClient_ReleaseBuffer(
     let pcm_base = unsafe { ptr::addr_of_mut!((*r_ptr).pcm_data.0) }.cast::<f32>();
 
     if total_frames > 0 {
-        let start = (w as usize) & LWASAPI_RING_MASK;
-        let first = total_frames.min(LWASAPI_RING_FRAMES - start);
+        let start = (w as usize) & LASAPI_RING_MASK;
+        let first = total_frames.min(LASAPI_RING_FRAMES - start);
         let second = total_frames - first;
         if (dwFlags & AUDCLNT_BUFFERFLAGS_SILENT) != 0 {
             unsafe {
@@ -823,14 +823,14 @@ pub unsafe extern "C" fn IAudioRenderClient_WriteFrames(
     client: *mut IAudioClient,
     src: *const c_void,
     frames: u32,
-    src_fmt: lwasapi_sample_format_t,
+    src_fmt: lasapi_sample_format_t,
 ) -> HRESULT {
     if client.is_null() || src.is_null() {
         return E_INVALIDARG;
     }
-    if src_fmt != LWASAPI_FMT_FLOAT32
-        && src_fmt != LWASAPI_FMT_S16_LE
-        && src_fmt != LWASAPI_FMT_S32_LE
+    if src_fmt != LASAPI_FMT_FLOAT32
+        && src_fmt != LASAPI_FMT_S16_LE
+        && src_fmt != LASAPI_FMT_S32_LE
     {
         return E_INVALIDARG;
     }
@@ -882,19 +882,19 @@ pub unsafe extern "C" fn IAudioRenderClient_WriteFrames(
 
         let samples = (chunk as usize) * (ch as usize);
         let dst_slice = unsafe { slice::from_raw_parts_mut(dst, samples) };
-        if src_fmt == LWASAPI_FMT_FLOAT32 {
+        if src_fmt == LASAPI_FMT_FLOAT32 {
             unsafe {
                 ptr::copy_nonoverlapping(byte_ptr.cast::<f32>(), dst, samples);
                 byte_ptr = byte_ptr.add(samples * mem::size_of::<f32>());
             }
-        } else if src_fmt == LWASAPI_FMT_S16_LE {
+        } else if src_fmt == LASAPI_FMT_S16_LE {
             let s16 = byte_ptr.cast::<i16>();
             for (i, out) in dst_slice.iter_mut().enumerate() {
                 let v = unsafe { ptr::read_unaligned(s16.add(i)) };
                 *out = f32::from(v) / 32768.0;
             }
             byte_ptr = unsafe { byte_ptr.add(samples * mem::size_of::<i16>()) };
-        } else if src_fmt == LWASAPI_FMT_S32_LE {
+        } else if src_fmt == LASAPI_FMT_S32_LE {
             let s32 = byte_ptr.cast::<i32>();
             for (i, out) in dst_slice.iter_mut().enumerate() {
                 let v = unsafe { ptr::read_unaligned(s32.add(i)) };
@@ -937,14 +937,14 @@ pub unsafe extern "C" fn IAudioCaptureClient_ReadFrames(
     client: *mut IAudioClient,
     dst: *mut c_void,
     frames: u32,
-    dst_fmt: lwasapi_sample_format_t,
+    dst_fmt: lasapi_sample_format_t,
 ) -> HRESULT {
     if client.is_null() || dst.is_null() {
         return E_INVALIDARG;
     }
-    if dst_fmt != LWASAPI_FMT_FLOAT32
-        && dst_fmt != LWASAPI_FMT_S16_LE
-        && dst_fmt != LWASAPI_FMT_S32_LE
+    if dst_fmt != LASAPI_FMT_FLOAT32
+        && dst_fmt != LASAPI_FMT_S16_LE
+        && dst_fmt != LASAPI_FMT_S32_LE
     {
         return E_INVALIDARG;
     }
@@ -958,8 +958,8 @@ pub unsafe extern "C" fn IAudioCaptureClient_ReadFrames(
     }
 
     let r = unsafe { &*r_ptr };
-    let ch = c.channels.min(LWASAPI_MAX_CHANNELS);
-    let bps = if dst_fmt == LWASAPI_FMT_S16_LE { 2usize } else { 4usize };
+    let ch = c.channels.min(LASAPI_MAX_CHANNELS);
+    let bps = if dst_fmt == LASAPI_FMT_S16_LE { 2usize } else { 4usize };
     if (frames as usize)
         .checked_mul(ch)
         .and_then(|s| s.checked_mul(bps))
@@ -978,8 +978,8 @@ pub unsafe extern "C" fn IAudioCaptureClient_ReadFrames(
     }
 
     let mut avail = cw.saturating_sub(cr);
-    if avail > LWASAPI_RING_FRAMES as u64 {
-        cr = cw - (LWASAPI_RING_FRAMES as u64 / 2);
+    if avail > LASAPI_RING_FRAMES as u64 {
+        cr = cw - (LASAPI_RING_FRAMES as u64 / 2);
         avail = cw - cr;
     }
 
@@ -991,7 +991,7 @@ pub unsafe extern "C" fn IAudioCaptureClient_ReadFrames(
     };
 
     for f in 0..to_copy as usize {
-        let idx = (((cr + f as u64) as usize) & LWASAPI_RING_MASK) * 2;
+        let idx = (((cr + f as u64) as usize) & LASAPI_RING_MASK) * 2;
         for ch_i in 0..ch {
             let raw_s = r.cap_pcm_data.0[idx + (ch_i & 1)] * vol;
             let sample = if raw_s.is_finite() {
@@ -1000,9 +1000,9 @@ pub unsafe extern "C" fn IAudioCaptureClient_ReadFrames(
                 0.0
             };
             let out_idx = f * ch + ch_i;
-            if dst_fmt == LWASAPI_FMT_FLOAT32 {
+            if dst_fmt == LASAPI_FMT_FLOAT32 {
                 unsafe { ptr::write_unaligned(out_ptr.cast::<f32>().add(out_idx), sample) };
-            } else if dst_fmt == LWASAPI_FMT_S16_LE {
+            } else if dst_fmt == LASAPI_FMT_S16_LE {
                 unsafe {
                     ptr::write_unaligned(
                         out_ptr.cast::<i16>().add(out_idx),
@@ -1080,7 +1080,7 @@ pub unsafe extern "C" fn ISimpleAudioVolume_GetMasterVolume(
 #[no_mangle]
 pub unsafe extern "C" fn IAudioClient_ReadMidiEvents(
     client: *mut IAudioClient,
-    events_out: *mut LwasapiMidiEvent,
+    events_out: *mut LasapiMidiEvent,
     max_events: u32,
 ) -> u32 {
     if client.is_null() || events_out.is_null() || max_events == 0 {
@@ -1099,13 +1099,13 @@ pub unsafe extern "C" fn IAudioClient_ReadMidiEvents(
     let mut rd = r.midi_read_idx.load(Ordering::Relaxed);
     if rd > w {
         rd = w;
-    } else if w - rd > LWASAPI_MIDI_RING_EVENTS as u64 {
-        rd = w - LWASAPI_MIDI_RING_EVENTS as u64;
+    } else if w - rd > LASAPI_MIDI_RING_EVENTS as u64 {
+        rd = w - LASAPI_MIDI_RING_EVENTS as u64;
     }
 
     let mut count = 0u32;
     while rd < w && count < max_events {
-        let ev = r.midi_ring[(rd as usize) & LWASAPI_MIDI_RING_MASK];
+        let ev = r.midi_ring[(rd as usize) & LASAPI_MIDI_RING_MASK];
         unsafe { *events_out.add(count as usize) = ev };
         count += 1;
         rd += 1;
@@ -1119,7 +1119,7 @@ pub unsafe extern "C" fn IAudioClient_ReadMidiEvents(
 #[no_mangle]
 pub unsafe extern "C" fn IAudioClient_WriteMidiEvent(
     client: *mut IAudioClient,
-    ev: *const LwasapiMidiEvent,
+    ev: *const LasapiMidiEvent,
 ) -> HRESULT {
     if ev.is_null() {
         return E_INVALIDARG;
@@ -1131,8 +1131,8 @@ pub unsafe extern "C" fn IAudioClient_WriteMidiEvent(
     let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
         return E_FAIL;
     };
-    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LWASAPI_CMD_INJECT_MIDI;
+    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
+    req.cmd = LASAPI_CMD_INJECT_MIDI;
     req.midi_ev = ev_val;
     if !client.is_null() {
         let c = unsafe { &*client };
@@ -1143,7 +1143,7 @@ pub unsafe extern "C" fn IAudioClient_WriteMidiEvent(
     if send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) }).is_err() {
         return E_FAIL;
     }
-    let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
     if !recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
         return E_FAIL;
     }
@@ -1158,13 +1158,13 @@ pub unsafe extern "C" fn IAudioClient_Release(client: *mut IAudioClient) -> HRES
     let c = unsafe { Box::from_raw(client) };
     if c.initialized {
         dbg_emit_dgram(
-            LWASAPI_DBG_WASAPI,
-            LWASAPI_DBG_INFO,
+            LASAPI_DBG_LASAPI,
+            LASAPI_DBG_INFO,
             c.session_id,
             0,
             0,
             S_OK,
-            "WASAPI_RELEASE",
+            "LASAPI_RELEASE",
             cbuf_to_str(&c.client_name),
             "closing session shm/eventfd",
         );
@@ -1178,20 +1178,20 @@ pub unsafe extern "C" fn IAudioClient_Release(client: *mut IAudioClient) -> HRES
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_GetEngineStatus(out_status: *mut LwasapiEngineStatus) -> HRESULT {
+pub unsafe extern "C" fn LASAPI_GetEngineStatus(out_status: *mut LasapiEngineStatus) -> HRESULT {
     if out_status.is_null() {
         return E_INVALIDARG;
     }
     let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
         return E_FAIL;
     };
-    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LWASAPI_CMD_GET_STATUS;
+    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
+    req.cmd = LASAPI_CMD_GET_STATUS;
     if send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) }).is_err() {
         return E_FAIL;
     }
     let out_bytes = unsafe {
-        slice::from_raw_parts_mut(out_status.cast::<u8>(), mem::size_of::<LwasapiEngineStatus>())
+        slice::from_raw_parts_mut(out_status.cast::<u8>(), mem::size_of::<LasapiEngineStatus>())
     };
     if recv_waitall(sock.as_raw_fd(), out_bytes) {
         S_OK
@@ -1208,8 +1208,8 @@ fn send_engine_config_ipc(
 ) -> HRESULT {
     let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
         dbg_emit_dgram(
-            LWASAPI_DBG_SHIM,
-            salsa_wire::c_abi::LWASAPI_DBG_ERR,
+            LASAPI_DBG_SHIM,
+            salsa_wire::c_abi::LASAPI_DBG_ERR,
             0,
             sample_rate as i32,
             period_frames as i32,
@@ -1221,15 +1221,15 @@ fn send_engine_config_ipc(
         return E_FAIL;
     };
 
-    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LWASAPI_CMD_SET_ENGINE_CONFIG;
+    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
+    req.cmd = LASAPI_CMD_SET_ENGINE_CONFIG;
     req.sample_rate = sample_rate;
     req.requested_period_frames = period_frames;
     req.format = format_bits;
     req.stream_flags = stream_flags;
     let _ = send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) });
 
-    let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
     let hr = if recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
         resp.hr
     } else {
@@ -1237,17 +1237,17 @@ fn send_engine_config_ipc(
     };
     let pname = get_process_comm();
     dbg_emit_dgram(
-        LWASAPI_DBG_SHIM,
+        LASAPI_DBG_SHIM,
         if hr == S_OK {
-            LWASAPI_DBG_INFO
+            LASAPI_DBG_INFO
         } else {
-            LWASAPI_DBG_WARN
+            LASAPI_DBG_WARN
         },
         0,
         sample_rate as i32,
         period_frames as i32,
         hr,
-        if stream_flags == LWASAPI_CFG_FLAG_CAPTURE_RATE {
+        if stream_flags == LASAPI_CFG_FLAG_CAPTURE_RATE {
             "CTL_SET_CAP_CFG"
         } else {
             "CTL_SET_CFG"
@@ -1262,7 +1262,7 @@ fn send_engine_config_ipc(
 }
 
 #[no_mangle]
-pub extern "C" fn LWASAPI_SetEngineConfig(
+pub extern "C" fn LASAPI_SetEngineConfig(
     sample_rate: u32,
     period_frames: u32,
     format_bits: u32,
@@ -1271,12 +1271,12 @@ pub extern "C" fn LWASAPI_SetEngineConfig(
 }
 
 #[no_mangle]
-pub extern "C" fn LWASAPI_SetCaptureSampleRate(sample_rate: u32) -> HRESULT {
-    send_engine_config_ipc(sample_rate, 0, 0, LWASAPI_CFG_FLAG_CAPTURE_RATE)
+pub extern "C" fn LASAPI_SetCaptureSampleRate(sample_rate: u32) -> HRESULT {
+    send_engine_config_ipc(sample_rate, 0, 0, LASAPI_CFG_FLAG_CAPTURE_RATE)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_SetDynamicEQ(eq_cfg: *const LwasapiEqConfig) -> HRESULT {
+pub unsafe extern "C" fn LASAPI_SetDynamicEQ(eq_cfg: *const LasapiEqConfig) -> HRESULT {
     if eq_cfg.is_null() {
         return E_INVALIDARG;
     }
@@ -1284,12 +1284,12 @@ pub unsafe extern "C" fn LWASAPI_SetDynamicEQ(eq_cfg: *const LwasapiEqConfig) ->
         return E_FAIL;
     };
     let eq = unsafe { *eq_cfg };
-    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LWASAPI_CMD_SET_EQ;
+    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
+    req.cmd = LASAPI_CMD_SET_EQ;
     req.eq_cfg = eq;
     let _ = send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) });
 
-    let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
     let hr = if recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
         resp.hr
     } else {
@@ -1298,8 +1298,8 @@ pub unsafe extern "C" fn LWASAPI_SetDynamicEQ(eq_cfg: *const LwasapiEqConfig) ->
     let pname = get_process_comm();
     let preset = cbuf_to_str(&eq.preset_name);
     dbg_emit_dgram(
-        LWASAPI_DBG_SHIM,
-        LWASAPI_DBG_INFO,
+        LASAPI_DBG_SHIM,
+        LASAPI_DBG_INFO,
         0,
         eq.enabled as i32,
         eq.dynamic_mode as i32,
@@ -1320,20 +1320,20 @@ pub unsafe extern "C" fn LWASAPI_SetDynamicEQ(eq_cfg: *const LwasapiEqConfig) ->
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_ListDevices(out_list: *mut LwasapiDeviceList) -> HRESULT {
+pub unsafe extern "C" fn LASAPI_ListDevices(out_list: *mut LasapiDeviceList) -> HRESULT {
     if out_list.is_null() {
         return E_INVALIDARG;
     }
     let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
         return E_FAIL;
     };
-    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LWASAPI_CMD_LIST_DEVICES;
+    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
+    req.cmd = LASAPI_CMD_LIST_DEVICES;
     if send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) }).is_err() {
         return E_FAIL;
     }
     let out_bytes = unsafe {
-        slice::from_raw_parts_mut(out_list.cast::<u8>(), mem::size_of::<LwasapiDeviceList>())
+        slice::from_raw_parts_mut(out_list.cast::<u8>(), mem::size_of::<LasapiDeviceList>())
     };
     if recv_waitall(sock.as_raw_fd(), out_bytes) {
         S_OK
@@ -1343,7 +1343,7 @@ pub unsafe extern "C" fn LWASAPI_ListDevices(out_list: *mut LwasapiDeviceList) -
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_SetDevices(
+pub unsafe extern "C" fn LASAPI_SetDevices(
     playback_id: *const c_char,
     capture_id: *const c_char,
 ) -> HRESULT {
@@ -1352,8 +1352,8 @@ pub unsafe extern "C" fn LWASAPI_SetDevices(
     };
     let pb = unsafe { cstr_to_str(playback_id) };
     let cap = unsafe { cstr_to_str(capture_id) };
-    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LWASAPI_CMD_SET_DEVICES;
+    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
+    req.cmd = LASAPI_CMD_SET_DEVICES;
     if !pb.is_empty() {
         copy_str_to_c(&mut req.target_device, pb);
     }
@@ -1362,18 +1362,18 @@ pub unsafe extern "C" fn LWASAPI_SetDevices(
     }
     let _ = send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) });
 
-    let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
     let hr = if recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
         resp.hr
     } else {
         E_FAIL
     };
     dbg_emit_dgram(
-        LWASAPI_DBG_SHIM,
+        LASAPI_DBG_SHIM,
         if hr == S_OK {
-            LWASAPI_DBG_INFO
+            LASAPI_DBG_INFO
         } else {
-            salsa_wire::c_abi::LWASAPI_DBG_ERR
+            salsa_wire::c_abi::LASAPI_DBG_ERR
         },
         0,
         0,
@@ -1391,7 +1391,7 @@ pub unsafe extern "C" fn LWASAPI_SetDevices(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_SetSessionControl(
+pub unsafe extern "C" fn LASAPI_SetSessionControl(
     session_id: u32,
     vol_pct: i32,
     mute_mode: i32,
@@ -1400,8 +1400,8 @@ pub unsafe extern "C" fn LWASAPI_SetSessionControl(
     let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
         return E_FAIL;
     };
-    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LWASAPI_CMD_SET_SESSION_CONTROL;
+    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
+    req.cmd = LASAPI_CMD_SET_SESSION_CONTROL;
     req.target_session_id = session_id;
     if vol_pct >= 0 {
         let clamped = vol_pct.min(150) as u32;
@@ -1420,7 +1420,7 @@ pub unsafe extern "C" fn LWASAPI_SetSessionControl(
     }
     let _ = send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) });
 
-    let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
     if recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
         resp.hr
     } else {
@@ -1432,7 +1432,7 @@ fn send_ext_ipc(cmd: u32, payload: &[u8], target_dev: &str, stream_flags: u32) -
     let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
         return E_FAIL;
     };
-    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
+    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
     req.cmd = cmd;
     req.requested_buffer_frames = payload.len() as u32;
     req.stream_flags = stream_flags;
@@ -1445,7 +1445,7 @@ fn send_ext_ipc(cmd: u32, payload: &[u8], target_dev: &str, stream_flags: u32) -
     if !payload.is_empty() && send_all_nosignal(sock.as_raw_fd(), payload).is_err() {
         return E_FAIL;
     }
-    let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
     if recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
         resp.hr
     } else {
@@ -1454,27 +1454,27 @@ fn send_ext_ipc(cmd: u32, payload: &[u8], target_dev: &str, stream_flags: u32) -
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_SetParametricEQ(
-    eq_cfg: *const LwasapiEqConfig,
-    param_ext: *const LwasapiParamEqExt,
+pub unsafe extern "C" fn LASAPI_SetParametricEQ(
+    eq_cfg: *const LasapiEqConfig,
+    param_ext: *const LasapiParamEqExt,
 ) -> HRESULT {
     if eq_cfg.is_null() || param_ext.is_null() {
         return E_INVALIDARG;
     }
-    let pay = LwasapiParamEqPayload {
+    let pay = LasapiParamEqPayload {
         eq: unsafe { *eq_cfg },
         ext: unsafe { *param_ext },
     };
-    send_ext_ipc(LWASAPI_CMD_SET_PARAM_EQ, unsafe { as_bytes(&pay) }, "", 0)
+    send_ext_ipc(LASAPI_CMD_SET_PARAM_EQ, unsafe { as_bytes(&pay) }, "", 0)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_SetMicAPO(mic_cfg: *const LwasapiMicApoCfg) -> HRESULT {
+pub unsafe extern "C" fn LASAPI_SetMicAPO(mic_cfg: *const LasapiMicApoCfg) -> HRESULT {
     if mic_cfg.is_null() {
         return E_INVALIDARG;
     }
     send_ext_ipc(
-        LWASAPI_CMD_SET_MIC_APO,
+        LASAPI_CMD_SET_MIC_APO,
         unsafe { as_bytes(&*mic_cfg) },
         "",
         0,
@@ -1482,12 +1482,12 @@ pub unsafe extern "C" fn LWASAPI_SetMicAPO(mic_cfg: *const LwasapiMicApoCfg) -> 
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_SetBtCodecConfig(bt_cfg: *const LwasapiBtCodecCfg) -> HRESULT {
+pub unsafe extern "C" fn LASAPI_SetBtCodecConfig(bt_cfg: *const LasapiBtCodecCfg) -> HRESULT {
     if bt_cfg.is_null() {
         return E_INVALIDARG;
     }
     send_ext_ipc(
-        LWASAPI_CMD_SET_BT_CODEC,
+        LASAPI_CMD_SET_BT_CODEC,
         unsafe { as_bytes(&*bt_cfg) },
         "",
         0,
@@ -1495,12 +1495,12 @@ pub unsafe extern "C" fn LWASAPI_SetBtCodecConfig(bt_cfg: *const LwasapiBtCodecC
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_SetHwAnalog(hw_cfg: *const LwasapiHwAnalogCfg) -> HRESULT {
+pub unsafe extern "C" fn LASAPI_SetHwAnalog(hw_cfg: *const LasapiHwAnalogCfg) -> HRESULT {
     if hw_cfg.is_null() {
         return E_INVALIDARG;
     }
     send_ext_ipc(
-        LWASAPI_CMD_SET_HW_ANALOG,
+        LASAPI_CMD_SET_HW_ANALOG,
         unsafe { as_bytes(&*hw_cfg) },
         "",
         0,
@@ -1508,7 +1508,7 @@ pub unsafe extern "C" fn LWASAPI_SetHwAnalog(hw_cfg: *const LwasapiHwAnalogCfg) 
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_BtConnectionCtl(
+pub unsafe extern "C" fn LASAPI_BtConnectionCtl(
     action: u32,
     mac_or_empty: *const c_char,
     out_flags: *mut u32,
@@ -1516,8 +1516,8 @@ pub unsafe extern "C" fn LWASAPI_BtConnectionCtl(
     let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
         return E_FAIL;
     };
-    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LWASAPI_CMD_BT_CONNECTION;
+    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
+    req.cmd = LASAPI_CMD_BT_CONNECTION;
     req.requested_period_frames = action;
     let mac = unsafe { cstr_to_str(mac_or_empty) };
     if !mac.is_empty() {
@@ -1526,7 +1526,7 @@ pub unsafe extern "C" fn LWASAPI_BtConnectionCtl(
     if send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) }).is_err() {
         return E_FAIL;
     }
-    let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
     if recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
         if !out_flags.is_null() {
             unsafe { *out_flags = resp.session_id };
@@ -1538,11 +1538,11 @@ pub unsafe extern "C" fn LWASAPI_BtConnectionCtl(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_SaveConfig() -> HRESULT {
-    send_ext_ipc(LWASAPI_CMD_SAVE_CONFIG, &[], "", 0)
+pub unsafe extern "C" fn LASAPI_SaveConfig() -> HRESULT {
+    send_ext_ipc(LASAPI_CMD_SAVE_CONFIG, &[], "", 0)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn LWASAPI_ReloadConfig() -> HRESULT {
-    send_ext_ipc(LWASAPI_CMD_RELOAD_CONFIG, &[], "", 0)
+pub unsafe extern "C" fn LASAPI_ReloadConfig() -> HRESULT {
+    send_ext_ipc(LASAPI_CMD_RELOAD_CONFIG, &[], "", 0)
 }

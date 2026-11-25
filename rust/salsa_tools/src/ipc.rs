@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -26,38 +26,38 @@ use crate::host::state_dir;
 use crate::json::JsonValue;
 
 pub use salsa_wire::c_abi::{
-    LwasapiBtCodecCfg, LwasapiDeviceEntry, LwasapiDeviceList, LwasapiEngineStatus, LwasapiEqConfig,
-    LwasapiHwAnalogCfg, LwasapiHwAnalogInfo, LwasapiIpcReq, LwasapiIpcResp, LwasapiMicApoCfg,
-    LwasapiParamEqExt, LwasapiSessionInfo, LWASAPI_BT_CAP_AAC, LWASAPI_BT_CAP_APTX,
-    LWASAPI_BT_CAP_APTX_HD, LWASAPI_BT_CAP_LDAC, LWASAPI_BT_CAP_SBC, LWASAPI_BT_PREF_AAC,
-    LWASAPI_BT_PREF_APTX, LWASAPI_BT_PREF_APTX_HD, LWASAPI_BT_PREF_AUTO, LWASAPI_BT_PREF_LDAC,
-    LWASAPI_BT_PREF_SBC, LWASAPI_CFG_FLAG_CAPTURE_RATE, LWASAPI_CMD_SET_VOLUME, LWASAPI_EQ_BANDS,
-    LWASAPI_FILTER_HIGH_SHELF, LWASAPI_FILTER_LOW_SHELF, LWASAPI_FILTER_PEAK, LWASAPI_MAX_DEVICES,
-    LWASAPI_MAX_SESSIONS,
+    LasapiBtCodecCfg, LasapiDeviceEntry, LasapiDeviceList, LasapiEngineStatus, LasapiEqConfig,
+    LasapiHwAnalogCfg, LasapiHwAnalogInfo, LasapiIpcReq, LasapiIpcResp, LasapiMicApoCfg,
+    LasapiParamEqExt, LasapiSessionInfo, LASAPI_BT_CAP_AAC, LASAPI_BT_CAP_APTX,
+    LASAPI_BT_CAP_APTX_HD, LASAPI_BT_CAP_LDAC, LASAPI_BT_CAP_SBC, LASAPI_BT_PREF_AAC,
+    LASAPI_BT_PREF_APTX, LASAPI_BT_PREF_APTX_HD, LASAPI_BT_PREF_AUTO, LASAPI_BT_PREF_LDAC,
+    LASAPI_BT_PREF_SBC, LASAPI_CFG_FLAG_CAPTURE_RATE, LASAPI_CMD_SET_VOLUME, LASAPI_EQ_BANDS,
+    LASAPI_FILTER_HIGH_SHELF, LASAPI_FILTER_LOW_SHELF, LASAPI_FILTER_PEAK, LASAPI_MAX_DEVICES,
+    LASAPI_MAX_SESSIONS,
 };
 
-pub const LWASAPI_LDAC_MODE_ABR: u32 = 0;
-pub const LWASAPI_LDAC_MODE_HQ_990: u32 = 1;
-pub const LWASAPI_LDAC_MODE_SQ_660: u32 = 2;
-pub const LWASAPI_LDAC_MODE_MQ_330: u32 = 3;
+pub const LASAPI_LDAC_MODE_ABR: u32 = 0;
+pub const LASAPI_LDAC_MODE_HQ_990: u32 = 1;
+pub const LASAPI_LDAC_MODE_SQ_660: u32 = 2;
+pub const LASAPI_LDAC_MODE_MQ_330: u32 = 3;
 
-pub const LWASAPI_HW_AMP_AUTO: u32 = 0;
-pub const LWASAPI_HW_AMP_LOW: u32 = 1;
-pub const LWASAPI_HW_AMP_MED: u32 = 2;
-pub const LWASAPI_HW_AMP_HIGH: u32 = 3;
+pub const LASAPI_HW_AMP_AUTO: u32 = 0;
+pub const LASAPI_HW_AMP_LOW: u32 = 1;
+pub const LASAPI_HW_AMP_MED: u32 = 2;
+pub const LASAPI_HW_AMP_HIGH: u32 = 3;
 
-pub const LWASAPI_HW_ROUTE_AUTO: u32 = 0;
-pub const LWASAPI_HW_ROUTE_HP: u32 = 1;
-pub const LWASAPI_HW_ROUTE_SPK: u32 = 2;
+pub const LASAPI_HW_ROUTE_AUTO: u32 = 0;
+pub const LASAPI_HW_ROUTE_HP: u32 = 1;
+pub const LASAPI_HW_ROUTE_SPK: u32 = 2;
 
-pub const LWASAPI_HW_CAP_DAC_VOL: u32 = 1 << 0;
-pub const LWASAPI_HW_CAP_HP_AMP: u32 = 1 << 1;
-pub const LWASAPI_HW_CAP_OUT_ROUTE: u32 = 1 << 2;
-pub const LWASAPI_HW_CAP_MIC_BOOST: u32 = 1 << 3;
-pub const LWASAPI_HW_CAP_LINE_AIR: u32 = 1 << 4;
-pub const LWASAPI_HW_CAP_HID_BOX: u32 = 1 << 5;
-pub const LWASAPI_HW_CAP_STRIX_ARCH: u32 = 1 << 6;
-pub const LWASAPI_HW_CAP_HIGH_RES: u32 = 1 << 7;
+pub const LASAPI_HW_CAP_DAC_VOL: u32 = 1 << 0;
+pub const LASAPI_HW_CAP_HP_AMP: u32 = 1 << 1;
+pub const LASAPI_HW_CAP_OUT_ROUTE: u32 = 1 << 2;
+pub const LASAPI_HW_CAP_MIC_BOOST: u32 = 1 << 3;
+pub const LASAPI_HW_CAP_LINE_AIR: u32 = 1 << 4;
+pub const LASAPI_HW_CAP_HID_BOX: u32 = 1 << 5;
+pub const LASAPI_HW_CAP_STRIX_ARCH: u32 = 1 << 6;
+pub const LASAPI_HW_CAP_HIGH_RES: u32 = 1 << 7;
 
 pub const DEFAULT_BAND_FREQS_HZ: [f32; 10] = [
     31.25, 62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
@@ -213,59 +213,59 @@ pub fn normalize_vol_step_pct(val: &str) -> u32 {
     DEFAULT_VOL_STEP_PCT
 }
 
-pub fn get_engine_status() -> Option<LwasapiEngineStatus> {
-    let mut st: LwasapiEngineStatus = unsafe { mem::zeroed() };
-    let hr = unsafe { lwasapi::LWASAPI_GetEngineStatus(&raw mut st) };
+pub fn get_engine_status() -> Option<LasapiEngineStatus> {
+    let mut st: LasapiEngineStatus = unsafe { mem::zeroed() };
+    let hr = unsafe { lasapi::LASAPI_GetEngineStatus(&raw mut st) };
     (hr == 0).then_some(st)
 }
 
 pub fn set_engine_config(sample_rate: u32, period_frames: u32, format_bits: u32) -> i32 {
-    lwasapi::LWASAPI_SetEngineConfig(sample_rate, period_frames, format_bits)
+    lasapi::LASAPI_SetEngineConfig(sample_rate, period_frames, format_bits)
 }
 
 pub fn set_capture_sample_rate(sample_rate: u32) -> i32 {
-    lwasapi::LWASAPI_SetCaptureSampleRate(sample_rate)
+    lasapi::LASAPI_SetCaptureSampleRate(sample_rate)
 }
 
-pub fn set_dynamic_eq(eq: &LwasapiEqConfig) -> i32 {
-    unsafe { lwasapi::LWASAPI_SetDynamicEQ(eq) }
+pub fn set_dynamic_eq(eq: &LasapiEqConfig) -> i32 {
+    unsafe { lasapi::LASAPI_SetDynamicEQ(eq) }
 }
 
-pub fn set_parametric_eq(eq: &LwasapiEqConfig, ext: &LwasapiParamEqExt) -> i32 {
-    unsafe { lwasapi::LWASAPI_SetParametricEQ(eq, ext) }
+pub fn set_parametric_eq(eq: &LasapiEqConfig, ext: &LasapiParamEqExt) -> i32 {
+    unsafe { lasapi::LASAPI_SetParametricEQ(eq, ext) }
 }
 
-pub fn set_mic_apo(cfg: &LwasapiMicApoCfg) -> i32 {
-    unsafe { lwasapi::LWASAPI_SetMicAPO(cfg) }
+pub fn set_mic_apo(cfg: &LasapiMicApoCfg) -> i32 {
+    unsafe { lasapi::LASAPI_SetMicAPO(cfg) }
 }
 
-pub fn set_bt_codec_config(cfg: &LwasapiBtCodecCfg) -> i32 {
-    unsafe { lwasapi::LWASAPI_SetBtCodecConfig(cfg) }
+pub fn set_bt_codec_config(cfg: &LasapiBtCodecCfg) -> i32 {
+    unsafe { lasapi::LASAPI_SetBtCodecConfig(cfg) }
 }
 
-pub fn set_hw_analog(cfg: &LwasapiHwAnalogCfg) -> i32 {
-    unsafe { lwasapi::LWASAPI_SetHwAnalog(cfg) }
+pub fn set_hw_analog(cfg: &LasapiHwAnalogCfg) -> i32 {
+    unsafe { lasapi::LASAPI_SetHwAnalog(cfg) }
 }
 
 pub fn save_config_now() -> i32 {
-    unsafe { lwasapi::LWASAPI_SaveConfig() }
+    unsafe { lasapi::LASAPI_SaveConfig() }
 }
 
 pub fn reload_config_now() -> i32 {
-    unsafe { lwasapi::LWASAPI_ReloadConfig() }
+    unsafe { lasapi::LASAPI_ReloadConfig() }
 }
 
 pub fn bt_connection_ctl(action: u32, mac: Option<&str>) -> (i32, u32) {
     let c_mac = mac.and_then(|s| CString::new(s).ok());
     let mac_ptr = c_mac.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
     let mut flags = 0u32;
-    let hr = unsafe { lwasapi::LWASAPI_BtConnectionCtl(action, mac_ptr, &raw mut flags) };
+    let hr = unsafe { lasapi::LASAPI_BtConnectionCtl(action, mac_ptr, &raw mut flags) };
     (hr, flags)
 }
 
-pub fn list_devices() -> Option<LwasapiDeviceList> {
-    let mut list: LwasapiDeviceList = unsafe { mem::zeroed() };
-    let hr = unsafe { lwasapi::LWASAPI_ListDevices(&raw mut list) };
+pub fn list_devices() -> Option<LasapiDeviceList> {
+    let mut list: LasapiDeviceList = unsafe { mem::zeroed() };
+    let hr = unsafe { lasapi::LASAPI_ListDevices(&raw mut list) };
     (hr == 0).then_some(list)
 }
 
@@ -274,7 +274,7 @@ pub fn set_devices(playback_id: Option<&str>, capture_id: Option<&str>) -> i32 {
     let c_cap = capture_id.and_then(|s| CString::new(s).ok());
     let pb_ptr = c_pb.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
     let cap_ptr = c_cap.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
-    unsafe { lwasapi::LWASAPI_SetDevices(pb_ptr, cap_ptr) }
+    unsafe { lasapi::LASAPI_SetDevices(pb_ptr, cap_ptr) }
 }
 
 pub fn set_session_control(
@@ -285,7 +285,7 @@ pub fn set_session_control(
 ) -> i32 {
     let c_dev = target_device.and_then(|s| CString::new(s).ok());
     let dev_ptr: *const c_char = c_dev.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
-    unsafe { lwasapi::LWASAPI_SetSessionControl(session_id, volume_pct, muted, dev_ptr) }
+    unsafe { lasapi::LASAPI_SetSessionControl(session_id, volume_pct, muted, dev_ptr) }
 }
 
 static PROC_COMM_CACHE: OnceLock<String> = OnceLock::new();
@@ -301,8 +301,8 @@ fn cached_proc_comm() -> &'static str {
 }
 
 fn send_volume_cmd(target_id: u32, pct: i32, mute_mode: i32) -> bool {
-    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LWASAPI_CMD_SET_VOLUME;
+    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
+    req.cmd = LASAPI_CMD_SET_VOLUME;
     req.client_pid = std::process::id();
     let comm = cached_proc_comm();
     if !comm.is_empty() {
@@ -333,18 +333,18 @@ fn send_volume_cmd(target_id: u32, pct: i32, mute_mode: i32) -> bool {
     let _ = stream.set_write_timeout(Some(Duration::from_millis(250)));
     let req_bytes = unsafe {
         core::slice::from_raw_parts(
-            (&req as *const LwasapiIpcReq).cast::<u8>(),
-            mem::size_of::<LwasapiIpcReq>(),
+            (&req as *const LasapiIpcReq).cast::<u8>(),
+            mem::size_of::<LasapiIpcReq>(),
         )
     };
     if stream.write_all(req_bytes).is_err() {
         return false;
     }
-    let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
     let resp_bytes = unsafe {
         core::slice::from_raw_parts_mut(
-            (&mut resp as *mut LwasapiIpcResp).cast::<u8>(),
-            mem::size_of::<LwasapiIpcResp>(),
+            (&mut resp as *mut LasapiIpcResp).cast::<u8>(),
+            mem::size_of::<LasapiIpcResp>(),
         )
     };
     match stream.read_exact(resp_bytes) {
@@ -519,17 +519,17 @@ mod tests {
 
     #[test]
     fn abi_struct_sizes_and_offsets_match_c_and_python() {
-        assert_eq!(size_of::<LwasapiEqConfig>(), 136);
-        assert_eq!(size_of::<LwasapiDeviceEntry>(), 188);
-        assert_eq!(size_of::<LwasapiDeviceList>(), 6020);
-        assert_eq!(size_of::<LwasapiSessionInfo>(), 184);
-        assert_eq!(size_of::<LwasapiParamEqExt>(), 96);
-        assert_eq!(size_of::<LwasapiMicApoCfg>(), 48);
-        assert_eq!(size_of::<LwasapiBtCodecCfg>(), 100);
-        assert_eq!(size_of::<LwasapiHwAnalogCfg>(), 24);
-        assert_eq!(size_of::<LwasapiHwAnalogInfo>(), 248);
-        assert_eq!(size_of::<LwasapiEngineStatus>(), 7136);
-        assert_eq!(offset_of!(LwasapiEngineStatus, output_peak_l), 480);
+        assert_eq!(size_of::<LasapiEqConfig>(), 136);
+        assert_eq!(size_of::<LasapiDeviceEntry>(), 188);
+        assert_eq!(size_of::<LasapiDeviceList>(), 6020);
+        assert_eq!(size_of::<LasapiSessionInfo>(), 184);
+        assert_eq!(size_of::<LasapiParamEqExt>(), 96);
+        assert_eq!(size_of::<LasapiMicApoCfg>(), 48);
+        assert_eq!(size_of::<LasapiBtCodecCfg>(), 100);
+        assert_eq!(size_of::<LasapiHwAnalogCfg>(), 24);
+        assert_eq!(size_of::<LasapiHwAnalogInfo>(), 248);
+        assert_eq!(size_of::<LasapiEngineStatus>(), 7136);
+        assert_eq!(offset_of!(LasapiEngineStatus, output_peak_l), 480);
     }
 
     #[test]

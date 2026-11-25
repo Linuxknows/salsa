@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -10,11 +10,11 @@
 #![allow(clippy::missing_safety_doc)]
 
 use crate::c_abi::{
-    copy_str_to_c, ptr_to_opt_str, LwasapiDbgPwClient, LwasapiDbgPwLink, LwasapiDbgPwNode,
-    LwasapiDbgPwSnapshot, LwasapiPwBrokerOpts, LwasapiPwPreviewShm, LWASAPI_DBG_INFO,
-    LWASAPI_DBG_PW_VIDEO, LWASAPI_DBG_WARN, LWASAPI_DEBUG_MAX_PW_CLIENTS,
-    LWASAPI_DEBUG_MAX_PW_LINKS, LWASAPI_DEBUG_MAX_PW_NODES, LWASAPI_PW_PREVIEW_MAGIC,
-    LWASAPI_PW_PREVIEW_MAX_H, LWASAPI_PW_PREVIEW_MAX_W, LWASAPI_PW_PREVIEW_VERSION,
+    copy_str_to_c, ptr_to_opt_str, LasapiDbgPwClient, LasapiDbgPwLink, LasapiDbgPwNode,
+    LasapiDbgPwSnapshot, LasapiPwBrokerOpts, LasapiPwPreviewShm, LASAPI_DBG_INFO,
+    LASAPI_DBG_PW_VIDEO, LASAPI_DBG_WARN, LASAPI_DEBUG_MAX_PW_CLIENTS,
+    LASAPI_DEBUG_MAX_PW_LINKS, LASAPI_DEBUG_MAX_PW_NODES, LASAPI_PW_PREVIEW_MAGIC,
+    LASAPI_PW_PREVIEW_MAX_H, LASAPI_PW_PREVIEW_MAX_W, LASAPI_PW_PREVIEW_VERSION,
 };
 use crate::dmabuf_gl::{DmabufFrameDesc, DmabufGlBlitter};
 use crate::failsafe::{record_trip, FS_FD_QUOTA, FS_PW_BAD_PKT};
@@ -939,13 +939,13 @@ impl PwState {
         if self.ignore_zero_flag {
             return true;
         }
-        if std::env::var("LWASAPI_PW_ZERO_MODE").as_deref() == Ok("1") {
+        if std::env::var("LASAPI_PW_ZERO_MODE").as_deref() == Ok("1") {
             return true;
         }
         let Ok(home) = std::env::var("HOME") else {
             return false;
         };
-        let path = format!("{}/.config/lwasapi/pipewire_zero_mode", home);
+        let path = format!("{}/.config/lasapi/pipewire_zero_mode", home);
         let Ok(txt) = fs::read_to_string(path) else {
             return false;
         };
@@ -983,8 +983,8 @@ impl PwState {
         } else {
             if !self.ignore_zero_flag && unix_socket_actively_served(&self.socket_path, current_pid()) {
                 dbg_emit(
-                    LWASAPI_DBG_PW_VIDEO,
-                    LWASAPI_DBG_WARN,
+                    LASAPI_DBG_PW_VIDEO,
+                    LASAPI_DBG_WARN,
                     current_pid(),
                     0,
                     "PW_BROKER_DEFER",
@@ -1000,8 +1000,8 @@ impl PwState {
         self.shared.broker_listening.store(ok, Ordering::Relaxed);
         if ok {
             dbg_emit(
-                LWASAPI_DBG_PW_VIDEO,
-                LWASAPI_DBG_INFO,
+                LASAPI_DBG_PW_VIDEO,
+                LASAPI_DBG_INFO,
                 current_pid(),
                 0,
                 "PW_BROKER_LISTEN",
@@ -1269,7 +1269,7 @@ impl PwState {
         let any_active = self.links.iter().any(|lk| lk.in_use && lk.state == 4);
         if !any_active {
             if let Some(map) = self.preview_shm_map.as_ref() {
-                let shm = map.as_ptr().cast::<LwasapiPwPreviewShm>();
+                let shm = map.as_ptr().cast::<LasapiPwPreviewShm>();
                 unsafe {
                     atomic_u32_store(ptr::addr_of!((*shm).active_stream).cast_mut(), 0, Ordering::Release);
                 }
@@ -1842,8 +1842,8 @@ impl PwState {
             n
         );
         dbg_emit(
-            LWASAPI_DBG_PW_VIDEO,
-            LWASAPI_DBG_INFO,
+            LASAPI_DBG_PW_VIDEO,
+            LASAPI_DBG_INFO,
             prod_pid,
             prod_gid,
             "PW_LINK_ACTIVE",
@@ -1942,8 +1942,8 @@ impl PwState {
             let cons_gid = self.nodes[cons_idx].global_id;
             let prod_gid = self.nodes[prod_idx].global_id;
             dbg_emit(
-                LWASAPI_DBG_PW_VIDEO,
-                LWASAPI_DBG_WARN,
+                LASAPI_DBG_PW_VIDEO,
+                LASAPI_DBG_WARN,
                 cc_pid,
                 cons_gid,
                 "PW_NEG_MISMATCH",
@@ -2181,7 +2181,7 @@ impl PwState {
 
     fn copy_frame_to_preview_shm(&mut self, nidx: usize, buf_id: u32, cons_count: u32) {
         let shm_base = match self.preview_shm_map.as_ref() {
-            Some(m) => m.as_ptr().cast::<LwasapiPwPreviewShm>().cast_mut(),
+            Some(m) => m.as_ptr().cast::<LasapiPwPreviewShm>().cast_mut(),
             None => return,
         };
         let req = unsafe { atomic_u32_load(ptr::addr_of!((*shm_base).preview_requested), Ordering::Relaxed) };
@@ -2225,8 +2225,8 @@ impl PwState {
             let sw_t = unsafe { atomic_u32_load(ptr::addr_of!((*shm_base).target_max_w), Ordering::Relaxed) };
             let sh_t = unsafe { atomic_u32_load(ptr::addr_of!((*shm_base).target_max_h), Ordering::Relaxed) };
             let sf_t = unsafe { atomic_u32_load(ptr::addr_of!((*shm_base).target_fps), Ordering::Relaxed) };
-            let cw = sw_t.min(LWASAPI_PW_PREVIEW_MAX_W);
-            let ch = sh_t.min(LWASAPI_PW_PREVIEW_MAX_H);
+            let cw = sw_t.min(LASAPI_PW_PREVIEW_MAX_W);
+            let ch = sh_t.min(LASAPI_PW_PREVIEW_MAX_H);
             let cf = sf_t.min(240);
             self.shared.preview_target_w.store(cw, Ordering::Relaxed);
             self.shared.preview_target_h.store(ch, Ordering::Relaxed);
@@ -2344,15 +2344,15 @@ impl PwState {
             s.cast_fps_cap = self.shared.cast_limit_fps.load(Ordering::Relaxed);
         }
 
-        let cap_w = if tw > 0 && tw <= LWASAPI_PW_PREVIEW_MAX_W {
+        let cap_w = if tw > 0 && tw <= LASAPI_PW_PREVIEW_MAX_W {
             tw
         } else {
-            LWASAPI_PW_PREVIEW_MAX_W
+            LASAPI_PW_PREVIEW_MAX_W
         };
-        let cap_h = if th_lim > 0 && th_lim <= LWASAPI_PW_PREVIEW_MAX_H {
+        let cap_h = if th_lim > 0 && th_lim <= LASAPI_PW_PREVIEW_MAX_H {
             th_lim
         } else {
-            LWASAPI_PW_PREVIEW_MAX_H
+            LASAPI_PW_PREVIEW_MAX_H
         };
         let mut dw = sw;
         let mut dh = sh;
@@ -2907,7 +2907,7 @@ impl PwState {
                         eb.int(0);
                         eb.int(-93); // -EPROTONOSUPPORT
                         eb.str_val(Some(
-                            "Salsa pipewire-0 broker is Video-Only (audio routes via Salsa PA/ALSA/WASAPI)",
+                            "Salsa pipewire-0 broker is Video-Only (audio routes via Salsa PA/ALSA/LASAPI)",
                         ));
                         eb.pop();
                         let ep = eb.into_vec();
@@ -2915,8 +2915,8 @@ impl PwState {
                         let pid = self.clients[ci].pid;
                         let app = self.clients[ci].app_name.clone();
                         dbg_emit(
-                            LWASAPI_DBG_PW_VIDEO,
-                            LWASAPI_DBG_WARN,
+                            LASAPI_DBG_PW_VIDEO,
+                            LASAPI_DBG_WARN,
                             pid,
                             new_id,
                             "PW_AUDIO_REJECTED",
@@ -3071,8 +3071,8 @@ impl PwState {
                     let pid = self.clients[ci].pid;
                     let app = self.clients[ci].app_name.clone();
                     dbg_emit(
-                        LWASAPI_DBG_PW_VIDEO,
-                        LWASAPI_DBG_INFO,
+                        LASAPI_DBG_PW_VIDEO,
+                        LASAPI_DBG_INFO,
                         pid,
                         ngid,
                         "PW_NODE_CREATED",
@@ -4110,11 +4110,11 @@ fn preview_shm_name_string() -> String {
             return cand;
         }
     }
-    format!("/lwasapi_pw_preview_{}", current_uid())
+    format!("/lasapi_pw_preview_{}", current_uid())
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pw_preview_shm_name(out_buf: *mut c_char, out_len: usize) {
+pub unsafe extern "C" fn lasapi_pw_preview_shm_name(out_buf: *mut c_char, out_len: usize) {
     if out_buf.is_null() || out_len == 0 {
         return;
     }
@@ -4123,9 +4123,9 @@ pub unsafe extern "C" fn lwasapi_pw_preview_shm_name(out_buf: *mut c_char, out_l
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pw_broker_start(
+pub unsafe extern "C" fn lasapi_pw_broker_start(
     out_brk: *mut *mut PwBrokerHandle,
-    opts: *const LwasapiPwBrokerOpts,
+    opts: *const LasapiPwBrokerOpts,
 ) -> c_int {
     if out_brk.is_null() {
         return -22; // -EINVAL
@@ -4144,13 +4144,13 @@ pub unsafe extern "C" fn lwasapi_pw_broker_start(
 
     let rdir = opt_rdir
         .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("LWASAPI_PW_TEST_DIR").ok().filter(|s| !s.is_empty()))
+        .or_else(|| std::env::var("LASAPI_PW_TEST_DIR").ok().filter(|s| !s.is_empty()))
         .or_else(|| std::env::var("XDG_RUNTIME_DIR").ok().filter(|s| !s.is_empty()))
         .unwrap_or_else(|| format!("/run/user/{}", current_uid()));
     let sname = opt_sname
         .filter(|s| !s.is_empty() && !s.contains('/') && *s != "." && *s != "..")
         .or_else(|| {
-            std::env::var("LWASAPI_PW_SOCKET_NAME")
+            std::env::var("LASAPI_PW_SOCKET_NAME")
                 .ok()
                 .filter(|s| !s.is_empty() && !s.contains('/') && s != "." && s != "..")
         })
@@ -4159,27 +4159,27 @@ pub unsafe extern "C" fn lwasapi_pw_broker_start(
     st.runtime_dir = rdir;
     st.socket_path = format!("{}/{}", st.runtime_dir, sname);
     st.manager_socket_path = format!("{}/{}-manager", st.runtime_dir, sname);
-    st.ignore_zero_flag = opt_ign || std::env::var_os("LWASAPI_PW_SOCKET_NAME").is_some();
+    st.ignore_zero_flag = opt_ign || std::env::var_os("LASAPI_PW_SOCKET_NAME").is_some();
 
-    let isolated = st.ignore_zero_flag || std::env::var_os("LWASAPI_PW_TEST_DIR").is_some();
+    let isolated = st.ignore_zero_flag || std::env::var_os("LASAPI_PW_TEST_DIR").is_some();
     let shm_name = if isolated {
         format!("{}/pw_preview_test", st.runtime_dir)
     } else {
-        unlink_shm_path(&format!("/lwasapi_pw_preview_{}", current_uid()), true);
+        unlink_shm_path(&format!("/lasapi_pw_preview_{}", current_uid()), true);
         preview_shm_name_string()
     };
     st.preview_shm_name = shm_name.clone();
-    if let Some((fd, is_posix)) = open_private_shm(&shm_name, size_of::<LwasapiPwPreviewShm>()) {
+    if let Some((fd, is_posix)) = open_private_shm(&shm_name, size_of::<LasapiPwPreviewShm>()) {
         st.preview_shm_posix = is_posix;
         if let Some(mut map) =
-            MappedMem::map_fd(fd.as_raw_fd(), size_of::<LwasapiPwPreviewShm>(), true, 0)
+            MappedMem::map_fd(fd.as_raw_fd(), size_of::<LasapiPwPreviewShm>(), true, 0)
         {
-            let hdr_end = offset_of!(LwasapiPwPreviewShm, pixels);
+            let hdr_end = offset_of!(LasapiPwPreviewShm, pixels);
             map.as_mut_slice()[..hdr_end].fill(0);
-            let shm = map.as_mut_ptr().cast::<LwasapiPwPreviewShm>();
+            let shm = map.as_mut_ptr().cast::<LasapiPwPreviewShm>();
             unsafe {
-                (*shm).magic = LWASAPI_PW_PREVIEW_MAGIC;
-                (*shm).version = LWASAPI_PW_PREVIEW_VERSION;
+                (*shm).magic = LASAPI_PW_PREVIEW_MAGIC;
+                (*shm).version = LASAPI_PW_PREVIEW_VERSION;
             }
             st.preview_shm_map = Some(map);
         }
@@ -4215,7 +4215,7 @@ pub unsafe extern "C" fn lwasapi_pw_broker_start(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pw_broker_stop(brk: *mut PwBrokerHandle) {
+pub unsafe extern "C" fn lasapi_pw_broker_stop(brk: *mut PwBrokerHandle) {
     if brk.is_null() {
         return;
     }
@@ -4246,7 +4246,7 @@ pub unsafe extern "C" fn lwasapi_pw_broker_stop(brk: *mut PwBrokerHandle) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pw_broker_sync_mode(brk: *mut PwBrokerHandle) -> c_int {
+pub unsafe extern "C" fn lasapi_pw_broker_sync_mode(brk: *mut PwBrokerHandle) -> c_int {
     if brk.is_null() {
         return -22;
     }
@@ -4260,7 +4260,7 @@ pub unsafe extern "C" fn lwasapi_pw_broker_sync_mode(brk: *mut PwBrokerHandle) -
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pw_broker_set_preview_ex(
+pub unsafe extern "C" fn lasapi_pw_broker_set_preview_ex(
     brk: *mut PwBrokerHandle,
     enabled: bool,
     ttl_ms: u32,
@@ -4272,8 +4272,8 @@ pub unsafe extern "C" fn lwasapi_pw_broker_set_preview_ex(
         return;
     }
     let h = unsafe { &*brk };
-    let cw = max_w.min(LWASAPI_PW_PREVIEW_MAX_W);
-    let ch = max_h.min(LWASAPI_PW_PREVIEW_MAX_H);
+    let cw = max_w.min(LASAPI_PW_PREVIEW_MAX_W);
+    let ch = max_h.min(LASAPI_PW_PREVIEW_MAX_H);
     let cfps = target_fps.min(240);
     h.shared.preview_target_w.store(cw, Ordering::Relaxed);
     h.shared.preview_target_h.store(ch, Ordering::Relaxed);
@@ -4283,7 +4283,7 @@ pub unsafe extern "C" fn lwasapi_pw_broker_set_preview_ex(
     let Some(map) = st.preview_shm_map.as_ref() else {
         return;
     };
-    let shm_ptr = map.as_ptr().cast::<LwasapiPwPreviewShm>().cast_mut();
+    let shm_ptr = map.as_ptr().cast::<LasapiPwPreviewShm>().cast_mut();
     let now = mono_ns();
     if enabled {
         let ttl_ns = (if ttl_ms != 0 { ttl_ms } else { 15000 }) as u64 * 1_000_000;
@@ -4318,16 +4318,16 @@ pub unsafe extern "C" fn lwasapi_pw_broker_set_preview_ex(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pw_broker_set_preview(
+pub unsafe extern "C" fn lasapi_pw_broker_set_preview(
     brk: *mut PwBrokerHandle,
     enabled: bool,
     ttl_ms: u32,
 ) {
-    unsafe { lwasapi_pw_broker_set_preview_ex(brk, enabled, ttl_ms, 0, 0, 0) }
+    unsafe { lasapi_pw_broker_set_preview_ex(brk, enabled, ttl_ms, 0, 0, 0) }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pw_broker_set_cast_limits(
+pub unsafe extern "C" fn lasapi_pw_broker_set_cast_limits(
     brk: *mut PwBrokerHandle,
     max_w: u32,
     max_h: u32,
@@ -4345,9 +4345,9 @@ pub unsafe extern "C" fn lwasapi_pw_broker_set_cast_limits(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pw_broker_fill_debug(
+pub unsafe extern "C" fn lasapi_pw_broker_fill_debug(
     brk: *mut PwBrokerHandle,
-    out_ptr: *mut LwasapiDbgPwSnapshot,
+    out_ptr: *mut LasapiDbgPwSnapshot,
 ) {
     if out_ptr.is_null() {
         return;
@@ -4365,7 +4365,7 @@ pub unsafe extern "C" fn lwasapi_pw_broker_fill_debug(
         .preview_shm_map
         .as_ref()
         .map_or(0, |m| {
-            let shm = m.as_ptr().cast::<LwasapiPwPreviewShm>();
+            let shm = m.as_ptr().cast::<LasapiPwPreviewShm>();
             u8::from(unsafe {
                 atomic_u32_load(ptr::addr_of!((*shm).preview_requested), Ordering::Relaxed) != 0
             })
@@ -4385,13 +4385,13 @@ pub unsafe extern "C" fn lwasapi_pw_broker_fill_debug(
     out.actual_fps_x100 = h.shared.preview_actual_fps_x100_pub.load(Ordering::Relaxed);
 
     for (ci, c) in st.clients.iter().enumerate() {
-        if (out.num_clients as usize) >= LWASAPI_DEBUG_MAX_PW_CLIENTS {
+        if (out.num_clients as usize) >= LASAPI_DEBUG_MAX_PW_CLIENTS {
             break;
         }
         if !c.in_use {
             continue;
         }
-        let dc: &mut LwasapiDbgPwClient = &mut out.clients[out.num_clients as usize];
+        let dc: &mut LasapiDbgPwClient = &mut out.clients[out.num_clients as usize];
         out.num_clients += 1;
         dc.id = c.global_id;
         dc.pid = c.pid;
@@ -4407,13 +4407,13 @@ pub unsafe extern "C" fn lwasapi_pw_broker_fill_debug(
     }
 
     for nd in &st.nodes {
-        if (out.num_nodes as usize) >= LWASAPI_DEBUG_MAX_PW_NODES {
+        if (out.num_nodes as usize) >= LASAPI_DEBUG_MAX_PW_NODES {
             break;
         }
         if !nd.in_use {
             continue;
         }
-        let dn: &mut LwasapiDbgPwNode = &mut out.nodes[out.num_nodes as usize];
+        let dn: &mut LasapiDbgPwNode = &mut out.nodes[out.num_nodes as usize];
         out.num_nodes += 1;
         dn.id = nd.global_id;
         let ow = &st.clients[nd.client_idx as usize];
@@ -4463,13 +4463,13 @@ pub unsafe extern "C" fn lwasapi_pw_broker_fill_debug(
     }
 
     for lk in &st.links {
-        if (out.num_links as usize) >= LWASAPI_DEBUG_MAX_PW_LINKS {
+        if (out.num_links as usize) >= LASAPI_DEBUG_MAX_PW_LINKS {
             break;
         }
         if !lk.in_use {
             continue;
         }
-        let dl: &mut LwasapiDbgPwLink = &mut out.links[out.num_links as usize];
+        let dl: &mut LasapiDbgPwLink = &mut out.links[out.num_links as usize];
         out.num_links += 1;
         let on = &st.nodes[lk.out_node_idx as usize];
         let ind = &st.nodes[lk.in_node_idx as usize];
@@ -4505,7 +4505,7 @@ pub unsafe extern "C" fn lwasapi_pw_broker_fill_debug(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pw_broker_self_test(
+pub unsafe extern "C" fn lasapi_pw_broker_self_test(
     brk: *mut PwBrokerHandle,
     out_msg: *mut c_char,
     out_len: usize,
@@ -4626,7 +4626,7 @@ pub unsafe extern "C" fn lwasapi_pw_broker_self_test(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pw_broker_reset_clients(brk: *mut PwBrokerHandle) -> c_int {
+pub unsafe extern "C" fn lasapi_pw_broker_reset_clients(brk: *mut PwBrokerHandle) -> c_int {
     if brk.is_null() {
         return 0;
     }
@@ -4660,17 +4660,17 @@ mod tests {
         fs::create_dir_all(&tmp_dir).unwrap();
         let c_rdir = CString::new(tmp_dir.clone()).unwrap();
         let c_sname = CString::new("pipewire-rust-test").unwrap();
-        let opts = LwasapiPwBrokerOpts {
+        let opts = LasapiPwBrokerOpts {
             runtime_dir: c_rdir.as_ptr(),
             socket_name: c_sname.as_ptr(),
             ignore_zero_flag: true,
         };
         let mut brk: *mut PwBrokerHandle = ptr::null_mut();
-        assert_eq!(unsafe { lwasapi_pw_broker_start(&mut brk, &opts) }, 0);
+        assert_eq!(unsafe { lasapi_pw_broker_start(&mut brk, &opts) }, 0);
         assert!(!brk.is_null());
 
         let mut msg = [0u8; 256];
-        let rc = unsafe { lwasapi_pw_broker_self_test(brk, msg.as_mut_ptr().cast(), msg.len()) };
+        let rc = unsafe { lasapi_pw_broker_self_test(brk, msg.as_mut_ptr().cast(), msg.len()) };
         let txt = String::from_utf8_lossy(&msg);
         assert_eq!(rc, 0, "self_test msg={}", txt);
 
@@ -4743,15 +4743,15 @@ mod tests {
         assert!(get_stats().pw_quarantined >= 1);
 
         // Reset remaining healthy client cleanly
-        let flushed = unsafe { lwasapi_pw_broker_reset_clients(brk) };
+        let flushed = unsafe { lasapi_pw_broker_reset_clients(brk) };
         assert!(flushed >= 1);
 
-        let mut snap: LwasapiDbgPwSnapshot = unsafe { mem::zeroed() };
-        unsafe { lwasapi_pw_broker_fill_debug(brk, &mut snap) };
+        let mut snap: LasapiDbgPwSnapshot = unsafe { mem::zeroed() };
+        unsafe { lasapi_pw_broker_fill_debug(brk, &mut snap) };
         assert_eq!(snap.broker_running, 1);
         assert!(snap.audio_rejects >= 1);
 
-        unsafe { lwasapi_pw_broker_stop(brk) };
+        unsafe { lasapi_pw_broker_stop(brk) };
         let _ = fs::remove_dir_all(&tmp_dir);
     }
 
@@ -4761,14 +4761,14 @@ mod tests {
         fs::create_dir_all(&tmp_dir).unwrap();
         let c_rdir = CString::new(tmp_dir.clone()).unwrap();
         let c_sname = CString::new("pipewire-relay-test").unwrap();
-        let opts = LwasapiPwBrokerOpts {
+        let opts = LasapiPwBrokerOpts {
             runtime_dir: c_rdir.as_ptr(),
             socket_name: c_sname.as_ptr(),
             ignore_zero_flag: true,
         };
         let mut brk: *mut PwBrokerHandle = ptr::null_mut();
-        assert_eq!(unsafe { lwasapi_pw_broker_start(&mut brk, &opts) }, 0);
-        unsafe { lwasapi_pw_broker_set_preview_ex(brk, true, 5000, 64, 64, 0) };
+        assert_eq!(unsafe { lasapi_pw_broker_start(&mut brk, &opts) }, 0);
+        unsafe { lasapi_pw_broker_set_preview_ex(brk, true, 5000, 64, 64, 0) };
 
         let sock_path = format!("{}/pipewire-relay-test", tmp_dir);
         let prod = UnixStream::connect(&sock_path).unwrap();
@@ -4837,8 +4837,8 @@ mod tests {
         let t0 = mono_ns();
         let mut active = false;
         while !active && mono_ns().saturating_sub(t0) < 1_500_000_000 {
-            let mut snap: LwasapiDbgPwSnapshot = unsafe { mem::zeroed() };
-            unsafe { lwasapi_pw_broker_fill_debug(brk, &mut snap) };
+            let mut snap: LasapiDbgPwSnapshot = unsafe { mem::zeroed() };
+            unsafe { lasapi_pw_broker_fill_debug(brk, &mut snap) };
             if snap.active_casting == 1 {
                 active = true;
                 break;
@@ -4901,17 +4901,17 @@ mod tests {
                     fs::File::from(dup_fd_cloexec(st.preview_shm_fd.as_ref().unwrap().as_raw_fd()).unwrap());
                 rfile.seek(SeekFrom::Start(520)).unwrap();
                 rfile.read_exact(&mut buf_px).unwrap();
-                assert_eq!(m.as_slice()[0..4], LWASAPI_PW_PREVIEW_MAGIC.to_le_bytes());
+                assert_eq!(m.as_slice()[0..4], LASAPI_PW_PREVIEW_MAGIC.to_le_bytes());
             }
             assert_eq!(&buf_px[..3], &[0x11, 0x55, 0xaa]);
         }
 
-        let mut snap: LwasapiDbgPwSnapshot = unsafe { mem::zeroed() };
-        unsafe { lwasapi_pw_broker_fill_debug(brk, &mut snap) };
+        let mut snap: LasapiDbgPwSnapshot = unsafe { mem::zeroed() };
+        unsafe { lasapi_pw_broker_fill_debug(brk, &mut snap) };
         assert!(snap.frames_relayed_total >= 1);
 
         // Verify relay FPS meter updates actual_fps_x100 even when live preview is disabled
-        unsafe { lwasapi_pw_broker_set_preview(brk, false, 0) };
+        unsafe { lasapi_pw_broker_set_preview(brk, false, 0) };
         {
             let h = unsafe { &*brk };
             let mut st = h.state.lock().unwrap();
@@ -4931,8 +4931,8 @@ mod tests {
             st.nodes[pidx].io_write_status_and_buf(PWB_STATUS_HAVE_DATA, 0);
             st.on_prod_done_event(pidx);
         }
-        let mut snap_noprev: LwasapiDbgPwSnapshot = unsafe { mem::zeroed() };
-        unsafe { lwasapi_pw_broker_fill_debug(brk, &mut snap_noprev) };
+        let mut snap_noprev: LasapiDbgPwSnapshot = unsafe { mem::zeroed() };
+        unsafe { lasapi_pw_broker_fill_debug(brk, &mut snap_noprev) };
         assert_eq!(snap_noprev.preview_requested, 0);
         assert!(
             snap_noprev.actual_fps_x100 >= 5000,
@@ -4992,7 +4992,7 @@ mod tests {
             );
         }
 
-        unsafe { lwasapi_pw_broker_stop(brk) };
+        unsafe { lasapi_pw_broker_stop(brk) };
         let _ = fs::remove_dir_all(&tmp_dir);
     }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -326,7 +326,7 @@ pub fn extract_mac_from_id(id: &[u8]) -> Option<[u8; 17]> {
 }
 
 pub fn hfp_make_batt_path(dev_path: &[u8], out: &mut [u8]) -> Option<usize> {
-    const ROOT: &[u8] = b"/org/lwasapi/Battery/";
+    const ROOT: &[u8] = b"/org/lasapi/Battery/";
     if out.len() <= ROOT.len() {
         return None;
     }
@@ -699,7 +699,7 @@ mod tests {
         let blen = hfp_make_batt_path(b"/org/bluez/hci0/dev_AA-BB..evil", &mut bpath).unwrap();
         assert_eq!(
             &bpath[..blen],
-            b"/org/lwasapi/Battery/dev_AA_BB__evil"
+            b"/org/lasapi/Battery/dev_AA_BB__evil"
         );
         assert_eq!(msbc_rx_strip_offset(&[0x01, 0x38, 0xAD]), 2);
         assert_eq!(msbc_rx_strip_offset(&[0xAD, 0x00]), 0);

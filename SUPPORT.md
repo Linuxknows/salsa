@@ -1,6 +1,6 @@
 # Support & Troubleshooting Guide
 
-Need help diagnosing **Salsa (`lwasapi`)**? Use Salsa's built-in **Live Architecture & Interaction Debugger (`salsa-debug`)** first so you can inspect live routing, probes, and telemetry right on your machine.
+Need help diagnosing **Salsa (`lasapi`)**? Use Salsa's built-in **Live Architecture & Interaction Debugger (`salsa-debug`)** first so you can inspect live routing, probes, and telemetry right on your machine.
 
 ---
 
@@ -9,10 +9,10 @@ Need help diagnosing **Salsa (`lwasapi`)**? Use Salsa's built-in **Live Architec
 Salsa ships with a standalone zero-overhead debugger (**`salsa-debug`**, also accessible from the system tray Quick Mixer **`Debug`** button):
 
 - **GUI Tabs & Interactive Probes (`salsa-debug`)**:
-  - **Tab 1 — Live Event Stream (`--tab 0`)**: Real-time stream of `WASAPI`, `PA`, `BLUEZ`, `MIDI`, `CAPTURE`, `ALSA`, `IPC`, `RT`, and `PW` events over `debug.sock`.
-  - **Tab 2 — App & Process Routing Audit (`--tab 1`)**: Scans `/proc` to show how every running game, browser, or DAW connects to Salsa (`WaveRT SHM`, `PA v35`, `ALSA plugin`, or `lwasapi-run` shim).
+  - **Tab 1 — Live Event Stream (`--tab 0`)**: Real-time stream of `LASAPI`, `PA`, `BLUEZ`, `MIDI`, `CAPTURE`, `ALSA`, `IPC`, `RT`, and `PW` events over `debug.sock`.
+  - **Tab 2 — App & Process Routing Audit (`--tab 1`)**: Scans `/proc` to show how every running game, browser, or DAW connects to Salsa (`WaveRT SHM`, `PA v35`, `ALSA plugin`, or `lasapi-run` shim).
   - **Tab 3 — Streams, Rings & RT Timing (`--tab 2`)**: Live `SCHED_FIFO` wakeup jitter, WaveRT shared-memory ring fill levels, and XRUN counters.
-  - **Tab 4 — Boundary, Configs & Probes (`--tab 3`)**: One-click **`IPC + Debug Ping RTT`**, **`Play 440Hz WASAPI Probe Tone`**, **`Send MIDI Note Ping (C4)`**, and **`Run All Socket & PA/PW Probes`**.
+  - **Tab 4 — Boundary, Configs & Probes (`--tab 3`)**: One-click **`IPC + Debug Ping RTT`**, **`Play 440Hz LASAPI Probe Tone`**, **`Send MIDI Note Ping (C4)`**, and **`Run All Socket & PA/PW Probes`**.
   - **Tab 5 — ScreenCast Broker & Live Feed (`--tab 4`)**: Live Wayland `pipewire-0` `DmaBuf`/`MemFd` video preview and **`Run PW Self-Test`**.
   - **`Export Bundle` Button**: Saves a complete timestamped `.zip` archive (`report.txt`, JSON snapshots, routing audit, configs, and logs) ready to attach directly to a GitHub Bug Report.
 

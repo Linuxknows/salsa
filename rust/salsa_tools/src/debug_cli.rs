@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -61,7 +61,7 @@ fn print_help() {
          --autosync            Tail autosync.log\n  \
          --dbus                Capture short session D-Bus signal sample\n\n\
          Filters & Formatting:\n  \
-         --sub SUB             Subsystem filter (WASAPI, PA, BLUEZ, MIDI, CAPTURE, ALSA, IPC, RT, PW, ALL)\n  \
+         --sub SUB             Subsystem filter (LASAPI, PA, BLUEZ, MIDI, CAPTURE, ALSA, IPC, RT, PW, ALL)\n  \
          --lvl LVL             Min level (TRACE, DEBUG, INFO, WARN, ERROR)\n  \
          --pid PID             Filter events by PID\n  \
          --duration SECS       Duration in seconds (stream or tone)\n  \
@@ -185,7 +185,7 @@ pub fn format_snapshot_human(snap: &JsonValue) -> String {
     }
 
     let nw = snap
-        .get("wasapi_sessions")
+        .get("lasapi_sessions")
         .and_then(JsonValue::as_array)
         .map(<[JsonValue]>::len)
         .unwrap_or(0);
@@ -200,7 +200,7 @@ pub fn format_snapshot_human(snap: &JsonValue) -> String {
         .map(<[JsonValue]>::len)
         .unwrap_or(0);
     out.push_str(&format!(
-        "Clients: wasapi_sessions={nw} | pa_clients={nc} | pa_streams={ns}\n"
+        "Clients: lasapi_sessions={nw} | pa_clients={nc} | pa_streams={ns}\n"
     ));
     out
 }

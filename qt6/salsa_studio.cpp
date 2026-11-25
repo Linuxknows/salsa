@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -671,7 +671,7 @@ void StudioController::buildMainWindow() {
         QApplication::quit();
         return true;
     });
-    mainWin_->setWindowTitle(QStringLiteral("Salsa — Linux WASAPI Studio"));
+    mainWin_->setWindowTitle(QStringLiteral("Salsa — LASAPI Studio"));
     QSize scrSz = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->availableSize() : QSize(1600, 960);
     mainWin_->resize(
         std::min(scrSz.width() - 32, scaledPx(1320, fontPct_)),
@@ -693,7 +693,7 @@ void StudioController::buildMainWindow() {
     auto* titleCol = new QVBoxLayout();
     auto* titleRow = new QHBoxLayout();
     titleRow->setSpacing(8);
-    lblTitle_ = new QLabel(QStringLiteral("SALSA — LINUX WASAPI STUDIO"), topCard);
+    lblTitle_ = new QLabel(QStringLiteral("SALSA — LASAPI STUDIO"), topCard);
     lblTitle_->setObjectName(QStringLiteral("TitleBanner"));
     titleRow->addWidget(lblTitle_);
     lblVerPill_ = new QLabel(SalsaStr(salsa_version_str()).toQString(), topCard);
@@ -798,7 +798,7 @@ void StudioController::buildMainWindow() {
     hdrBtns->addWidget(btnAdv, 0, 1);
     btnSaveCfgMain_ = new QPushButton(QStringLiteral("Save Settings (Ctrl+S)"), topCard);
     btnSaveCfgMain_->setObjectName(QStringLiteral("CompactBtn"));
-    btnSaveCfgMain_->setToolTip(QStringLiteral("Save Settings (Ctrl+S) — Validates and saves all current engine, analog, BT, EQ, volume, and GUI settings to ~/.config/lwasapi/salsa_settings.json."));
+    btnSaveCfgMain_->setToolTip(QStringLiteral("Save Settings (Ctrl+S) — Validates and saves all current engine, analog, BT, EQ, volume, and GUI settings to ~/.config/lasapi/salsa_settings.json."));
     connect(btnSaveCfgMain_, &QPushButton::clicked, this, [this]() { onSaveOverwriteConfigClicked(); });
     hdrBtns->addWidget(btnSaveCfgMain_, 1, 0);
     auto* btnAboutMain = new QPushButton(QStringLiteral("About / LGPL-3.0"), topCard);
@@ -1449,7 +1449,7 @@ void StudioController::buildAdvancedWindow() {
     gDiag->addWidget(btnOpenDbg, 0, 0, 1, 2);
 
     auto* btnBench = new QPushButton(QStringLiteral("Run Latency Benchmark"), diagCard);
-    btnBench->setToolTip(QStringLiteral("Latency Benchmark — Runs an isolated virtual timing & loopback benchmark comparing Native WASAPI, Pulse, and ALSA shims without altering your live volume or interrupting playback."));
+    btnBench->setToolTip(QStringLiteral("Latency Benchmark — Runs an isolated virtual timing & loopback benchmark comparing Native LASAPI, Pulse, and ALSA shims without altering your live volume or interrupting playback."));
     connect(btnBench, &QPushButton::clicked, this, [this, btnBench]() {
         if (!btnBench->isEnabled()) return;
         btnBench->setEnabled(false);
@@ -1488,7 +1488,7 @@ void StudioController::buildAdvancedWindow() {
     gDiag->addWidget(btnAudit, 1, 1);
 
     auto* btnSync = new QPushButton(QStringLiteral("Sync Audio Modules Now"), diagCard);
-    btnSync->setToolTip(QStringLiteral("Sync Audio Modules Now — Verifies host `.so` ABI symbol tables and rebuilds ALSA/Pulse/JACK shims via lwasapi-autosync."));
+    btnSync->setToolTip(QStringLiteral("Sync Audio Modules Now — Verifies host `.so` ABI symbol tables and rebuilds ALSA/Pulse/JACK shims via lasapi-autosync."));
     connect(btnSync, &QPushButton::clicked, this, [this]() {
         const SalsaStr rep(salsa_run_sync_modules(true));
         showReportDialog(advWin_, QStringLiteral("Salsa Module Auto-Sync Report"), rep.toQString(), currentTheme_, fontPct_, 760, 360);
@@ -1496,18 +1496,18 @@ void StudioController::buildAdvancedWindow() {
     gDiag->addWidget(btnSync, 2, 0);
 
     auto* btnMidi = new QPushButton(QStringLiteral("Send Test MIDI (C4)"), diagCard);
-    btnMidi->setToolTip(QStringLiteral("Send Test MIDI (C4) — Injects a synthetic Note-On C4 packet into the LWASAPI MIDI Hub to test synth or debugger reception."));
+    btnMidi->setToolTip(QStringLiteral("Send Test MIDI (C4) — Injects a synthetic Note-On C4 packet into the LASAPI MIDI Hub to test synth or debugger reception."));
     connect(btnMidi, &QPushButton::clicked, this, []() { salsa_send_test_midi(60, 115); });
     gDiag->addWidget(btnMidi, 2, 1);
 
     btnRstEngine_ = new QPushButton(QStringLiteral("Restart Audio Engine"), diagCard);
-    btnRstEngine_->setToolTip(QStringLiteral("Restart Audio Engine — Restarts `lwasapi-audiodg.service` and re-establishes hardware, BlueZ, and Pulse clients."));
-    connect(btnRstEngine_, &QPushButton::clicked, this, [this]() { runSystemdRestart(QStringLiteral("lwasapi-audiodg.service"), btnRstEngine_); });
+    btnRstEngine_->setToolTip(QStringLiteral("Restart Audio Engine — Restarts `lasapi-audiodg.service` and re-establishes hardware, BlueZ, and Pulse clients."));
+    connect(btnRstEngine_, &QPushButton::clicked, this, [this]() { runSystemdRestart(QStringLiteral("lasapi-audiodg.service"), btnRstEngine_); });
     gDiag->addWidget(btnRstEngine_, 3, 0);
 
     btnRstTray_ = new QPushButton(QStringLiteral("Restart Tray Service"), diagCard);
-    btnRstTray_->setToolTip(QStringLiteral("Restart Tray Service — Restarts `lwasapi-tray.service` to reload the taskbar Quick Mixer indicator."));
-    connect(btnRstTray_, &QPushButton::clicked, this, [this]() { runSystemdRestart(QStringLiteral("lwasapi-tray.service"), btnRstTray_); });
+    btnRstTray_->setToolTip(QStringLiteral("Restart Tray Service — Restarts `lasapi-tray.service` to reload the taskbar Quick Mixer indicator."));
+    connect(btnRstTray_, &QPushButton::clicked, this, [this]() { runSystemdRestart(QStringLiteral("lasapi-tray.service"), btnRstTray_); });
     gDiag->addWidget(btnRstTray_, 3, 1);
     dcLay->addLayout(gDiag);
 
@@ -1535,7 +1535,7 @@ void StudioController::buildAdvancedWindow() {
     hookRow->addWidget(btnTogglePacman_, 1);
 
     chkAutosyncNow_ = new QCheckBox(QStringLiteral("Auto-Sync Watcher + Sync Now"), diagCard);
-    chkAutosyncNow_->setToolTip(QStringLiteral("Background ABI Watcher — Enables or disables `lwasapi-module-watcher.path/.timer` so library updates trigger automatic shim rebuilds."));
+    chkAutosyncNow_->setToolTip(QStringLiteral("Background ABI Watcher — Enables or disables `lasapi-module-watcher.path/.timer` so library updates trigger automatic shim rebuilds."));
     connect(chkAutosyncNow_, &QCheckBox::clicked, this, [this](bool checked) {
         const SalsaStr msg(salsa_toggle_autosync_watcher(checked));
         refreshAdvIntegration();
@@ -1601,19 +1601,19 @@ void StudioController::buildAdvancedWindow() {
     auto* rowCfg = new QHBoxLayout();
     btnSaveCfgAdv_ = new QPushButton(QStringLiteral("Save Settings"), engCard);
     btnSaveCfgAdv_->setObjectName(QStringLiteral("PrimaryBtn"));
-    btnSaveCfgAdv_->setToolTip(QStringLiteral("Save & Overwrite Settings (Ctrl+S) — Validates and overwrites ~/.config/lwasapi/salsa_settings.json with all current engine, BT, analog, EQ, volume, and GUI settings."));
+    btnSaveCfgAdv_->setToolTip(QStringLiteral("Save & Overwrite Settings (Ctrl+S) — Validates and overwrites ~/.config/lasapi/salsa_settings.json with all current engine, BT, analog, EQ, volume, and GUI settings."));
     connect(btnSaveCfgAdv_, &QPushButton::clicked, this, [this]() { onSaveOverwriteConfigClicked(); });
     rowCfg->addWidget(btnSaveCfgAdv_, 1);
 
     btnReloadCfg_ = new QPushButton(QStringLiteral("Reload Saved Config"), engCard);
     btnReloadCfg_->setObjectName(QStringLiteral("CompactBtn"));
-    btnReloadCfg_->setToolTip(QStringLiteral("Reload Saved Config — Re-reads ~/.config/lwasapi/salsa_settings.json and reapplies saved settings to the daemon and Studio UI."));
+    btnReloadCfg_->setToolTip(QStringLiteral("Reload Saved Config — Re-reads ~/.config/lasapi/salsa_settings.json and reapplies saved settings to the daemon and Studio UI."));
     connect(btnReloadCfg_, &QPushButton::clicked, this, [this]() { onReloadConfigClicked(); });
     rowCfg->addWidget(btnReloadCfg_);
 
     btnOpenCfgAdv_ = new QPushButton(QStringLiteral("Open Config File"), engCard);
     btnOpenCfgAdv_->setObjectName(QStringLiteral("CompactBtn"));
-    btnOpenCfgAdv_->setToolTip(QStringLiteral("Open Config File — Opens ~/.config/lwasapi/salsa_settings.json in your system editor; click Reload Saved Config after making manual edits."));
+    btnOpenCfgAdv_->setToolTip(QStringLiteral("Open Config File — Opens ~/.config/lasapi/salsa_settings.json in your system editor; click Reload Saved Config after making manual edits."));
     connect(btnOpenCfgAdv_, &QPushButton::clicked, this, [this]() { onOpenConfigFileClicked(); });
     rowCfg->addWidget(btnOpenCfgAdv_);
     ecLay->addLayout(rowCfg);
@@ -1839,7 +1839,7 @@ void StudioController::buildAdvancedWindow() {
 
     btnSaveHw_ = new QPushButton(QStringLiteral("Save Settings"), hwaCard);
     btnSaveHw_->setObjectName(QStringLiteral("PrimaryBtn"));
-    btnSaveHw_->setToolTip(QStringLiteral("Save & Overwrite Settings (Ctrl+S) — Pushes Hardware Analog Stage and all Studio settings directly into ~/.config/lwasapi/salsa_settings.json."));
+    btnSaveHw_->setToolTip(QStringLiteral("Save & Overwrite Settings (Ctrl+S) — Pushes Hardware Analog Stage and all Studio settings directly into ~/.config/lasapi/salsa_settings.json."));
     connect(btnSaveHw_, &QPushButton::clicked, this, [this]() { onSaveOverwriteConfigClicked(); });
     haR3->addWidget(btnSaveHw_);
     haLay->addLayout(haR3);
@@ -3216,7 +3216,7 @@ void StudioController::pollEngine(bool initial) {
     }
 
     if (!gotSt) {
-        lblEndpoints_->setText(QStringLiteral("Audio engine offline — start lwasapi-audiodg.service to manage live streams"));
+        lblEndpoints_->setText(QStringLiteral("Audio engine offline — start lasapi-audiodg.service to manage live streams"));
         if (pollTimer_ && pollTimer_->interval() != 450) pollTimer_->setInterval(450);
         return;
     }
@@ -3667,7 +3667,7 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     salsa::syncResolvedPlatformEnv();
     app.setApplicationName(QStringLiteral("salsa-studio"));
-    app.setDesktopFileName(QStringLiteral("salsa-lwasapi"));
+    app.setDesktopFileName(QStringLiteral("salsa-lasapi"));
 
     salsa::StudioController ctrl(forceStudio);
     ctrl.start(forceStudio, forceTopology, forceAdvanced, forceThemeStudio, forceAbout);

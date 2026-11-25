@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -25,10 +25,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, LwasapiDbgPaSnapshot, LwasapiDeviceList, LwasapiEngineStatus,
-    LwasapiPaCallbacks, LWASAPI_DBG_INFO, LWASAPI_DBG_PA, LWASAPI_DBG_TRACE, LWASAPI_DBG_WARN,
-    LWASAPI_DEBUG_MAX_PA_CLIENTS, LWASAPI_DEBUG_MAX_PA_STREAMS, LWASAPI_MAX_DEVICES,
-    LWASAPI_MAX_SESSIONS,
+    c_str_to_string, copy_str_to_c, LasapiDbgPaSnapshot, LasapiDeviceList, LasapiEngineStatus,
+    LasapiPaCallbacks, LASAPI_DBG_INFO, LASAPI_DBG_PA, LASAPI_DBG_TRACE, LASAPI_DBG_WARN,
+    LASAPI_DEBUG_MAX_PA_CLIENTS, LASAPI_DEBUG_MAX_PA_STREAMS, LASAPI_MAX_DEVICES,
+    LASAPI_MAX_SESSIONS,
 };
 use crate::failsafe;
 use crate::pa_wire::{
@@ -327,7 +327,7 @@ impl PaRtStream {
     }
 }
 
-struct PaWasapiRtSlot {
+struct PaLasapiRtSlot {
     active: AtomicBool,
     session_id: AtomicU32,
     pa_stream_idx: AtomicU32,
@@ -344,7 +344,7 @@ struct PaWasapiRtSlot {
     period_r: Vec<AtomicU32>,
 }
 
-impl PaWasapiRtSlot {
+impl PaLasapiRtSlot {
     fn new() -> Self {
         let mut period_l = Vec::with_capacity(PA_MAX_DOI_PERIOD);
         let mut period_r = Vec::with_capacity(PA_MAX_DOI_PERIOD);
@@ -373,9 +373,9 @@ impl PaWasapiRtSlot {
 
 struct PaRtShared {
     streams: Vec<PaRtStream>,
-    wasapi_slots: Vec<PaWasapiRtSlot>,
+    lasapi_slots: Vec<PaLasapiRtSlot>,
     has_active_doi: AtomicBool,
-    wasapi_doi_mask: AtomicU32,
+    lasapi_doi_mask: AtomicU32,
     mon_vol_milli: AtomicU32,
     mon_muted: AtomicI32,
     dom_stream_rate: AtomicU32,
@@ -389,15 +389,15 @@ impl PaRtShared {
         for _ in 0..PA_MAX_STREAMS {
             streams.push(PaRtStream::new());
         }
-        let mut wasapi_slots = Vec::with_capacity(LWASAPI_MAX_SESSIONS);
-        for _ in 0..LWASAPI_MAX_SESSIONS {
-            wasapi_slots.push(PaWasapiRtSlot::new());
+        let mut lasapi_slots = Vec::with_capacity(LASAPI_MAX_SESSIONS);
+        for _ in 0..LASAPI_MAX_SESSIONS {
+            lasapi_slots.push(PaLasapiRtSlot::new());
         }
         Self {
             streams,
-            wasapi_slots,
+            lasapi_slots,
             has_active_doi: AtomicBool::new(false),
-            wasapi_doi_mask: AtomicU32::new(0),
+            lasapi_doi_mask: AtomicU32::new(0),
             mon_vol_milli: AtomicU32::new(1000),
             mon_muted: AtomicI32::new(0),
             dom_stream_rate: AtomicU32::new(0),
@@ -421,7 +421,7 @@ impl PaRtShared {
         self.has_active_doi.store(any_doi, Ordering::Release);
 
         let mut wmask = 0u32;
-        for (slot_idx, ws) in self.wasapi_slots.iter().enumerate() {
+        for (slot_idx, ws) in self.lasapi_slots.iter().enumerate() {
             let w_idx = ws.pa_stream_idx.load(Ordering::Acquire);
             let watched = any_doi
                 && ws.active.load(Ordering::Acquire)
@@ -438,7 +438,7 @@ impl PaRtShared {
                 wmask |= 1u32 << slot_idx;
             }
         }
-        self.wasapi_doi_mask.store(wmask, Ordering::Release);
+        self.lasapi_doi_mask.store(wmask, Ordering::Release);
     }
 
     #[inline]
@@ -616,9 +616,9 @@ impl PaClient {
                         | CMD_GET_RECORD_LATENCY
                 ));
         let lvl = if benign_race {
-            LWASAPI_DBG_TRACE
+            LASAPI_DBG_TRACE
         } else {
-            LWASAPI_DBG_WARN
+            LASAPI_DBG_WARN
         };
         let tgt = if self.name.is_empty() {
             "pa-client"
@@ -626,7 +626,7 @@ impl PaClient {
             &self.name
         };
         dbg_emit_vals(
-            LWASAPI_DBG_PA,
+            LASAPI_DBG_PA,
             lvl,
             self.pid,
             self.index,
@@ -693,7 +693,7 @@ struct AppVolEntry {
 }
 
 #[derive(Clone, Default)]
-struct WasapiPaProxyMeta {
+struct LasapiPaProxyMeta {
     active: bool,
     session_id: u32,
     pa_stream_idx: u32,
@@ -710,20 +710,20 @@ struct WasapiPaProxyMeta {
 }
 
 struct PaState {
-    cbs: LwasapiPaCallbacks,
+    cbs: LasapiPaCallbacks,
     _sock_path: String,
     _pid_path: String,
     cookie: [u8; PA_NATIVE_COOKIE_LEN],
     cookie_valid: bool,
     clients: Vec<PaClient>,
     streams: Vec<PaStreamMeta>,
-    wasapi_proxies: Vec<WasapiPaProxyMeta>,
+    lasapi_proxies: Vec<LasapiPaProxyMeta>,
     next_client_idx: u32,
     next_stream_idx: u32,
     stable_ids: Vec<StableId>,
     next_fac_idx: [u32; 3],
-    cached_status: LwasapiEngineStatus,
-    cached_devices: LwasapiDeviceList,
+    cached_status: LasapiEngineStatus,
+    cached_devices: LasapiDeviceList,
     devices_cache_valid: bool,
     sink_pa_vol_valid: bool,
     sink_pa_vol: u32,
@@ -737,13 +737,13 @@ struct PaState {
 }
 
 impl PaState {
-    fn new(cbs: LwasapiPaCallbacks, sock_path: String, pid_path: String) -> Self {
+    fn new(cbs: LasapiPaCallbacks, sock_path: String, pid_path: String) -> Self {
         let mut clients = Vec::with_capacity(PA_MAX_CLIENTS);
         for s in 0..PA_MAX_CLIENTS {
             clients.push(PaClient::new(s));
         }
         let streams = vec![PaStreamMeta::default(); PA_MAX_STREAMS];
-        let wasapi_proxies = vec![WasapiPaProxyMeta::default(); LWASAPI_MAX_SESSIONS];
+        let lasapi_proxies = vec![LasapiPaProxyMeta::default(); LASAPI_MAX_SESSIONS];
         let stable_ids = vec![StableId::default(); PA_MAX_STABLE_IDS];
         let mut st = Self {
             cbs,
@@ -753,7 +753,7 @@ impl PaState {
             cookie_valid: false,
             clients,
             streams,
-            wasapi_proxies,
+            lasapi_proxies,
             next_client_idx: 1,
             next_stream_idx: 1,
             stable_ids,
@@ -865,7 +865,7 @@ impl PaState {
     }
 
     fn cached_dev_count(&self) -> usize {
-        (self.cached_devices.num_devices as usize).min(LWASAPI_MAX_DEVICES)
+        (self.cached_devices.num_devices as usize).min(LASAPI_MAX_DEVICES)
     }
 
     fn get_default_sink_pa_name(&self) -> String {
@@ -1356,8 +1356,8 @@ impl PaState {
                 &self.clients[ci].name
             };
             dbg_emit_vals(
-                LWASAPI_DBG_PA,
-                LWASAPI_DBG_INFO,
+                LASAPI_DBG_PA,
+                LASAPI_DBG_INFO,
                 pid,
                 idx,
                 ver as i32,
@@ -1403,8 +1403,8 @@ impl PaState {
         None
     }
 
-    fn find_wasapi_proxy_by_stream_idx(&self, idx: u32) -> Option<usize> {
-        for (slot_idx, w) in self.wasapi_proxies.iter().enumerate() {
+    fn find_lasapi_proxy_by_stream_idx(&self, idx: u32) -> Option<usize> {
+        for (slot_idx, w) in self.lasapi_proxies.iter().enumerate() {
             if w.active && w.pa_stream_idx == idx {
                 return Some(slot_idx);
             }
@@ -1412,9 +1412,9 @@ impl PaState {
         None
     }
 
-    fn sync_wasapi_proxy_vol_from_rt(
-        w: &mut WasapiPaProxyMeta,
-        ws: &PaWasapiRtSlot,
+    fn sync_lasapi_proxy_vol_from_rt(
+        w: &mut LasapiPaProxyMeta,
+        ws: &PaLasapiRtSlot,
     ) -> (bool, bool) {
         let milli = ws.volume_milli.load(Ordering::Relaxed);
         let muted = ws.muted.load(Ordering::Relaxed);
@@ -1423,7 +1423,7 @@ impl PaState {
         (muted, false)
     }
 
-    fn register_wasapi_proxy(
+    fn register_lasapi_proxy(
         &mut self,
         slot_idx: usize,
         session_id: u32,
@@ -1433,14 +1433,14 @@ impl PaState {
         channels: u32,
         rt: &PaRtShared,
     ) {
-        if slot_idx >= LWASAPI_MAX_SESSIONS || slot_idx >= self.wasapi_proxies.len() {
+        if slot_idx >= LASAPI_MAX_SESSIONS || slot_idx >= self.lasapi_proxies.len() {
             return;
         }
-        if self.wasapi_proxies[slot_idx].active {
-            if self.wasapi_proxies[slot_idx].session_id == session_id {
+        if self.lasapi_proxies[slot_idx].active {
+            if self.lasapi_proxies[slot_idx].session_id == session_id {
                 return;
             }
-            self.unregister_wasapi_proxy(slot_idx, self.wasapi_proxies[slot_idx].session_id, rt);
+            self.unregister_lasapi_proxy(slot_idx, self.lasapi_proxies[slot_idx].session_id, rt);
         }
         self.refresh_device_cache();
         let active_sink = self.find_active_sink_idx();
@@ -1464,7 +1464,7 @@ impl PaState {
         let mut cprops = PaPropBag::default();
         cprops.set_kv("application.name", app_bin);
         cprops.set_kv("application.process.binary", app_bin);
-        cprops.set_kv("salsa.wasapi.session_id", &session_id.to_string());
+        cprops.set_kv("salsa.lasapi.session_id", &session_id.to_string());
         if pid > 0 {
             cprops.set_kv("application.process.id", &pid.to_string());
         }
@@ -1482,7 +1482,7 @@ impl PaState {
         let map = std_channel_map(ch_u8);
         let vol = milli_to_cvol(1000, ch_u8);
 
-        self.wasapi_proxies[slot_idx] = WasapiPaProxyMeta {
+        self.lasapi_proxies[slot_idx] = LasapiPaProxyMeta {
             active: true,
             session_id,
             pa_stream_idx,
@@ -1498,7 +1498,7 @@ impl PaState {
             stream_props: sprops,
         };
 
-        let ws = &rt.wasapi_slots[slot_idx];
+        let ws = &rt.lasapi_slots[slot_idx];
         ws.session_id.store(session_id, Ordering::Relaxed);
         ws.pa_stream_idx.store(pa_stream_idx, Ordering::Release);
         ws.volume_milli.store(1000, Ordering::Relaxed);
@@ -1516,24 +1516,24 @@ impl PaState {
         self.broadcast_sub_event(SUB_EVENT_CLIENT, SUB_EVENT_NEW, pa_client_idx);
         self.broadcast_sub_event(SUB_EVENT_SINK_INPUT, SUB_EVENT_NEW, pa_stream_idx);
         dbg_emit_vals(
-            LWASAPI_DBG_PA,
-            LWASAPI_DBG_INFO,
+            LASAPI_DBG_PA,
+            LASAPI_DBG_INFO,
             pid,
             10000 + pa_stream_idx,
             eff_rate as i32,
             i32::from(ch_u8),
             session_id as i32,
-            "PA_WASAPI_ADD",
+            "PA_LASAPI_ADD",
             clean_name,
-            &format!("pa_si=#{pa_stream_idx} pa_cid=#{pa_client_idx} wasapi_sid=#{session_id}"),
+            &format!("pa_si=#{pa_stream_idx} pa_cid=#{pa_client_idx} lasapi_sid=#{session_id}"),
         );
     }
 
-    fn unregister_wasapi_proxy(&mut self, slot_idx: usize, session_id: u32, rt: &PaRtShared) {
-        if slot_idx >= LWASAPI_MAX_SESSIONS || slot_idx >= self.wasapi_proxies.len() {
+    fn unregister_lasapi_proxy(&mut self, slot_idx: usize, session_id: u32, rt: &PaRtShared) {
+        if slot_idx >= LASAPI_MAX_SESSIONS || slot_idx >= self.lasapi_proxies.len() {
             return;
         }
-        let w = &self.wasapi_proxies[slot_idx];
+        let w = &self.lasapi_proxies[slot_idx];
         if !w.active || (session_id != 0 && w.session_id != session_id) {
             return;
         }
@@ -1542,28 +1542,28 @@ impl PaState {
         let pid = w.client_pid;
         let nm = w.stream_name.clone();
 
-        let ws = &rt.wasapi_slots[slot_idx];
+        let ws = &rt.lasapi_slots[slot_idx];
         ws.active.store(false, Ordering::Release);
         ws.doi_watched.store(false, Ordering::Release);
         ws.period_frames.store(0, Ordering::Relaxed);
         ws.pa_stream_idx.store(PA_INVALID_INDEX, Ordering::Release);
         ws.session_id.store(0, Ordering::Relaxed);
-        self.wasapi_proxies[slot_idx] = WasapiPaProxyMeta::default();
+        self.lasapi_proxies[slot_idx] = LasapiPaProxyMeta::default();
         rt.sync_active_doi();
 
         self.broadcast_sub_event(SUB_EVENT_SINK_INPUT, SUB_EVENT_REMOVE, pa_stream_idx);
         self.broadcast_sub_event(SUB_EVENT_CLIENT, SUB_EVENT_REMOVE, pa_client_idx);
         dbg_emit_vals(
-            LWASAPI_DBG_PA,
-            LWASAPI_DBG_INFO,
+            LASAPI_DBG_PA,
+            LASAPI_DBG_INFO,
             pid,
             10000 + pa_stream_idx,
             0,
             0,
             session_id as i32,
-            "PA_WASAPI_DEL",
+            "PA_LASAPI_DEL",
             &nm,
-            &format!("pa_si=#{pa_stream_idx} pa_cid=#{pa_client_idx} wasapi_sid=#{session_id}"),
+            &format!("pa_si=#{pa_stream_idx} pa_cid=#{pa_client_idx} lasapi_sid=#{session_id}"),
         );
     }
 
@@ -1893,8 +1893,8 @@ impl PaState {
                 &self.clients[ci].name
             };
             dbg_emit_vals(
-                LWASAPI_DBG_PA,
-                LWASAPI_DBG_TRACE,
+                LASAPI_DBG_PA,
+                LASAPI_DBG_TRACE,
                 pid,
                 idx,
                 cmd as i32,
@@ -1933,8 +1933,8 @@ impl PaState {
             self.clients[ci].version = cver & 0xFFFF;
             self.clients[ci].authed = true;
             dbg_emit_vals(
-                LWASAPI_DBG_PA,
-                LWASAPI_DBG_INFO,
+                LASAPI_DBG_PA,
+                LASAPI_DBG_INFO,
                 self.clients[ci].pid,
                 self.clients[ci].index,
                 self.clients[ci].version as i32,
@@ -1991,8 +1991,8 @@ impl PaState {
                     &self.clients[ci].name
                 };
                 dbg_emit_vals(
-                    LWASAPI_DBG_PA,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_PA,
+                    LASAPI_DBG_INFO,
                     self.clients[ci].pid,
                     self.clients[ci].index,
                     self.clients[ci].version as i32,
@@ -2028,7 +2028,7 @@ impl PaState {
                 };
                 let mp = std_channel_map(2);
                 let mut tb = TagBuilder::begin_reply(tag, 512);
-                tb.put_str(Some("PulseAudio (on Salsa LWASAPI 1.0)"));
+                tb.put_str(Some("PulseAudio (on Salsa LASAPI 1.0)"));
                 tb.put_str(Some("15.0.0"));
                 tb.put_str(Some(&uname));
                 tb.put_str(Some(&hname));
@@ -2353,14 +2353,14 @@ impl PaState {
                 let ver = self.clients[ci].version;
                 let mut tb = TagBuilder::begin_reply(tag, 256);
                 tb.put_u32(PA_TAG_U32, 0);
-                tb.put_str(Some("module-salsa-lwasapi"));
+                tb.put_str(Some("module-salsa-lasapi"));
                 tb.put_str(Some("backend=kernel_alsa+native_bluez"));
                 tb.put_u32(PA_TAG_U32, PA_INVALID_INDEX);
                 if ver < 15 {
                     tb.put_bool(false);
                 } else {
                     let mut pb = PaPropBag::default();
-                    pb.set_kv("module.description", "Salsa LWASAPI Direct Audio & BlueZ Server");
+                    pb.set_kv("module.description", "Salsa LASAPI Direct Audio & BlueZ Server");
                     tb.put_proplist(Some(&pb));
                 }
                 self.clients[ci].queue_tb(tb);
@@ -2392,7 +2392,7 @@ impl PaState {
                     put_client_fields(&mut tb, ver, cl.index, nm, &cl.props);
                     added += 1;
                 }
-                for w in &self.wasapi_proxies {
+                for w in &self.lasapi_proxies {
                     if !w.active {
                         continue;
                     }
@@ -2438,7 +2438,7 @@ impl PaState {
                     added += 1;
                 }
                 let active_sink = self.find_active_sink_idx();
-                for (slot_idx, w) in self.wasapi_proxies.iter_mut().enumerate() {
+                for (slot_idx, w) in self.lasapi_proxies.iter_mut().enumerate() {
                     if !w.active {
                         continue;
                     }
@@ -2447,7 +2447,7 @@ impl PaState {
                     }
                     w.target_dev_idx = active_sink;
                     let (muted, corked) =
-                        Self::sync_wasapi_proxy_vol_from_rt(w, &rt.wasapi_slots[slot_idx]);
+                        Self::sync_lasapi_proxy_vol_from_rt(w, &rt.lasapi_slots[slot_idx]);
                     let nm = if w.stream_name.is_empty() {
                         w.client_name.as_str()
                     } else {
@@ -2598,8 +2598,8 @@ impl PaState {
                         &self.clients[ci].name
                     };
                     dbg_emit_vals(
-                        LWASAPI_DBG_PA,
-                        LWASAPI_DBG_INFO,
+                        LASAPI_DBG_PA,
+                        LASAPI_DBG_INFO,
                         self.clients[ci].pid,
                         tgt_idx,
                         pct,
@@ -2692,13 +2692,13 @@ impl PaState {
                         idx,
                     );
                 } else if cmd == CMD_SET_SINK_INPUT_VOLUME {
-                    let Some(wi) = self.find_wasapi_proxy_by_stream_idx(idx) else {
+                    let Some(wi) = self.find_lasapi_proxy_by_stream_idx(idx) else {
                         self.clients[ci].reply_err(tag, ERR_NOENTITY);
                         return;
                     };
                     let milli = cvol_to_milli(&cv).min(1500);
-                    self.wasapi_proxies[wi].vol = cv;
-                    let ws = &rt.wasapi_slots[wi];
+                    self.lasapi_proxies[wi].vol = cv;
+                    let ws = &rt.lasapi_slots[wi];
                     ws.volume_milli.store(milli, Ordering::Relaxed);
                     ws.pa_target_vol_milli.store(milli, Ordering::Relaxed);
                     ws.pa_target_muted
@@ -2734,11 +2734,11 @@ impl PaState {
                         idx,
                     );
                 } else if cmd == CMD_SET_SINK_INPUT_MUTE {
-                    let Some(wi) = self.find_wasapi_proxy_by_stream_idx(idx) else {
+                    let Some(wi) = self.find_lasapi_proxy_by_stream_idx(idx) else {
                         self.clients[ci].reply_err(tag, ERR_NOENTITY);
                         return;
                     };
-                    let ws = &rt.wasapi_slots[wi];
+                    let ws = &rt.lasapi_slots[wi];
                     ws.muted.store(mute, Ordering::Relaxed);
                     ws.pa_target_vol_milli
                         .store(ws.volume_milli.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -3039,8 +3039,8 @@ impl PaState {
                 self.clients[ci].queue_tb(tb);
 
                 dbg_emit_vals(
-                    LWASAPI_DBG_PA,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_PA,
+                    LASAPI_DBG_INFO,
                     self.clients[ci].pid,
                     10000 + sidx,
                     srate as i32,
@@ -3149,8 +3149,8 @@ impl PaState {
                             return;
                         }
                         self.streams[target_si].target_dev_idx
-                    } else if let Some(target_wi) = self.find_wasapi_proxy_by_stream_idx(doi) {
-                        let d = self.wasapi_proxies[target_wi].target_dev_idx;
+                    } else if let Some(target_wi) = self.find_lasapi_proxy_by_stream_idx(doi) {
+                        let d = self.lasapi_proxies[target_wi].target_dev_idx;
                         if d != PA_INVALID_INDEX {
                             d
                         } else {
@@ -3299,8 +3299,8 @@ impl PaState {
                 self.clients[ci].queue_tb(tb);
 
                 dbg_emit_vals(
-                    LWASAPI_DBG_PA,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_PA,
+                    LASAPI_DBG_INFO,
                     self.clients[ci].pid,
                     10000 + sidx,
                     s_rate as i32,
@@ -3332,8 +3332,8 @@ impl PaState {
                     self.streams[si].name.clone()
                 };
                 dbg_emit_vals(
-                    LWASAPI_DBG_PA,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_PA,
+                    LASAPI_DBG_INFO,
                     self.clients[ci].pid,
                     10000 + sidx,
                     i32::from(is_pb),
@@ -3378,8 +3378,8 @@ impl PaState {
                     self.streams[si].name.clone()
                 };
                 dbg_emit_vals(
-                    LWASAPI_DBG_PA,
-                    LWASAPI_DBG_INFO,
+                    LASAPI_DBG_PA,
+                    LASAPI_DBG_INFO,
                     self.clients[ci].pid,
                     10000 + sidx,
                     i32::from(cork),
@@ -3650,7 +3650,7 @@ impl PaState {
                 let dev_nm =
                     nm_opt.map(|(o, l)| String::from_utf8_lossy(&buf[o..o + l]).into_owned());
                 if cmd == CMD_MOVE_SINK_INPUT {
-                    if let Some(wi) = self.find_wasapi_proxy_by_stream_idx(sidx) {
+                    if let Some(wi) = self.find_lasapi_proxy_by_stream_idx(sidx) {
                         self.refresh_device_cache();
                         let Some((resolved_idx, _)) =
                             self.resolve_sink_idx_and_name(dev_idx, dev_nm.as_deref())
@@ -3658,7 +3658,7 @@ impl PaState {
                             self.clients[ci].reply_err(tag, ERR_NOENTITY);
                             return;
                         };
-                        self.wasapi_proxies[wi].target_dev_idx = resolved_idx;
+                        self.lasapi_proxies[wi].target_dev_idx = resolved_idx;
                         self.clients[ci].reply_simple_ack(tag);
                         self.broadcast_sub_event(SUB_EVENT_SINK_INPUT, SUB_EVENT_CHANGE, sidx);
                         return;
@@ -3720,7 +3720,7 @@ impl PaState {
                     self.clients[ci].reply_err(tag, ERR_PROTOCOL);
                     return;
                 };
-                if cmd == CMD_KILL_SINK_INPUT && self.find_wasapi_proxy_by_stream_idx(idx).is_some() {
+                if cmd == CMD_KILL_SINK_INPUT && self.find_lasapi_proxy_by_stream_idx(idx).is_some() {
                     self.clients[ci].reply_err(tag, ERR_ACCESS);
                     return;
                 }
@@ -3896,8 +3896,8 @@ pub struct PaServerHandle {
     thread: Option<JoinHandle<()>>,
 }
 
-fn collect_pa_facility_ids(dl: &LwasapiDeviceList, facility: u32) -> Vec<String> {
-    let ndev = (dl.num_devices as usize).min(LWASAPI_MAX_DEVICES);
+fn collect_pa_facility_ids(dl: &LasapiDeviceList, facility: u32) -> Vec<String> {
+    let ndev = (dl.num_devices as usize).min(LASAPI_MAX_DEVICES);
     let mut out = Vec::new();
     match facility {
         SUB_EVENT_SINK => {
@@ -3943,8 +3943,8 @@ fn collect_pa_facility_ids(dl: &LwasapiDeviceList, facility: u32) -> Vec<String>
 fn emit_facility_diff(
     st: &mut PaState,
     facility: u32,
-    old_dl: &LwasapiDeviceList,
-    new_dl: &LwasapiDeviceList,
+    old_dl: &LasapiDeviceList,
+    new_dl: &LasapiDeviceList,
     active_idx: u32,
 ) {
     let old_ids = collect_pa_facility_ids(old_dl, facility);
@@ -4188,7 +4188,7 @@ fn init_app_vols_path() -> String {
     let uid = current_uid();
     let cfg_dir = format!("{home}/.config");
     let _ = ensure_owned_dir_0700(&cfg_dir, uid);
-    let app_dir = format!("{cfg_dir}/lwasapi");
+    let app_dir = format!("{cfg_dir}/lasapi");
     let _ = ensure_owned_dir_0700(&app_dir, uid);
     format!("{app_dir}/app_volumes.conf")
 }
@@ -4624,7 +4624,7 @@ fn put_sink_entry(
     tb.put_u32(PA_TAG_U32, mon_src_idx);
     tb.put_str(Some(&mon_name));
     tb.put_u64_raw(PA_TAG_USEC, if is_bt { 20000 } else { 2000 });
-    tb.put_str(Some("Salsa-LWASAPI"));
+    tb.put_str(Some("Salsa-LASAPI"));
     tb.put_u32(PA_TAG_U32, flags);
     if ver >= 13 {
         let mut pb = PaPropBag::default();
@@ -4632,7 +4632,7 @@ fn put_sink_entry(
         pb.set_kv("device.class", "sound");
         pb.set_kv("device.api", if is_bt { "bluez" } else { "alsa" });
         pb.set_kv("salsa.device.id", salsa_id);
-        pb.set_kv("node.driver", "lwasapi-audiodg");
+        pb.set_kv("node.driver", "lasapi-audiodg");
         tb.put_proplist(Some(&pb));
         tb.put_u64_raw(PA_TAG_USEC, 2000);
     }
@@ -4709,7 +4709,7 @@ fn put_source_entry(
     tb.put_u32(PA_TAG_U32, mon_of_sink_idx);
     tb.put_str(mon_of_sink_name);
     tb.put_u64_raw(PA_TAG_USEC, 2000);
-    tb.put_str(Some("Salsa-LWASAPI"));
+    tb.put_str(Some("Salsa-LASAPI"));
     tb.put_u32(PA_TAG_U32, flags);
     if ver >= 13 {
         let mut pb = PaPropBag::default();
@@ -4757,8 +4757,8 @@ fn put_card_entry(
     tb: &mut TagBuilder,
     ver: u32,
     card_idx: u32,
-    dl: &LwasapiDeviceList,
-    d: &crate::c_abi::LwasapiDeviceEntry,
+    dl: &LasapiDeviceList,
+    d: &crate::c_abi::LasapiDeviceEntry,
 ) {
     let did = c_str_to_string(&d.id);
     let dname = c_str_to_string(&d.name);
@@ -4776,7 +4776,7 @@ fn put_card_entry(
 
     let mut has_pb = false;
     let mut has_cap = false;
-    let ndev = (dl.num_devices as usize).min(LWASAPI_MAX_DEVICES);
+    let ndev = (dl.num_devices as usize).min(LASAPI_MAX_DEVICES);
     for dev in &dl.devices[..ndev] {
         if c_str_to_string(&dev.id) == did {
             if dev.is_capture != 0 {
@@ -4892,7 +4892,7 @@ fn put_client_fields(tb: &mut TagBuilder, ver: u32, idx: u32, name: &str, props:
     tb.put_u32(PA_TAG_U32, idx);
     tb.put_str(Some(name));
     tb.put_u32(PA_TAG_U32, 0);
-    tb.put_str(Some("Salsa-LWASAPI"));
+    tb.put_str(Some("Salsa-LASAPI"));
     if ver >= 13 {
         tb.put_proplist(Some(props));
     }
@@ -4923,7 +4923,7 @@ fn put_sink_input_fields(
     tb.put_u64_raw(PA_TAG_USEC, 2000);
     tb.put_u64_raw(PA_TAG_USEC, 2000);
     tb.put_str(Some("linear"));
-    tb.put_str(Some("Salsa-LWASAPI"));
+    tb.put_str(Some("Salsa-LASAPI"));
     if ver >= 11 {
         tb.put_bool(muted);
     }
@@ -4996,7 +4996,7 @@ fn put_source_output_entry(
     tb.put_u64_raw(PA_TAG_USEC, 2000);
     tb.put_u64_raw(PA_TAG_USEC, 2000);
     tb.put_str(Some("linear"));
-    tb.put_str(Some("Salsa-LWASAPI"));
+    tb.put_str(Some("Salsa-LASAPI"));
     if ver >= 13 {
         tb.put_proplist(Some(&s.props));
     }
@@ -5162,9 +5162,9 @@ fn bind_loopback_tcp_and_write_port(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_start(
+pub unsafe extern "C" fn lasapi_pa_server_start(
     out_srv: *mut *mut PaServerHandle,
-    cbs: LwasapiPaCallbacks,
+    cbs: LasapiPaCallbacks,
 ) -> c_int {
     if out_srv.is_null() {
         return -1;
@@ -5261,7 +5261,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_start(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_stop(srv: *mut PaServerHandle) {
+pub unsafe extern "C" fn lasapi_pa_server_stop(srv: *mut PaServerHandle) {
     if srv.is_null() {
         return;
     }
@@ -5306,7 +5306,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_stop(srv: *mut PaServerHandle) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_notify_change(srv: *mut PaServerHandle) {
+pub unsafe extern "C" fn lasapi_pa_server_notify_change(srv: *mut PaServerHandle) {
     if srv.is_null() {
         return;
     }
@@ -5314,8 +5314,8 @@ pub unsafe extern "C" fn lwasapi_pa_server_notify_change(srv: *mut PaServerHandl
     if !h.running.load(Ordering::Relaxed) {
         return;
     }
-    let mut new_st: LwasapiEngineStatus = unsafe { mem::zeroed() };
-    let mut new_dl: LwasapiDeviceList = unsafe { mem::zeroed() };
+    let mut new_st: LasapiEngineStatus = unsafe { mem::zeroed() };
+    let mut new_dl: LasapiDeviceList = unsafe { mem::zeroed() };
     let (cbs_get_st, cbs_get_dl, ctx) = {
         let st = h.state.lock().unwrap_or_else(|p| p.into_inner());
         (st.cbs.get_status, st.cbs.get_devices, st.cbs.user_ctx)
@@ -5376,18 +5376,18 @@ pub unsafe extern "C" fn lwasapi_pa_server_notify_change(srv: *mut PaServerHandl
                 st.stream_update_device_id(si);
             }
         }
-        let mut changed_wasapi: [u32; LWASAPI_MAX_SESSIONS] = [0; LWASAPI_MAX_SESSIONS];
+        let mut changed_lasapi: [u32; LASAPI_MAX_SESSIONS] = [0; LASAPI_MAX_SESSIONS];
         let mut cw_cnt = 0usize;
-        for w in &mut st.wasapi_proxies {
+        for w in &mut st.lasapi_proxies {
             if w.active && w.target_dev_idx != sink_idx {
                 w.target_dev_idx = sink_idx;
-                if cw_cnt < changed_wasapi.len() {
-                    changed_wasapi[cw_cnt] = w.pa_stream_idx;
+                if cw_cnt < changed_lasapi.len() {
+                    changed_lasapi[cw_cnt] = w.pa_stream_idx;
                     cw_cnt += 1;
                 }
             }
         }
-        for &w_idx in &changed_wasapi[..cw_cnt] {
+        for &w_idx in &changed_lasapi[..cw_cnt] {
             st.broadcast_sub_event(SUB_EVENT_SINK_INPUT, SUB_EVENT_CHANGE, w_idx);
         }
         st.broadcast_sub_event(SUB_EVENT_SERVER, SUB_EVENT_CHANGE, PA_INVALID_INDEX);
@@ -5396,7 +5396,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_notify_change(srv: *mut PaServerHandl
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_notify_volume(
+pub unsafe extern "C" fn lasapi_pa_server_notify_volume(
     srv: *mut PaServerHandle,
     is_capture: bool,
 ) {
@@ -5407,7 +5407,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_notify_volume(
     if !h.running.load(Ordering::Relaxed) {
         return;
     }
-    let mut new_st: LwasapiEngineStatus = unsafe { mem::zeroed() };
+    let mut new_st: LasapiEngineStatus = unsafe { mem::zeroed() };
     let (get_st, ctx) = {
         let st = h.state.lock().unwrap_or_else(|p| p.into_inner());
         (st.cbs.get_status, st.cbs.user_ctx)
@@ -5442,7 +5442,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_notify_volume(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_mix_playback(
+pub unsafe extern "C" fn lasapi_pa_server_mix_playback(
     srv: *mut PaServerHandle,
     stereo_out_ptr: *mut f32,
     frames: u32,
@@ -5673,7 +5673,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_mix_playback(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_push_capture(
+pub unsafe extern "C" fn lasapi_pa_server_push_capture(
     srv: *mut PaServerHandle,
     mic_ptr: *const f32,
     mic_frames: u32,
@@ -5729,7 +5729,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_push_capture(
         let mut doi_r = 0.0f32;
         enum DoiSource<'a> {
             Pa(&'a PaRtStream),
-            Wasapi(&'a PaWasapiRtSlot),
+            Lasapi(&'a PaLasapiRtSlot),
         }
         let mut doi_stream_ref: Option<DoiSource<'_>> = None;
         let mut src_slice = if is_mon { mon_slice } else { mic_slice };
@@ -5750,14 +5750,14 @@ pub unsafe extern "C" fn lwasapi_pa_server_push_capture(
                 }
             }
             if doi_stream_ref.is_none() {
-                for ws in &h.rt.wasapi_slots {
+                for ws in &h.rt.lasapi_slots {
                     if ws.active.load(Ordering::Acquire)
                         && ws.pa_stream_idx.load(Ordering::Acquire) == doi
                     {
                         doi_l = f32::from_bits(ws.mix_peak_l.load(Ordering::Relaxed));
                         doi_r = f32::from_bits(ws.mix_peak_r.load(Ordering::Relaxed));
                         if !peak_detect && ws.period_frames.load(Ordering::Acquire) >= frames {
-                            doi_stream_ref = Some(DoiSource::Wasapi(ws));
+                            doi_stream_ref = Some(DoiSource::Lasapi(ws));
                         }
                         break;
                     }
@@ -5774,7 +5774,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_push_capture(
             if let Some(ref ds) = doi_stream_ref {
                 let (pl, pr) = match ds {
                     DoiSource::Pa(s) => (&s.period_l, &s.period_r),
-                    DoiSource::Wasapi(w) => (&w.period_l, &w.period_r),
+                    DoiSource::Lasapi(w) => (&w.period_l, &w.period_r),
                 };
                 if idx < pl.len() {
                     return Some((
@@ -5938,9 +5938,9 @@ pub unsafe extern "C" fn lwasapi_pa_server_push_capture(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_fill_sessions(
+pub unsafe extern "C" fn lasapi_pa_server_fill_sessions(
     srv: *mut PaServerHandle,
-    st_ptr: *mut LwasapiEngineStatus,
+    st_ptr: *mut LasapiEngineStatus,
     out_num_clients: *mut u32,
 ) {
     if srv.is_null() || st_ptr.is_null() {
@@ -5958,7 +5958,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_fill_sessions(
         unsafe { *out_num_clients = nc };
     }
     for si in 0..PA_MAX_STREAMS {
-        if out.num_sessions as usize >= LWASAPI_MAX_SESSIONS {
+        if out.num_sessions as usize >= LASAPI_MAX_SESSIONS {
             break;
         }
         let s = &st.streams[si];
@@ -5997,7 +5997,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_fill_sessions(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_control_stream(
+pub unsafe extern "C" fn lasapi_pa_server_control_stream(
     srv: *mut PaServerHandle,
     session_id: u32,
     mut vol_pct: i32,
@@ -6119,16 +6119,16 @@ pub unsafe extern "C" fn lwasapi_pa_server_control_stream(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_set_stream_volume(
+pub unsafe extern "C" fn lasapi_pa_server_set_stream_volume(
     srv: *mut PaServerHandle,
     session_id: u32,
     vol_pct: u32,
 ) -> c_int {
-    unsafe { lwasapi_pa_server_control_stream(srv, session_id, vol_pct as i32, -1, core::ptr::null()) }
+    unsafe { lasapi_pa_server_control_stream(srv, session_id, vol_pct as i32, -1, core::ptr::null()) }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_get_dominant_rate(
+pub unsafe extern "C" fn lasapi_pa_server_get_dominant_rate(
     srv: *mut PaServerHandle,
     out_bits: *mut u32,
 ) -> u32 {
@@ -6146,9 +6146,9 @@ pub unsafe extern "C" fn lwasapi_pa_server_get_dominant_rate(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_fill_debug(
+pub unsafe extern "C" fn lasapi_pa_server_fill_debug(
     srv: *mut PaServerHandle,
-    out_ptr: *mut LwasapiDbgPaSnapshot,
+    out_ptr: *mut LasapiDbgPaSnapshot,
 ) {
     if out_ptr.is_null() {
         return;
@@ -6162,7 +6162,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_fill_debug(
     let st = h.state.lock().unwrap_or_else(|p| p.into_inner());
 
     for c in &st.clients {
-        if out.num_clients as usize >= LWASAPI_DEBUG_MAX_PA_CLIENTS {
+        if out.num_clients as usize >= LASAPI_DEBUG_MAX_PA_CLIENTS {
             break;
         }
         if !c.in_use {
@@ -6182,7 +6182,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_fill_debug(
     }
 
     for si in 0..PA_MAX_STREAMS {
-        if out.num_streams as usize >= LWASAPI_DEBUG_MAX_PA_STREAMS {
+        if out.num_streams as usize >= LASAPI_DEBUG_MAX_PA_STREAMS {
             break;
         }
         let s = &st.streams[si];
@@ -6229,7 +6229,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_fill_debug(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_reset_clients(srv: *mut PaServerHandle) -> c_int {
+pub unsafe extern "C" fn lasapi_pa_server_reset_clients(srv: *mut PaServerHandle) -> c_int {
     if srv.is_null() {
         return 0;
     }
@@ -6249,7 +6249,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_reset_clients(srv: *mut PaServerHandl
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_register_wasapi_session(
+pub unsafe extern "C" fn lasapi_pa_server_register_lasapi_session(
     srv: *mut PaServerHandle,
     slot_idx: u32,
     session_id: u32,
@@ -6258,7 +6258,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_register_wasapi_session(
     rate: u32,
     channels: u32,
 ) {
-    if srv.is_null() || (slot_idx as usize) >= LWASAPI_MAX_SESSIONS {
+    if srv.is_null() || (slot_idx as usize) >= LASAPI_MAX_SESSIONS {
         return;
     }
     let h = unsafe { &*srv };
@@ -6269,7 +6269,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_register_wasapi_session(
     };
     {
         let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
-        st.register_wasapi_proxy(
+        st.register_lasapi_proxy(
             slot_idx as usize,
             session_id,
             pid,
@@ -6283,31 +6283,31 @@ pub unsafe extern "C" fn lwasapi_pa_server_register_wasapi_session(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_unregister_wasapi_session(
+pub unsafe extern "C" fn lasapi_pa_server_unregister_lasapi_session(
     srv: *mut PaServerHandle,
     slot_idx: u32,
     session_id: u32,
 ) {
-    if srv.is_null() || (slot_idx as usize) >= LWASAPI_MAX_SESSIONS {
+    if srv.is_null() || (slot_idx as usize) >= LASAPI_MAX_SESSIONS {
         return;
     }
     let h = unsafe { &*srv };
     {
         let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
-        st.unregister_wasapi_proxy(slot_idx as usize, session_id, &h.rt);
+        st.unregister_lasapi_proxy(slot_idx as usize, session_id, &h.rt);
     }
     h.rt.signal_wake();
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_update_wasapi_session_vol(
+pub unsafe extern "C" fn lasapi_pa_server_update_lasapi_session_vol(
     srv: *mut PaServerHandle,
     slot_idx: u32,
     session_id: u32,
     volume_milli: u32,
     muted: bool,
 ) {
-    if srv.is_null() || (slot_idx as usize) >= LWASAPI_MAX_SESSIONS {
+    if srv.is_null() || (slot_idx as usize) >= LASAPI_MAX_SESSIONS {
         return;
     }
     let h = unsafe { &*srv };
@@ -6315,11 +6315,11 @@ pub unsafe extern "C" fn lwasapi_pa_server_update_wasapi_session_vol(
     let clamped = volume_milli.min(1500);
     let pa_idx = {
         let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
-        let w = &mut st.wasapi_proxies[si];
+        let w = &mut st.lasapi_proxies[si];
         if !w.active || w.session_id != session_id {
             return;
         }
-        let ws = &h.rt.wasapi_slots[si];
+        let ws = &h.rt.lasapi_slots[si];
         ws.volume_milli.store(clamped, Ordering::Relaxed);
         ws.muted.store(muted, Ordering::Relaxed);
         w.vol = milli_to_cvol(clamped, w.ss.channels.max(1));
@@ -6332,16 +6332,16 @@ pub unsafe extern "C" fn lwasapi_pa_server_update_wasapi_session_vol(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_wasapi_doi_mask(srv: *mut PaServerHandle) -> u32 {
+pub unsafe extern "C" fn lasapi_pa_server_lasapi_doi_mask(srv: *mut PaServerHandle) -> u32 {
     if srv.is_null() {
         return 0;
     }
     let h = unsafe { &*srv };
-    h.rt.wasapi_doi_mask.load(Ordering::Acquire)
+    h.rt.lasapi_doi_mask.load(Ordering::Acquire)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_push_wasapi_period(
+pub unsafe extern "C" fn lasapi_pa_server_push_lasapi_period(
     srv: *mut PaServerHandle,
     slot_idx: u32,
     interleaved_ptr: *const f32,
@@ -6353,10 +6353,10 @@ pub unsafe extern "C" fn lwasapi_pa_server_push_wasapi_period(
     }
     let si = slot_idx as usize;
     let h = unsafe { &*srv };
-    if si >= h.rt.wasapi_slots.len() {
+    if si >= h.rt.lasapi_slots.len() {
         return;
     }
-    let ws = &h.rt.wasapi_slots[si];
+    let ws = &h.rt.lasapi_slots[si];
     if !ws.active.load(Ordering::Acquire) {
         return;
     }
@@ -6380,7 +6380,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_push_wasapi_period(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_pa_server_poll_wasapi_ctl(
+pub unsafe extern "C" fn lasapi_pa_server_poll_lasapi_ctl(
     srv: *mut PaServerHandle,
     slot_idx: u32,
     last_seq: &mut u64,
@@ -6392,10 +6392,10 @@ pub unsafe extern "C" fn lwasapi_pa_server_poll_wasapi_ctl(
     }
     let si = slot_idx as usize;
     let h = unsafe { &*srv };
-    if si >= h.rt.wasapi_slots.len() {
+    if si >= h.rt.lasapi_slots.len() {
         return false;
     }
-    let ws = &h.rt.wasapi_slots[si];
+    let ws = &h.rt.lasapi_slots[si];
     let seq = ws.pa_ctl_seq.load(Ordering::Acquire);
     if seq == *last_seq {
         return false;
@@ -6410,7 +6410,7 @@ pub unsafe extern "C" fn lwasapi_pa_server_poll_wasapi_ctl(
 mod tests {
     use super::*;
 
-    fn empty_pa_callbacks() -> LwasapiPaCallbacks {
+    fn empty_pa_callbacks() -> LasapiPaCallbacks {
         unsafe { mem::zeroed() }
     }
 
@@ -6556,7 +6556,7 @@ mod tests {
         }
         let mut out = vec![0.0f32; 256];
         unsafe {
-            lwasapi_pa_server_mix_playback(&mut h, out.as_mut_ptr(), 128, 48_000);
+            lasapi_pa_server_mix_playback(&mut h, out.as_mut_ptr(), 128, 48_000);
         }
         assert_eq!(rs.rd_frame.load(Ordering::Acquire), 64);
         assert_eq!(rs.in_prebuf.load(Ordering::Acquire), 1);
@@ -6564,7 +6564,7 @@ mod tests {
     }
 
     #[test]
-    fn wasapi_session_exposes_pa_sink_input_and_feeds_doi_record_stream() {
+    fn lasapi_session_exposes_pa_sink_input_and_feeds_doi_record_stream() {
         use std::os::unix::net::UnixStream;
 
         let mut h = PaServerHandle {
@@ -6584,10 +6584,10 @@ mod tests {
             thread: None,
         };
 
-        // 1. Register a WASAPI playback session (e.g., FL64.exe:Salsa-WaveRT-ASIO @ 192kHz).
+        // 1. Register a LASAPI playback session (e.g., FL64.exe:Salsa-WaveRT-ASIO @ 192kHz).
         let cname = std::ffi::CString::new("FL64.exe:Salsa-WaveRT-ASIO").unwrap();
         unsafe {
-            lwasapi_pa_server_register_wasapi_session(
+            lasapi_pa_server_register_lasapi_session(
                 &mut h,
                 2,
                 77,
@@ -6617,32 +6617,32 @@ mod tests {
             st.handle_control_packet(0, &auth_tb.into_vec(), &h.rt, &h.vol_file_lock);
             assert!(st.clients[0].authed);
 
-            // Verify CMD_GET_SINK_INPUT_INFO_LIST includes the WASAPI session with its PID.
+            // Verify CMD_GET_SINK_INPUT_INFO_LIST includes the LASAPI session with its PID.
             let mut si_tb = TagBuilder::new(32);
             si_tb.put_u32(PA_TAG_U32, CMD_GET_SINK_INPUT_INFO_LIST);
             si_tb.put_u32(PA_TAG_U32, 2);
             st.clients[0].out_q.clear();
             st.handle_control_packet(0, &si_tb.into_vec(), &h.rt, &h.vol_file_lock);
             let reply = st.clients[0].out_q.pop_front().expect("sink input list reply");
-            let w = &st.wasapi_proxies[2];
+            let w = &st.lasapi_proxies[2];
             assert!(w.active);
             assert_eq!(w.client_pid, 451327);
             assert_eq!(w.stream_props.get_str("application.process.id").as_deref(), Some("451327"));
             assert_eq!(w.client_props.get_str("application.process.binary").as_deref(), Some("FL64.exe"));
             assert!(!reply.data.is_empty());
 
-            // Verify fill_sessions does NOT duplicate the WASAPI proxy in Salsa's PA sessions list.
-            let mut eng_st: LwasapiEngineStatus = unsafe { mem::zeroed() };
+            // Verify fill_sessions does NOT duplicate the LASAPI proxy in Salsa's PA sessions list.
+            let mut eng_st: LasapiEngineStatus = unsafe { mem::zeroed() };
             let mut n_cli = 0u32;
             drop(st);
-            unsafe { lwasapi_pa_server_fill_sessions(&mut h, &mut eng_st, &mut n_cli) };
+            unsafe { lasapi_pa_server_fill_sessions(&mut h, &mut eng_st, &mut n_cli) };
             assert_eq!(eng_st.num_sessions, 0);
 
             let st = h.state.lock().unwrap();
-            (st.wasapi_proxies[2].pa_stream_idx, st.wasapi_proxies[2].pa_client_idx)
+            (st.lasapi_proxies[2].pa_stream_idx, st.lasapi_proxies[2].pa_client_idx)
         };
 
-        // 2. Attach a direct_on_input (pa_stream_set_monitor_stream) record stream to the WASAPI proxy.
+        // 2. Attach a direct_on_input (pa_stream_set_monitor_stream) record stream to the LASAPI proxy.
         {
             let mut st = h.state.lock().unwrap();
             let mut rec_tb = TagBuilder::new(256);
@@ -6671,19 +6671,19 @@ mod tests {
             assert_eq!(st.streams[0].direct_on_input, pa_stream_idx);
         }
 
-        // Verify WASAPI doi mask includes bit 2.
-        let mask = unsafe { lwasapi_pa_server_wasapi_doi_mask(&mut h) };
+        // Verify LASAPI doi mask includes bit 2.
+        let mask = unsafe { lasapi_pa_server_lasapi_doi_mask(&mut h) };
         assert_eq!(mask & (1u32 << 2), 1u32 << 2);
 
-        // 3. Push one 128-frame WASAPI period and pump capture; verify DOI record stream receives exact samples.
+        // 3. Push one 128-frame LASAPI period and pump capture; verify DOI record stream receives exact samples.
         let mut period_pcm = vec![0.0f32; 128 * 2];
         for f in 0..128 {
             period_pcm[f * 2] = 0.25;
             period_pcm[f * 2 + 1] = -0.5;
         }
         unsafe {
-            lwasapi_pa_server_push_wasapi_period(&mut h, 2, period_pcm.as_ptr(), 128, 2);
-            lwasapi_pa_server_push_capture(&mut h, core::ptr::null(), 0, 48_000, period_pcm.as_ptr(), 128, 48_000);
+            lasapi_pa_server_push_lasapi_period(&mut h, 2, period_pcm.as_ptr(), 128, 2);
+            lasapi_pa_server_push_capture(&mut h, core::ptr::null(), 0, 48_000, period_pcm.as_ptr(), 128, 48_000);
         }
         let wr = h.rt.streams[0].wr_frame.load(Ordering::Acquire);
         assert_eq!(wr, 128);
@@ -6691,7 +6691,7 @@ mod tests {
         assert!((sl - 0.25).abs() < 1e-5);
         assert!((sr + 0.5).abs() < 1e-5);
 
-        // 4. PA SET_SINK_INPUT_MUTE + SET_SINK_INPUT_VOLUME forward lock-free control to WASAPI poller.
+        // 4. PA SET_SINK_INPUT_MUTE + SET_SINK_INPUT_VOLUME forward lock-free control to LASAPI poller.
         {
             let mut st = h.state.lock().unwrap();
             let mut mute_tb = TagBuilder::new(64);
@@ -6704,13 +6704,13 @@ mod tests {
         let mut seq = 0u64;
         let mut vm = 0u32;
         let mut mu = 0u32;
-        assert!(unsafe { lwasapi_pa_server_poll_wasapi_ctl(&mut h, 2, &mut seq, &mut vm, &mut mu) });
+        assert!(unsafe { lasapi_pa_server_poll_lasapi_ctl(&mut h, 2, &mut seq, &mut vm, &mut mu) });
         assert_eq!(mu, 1);
 
-        // 5. Unregister WASAPI session clears mask and proxy state cleanly.
-        unsafe { lwasapi_pa_server_unregister_wasapi_session(&mut h, 2, 77) };
-        assert_eq!(unsafe { lwasapi_pa_server_wasapi_doi_mask(&mut h) } & (1u32 << 2), 0);
-        assert!(!h.state.lock().unwrap().wasapi_proxies[2].active);
+        // 5. Unregister LASAPI session clears mask and proxy state cleanly.
+        unsafe { lasapi_pa_server_unregister_lasapi_session(&mut h, 2, 77) };
+        assert_eq!(unsafe { lasapi_pa_server_lasapi_doi_mask(&mut h) } & (1u32 << 2), 0);
+        assert!(!h.state.lock().unwrap().lasapi_proxies[2].active);
     }
 
     #[test]

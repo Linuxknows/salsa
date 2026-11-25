@@ -12,5 +12,5 @@ path = "src/lib.rs"
 
 [dependencies]
 salsa_net = { path = "../salsa_net" }
-lwasapi_client = { path = "../lwasapi_client" }
+lasapi_client = { path = "../lasapi_client" }
 salsa_tools = { path = "../salsa_tools" }

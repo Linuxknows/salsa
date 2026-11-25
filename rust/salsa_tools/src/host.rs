@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -89,11 +89,11 @@ pub fn private_runtime_dir() -> PathBuf {
         return PathBuf::from(p);
     }
     let uid = getuid();
-    let fb = PathBuf::from(format!("/tmp/lwasapi-{uid}"));
+    let fb = PathBuf::from(format!("/tmp/lasapi-{uid}"));
     if ensure_owned_dir_0700(&fb.to_string_lossy(), uid) {
         return fb;
     }
-    let pid_fb = PathBuf::from(format!("/tmp/lwasapi-{uid}-{}", getpid()));
+    let pid_fb = PathBuf::from(format!("/tmp/lasapi-{uid}-{}", getpid()));
     let _ = ensure_owned_dir_0700(&pid_fb.to_string_lossy(), uid);
     pid_fb
 }
@@ -101,10 +101,10 @@ pub fn private_runtime_dir() -> PathBuf {
 pub fn state_dir() -> PathBuf {
     if let Ok(cfg) = env::var("XDG_CONFIG_HOME") {
         if cfg.starts_with('/') {
-            return PathBuf::from(cfg).join("lwasapi");
+            return PathBuf::from(cfg).join("lasapi");
         }
     }
-    PathBuf::from(user_home_dir()).join(".config").join("lwasapi")
+    PathBuf::from(user_home_dir()).join(".config").join("lasapi")
 }
 
 pub fn home_dir() -> PathBuf {

@@ -2,7 +2,7 @@
     global:
         IAudio*;
         ISimpleAudioVolume_*;
-        LWASAPI_*;
+        LASAPI_*;
     local:
         *;
 };

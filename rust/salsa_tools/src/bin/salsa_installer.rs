@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -29,8 +29,8 @@ const ICON_SIZES: [u32; 5] = [512, 256, 128, 64, 48];
 const PACMAN_HOOK_PATH: &str = "/etc/pacman.d/hooks/99-salsa-autosync.hook";
 const LEGACY_PACMAN_HOOK_PATHS: [&str; 3] = [
     "/etc/pacman.d/hooks/95-salsa-autosync.hook",
-    "/etc/pacman.d/hooks/99-lwasapi-autosync.hook",
-    "/etc/pacman.d/hooks/lwasapi-autosync.hook",
+    "/etc/pacman.d/hooks/99-lasapi-autosync.hook",
+    "/etc/pacman.d/hooks/lasapi-autosync.hook",
 ];
 const AUTOSYNC_MARKER_DIR: &str = "/var/lib/salsa-autosync";
 const AUTOSYNC_MARKER_PATH: &str = "/var/lib/salsa-autosync/libpulse-updated";
@@ -57,7 +57,7 @@ Target = dbus\n\
 Target = qt6-base\n\
 \n\
 [Action]\n\
-Description = Marking Salsa WASAPI runtime modules for ABI auto-sync...\n\
+Description = Marking Salsa LASAPI runtime modules for ABI auto-sync...\n\
 When = PostTransaction\n\
 Exec = /bin/sh -c '/usr/bin/mkdir -p /var/lib/salsa-autosync && /usr/bin/date +%s%N > /var/lib/salsa-autosync/libpulse-updated'\n";
 
@@ -236,14 +236,14 @@ fn write_user_units(root: &Path) -> Result<(), String> {
     fs::create_dir_all(&unit_dir).map_err(|e| format!("mkdir {}: {e}", unit_dir.display()))?;
 
     let root_wd = systemd_path(&root.to_string_lossy());
-    let audiodg_exec = systemd_quote(&root.join("build/lwasapi-audiodg").to_string_lossy());
-    let tray_exec = systemd_quote(&root.join("build/lwasapi-tray").to_string_lossy());
-    let autosync_exec = systemd_quote(&root.join("build/lwasapi-autosync").to_string_lossy());
+    let audiodg_exec = systemd_quote(&root.join("build/lasapi-audiodg").to_string_lossy());
+    let tray_exec = systemd_quote(&root.join("build/lasapi-tray").to_string_lossy());
+    let autosync_exec = systemd_quote(&root.join("build/lasapi-autosync").to_string_lossy());
 
     let pw_socket_unit = "\
 [Unit]
 Description=Salsa — Zero-Downtime Video-Only PipeWire-0 Socket (ScreenCast & KDE MediaMonitor)
-ConditionPathExists=%h/.config/lwasapi/pipewire_zero_mode
+ConditionPathExists=%h/.config/lasapi/pipewire_zero_mode
 Before=graphical-session-pre.target sockets.target
 
 [Socket]
@@ -253,13 +253,13 @@ SocketMode=0600
 DirectoryMode=0700
 Backlog=128
 RemoveOnStop=yes
-Service=lwasapi-audiodg.service
+Service=lasapi-audiodg.service
 
 [Install]
 WantedBy=sockets.target default.target
 ";
     write_atomic_secure(
-        &unit_dir.join("lwasapi-pipewire.socket"),
+        &unit_dir.join("lasapi-pipewire.socket"),
         pw_socket_unit.as_bytes(),
         0o644,
     )
@@ -267,15 +267,15 @@ WantedBy=sockets.target default.target
 
     let audiodg_unit = format!(
         "[Unit]\n\
-         Description=Salsa — Linux WASAPI (lwasapi-audiodg) WaveRT 192kHz, Native PA v35, Direct BlueZ, Video Broker & Dynamic EQ Engine\n\
-         After=bluetooth.target sound.target lwasapi-pipewire.socket\n\
-         Wants=bluetooth.target sound.target lwasapi-pipewire.socket\n\
+         Description=Salsa — LASAPI (lasapi-audiodg) WaveRT 192kHz, Native PA v35, Direct BlueZ, Video Broker & Dynamic EQ Engine\n\
+         After=bluetooth.target sound.target lasapi-pipewire.socket\n\
+         Wants=bluetooth.target sound.target lasapi-pipewire.socket\n\
          \n\
          [Service]\n\
          Type=simple\n\
          WorkingDirectory={root_wd}\n\
          ExecStart={audiodg_exec}\n\
-         Sockets=lwasapi-pipewire.socket\n\
+         Sockets=lasapi-pipewire.socket\n\
          UMask=0077\n\
          Restart=always\n\
          RestartSec=1\n\
@@ -283,14 +283,14 @@ WantedBy=sockets.target default.target
          [Install]\n\
          WantedBy=default.target\n"
     );
-    write_atomic_secure(&unit_dir.join("lwasapi-audiodg.service"), audiodg_unit.as_bytes(), 0o644)
+    write_atomic_secure(&unit_dir.join("lasapi-audiodg.service"), audiodg_unit.as_bytes(), 0o644)
         .map_err(|e| format!("write audiodg unit: {e}"))?;
 
     let tray_unit = format!(
         "[Unit]\n\
-         Description=Salsa — Linux WASAPI Pure Native Audio System Tray Switcher\n\
+         Description=Salsa — LASAPI Pure Native Audio System Tray Switcher\n\
          PartOf=graphical-session.target\n\
-         After=graphical-session.target lwasapi-audiodg.service\n\
+         After=graphical-session.target lasapi-audiodg.service\n\
          \n\
          [Service]\n\
          Type=simple\n\
@@ -303,12 +303,12 @@ WantedBy=sockets.target default.target
          [Install]\n\
          WantedBy=graphical-session.target\n"
     );
-    write_atomic_secure(&unit_dir.join("lwasapi-tray.service"), tray_unit.as_bytes(), 0o644)
+    write_atomic_secure(&unit_dir.join("lasapi-tray.service"), tray_unit.as_bytes(), 0o644)
         .map_err(|e| format!("write tray unit: {e}"))?;
 
     let watcher_svc = format!(
         "[Unit]\n\
-         Description=Salsa — Linux WASAPI Automatic Audio Module ABI & Config Sync Service\n\
+         Description=Salsa — LASAPI Automatic Audio Module ABI & Config Sync Service\n\
          After=network.target\n\
          StartLimitIntervalSec=0\n\
          \n\
@@ -319,7 +319,7 @@ WantedBy=sockets.target default.target
          ExecStart={autosync_exec} --auto\n"
     );
     write_atomic_secure(
-        &unit_dir.join("lwasapi-module-watcher.service"),
+        &unit_dir.join("lasapi-module-watcher.service"),
         watcher_svc.as_bytes(),
         0o644,
     )
@@ -328,7 +328,7 @@ WantedBy=sockets.target default.target
     let pkg_db = detect_pkg_db_path();
     let mut path_lines = format!(
         "[Unit]\n\
-         Description=Salsa — Linux WASAPI Automatic Audio Module Update Watcher (Path Trigger)\n\
+         Description=Salsa — LASAPI Automatic Audio Module Update Watcher (Path Trigger)\n\
          StartLimitIntervalSec=0\n\
          \n\
          [Path]\n\
@@ -350,13 +350,13 @@ WantedBy=sockets.target default.target
     }
     path_lines.push_str(
         "TriggerLimitIntervalSec=0\n\
-         Unit=lwasapi-module-watcher.service\n\
+         Unit=lasapi-module-watcher.service\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",
     );
     write_atomic_secure(
-        &unit_dir.join("lwasapi-module-watcher.path"),
+        &unit_dir.join("lasapi-module-watcher.path"),
         path_lines.as_bytes(),
         0o644,
     )
@@ -368,12 +368,12 @@ WantedBy=sockets.target default.target
          [Timer]\n\
          OnBootSec=1min\n\
          OnUnitActiveSec=6h\n\
-         Unit=lwasapi-module-watcher.service\n\
+         Unit=lasapi-module-watcher.service\n\
          \n\
          [Install]\n\
          WantedBy=timers.target\n";
     write_atomic_secure(
-        &unit_dir.join("lwasapi-module-watcher.timer"),
+        &unit_dir.join("lasapi-module-watcher.timer"),
         watcher_timer.as_bytes(),
         0o644,
     )
@@ -387,14 +387,14 @@ fn install_bin_links(root: &Path) -> Result<(), String> {
     fs::create_dir_all(&bdir).map_err(|e| format!("mkdir {}: {e}", bdir.display()))?;
 
     let links: [(&str, PathBuf); 8] = [
-        ("lwasapi-audiodg", root.join("build/lwasapi-audiodg")),
-        ("lwasapi-ctl", root.join("build/lwasapi-ctl")),
-        ("lwasapi-bench", root.join("build/lwasapi-bench")),
-        ("lwasapi-run", root.join("build/lwasapi-run")),
+        ("lasapi-audiodg", root.join("build/lasapi-audiodg")),
+        ("lasapi-ctl", root.join("build/lasapi-ctl")),
+        ("lasapi-bench", root.join("build/lasapi-bench")),
+        ("lasapi-run", root.join("build/lasapi-run")),
         ("salsa-debug-cli", root.join("build/salsa-debug-cli")),
         ("salsa", root.join("build/salsa-studio")),
         ("salsa-debug", root.join("build/salsa-debug")),
-        ("lwasapi-tray", root.join("build/lwasapi-tray")),
+        ("lasapi-tray", root.join("build/lasapi-tray")),
     ];
     for (name, target) in links {
         force_symlink(&target, &bdir.join(name))?;
@@ -411,7 +411,7 @@ fn install_bin_links(root: &Path) -> Result<(), String> {
 }
 
 fn install_icons_and_desktop(root: &Path) -> Result<(), String> {
-    let icon_src = root.join("assets/salsa-lwasapi.png");
+    let icon_src = root.join("assets/salsa-lasapi.png");
     if icon_src.is_file() {
         let png_bytes =
             fs::read(&icon_src).map_err(|e| format!("read {}: {e}", icon_src.display()))?;
@@ -426,7 +426,7 @@ fn install_icons_and_desktop(root: &Path) -> Result<(), String> {
                 resize_rgba(&rgba, sz, sz)
             };
             let encoded = encode_png_rgba(&resized)?;
-            write_atomic_secure(&dir.join("salsa-lwasapi.png"), &encoded, 0o644)
+            write_atomic_secure(&dir.join("salsa-lasapi.png"), &encoded, 0o644)
                 .map_err(|e| format!("write icon {sz}x{sz}: {e}"))?;
         }
         if which("gtk-update-icon-cache").is_some() {
@@ -442,20 +442,20 @@ fn install_icons_and_desktop(root: &Path) -> Result<(), String> {
 
     let studio_exec = desktop_exec_quote(&root.join("build/salsa-studio").to_string_lossy());
     let debug_exec = desktop_exec_quote(&root.join("build/salsa-debug").to_string_lossy());
-    let tray_exec = desktop_exec_quote(&root.join("build/lwasapi-tray").to_string_lossy());
+    let tray_exec = desktop_exec_quote(&root.join("build/lasapi-tray").to_string_lossy());
 
     let desktop = format!(
         "[Desktop Entry]\n\
          Type=Application\n\
          Name=Salsa Audio Studio\n\
-         Comment=Linux WASAPI Engine Control, Equalizer & Audio Matrix\n\
+         Comment=LASAPI Engine Control, Equalizer & Audio Matrix\n\
          Exec={studio_exec}\n\
-         Icon=salsa-lwasapi\n\
+         Icon=salsa-lasapi\n\
          Terminal=false\n\
          Categories=AudioVideo;Audio;Mixer;\n\
          StartupNotify=true\n"
     );
-    write_atomic_secure(&apps_dir.join("salsa-lwasapi.desktop"), desktop.as_bytes(), 0o644)
+    write_atomic_secure(&apps_dir.join("salsa-lasapi.desktop"), desktop.as_bytes(), 0o644)
         .map_err(|e| format!("write desktop entry: {e}"))?;
 
     let debug_desktop = format!(
@@ -463,12 +463,12 @@ fn install_icons_and_desktop(root: &Path) -> Result<(), String> {
          Type=Application\n\
          Name=Salsa — Live Interaction Debugger\n\
          GenericName=SALSA Telemetry, Routing Audit & Protocol Debugger\n\
-         Comment=Live event stream, /proc audio routing audit, RT SCHED_FIFO jitter, BlueZ/PA v35/WASAPI SHM inspection & interactive probes\n\
+         Comment=Live event stream, /proc audio routing audit, RT SCHED_FIFO jitter, BlueZ/PA v35/LASAPI SHM inspection & interactive probes\n\
          Exec={debug_exec}\n\
-         Icon=salsa-lwasapi\n\
+         Icon=salsa-lasapi\n\
          Terminal=false\n\
          Categories=AudioVideo;Audio;Development;System;\n\
-         Keywords=WASAPI;Salsa;Debugger;Telemetry;Trace;BlueZ;PulseAudio;MIDI;ALSA;\n\
+         Keywords=LASAPI;Salsa;Debugger;Telemetry;Trace;BlueZ;PulseAudio;MIDI;ALSA;\n\
          StartupNotify=true\n"
     );
     write_atomic_secure(
@@ -483,15 +483,15 @@ fn install_icons_and_desktop(root: &Path) -> Result<(), String> {
          Type=Application\n\
          Name=Salsa — Audio System Tray\n\
          GenericName=Salsa 192kHz Audio Control\n\
-         Comment=Control Salsa LWASAPI (192kHz WaveRT, Dynamic EQ, Sample Rate, and Status) from the system tray\n\
+         Comment=Control Salsa LASAPI (192kHz WaveRT, Dynamic EQ, Sample Rate, and Status) from the system tray\n\
          Exec={tray_exec}\n\
-         Icon=salsa-lwasapi\n\
+         Icon=salsa-lasapi\n\
          Terminal=false\n\
          Categories=AudioVideo;Audio;Settings;\n\
          StartupNotify=false\n"
     );
     write_atomic_secure(
-        &apps_dir.join("lwasapi-tray.desktop"),
+        &apps_dir.join("lasapi-tray.desktop"),
         tray_desktop.as_bytes(),
         0o644,
     )
@@ -717,7 +717,7 @@ fn configure_flatpak_and_kde(st_dir: &Path) -> Vec<String> {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .collect();
-            for ex in ["lwasapi-tray", "lwasapi-tray.py", "lwasapi-tray.desktop"] {
+            for ex in ["lasapi-tray", "lasapi-tray.py", "lasapi-tray.desktop"] {
                 if !items.iter().any(|x| x == ex) {
                     items.push(ex.to_string());
                 }
@@ -767,9 +767,9 @@ fn send_completion_notification(ver: &str, warnings: usize, gui_only: bool, no_n
     }
 
     let title = if warnings == 0 {
-        format!("Salsa (LWASAPI) {ver} Installed")
+        format!("Salsa (LASAPI) {ver} Installed")
     } else {
-        format!("Salsa (LWASAPI) {ver} Installed ({warnings} warning(s))")
+        format!("Salsa (LASAPI) {ver} Installed ({warnings} warning(s))")
     };
     let body = "Setup complete. Open 'Salsa Audio Studio' from your App Launcher, click the Salsa system tray icon, or run 'salsa' in a terminal.";
 
@@ -779,7 +779,7 @@ fn send_completion_notification(ver: &str, warnings: usize, gui_only: bool, no_n
                 "-a",
                 "Salsa Installer",
                 "-i",
-                "salsa-lwasapi",
+                "salsa-lasapi",
                 "-u",
                 if warnings == 0 { "normal" } else { "critical" },
                 &title,
@@ -818,7 +818,7 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
     let mut warnings = 0usize;
 
     println!("================================================================================");
-    println!("  Salsa (LWASAPI) {ver} — Installer");
+    println!("  Salsa (LASAPI) {ver} — Installer");
     println!("  Source directory : {}", root.display());
     println!("================================================================================");
 
@@ -901,7 +901,7 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
         bin_home().display()
     );
     actions.push(format!(
-        "Linked CLI/GUI commands (salsa, salsa-graph, salsa-debug, lwasapi-ctl, lwasapi-bench, lwasapi-run, lwasapi-tray) in {}",
+        "Linked CLI/GUI commands (salsa, salsa-graph, salsa-debug, lasapi-ctl, lasapi-bench, lasapi-run, lasapi-tray) in {}",
         bin_home().display()
     ));
 
@@ -914,7 +914,7 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
         data_home().join("applications").display()
     );
     actions.push(format!(
-        "Installed App Launcher entries (salsa-lwasapi.desktop, salsa-debug.desktop, lwasapi-tray.desktop) in {}",
+        "Installed App Launcher entries (salsa-lasapi.desktop, salsa-debug.desktop, lasapi-tray.desktop) in {}",
         data_home().join("applications").display()
     ));
 
@@ -934,26 +934,26 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
         actions.push(note.clone());
     }
 
-    let ctl = root.join("build/lwasapi-ctl");
+    let ctl = root.join("build/lasapi-ctl");
     if ctl.is_file() {
         if run_quiet(&ctl.to_string_lossy(), &["enable-auto"]) {
-            println!("  [OK] Activated Zero-PipeWire isolation & PA/ALSA cutover (lwasapi-ctl enable-auto)");
+            println!("  [OK] Activated Zero-PipeWire isolation & PA/ALSA cutover (lasapi-ctl enable-auto)");
             actions.push(
                 "Configured Zero-PipeWire audio ownership, PA v35 socket, ~/.asoundrc & built-in ScreenCast broker"
                     .to_string(),
             );
         } else {
-            eprintln!("  [WARN] lwasapi-ctl enable-auto returned non-zero");
+            eprintln!("  [WARN] lasapi-ctl enable-auto returned non-zero");
             warnings += 1;
         }
     }
-    let autosync = root.join("build/lwasapi-autosync");
+    let autosync = root.join("build/lasapi-autosync");
     if autosync.is_file() {
         if run_quiet(&autosync.to_string_lossy(), &["--quiet"]) {
-            println!("  [OK] Synced host ALSA/Pulse ELF symbol versions (lwasapi-autosync)");
+            println!("  [OK] Synced host ALSA/Pulse ELF symbol versions (lasapi-autosync)");
             actions.push("Verified/synced host ALSA & PulseAudio ABI symbol versions".to_string());
         } else {
-            eprintln!("  [WARN] lwasapi-autosync --quiet returned non-zero");
+            eprintln!("  [WARN] lasapi-autosync --quiet returned non-zero");
             warnings += 1;
         }
     }
@@ -964,31 +964,31 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
         warnings += 1;
     }
     for unit in [
-        "lwasapi-pipewire.socket",
-        "lwasapi-audiodg.service",
-        "lwasapi-module-watcher.path",
-        "lwasapi-module-watcher.timer",
+        "lasapi-pipewire.socket",
+        "lasapi-audiodg.service",
+        "lasapi-module-watcher.path",
+        "lasapi-module-watcher.timer",
     ] {
         if !run_ok("systemctl", &["--user", "enable", "--now", unit]) {
             eprintln!("  [WARN] systemctl --user enable --now {unit} failed");
             warnings += 1;
         }
     }
-    if !run_quiet("systemctl", &["--user", "restart", "lwasapi-audiodg.service"]) {
-        eprintln!("  [WARN] systemctl --user restart lwasapi-audiodg.service returned non-zero");
+    if !run_quiet("systemctl", &["--user", "restart", "lasapi-audiodg.service"]) {
+        eprintln!("  [WARN] systemctl --user restart lasapi-audiodg.service returned non-zero");
         warnings += 1;
     }
-    if !run_quiet("systemctl", &["--user", "enable", "--now", "lwasapi-tray.service"]) {
-        eprintln!("  [WARN] systemctl --user enable --now lwasapi-tray.service returned non-zero");
+    if !run_quiet("systemctl", &["--user", "enable", "--now", "lasapi-tray.service"]) {
+        eprintln!("  [WARN] systemctl --user enable --now lasapi-tray.service returned non-zero");
         warnings += 1;
-    } else if !run_quiet("systemctl", &["--user", "restart", "lwasapi-tray.service"]) {
-        eprintln!("  [WARN] systemctl --user restart lwasapi-tray.service returned non-zero");
+    } else if !run_quiet("systemctl", &["--user", "restart", "lasapi-tray.service"]) {
+        eprintln!("  [WARN] systemctl --user restart lasapi-tray.service returned non-zero");
         warnings += 1;
     }
 
-    let audiodg_active = run_quiet("systemctl", &["--user", "is-active", "lwasapi-audiodg.service"]);
-    let tray_active = run_quiet("systemctl", &["--user", "is-active", "lwasapi-tray.service"]);
-    let watcher_active = run_quiet("systemctl", &["--user", "is-active", "lwasapi-module-watcher.path"]);
+    let audiodg_active = run_quiet("systemctl", &["--user", "is-active", "lasapi-audiodg.service"]);
+    let tray_active = run_quiet("systemctl", &["--user", "is-active", "lasapi-tray.service"]);
+    let watcher_active = run_quiet("systemctl", &["--user", "is-active", "lasapi-module-watcher.path"]);
     println!(
         "  [{}] Services: audiodg={}, tray={}, module-watcher={}",
         if audiodg_active && tray_active { "OK" } else { "WARN" },
@@ -997,7 +997,7 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
         if watcher_active { "active" } else { "inactive" }
     );
     actions.push(format!(
-        "Started user services (lwasapi-audiodg={}, lwasapi-tray={}, watcher={})",
+        "Started user services (lasapi-audiodg={}, lasapi-tray={}, watcher={})",
         if audiodg_active { "active" } else { "inactive" },
         if tray_active { "active" } else { "inactive" },
         if watcher_active { "active" } else { "inactive" },
@@ -1012,9 +1012,9 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
     println!();
     println!("================================================================================");
     if warnings == 0 {
-        println!("  [OK] Salsa (LWASAPI) {ver} installation complete!");
+        println!("  [OK] Salsa (LASAPI) {ver} installation complete!");
     } else {
-        println!("  [DONE] Salsa (LWASAPI) {ver} installed with {warnings} warning(s).");
+        println!("  [DONE] Salsa (LASAPI) {ver} installed with {warnings} warning(s).");
     }
     println!("--------------------------------------------------------------------------------");
     println!("  What Was Installed & Configured:");
@@ -1034,8 +1034,8 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
     println!("                               - salsa              (Open Salsa Audio Studio GUI)");
     println!("                               - salsa-graph        (Open Signal Topology Graph)");
     println!("                               - salsa-debug        (Open Live Interaction Debugger)");
-    println!("                               - lwasapi-ctl status (Inspect audio engine & devices)");
-    println!("                               - lwasapi-bench      (Run real-time latency benchmark)");
+    println!("                               - lasapi-ctl status (Inspect audio engine & devices)");
+    println!("                               - lasapi-bench      (Run real-time latency benchmark)");
     if !path_contains_dir(&bdir) {
         println!(
             "       Note: {} is not in your current PATH; launch e.g. {}/salsa",
@@ -1043,7 +1043,7 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
             bdir.display()
         );
     }
-    println!("    4. Audit or Revert       : ./install-salsa.sh --check   | lwasapi-ctl disable-auto");
+    println!("    4. Audit or Revert       : ./install-salsa.sh --check   | lasapi-ctl disable-auto");
     println!("================================================================================");
 
     ExitCode::SUCCESS
@@ -1085,13 +1085,13 @@ fn do_check(root: &Path) -> ExitCode {
 
     let bdir = bin_home();
     for name in [
-        "lwasapi-ctl",
-        "lwasapi-bench",
-        "lwasapi-run",
+        "lasapi-ctl",
+        "lasapi-bench",
+        "lasapi-run",
         "salsa-debug-cli",
         "salsa",
         "salsa-debug",
-        "lwasapi-tray",
+        "lasapi-tray",
         "salsa-graph",
     ] {
         let p = bdir.join(name);
@@ -1105,12 +1105,12 @@ fn do_check(root: &Path) -> ExitCode {
 
     let unit_dir = config_home().join("systemd/user");
     for unit in [
-        "lwasapi-pipewire.socket",
-        "lwasapi-audiodg.service",
-        "lwasapi-tray.service",
-        "lwasapi-module-watcher.path",
-        "lwasapi-module-watcher.service",
-        "lwasapi-module-watcher.timer",
+        "lasapi-pipewire.socket",
+        "lasapi-audiodg.service",
+        "lasapi-tray.service",
+        "lasapi-module-watcher.path",
+        "lasapi-module-watcher.service",
+        "lasapi-module-watcher.timer",
     ] {
         let up = unit_dir.join(unit);
         let active = run_quiet("systemctl", &["--user", "is-active", unit]);
@@ -1125,29 +1125,29 @@ fn do_check(root: &Path) -> ExitCode {
         }
     }
 
-    let repo_plugin = root.join("build/libasound_module_pcm_lwasapi.so");
-    let sys_plugin = Path::new("/usr/lib/alsa-lib/libasound_module_pcm_lwasapi.so");
+    let repo_plugin = root.join("build/libasound_module_pcm_lasapi.so");
+    let sys_plugin = Path::new("/usr/lib/alsa-lib/libasound_module_pcm_lasapi.so");
     let sha_repo = sha256_file(&repo_plugin);
     let sha_sys = sha256_file(sys_plugin);
     if sha_repo.is_some() && sha_repo == sha_sys {
-        println!("  [OK] System ALSA lwasapi plugin matches build artifact");
+        println!("  [OK] System ALSA lasapi plugin matches build artifact");
     } else {
         println!(
-            "  [INFO] System ALSA plugin (/usr/lib/alsa-lib/libasound_module_pcm_lwasapi.so) differs or not installed (optional root install)"
+            "  [INFO] System ALSA plugin (/usr/lib/alsa-lib/libasound_module_pcm_lasapi.so) differs or not installed (optional root install)"
         );
     }
 
     let apps = data_home().join("applications");
     let desktop_ok = [
-        "salsa-lwasapi.desktop",
+        "salsa-lasapi.desktop",
         "salsa-debug.desktop",
-        "lwasapi-tray.desktop",
+        "lasapi-tray.desktop",
     ]
     .iter()
     .all(|f| apps.join(f).is_file());
     let icon_ok = ICON_SIZES.iter().all(|sz| {
         data_home()
-            .join(format!("icons/hicolor/{sz}x{sz}/apps/salsa-lwasapi.png"))
+            .join(format!("icons/hicolor/{sz}x{sz}/apps/salsa-lasapi.png"))
             .is_file()
     });
     println!(
@@ -1215,12 +1215,12 @@ fn do_check(root: &Path) -> ExitCode {
 fn do_uninstall(root: &Path) -> ExitCode {
     println!("==> Stopping & disabling Salsa user units...");
     for unit in [
-        "lwasapi-module-watcher.timer",
-        "lwasapi-module-watcher.path",
-        "lwasapi-module-watcher.service",
-        "lwasapi-tray.service",
-        "lwasapi-audiodg.service",
-        "lwasapi-pipewire.socket",
+        "lasapi-module-watcher.timer",
+        "lasapi-module-watcher.path",
+        "lasapi-module-watcher.service",
+        "lasapi-tray.service",
+        "lasapi-audiodg.service",
+        "lasapi-pipewire.socket",
     ] {
         let _ = run_quiet("systemctl", &["--user", "disable", "--now", unit]);
         let _ = fs::remove_file(config_home().join("systemd/user").join(unit));
@@ -1229,29 +1229,29 @@ fn do_uninstall(root: &Path) -> ExitCode {
 
     let bdir = bin_home();
     for name in [
-        "lwasapi-audiodg",
-        "lwasapi-ctl",
-        "lwasapi-bench",
-        "lwasapi-run",
+        "lasapi-audiodg",
+        "lasapi-ctl",
+        "lasapi-bench",
+        "lasapi-run",
         "salsa-debug-cli",
         "salsa",
         "salsa-debug",
-        "lwasapi-tray",
+        "lasapi-tray",
         "salsa-graph",
     ] {
         let _ = fs::remove_file(bdir.join(name));
     }
 
     for df in [
-        "salsa-lwasapi.desktop",
+        "salsa-lasapi.desktop",
         "salsa-debug.desktop",
-        "lwasapi-tray.desktop",
+        "lasapi-tray.desktop",
     ] {
         let _ = fs::remove_file(data_home().join("applications").join(df));
     }
     for sz in ICON_SIZES {
         let _ = fs::remove_file(
-            data_home().join(format!("icons/hicolor/{sz}x{sz}/apps/salsa-lwasapi.png")),
+            data_home().join(format!("icons/hicolor/{sz}x{sz}/apps/salsa-lasapi.png")),
         );
     }
     let lic_dir = licenses_install_dir();
@@ -1355,7 +1355,7 @@ fn do_uninstall(root: &Path) -> ExitCode {
         let _ = fs::remove_file(&fp_file);
     }
 
-    let ctl = root.join("build/lwasapi-ctl");
+    let ctl = root.join("build/lasapi-ctl");
     if ctl.is_file() {
         let _ = run_quiet(&ctl.to_string_lossy(), &["disable-auto"]);
     }

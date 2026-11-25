@@ -1,7 +1,7 @@
 {
     global:
-        _snd_pcm_lwasapi_open;
-        __snd_pcm_lwasapi_open_dlsym_pcm_001;
+        _snd_pcm_lasapi_open;
+        __snd_pcm_lasapi_open_dlsym_pcm_001;
     local:
         *;
 };

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -13,8 +13,8 @@ use core::sync::atomic::AtomicU64;
 use std::env;
 
 use salsa_wire::c_abi::{
-    LwasapiDbgDgram, LwasapiHwAnalogCfg, LwasapiMicApoCfg, LwasapiParamEqExt, SalsaMicCubicState,
-    SalsaRuntimeState, LWASAPI_DEBUG_DGRAM_MAGIC,
+    LasapiDbgDgram, LasapiHwAnalogCfg, LasapiMicApoCfg, LasapiParamEqExt, SalsaMicCubicState,
+    SalsaRuntimeState, LASAPI_DEBUG_DGRAM_MAGIC,
 };
 use salsa_wire::debug_server::{salsa_dbg_escape_json_str, salsa_dbg_parse_dgram};
 use salsa_wire::dsp::{
@@ -35,7 +35,7 @@ use salsa_wire::ffi::{
 use salsa_wire::pa_wire::PA_MAX_FRAME_SZ;
 use salsa_wire::pw_wire::PWB_MAX_CLIENT_FDS;
 use salsa_wire::hw_analog::{
-    lwasapi_hw_analog_clamp_cfg, lwasapi_hw_analog_default_cfg, lwasapi_hw_analog_score_card,
+    lasapi_hw_analog_clamp_cfg, lasapi_hw_analog_default_cfg, lasapi_hw_analog_score_card,
 };
 use salsa_wire::state_conf::{
     salsa_dsp_clamp_mic_apo_cfg, salsa_dsp_clamp_param_eq_ext, salsa_state_init_defaults,
@@ -426,13 +426,13 @@ fn fuzz_one_input(data: &[u8]) {
         {
             assert!(salsa_dbg_trim_cmd(data.as_ptr(), size) <= size);
 
-            let mut r_dg: LwasapiDbgDgram = mem::zeroed();
+            let mut r_dg: LasapiDbgDgram = mem::zeroed();
             let _ = salsa_dbg_parse_dgram(data.as_ptr(), size, &mut r_dg);
 
-            if size >= mem::size_of::<LwasapiDbgDgram>() && (data[0] & 1) != 0 {
-                let mut dgram_buf = [0u8; mem::size_of::<LwasapiDbgDgram>()];
-                dgram_buf.copy_from_slice(&data[..mem::size_of::<LwasapiDbgDgram>()]);
-                let magic_le = LWASAPI_DEBUG_DGRAM_MAGIC.to_le_bytes();
+            if size >= mem::size_of::<LasapiDbgDgram>() && (data[0] & 1) != 0 {
+                let mut dgram_buf = [0u8; mem::size_of::<LasapiDbgDgram>()];
+                dgram_buf.copy_from_slice(&data[..mem::size_of::<LasapiDbgDgram>()]);
+                let magic_le = LASAPI_DEBUG_DGRAM_MAGIC.to_le_bytes();
                 dgram_buf[0..4].copy_from_slice(&magic_le);
                 assert!(salsa_dbg_parse_dgram(
                     dgram_buf.as_ptr(),
@@ -477,29 +477,29 @@ fn fuzz_one_input(data: &[u8]) {
             salsa_state_init_defaults(&mut rst);
             assert!(rst.sample_rate >= 44100 && rst.sample_rate <= 384000);
 
-            let mut hwa: LwasapiHwAnalogCfg = mem::zeroed();
-            lwasapi_hw_analog_default_cfg(&mut hwa);
+            let mut hwa: LasapiHwAnalogCfg = mem::zeroed();
+            lasapi_hw_analog_default_cfg(&mut hwa);
             assert_eq!(hwa.hw_dac_unity_vol, 1);
-            lwasapi_hw_analog_clamp_cfg(&mut hwa);
+            lasapi_hw_analog_clamp_cfg(&mut hwa);
             let cname = b"Scarlett 2i2 4th Gen\0";
-            let _ = lwasapi_hw_analog_score_card(99, cname.as_ptr().cast::<c_char>());
+            let _ = lasapi_hw_analog_score_card(99, cname.as_ptr().cast::<c_char>());
 
-            if size >= mem::size_of::<LwasapiParamEqExt>() {
-                let mut r_ext: LwasapiParamEqExt = mem::zeroed();
+            if size >= mem::size_of::<LasapiParamEqExt>() {
+                let mut r_ext: LasapiParamEqExt = mem::zeroed();
                 core::ptr::copy_nonoverlapping(
                     data.as_ptr(),
-                    (&mut r_ext as *mut LwasapiParamEqExt).cast::<u8>(),
-                    mem::size_of::<LwasapiParamEqExt>(),
+                    (&mut r_ext as *mut LasapiParamEqExt).cast::<u8>(),
+                    mem::size_of::<LasapiParamEqExt>(),
                 );
                 salsa_dsp_clamp_param_eq_ext(&mut r_ext);
                 assert!(r_ext.crossfeed_cutoff_hz >= 300 && r_ext.crossfeed_cutoff_hz <= 1500);
             }
-            if size >= mem::size_of::<LwasapiMicApoCfg>() {
-                let mut r_mic: LwasapiMicApoCfg = mem::zeroed();
+            if size >= mem::size_of::<LasapiMicApoCfg>() {
+                let mut r_mic: LasapiMicApoCfg = mem::zeroed();
                 core::ptr::copy_nonoverlapping(
                     data.as_ptr(),
-                    (&mut r_mic as *mut LwasapiMicApoCfg).cast::<u8>(),
-                    mem::size_of::<LwasapiMicApoCfg>(),
+                    (&mut r_mic as *mut LasapiMicApoCfg).cast::<u8>(),
+                    mem::size_of::<LasapiMicApoCfg>(),
                 );
                 salsa_dsp_clamp_mic_apo_cfg(&mut r_mic);
                 assert!(r_mic.clarity_db >= -6.0 && r_mic.clarity_db <= 12.0);

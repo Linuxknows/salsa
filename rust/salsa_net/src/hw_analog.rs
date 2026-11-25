@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -17,31 +17,31 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, ptr_to_opt_str, LwasapiHwAnalogCfg, LwasapiHwAnalogInfo,
-    LWASAPI_DBG_ENGINE, LWASAPI_DBG_INFO,
+    c_str_to_string, copy_str_to_c, ptr_to_opt_str, LasapiHwAnalogCfg, LasapiHwAnalogInfo,
+    LASAPI_DBG_ENGINE, LASAPI_DBG_INFO,
 };
 use crate::unix_sys::{
     close_raw_fd, dbg_emit, ioctl_raw, nb_read_raw, open_raw_flags, O_CLOEXEC, O_NONBLOCK,
     O_RDONLY, O_RDWR,
 };
 
-pub const LWASAPI_HW_AMP_AUTO: u32 = 0;
-pub const LWASAPI_HW_AMP_LOW: u32 = 1;
-pub const LWASAPI_HW_AMP_MED: u32 = 2;
-pub const LWASAPI_HW_AMP_HIGH: u32 = 3;
+pub const LASAPI_HW_AMP_AUTO: u32 = 0;
+pub const LASAPI_HW_AMP_LOW: u32 = 1;
+pub const LASAPI_HW_AMP_MED: u32 = 2;
+pub const LASAPI_HW_AMP_HIGH: u32 = 3;
 
-pub const LWASAPI_HW_ROUTE_AUTO: u32 = 0;
-pub const LWASAPI_HW_ROUTE_HP: u32 = 1;
-pub const LWASAPI_HW_ROUTE_SPK: u32 = 2;
+pub const LASAPI_HW_ROUTE_AUTO: u32 = 0;
+pub const LASAPI_HW_ROUTE_HP: u32 = 1;
+pub const LASAPI_HW_ROUTE_SPK: u32 = 2;
 
-pub const LWASAPI_HW_CAP_DAC_VOL: u32 = 1 << 0;
-pub const LWASAPI_HW_CAP_HP_AMP: u32 = 1 << 1;
-pub const LWASAPI_HW_CAP_OUT_ROUTE: u32 = 1 << 2;
-pub const LWASAPI_HW_CAP_MIC_BOOST: u32 = 1 << 3;
-pub const LWASAPI_HW_CAP_LINE_AIR: u32 = 1 << 4;
-pub const LWASAPI_HW_CAP_HID_BOX: u32 = 1 << 5;
-pub const LWASAPI_HW_CAP_STRIX_ARCH: u32 = 1 << 6;
-pub const LWASAPI_HW_CAP_HIGH_RES: u32 = 1 << 7;
+pub const LASAPI_HW_CAP_DAC_VOL: u32 = 1 << 0;
+pub const LASAPI_HW_CAP_HP_AMP: u32 = 1 << 1;
+pub const LASAPI_HW_CAP_OUT_ROUTE: u32 = 1 << 2;
+pub const LASAPI_HW_CAP_MIC_BOOST: u32 = 1 << 3;
+pub const LASAPI_HW_CAP_LINE_AIR: u32 = 1 << 4;
+pub const LASAPI_HW_CAP_HID_BOX: u32 = 1 << 5;
+pub const LASAPI_HW_CAP_STRIX_ARCH: u32 = 1 << 6;
+pub const LASAPI_HW_CAP_HIGH_RES: u32 = 1 << 7;
 
 const BUS_USB: u32 = 3;
 const HID_MAX_DESCRIPTOR_SIZE: usize = 4096;
@@ -252,7 +252,7 @@ struct HwAnalogInner {
     sync_cache_valid: bool,
     last_pb_card: i32,
     last_cap_card: i32,
-    last_cfg: LwasapiHwAnalogCfg,
+    last_cfg: LasapiHwAnalogCfg,
     last_d_vol: u32,
     last_d_muted: bool,
     last_m_muted: bool,
@@ -314,7 +314,7 @@ impl Drop for HwAnalogInner {
     }
 }
 
-pub struct LwasapiHwAnalogCtx {
+pub struct LasapiHwAnalogCtx {
     inner: Mutex<HwAnalogInner>,
     dac_unity_active: AtomicI32,
     softknee_active: AtomicI32,
@@ -322,7 +322,7 @@ pub struct LwasapiHwAnalogCtx {
     cap_makeup_ppm: AtomicU32,
 }
 
-impl LwasapiHwAnalogCtx {
+impl LasapiHwAnalogCtx {
     fn new() -> Self {
         Self {
             inner: Mutex::new(HwAnalogInner::new()),
@@ -362,24 +362,24 @@ fn read_small_text(path: &str) -> Option<String> {
     }
 }
 
-pub fn default_cfg_value() -> LwasapiHwAnalogCfg {
-    LwasapiHwAnalogCfg {
+pub fn default_cfg_value() -> LasapiHwAnalogCfg {
+    LasapiHwAnalogCfg {
         hw_dac_unity_vol: 1,
-        hp_amp_tier: LWASAPI_HW_AMP_AUTO,
-        output_route: LWASAPI_HW_ROUTE_AUTO,
+        hp_amp_tier: LASAPI_HW_AMP_AUTO,
+        output_route: LASAPI_HW_ROUTE_AUTO,
         unlock_0db_rails: 0,
         analog_boost_db: 0.0,
         mic_hw_boost_db: 0.0,
     }
 }
 
-pub fn clamp_cfg(cfg: &mut LwasapiHwAnalogCfg) {
+pub fn clamp_cfg(cfg: &mut LasapiHwAnalogCfg) {
     cfg.hw_dac_unity_vol = u32::from(cfg.hw_dac_unity_vol != 0);
-    if cfg.hp_amp_tier > LWASAPI_HW_AMP_HIGH {
-        cfg.hp_amp_tier = LWASAPI_HW_AMP_AUTO;
+    if cfg.hp_amp_tier > LASAPI_HW_AMP_HIGH {
+        cfg.hp_amp_tier = LASAPI_HW_AMP_AUTO;
     }
-    if cfg.output_route > LWASAPI_HW_ROUTE_SPK {
-        cfg.output_route = LWASAPI_HW_ROUTE_AUTO;
+    if cfg.output_route > LASAPI_HW_ROUTE_SPK {
+        cfg.output_route = LASAPI_HW_ROUTE_AUTO;
     }
     cfg.unlock_0db_rails = u32::from(cfg.unlock_0db_rails != 0);
     if !(0.0..=12.0).contains(&cfg.analog_boost_db) {
@@ -390,7 +390,7 @@ pub fn clamp_cfg(cfg: &mut LwasapiHwAnalogCfg) {
     }
 }
 
-fn cfg_eq(a: &LwasapiHwAnalogCfg, b: &LwasapiHwAnalogCfg) -> bool {
+fn cfg_eq(a: &LasapiHwAnalogCfg, b: &LasapiHwAnalogCfg) -> bool {
     a.hw_dac_unity_vol == b.hw_dac_unity_vol
         && a.hp_amp_tier == b.hp_amp_tier
         && a.output_route == b.output_route
@@ -411,32 +411,32 @@ pub fn identify_card_arch_from_meta(
         || ci_contains(stream_head, "STRIX RAID DLX")
         || ci_contains(cid, "DLX")
     {
-        caps |= LWASAPI_HW_CAP_STRIX_ARCH | LWASAPI_HW_CAP_HIGH_RES;
+        caps |= LASAPI_HW_CAP_STRIX_ARCH | LASAPI_HW_CAP_HIGH_RES;
         "ASUS STRIX RAID DLX (ES9016 + TPA6120A2)".to_string()
     } else if ci_eq(usbid, "0b05:180d")
         || ci_contains(stream_head, "STRIX")
         || ci_contains(cid, "STRIX")
     {
-        caps |= LWASAPI_HW_CAP_STRIX_ARCH | LWASAPI_HW_CAP_HIGH_RES;
+        caps |= LASAPI_HW_CAP_STRIX_ARCH | LASAPI_HW_CAP_HIGH_RES;
         "ASUS STRIX Sound Card (ES9016 + TPA6120A2)".to_string()
     } else if ci_eq(usbid, "0b05:1808")
         || ci_eq(usbid, "0b05:1809")
         || ci_contains(uevent, "virtuoso")
         || ci_contains(cid, "Xonar")
     {
-        caps |= LWASAPI_HW_CAP_HIGH_RES;
+        caps |= LASAPI_HW_CAP_HIGH_RES;
         "ASUS Xonar Discrete DAC/Amp".to_string()
     } else if usbid.starts_with("1235:")
         || ci_contains(stream_head, "Scarlett")
         || ci_contains(cid, "Gen")
     {
-        caps |= LWASAPI_HW_CAP_HIGH_RES;
+        caps |= LASAPI_HW_CAP_HIGH_RES;
         "Focusrite Scarlett Pro Audio DAC/Preamp".to_string()
     } else if usbid.starts_with("041e:")
         || ci_contains(uevent, "ca0132")
         || ci_contains(cid, "Creative")
     {
-        caps |= LWASAPI_HW_CAP_HIGH_RES;
+        caps |= LASAPI_HW_CAP_HIGH_RES;
         "Creative Sound Blaster DAC / HP Amp".to_string()
     } else if ci_contains(uevent, "snd_hda_intel") || ci_contains(cid, "Generic") {
         let short_cid: String = if cid.is_empty() {
@@ -446,7 +446,7 @@ pub fn identify_card_arch_from_meta(
         };
         format!("HD-Audio Codec ({short_cid})")
     } else if !usbid.is_empty() {
-        caps |= LWASAPI_HW_CAP_HIGH_RES;
+        caps |= LASAPI_HW_CAP_HIGH_RES;
         format!("USB Audio Class DAC ({usbid})")
     } else {
         let nm = if cid.is_empty() { "PCM" } else { cid };
@@ -589,15 +589,15 @@ fn probe_strix_hid_box(inner: &mut HwAnalogInner) {
             inner.hid_has_consumer = has_cons;
             inner.hid_has_report_id = has_rid;
             inner.hid_consumer_report_id = cons_rid;
-            inner.caps_mask |= LWASAPI_HW_CAP_HID_BOX;
+            inner.caps_mask |= LASAPI_HW_CAP_HID_BOX;
             let detail = format!(
                 "Detected ASUS Strix HID Control Box {vid:04x}:{pid:04x} (consumer={} rid={}:{cons_rid})",
                 i32::from(has_cons),
                 i32::from(has_rid)
             );
             dbg_emit(
-                LWASAPI_DBG_ENGINE,
-                LWASAPI_DBG_INFO,
+                LASAPI_DBG_ENGINE,
+                LASAPI_DBG_INFO,
                 0,
                 0,
                 "HW_STRIX_HID",
@@ -697,7 +697,7 @@ fn scan_alsa_card_mixers(card: i32, for_capture: bool, inner: &mut HwAnalogInner
                 if pr > dac_prio {
                     dac_prio = pr;
                     inner.pb_dac_vol = HwCtlElem::from_info(id, &info, &nm);
-                    inner.caps_mask |= LWASAPI_HW_CAP_DAC_VOL;
+                    inner.caps_mask |= LASAPI_HW_CAP_DAC_VOL;
                 }
             } else if tp == SNDRV_CTL_ELEM_TYPE_BOOLEAN {
                 if ci_eq(&nm, "Master Playback Switch")
@@ -722,7 +722,7 @@ fn scan_alsa_card_mixers(card: i32, for_capture: bool, inner: &mut HwAnalogInner
                 || ci_contains(&nm, "Output Gain")
             {
                 inner.pb_amp_ctl = HwCtlElem::from_info(id, &info, &nm);
-                inner.caps_mask |= LWASAPI_HW_CAP_HP_AMP;
+                inner.caps_mask |= LASAPI_HW_CAP_HP_AMP;
             }
             if ci_eq(&nm, "Analog Output")
                 || ci_eq(&nm, "Output Select")
@@ -730,19 +730,19 @@ fn scan_alsa_card_mixers(card: i32, for_capture: bool, inner: &mut HwAnalogInner
                 || ci_contains(&nm, "Headphone Jack Mode")
             {
                 inner.pb_route_ctl = HwCtlElem::from_info(id, &info, &nm);
-                inner.caps_mask |= LWASAPI_HW_CAP_OUT_ROUTE;
+                inner.caps_mask |= LASAPI_HW_CAP_OUT_ROUTE;
             }
         } else {
             if ci_contains(&nm, "Line In 1 Air")
                 || ci_contains(&nm, "Phantom Power")
                 || ci_contains(&nm, "Autogain")
             {
-                inner.caps_mask |= LWASAPI_HW_CAP_LINE_AIR;
+                inner.caps_mask |= LASAPI_HW_CAP_LINE_AIR;
             }
             if ci_contains(&nm, "Mic Boost") && tp == SNDRV_CTL_ELEM_TYPE_INTEGER {
                 if !inner.cap_boost_ctl.valid {
                     inner.cap_boost_ctl = HwCtlElem::from_info(id, &info, &nm);
-                    inner.caps_mask |= LWASAPI_HW_CAP_MIC_BOOST;
+                    inner.caps_mask |= LASAPI_HW_CAP_MIC_BOOST;
                 }
             } else if (ci_eq(&nm, "Capture Volume")
                 || ci_eq(&nm, "Mic Capture Volume")
@@ -762,7 +762,7 @@ fn scan_alsa_card_mixers(card: i32, for_capture: bool, inner: &mut HwAnalogInner
     }
 
     if !for_capture && inner.pb_hp_sw.valid && inner.pb_spk_sw.valid {
-        inner.caps_mask |= LWASAPI_HW_CAP_OUT_ROUTE;
+        inner.caps_mask |= LASAPI_HW_CAP_OUT_ROUTE;
     }
 
     close_raw_fd(fd);
@@ -1077,34 +1077,34 @@ pub fn score_card_with_meta_hp(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_hw_analog_default_cfg(cfg: *mut LwasapiHwAnalogCfg) {
+pub unsafe extern "C" fn lasapi_hw_analog_default_cfg(cfg: *mut LasapiHwAnalogCfg) {
     if !cfg.is_null() {
         unsafe { *cfg = default_cfg_value() };
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_hw_analog_clamp_cfg(cfg: *mut LwasapiHwAnalogCfg) {
+pub unsafe extern "C" fn lasapi_hw_analog_clamp_cfg(cfg: *mut LasapiHwAnalogCfg) {
     if !cfg.is_null() {
         clamp_cfg(unsafe { &mut *cfg });
     }
 }
 
 #[no_mangle]
-pub extern "C" fn lwasapi_hw_analog_create() -> *mut LwasapiHwAnalogCtx {
-    Box::into_raw(Box::new(LwasapiHwAnalogCtx::new()))
+pub extern "C" fn lasapi_hw_analog_create() -> *mut LasapiHwAnalogCtx {
+    Box::into_raw(Box::new(LasapiHwAnalogCtx::new()))
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_hw_analog_destroy(ctx: *mut LwasapiHwAnalogCtx) {
+pub unsafe extern "C" fn lasapi_hw_analog_destroy(ctx: *mut LasapiHwAnalogCtx) {
     if !ctx.is_null() {
         drop(unsafe { Box::from_raw(ctx) });
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_hw_analog_probe(
-    ctx: *mut LwasapiHwAnalogCtx,
+pub unsafe extern "C" fn lasapi_hw_analog_probe(
+    ctx: *mut LasapiHwAnalogCtx,
     pb_card: c_int,
     cap_card: c_int,
 ) {
@@ -1145,22 +1145,22 @@ pub unsafe extern "C" fn lwasapi_hw_analog_probe(
             inner.card_arch_name = arch;
             inner.caps_mask |= caps;
         } else {
-            inner.caps_mask |= caps & (LWASAPI_HW_CAP_STRIX_ARCH | LWASAPI_HW_CAP_HIGH_RES);
+            inner.caps_mask |= caps & (LASAPI_HW_CAP_STRIX_ARCH | LASAPI_HW_CAP_HIGH_RES);
         }
         scan_alsa_card_mixers(cap_card, true, &mut inner);
     }
 
-    if (inner.caps_mask & LWASAPI_HW_CAP_STRIX_ARCH) != 0 {
+    if (inner.caps_mask & LASAPI_HW_CAP_STRIX_ARCH) != 0 {
         probe_strix_hid_box(&mut inner);
     } else {
         inner.close_hid();
     }
 
-    if (inner.caps_mask & LWASAPI_HW_CAP_STRIX_ARCH) != 0
-        && (inner.caps_mask & LWASAPI_HW_CAP_HP_AMP) == 0
+    if (inner.caps_mask & LASAPI_HW_CAP_STRIX_ARCH) != 0
+        && (inner.caps_mask & LASAPI_HW_CAP_HP_AMP) == 0
     {
         inner.diag_note = "Strix CM6632AE UAC: DAC/Analog Soft-Amp + Preamp Ready".to_string();
-    } else if (inner.caps_mask & LWASAPI_HW_CAP_DAC_VOL) != 0 {
+    } else if (inner.caps_mask & LASAPI_HW_CAP_DAC_VOL) != 0 {
         let short_name: String = inner.pb_dac_vol.name.chars().take(24).collect();
         inner.diag_note = format!("ALSA Hardware DAC Unity Stage Active ({short_name})");
     } else {
@@ -1171,9 +1171,9 @@ pub unsafe extern "C" fn lwasapi_hw_analog_probe(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_hw_analog_sync(
-    ctx: *mut LwasapiHwAnalogCtx,
-    cfg_in: *const LwasapiHwAnalogCfg,
+pub unsafe extern "C" fn lasapi_hw_analog_sync(
+    ctx: *mut LasapiHwAnalogCtx,
+    cfg_in: *const LasapiHwAnalogCfg,
     desktop_vol_pct: u32,
     desktop_muted: bool,
     _mic_vol_pct: u32,
@@ -1208,9 +1208,9 @@ pub unsafe extern "C" fn lwasapi_hw_analog_sync(
             O_RDWR | O_NONBLOCK | O_CLOEXEC,
         );
         if pfd >= 0 {
-            if cfg.output_route != LWASAPI_HW_ROUTE_AUTO {
+            if cfg.output_route != LASAPI_HW_ROUTE_AUTO {
                 if inner.pb_route_ctl.valid {
-                    if cfg.output_route == LWASAPI_HW_ROUTE_HP {
+                    if cfg.output_route == LASAPI_HW_ROUTE_HP {
                         write_alsa_enum_match(
                             pfd,
                             &inner.pb_route_ctl,
@@ -1232,21 +1232,21 @@ pub unsafe extern "C" fn lwasapi_hw_analog_sync(
                     write_alsa_int(
                         pfd,
                         &inner.pb_hp_sw,
-                        c_long::from(cfg.output_route == LWASAPI_HW_ROUTE_HP),
+                        c_long::from(cfg.output_route == LASAPI_HW_ROUTE_HP),
                     );
                     write_alsa_int(
                         pfd,
                         &inner.pb_spk_sw,
-                        c_long::from(cfg.output_route == LWASAPI_HW_ROUTE_SPK),
+                        c_long::from(cfg.output_route == LASAPI_HW_ROUTE_SPK),
                     );
                 }
             }
 
-            if cfg.hp_amp_tier != LWASAPI_HW_AMP_AUTO && inner.pb_amp_ctl.valid {
+            if cfg.hp_amp_tier != LASAPI_HW_AMP_AUTO && inner.pb_amp_ctl.valid {
                 if inner.pb_amp_ctl.tp == SNDRV_CTL_ELEM_TYPE_ENUMERATED {
-                    if cfg.hp_amp_tier == LWASAPI_HW_AMP_LOW {
+                    if cfg.hp_amp_tier == LASAPI_HW_AMP_LOW {
                         write_alsa_enum_match(pfd, &inner.pb_amp_ctl, Some("Low"), Some("32"), 0);
-                    } else if cfg.hp_amp_tier == LWASAPI_HW_AMP_MED {
+                    } else if cfg.hp_amp_tier == LASAPI_HW_AMP_MED {
                         write_alsa_enum_match(pfd, &inner.pb_amp_ctl, Some("Med"), Some("150"), 1);
                     } else {
                         write_alsa_enum_match(pfd, &inner.pb_amp_ctl, Some("High"), Some("600"), 2);
@@ -1254,8 +1254,8 @@ pub unsafe extern "C" fn lwasapi_hw_analog_sync(
                 } else if inner.pb_amp_ctl.tp == SNDRV_CTL_ELEM_TYPE_INTEGER {
                     let span = inner.pb_amp_ctl.imax - inner.pb_amp_ctl.imin;
                     let target = match cfg.hp_amp_tier {
-                        LWASAPI_HW_AMP_LOW => inner.pb_amp_ctl.imin,
-                        LWASAPI_HW_AMP_MED => inner.pb_amp_ctl.imin + span / 2,
+                        LASAPI_HW_AMP_LOW => inner.pb_amp_ctl.imin,
+                        LASAPI_HW_AMP_MED => inner.pb_amp_ctl.imin + span / 2,
                         _ => inner.pb_amp_ctl.imax,
                     };
                     write_alsa_int(pfd, &inner.pb_amp_ctl, target);
@@ -1275,7 +1275,7 @@ pub unsafe extern "C" fn lwasapi_hw_analog_sync(
                 {
                     write_alsa_int(pfd, &inner.pb_spk_vol, inner.pb_spk_vol.imax);
                 }
-                if cfg.output_route == LWASAPI_HW_ROUTE_AUTO {
+                if cfg.output_route == LASAPI_HW_ROUTE_AUTO {
                     if inner.pb_hp_sw.valid {
                         write_alsa_int(pfd, &inner.pb_hp_sw, 1);
                     }
@@ -1309,7 +1309,7 @@ pub unsafe extern "C" fn lwasapi_hw_analog_sync(
                     write_alsa_int(pfd, &inner.pb_dac_sw, 1);
                 }
                 if inner.pb_hp_sw.valid
-                    && cfg.output_route != LWASAPI_HW_ROUTE_SPK
+                    && cfg.output_route != LASAPI_HW_ROUTE_SPK
                     && card_has_plugged_headphone_jack(inner.pb_card)
                     && read_alsa_bool(pfd, &inner.pb_hp_sw) == Some(false)
                 {
@@ -1321,10 +1321,10 @@ pub unsafe extern "C" fn lwasapi_hw_analog_sync(
     }
 
     let mut amp_stage_db = cfg.analog_boost_db;
-    if cfg.hp_amp_tier != LWASAPI_HW_AMP_AUTO && !inner.pb_amp_ctl.valid {
-        if cfg.hp_amp_tier == LWASAPI_HW_AMP_MED {
+    if cfg.hp_amp_tier != LASAPI_HW_AMP_AUTO && !inner.pb_amp_ctl.valid {
+        if cfg.hp_amp_tier == LASAPI_HW_AMP_MED {
             amp_stage_db += 3.5;
-        } else if cfg.hp_amp_tier == LWASAPI_HW_AMP_HIGH {
+        } else if cfg.hp_amp_tier == LASAPI_HW_AMP_HIGH {
             amp_stage_db += 7.0;
         }
     }
@@ -1413,8 +1413,8 @@ pub unsafe extern "C" fn lwasapi_hw_analog_sync(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_hw_analog_poll_hid(
-    ctx: *mut LwasapiHwAnalogCtx,
+pub unsafe extern "C" fn lasapi_hw_analog_poll_hid(
+    ctx: *mut LasapiHwAnalogCtx,
     out_vol_delta: *mut c_int,
     out_mute_toggle: *mut c_int,
 ) -> c_int {
@@ -1484,9 +1484,9 @@ pub unsafe extern "C" fn lwasapi_hw_analog_poll_hid(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_hw_analog_get_info(
-    ctx: *mut LwasapiHwAnalogCtx,
-    out_info: *mut LwasapiHwAnalogInfo,
+pub unsafe extern "C" fn lasapi_hw_analog_get_info(
+    ctx: *mut LasapiHwAnalogCtx,
+    out_info: *mut LasapiHwAnalogInfo,
 ) {
     if out_info.is_null() {
         return;
@@ -1523,7 +1523,7 @@ pub unsafe extern "C" fn lwasapi_hw_analog_get_info(
         inner.pb_amp_ctl.name.as_str()
     } else if inner.pb_route_ctl.valid {
         inner.pb_route_ctl.name.as_str()
-    } else if (inner.caps_mask & LWASAPI_HW_CAP_STRIX_ARCH) != 0 {
+    } else if (inner.caps_mask & LASAPI_HW_CAP_STRIX_ARCH) != 0 {
         "TPA6120A2 Analog Stage"
     } else {
         "Default Output Stage"
@@ -1542,15 +1542,15 @@ pub unsafe extern "C" fn lwasapi_hw_analog_get_info(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_hw_analog_is_dac_unity_active(
-    ctx: *const LwasapiHwAnalogCtx,
+pub unsafe extern "C" fn lasapi_hw_analog_is_dac_unity_active(
+    ctx: *const LasapiHwAnalogCtx,
 ) -> bool {
     !ctx.is_null() && unsafe { &*ctx }.dac_unity_active.load(Ordering::Relaxed) != 0
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_hw_analog_get_drive_linear(
-    ctx: *const LwasapiHwAnalogCtx,
+pub unsafe extern "C" fn lasapi_hw_analog_get_drive_linear(
+    ctx: *const LasapiHwAnalogCtx,
 ) -> f32 {
     if ctx.is_null() {
         return 1.0;
@@ -1560,15 +1560,15 @@ pub unsafe extern "C" fn lwasapi_hw_analog_get_drive_linear(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_hw_analog_softknee_active(
-    ctx: *const LwasapiHwAnalogCtx,
+pub unsafe extern "C" fn lasapi_hw_analog_softknee_active(
+    ctx: *const LasapiHwAnalogCtx,
 ) -> bool {
     !ctx.is_null() && unsafe { &*ctx }.softknee_active.load(Ordering::Relaxed) != 0
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_hw_analog_get_cap_makeup_linear(
-    ctx: *const LwasapiHwAnalogCtx,
+pub unsafe extern "C" fn lasapi_hw_analog_get_cap_makeup_linear(
+    ctx: *const LasapiHwAnalogCtx,
 ) -> f32 {
     if ctx.is_null() {
         return 1.0;
@@ -1578,7 +1578,7 @@ pub unsafe extern "C" fn lwasapi_hw_analog_get_cap_makeup_linear(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lwasapi_hw_analog_score_card(
+pub unsafe extern "C" fn lasapi_hw_analog_score_card(
     card_index: u32,
     dev_name: *const c_char,
 ) -> c_int {
@@ -1661,7 +1661,7 @@ mod tests {
 
         let (arch, caps) = identify_card_arch_from_meta(2, "DLX", "0b05:180c", "", "");
         assert!(arch.contains("STRIX"));
-        assert_ne!(caps & LWASAPI_HW_CAP_STRIX_ARCH, 0);
+        assert_ne!(caps & LASAPI_HW_CAP_STRIX_ARCH, 0);
     }
 
     #[test]
@@ -1672,16 +1672,16 @@ mod tests {
         cfg.analog_boost_db = f32::NAN;
         cfg.mic_hw_boost_db = 42.0;
         clamp_cfg(&mut cfg);
-        assert_eq!(cfg.hp_amp_tier, LWASAPI_HW_AMP_AUTO);
-        assert_eq!(cfg.output_route, LWASAPI_HW_ROUTE_AUTO);
+        assert_eq!(cfg.hp_amp_tier, LASAPI_HW_AMP_AUTO);
+        assert_eq!(cfg.output_route, LASAPI_HW_ROUTE_AUTO);
         assert_eq!(cfg.analog_boost_db, 0.0);
         assert_eq!(cfg.mic_hw_boost_db, 24.0);
 
-        let ctx = lwasapi_hw_analog_create();
+        let ctx = lasapi_hw_analog_create();
         unsafe {
-            assert!(!lwasapi_hw_analog_is_dac_unity_active(ctx));
-            assert!((lwasapi_hw_analog_get_drive_linear(ctx) - 1.0).abs() < 1e-6);
-            lwasapi_hw_analog_destroy(ctx);
+            assert!(!lasapi_hw_analog_is_dac_unity_active(ctx));
+            assert!((lasapi_hw_analog_get_drive_linear(ctx) - 1.0).abs() < 1e-6);
+            lasapi_hw_analog_destroy(ctx);
         }
     }
 }

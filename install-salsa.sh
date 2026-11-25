@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # Copyright (C) 2026 Linuxknows
 #
-# Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+# Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 # under the terms of the GNU Lesser General Public License as published by
 # the Free Software Foundation, version 3 of the License.
 
@@ -34,7 +34,7 @@ launch_in_terminal() {
         mate-terminal tilix xterm
     )
     local self_path="${BASH_SOURCE[0]}"
-    local title="Salsa (LWASAPI) Installer"
+    local title="Salsa (LASAPI) Installer"
     for term in "${candidates[@]}"; do
         local bin="${term%% *}"
         command -v "${bin}" >/dev/null 2>&1 || continue
@@ -94,7 +94,7 @@ fi
 
 if [[ ! -x "${INSTALLER_BIN}" || "${SCRIPT_DIR}/rust/salsa_tools/src/bin/salsa_installer.rs" -nt "${INSTALLER_BIN}" || "${SCRIPT_DIR}/rust/salsa_tools/src/debug_core.rs" -nt "${INSTALLER_BIN}" || "${SCRIPT_DIR}/rust/salsa_tools/src/host.rs" -nt "${INSTALLER_BIN}" || "${SCRIPT_DIR}/rust/Cargo.toml" -nt "${INSTALLER_BIN}" ]]; then
     echo "================================================================================"
-    echo "  Salsa (LWASAPI) Bootstrap"
+    echo "  Salsa (LASAPI) Bootstrap"
     echo "================================================================================"
     echo "[0/6] Compiling Salsa installer helper..."
     if command -v make >/dev/null 2>&1; then

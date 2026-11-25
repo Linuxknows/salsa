@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -25,10 +25,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use salsa_wire::c_abi::{
-    LwasapiMidiEvent, LwasapiPwPreviewShm, WaveFormatEx, AUDCLNT_SHAREMODE_SHARED,
-    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, LWASAPI_FMT_FLOAT32, LWASAPI_PW_PREVIEW_MAGIC,
-    LWASAPI_PW_PREVIEW_MAX_BYTES, LWASAPI_PW_PREVIEW_MAX_H, LWASAPI_PW_PREVIEW_MAX_W,
-    LWASAPI_PW_PREVIEW_VERSION,
+    LasapiMidiEvent, LasapiPwPreviewShm, WaveFormatEx, AUDCLNT_SHAREMODE_SHARED,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, LASAPI_FMT_FLOAT32, LASAPI_PW_PREVIEW_MAGIC,
+    LASAPI_PW_PREVIEW_MAX_BYTES, LASAPI_PW_PREVIEW_MAX_H, LASAPI_PW_PREVIEW_MAX_W,
+    LASAPI_PW_PREVIEW_VERSION,
 };
 use salsa_wire::unix_sys::{
     audiodg_sock_path, current_hostname, debug_in_sock_path, mono_ns,
@@ -44,7 +44,7 @@ use crate::json::JsonValue;
 use crate::zlib_png::ZipWriter;
 
 pub const SUBSYSTEMS: &[&str] = &[
-    "ALL", "ENGINE", "WASAPI", "PA", "BLUEZ", "MIDI", "SHIM", "ALSA", "PW_VIDEO", "JOURNAL",
+    "ALL", "ENGINE", "LASAPI", "PA", "BLUEZ", "MIDI", "SHIM", "ALSA", "PW_VIDEO", "JOURNAL",
     "AUTOSYNC", "DBUS",
 ];
 pub const LOG_LEVELS: &[&str] = &["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
@@ -63,7 +63,7 @@ pub fn level_rank(lvl: &str) -> usize {
 }
 
 pub fn resolve_debug_sock_path() -> String {
-    resolve_sock_path_common("LWASAPI_DEBUG_SOCK", "debug.sock", "/tmp/lwasapi-debug.sock")
+    resolve_sock_path_common("LASAPI_DEBUG_SOCK", "debug.sock", "/tmp/lasapi-debug.sock")
 }
 
 pub fn resolve_audiodg_sock_path() -> String {
@@ -596,15 +596,15 @@ impl SystemAuditScanner {
             "rust/Cargo.toml",
             "rust/salsa_net/Cargo.toml",
             "rust/salsa_net/src",
-            "rust/lwasapi_client/Cargo.toml",
-            "rust/lwasapi_client/src",
+            "rust/lasapi_client/Cargo.toml",
+            "rust/lasapi_client/src",
         ];
         let tools_deps = [
             "rust/Cargo.toml",
             "rust/salsa_net/Cargo.toml",
             "rust/salsa_net/src",
-            "rust/lwasapi_client/Cargo.toml",
-            "rust/lwasapi_client/src",
+            "rust/lasapi_client/Cargo.toml",
+            "rust/lasapi_client/src",
             "rust/salsa_tools/Cargo.toml",
             "rust/salsa_tools/src",
         ];
@@ -617,15 +617,15 @@ impl SystemAuditScanner {
             "rust/Cargo.lock",
             "rust/salsa_net/Cargo.toml",
             "rust/salsa_net/src",
-            "rust/lwasapi_client/Cargo.toml",
-            "rust/lwasapi_client/src",
+            "rust/lasapi_client/Cargo.toml",
+            "rust/lasapi_client/src",
             "rust/salsa_tools/Cargo.toml",
             "rust/salsa_tools/src",
             "rust/salsa_ui/Cargo.toml",
             "rust/salsa_ui/src",
         ];
         let mut tray_deps = ui_shared_deps.to_vec();
-        tray_deps.push("qt6/lwasapi_tray.cpp");
+        tray_deps.push("qt6/lasapi_tray.cpp");
         let mut debug_deps = ui_shared_deps.to_vec();
         debug_deps.extend([
             "qt6/salsa_widgets.hpp",
@@ -642,20 +642,20 @@ impl SystemAuditScanner {
         ]);
 
         let is_dev_repo = base_dir.join("rust/Cargo.toml").is_file();
-        let mut lwasapi_deps = client_deps.to_vec();
-        lwasapi_deps.push("src/lwasapi.version");
+        let mut lasapi_deps = client_deps.to_vec();
+        lasapi_deps.push("src/lasapi.version");
 
         let mut checks: Vec<(&str, Vec<&str>)> = vec![
-            ("build/lwasapi-audiodg", net_deps.to_vec()),
-            ("build/lwasapi-ctl", net_deps.to_vec()),
-            ("build/liblwasapi.so", lwasapi_deps),
-            ("build/lwasapi-test", client_deps.to_vec()),
-            ("build/lwasapi-bench", client_deps.to_vec()),
-            ("build/lwasapi-run", tools_deps.to_vec()),
-            ("build/lwasapi-autosync", tools_deps.to_vec()),
+            ("build/lasapi-audiodg", net_deps.to_vec()),
+            ("build/lasapi-ctl", net_deps.to_vec()),
+            ("build/liblasapi.so", lasapi_deps),
+            ("build/lasapi-test", client_deps.to_vec()),
+            ("build/lasapi-bench", client_deps.to_vec()),
+            ("build/lasapi-run", tools_deps.to_vec()),
+            ("build/lasapi-autosync", tools_deps.to_vec()),
             ("build/salsa-installer", tools_deps.to_vec()),
             ("build/salsa-debug-cli", tools_deps.to_vec()),
-            ("build/lwasapi-tray", tray_deps),
+            ("build/lasapi-tray", tray_deps),
             ("build/salsa-debug", debug_deps),
             ("build/salsa-studio", studio_deps),
         ];
@@ -672,11 +672,11 @@ impl SystemAuditScanner {
 
         let mut alsa_plugin_deps = client_deps.to_vec();
         alsa_plugin_deps.extend([
-            "rust/alsa_plugin_lwasapi/Cargo.toml",
-            "rust/alsa_plugin_lwasapi/src",
+            "rust/alsa_plugin_lasapi/Cargo.toml",
+            "rust/alsa_plugin_lasapi/src",
             "src/alsa_plugin.version",
         ]);
-        checks.push(("build/libasound_module_pcm_lwasapi.so", alsa_plugin_deps));
+        checks.push(("build/libasound_module_pcm_lasapi.so", alsa_plugin_deps));
 
         checks.push((
             "build/libsalsa_pa_reconnect.so",
@@ -889,8 +889,8 @@ impl SystemAuditScanner {
             ("pipewire_0", xdg_rt.join("pipewire-0")),
             ("pipewire_0_manager", xdg_rt.join("pipewire-0-manager")),
         ];
-        let lwasapi_pw_sock_active = query_systemd_unit("lwasapi-pipewire.socket")
-            .get("active_state")
+        let lasapi_pw_sock_active = query_systemd_unit("lasapi-pipewire.socket")
+            .get("active")
             .and_then(JsonValue::as_str)
             .is_some_and(|s| s == "active" || s == "listening");
         let mut sockets_arr = Vec::with_capacity(sock_specs.len());
@@ -898,8 +898,8 @@ impl SystemAuditScanner {
         for (name, path) in &sock_specs {
             let info = peercred_for_unix_socket(path);
             if *name == "pipewire_0"
-                && (info.peer_comm == "lwasapi-audiodg"
-                    || (info.peer_comm == "systemd" && lwasapi_pw_sock_active))
+                && (info.peer_comm == "lasapi-audiodg"
+                    || (info.peer_comm == "systemd" && lasapi_pw_sock_active))
             {
                 pw_is_salsa = true;
             }
@@ -931,12 +931,12 @@ impl SystemAuditScanner {
         }
 
         let unit_names = [
-            "lwasapi-pipewire.socket",
-            "lwasapi-audiodg.service",
-            "lwasapi-tray.service",
-            "lwasapi-module-watcher.path",
-            "lwasapi-module-watcher.service",
-            "lwasapi-module-watcher.timer",
+            "lasapi-pipewire.socket",
+            "lasapi-audiodg.service",
+            "lasapi-tray.service",
+            "lasapi-module-watcher.path",
+            "lasapi-module-watcher.service",
+            "lasapi-module-watcher.timer",
             "pipewire.service",
             "pipewire.socket",
             "pipewire-pulse.service",
@@ -957,7 +957,7 @@ impl SystemAuditScanner {
         let freshness_obj = Self::check_build_freshness(&base_dir);
 
         let pw_note = if pw_is_salsa {
-            "pipewire-0 is actively served by Salsa Video-Only ScreenCast broker (lwasapi-audiodg)"
+            "pipewire-0 is actively served by Salsa Video-Only ScreenCast broker (lasapi-audiodg)"
         } else if xdg_rt.join("pipewire-0").exists() {
             "pipewire-0 is served by an external PipeWire instance"
         } else {
@@ -1048,7 +1048,7 @@ fn scan_audio_processes() -> Vec<JsonValue> {
 
 pub fn scan_process_routing_audit() -> Vec<JsonValue> {
     let needles = [
-        "lwasapi",
+        "lasapi",
         "salsa",
         "pipewire",
         "wireplumber",
@@ -1059,7 +1059,7 @@ pub fn scan_process_routing_audit() -> Vec<JsonValue> {
         "xdg-desktop-portal",
     ];
     let lib_markers = [
-        "liblwasapi",
+        "liblasapi",
         "shims/lib",
         "pa_reconnect",
         "libasound",
@@ -1099,8 +1099,8 @@ pub fn scan_process_routing_audit() -> Vec<JsonValue> {
                     let s = tgt.to_string_lossy();
                     if s.contains("/dev/snd/") {
                         alsa_fds.push(s.into_owned());
-                    } else if s.contains("memfd:") || s.contains("lwasapi") || s.contains("salsa") {
-                        if s.contains("lwasapi") || s.contains("salsa") {
+                    } else if s.contains("memfd:") || s.contains("lasapi") || s.contains("salsa") {
+                        if s.contains("lasapi") || s.contains("salsa") {
                             saw_salsa_fd = true;
                         }
                         if sockets_shm.len() < 16 {
@@ -1140,11 +1140,11 @@ pub fn scan_process_routing_audit() -> Vec<JsonValue> {
             continue;
         }
 
-        let is_daemon = lc_comm.contains("lwasapi-audiodg") || lc_cmd.contains("lwasapi-audiodg");
+        let is_daemon = lc_comm.contains("lasapi-audiodg") || lc_cmd.contains("lasapi-audiodg");
         let has_salsa_map = mapped_libs
             .iter()
-            .any(|l| l.contains("liblwasapi") || l.contains("shims/") || l.contains("pa_reconnect"));
-        let has_salsa_name = lc_comm.contains("lwasapi") || lc_comm.contains("salsa") || saw_salsa_fd;
+            .any(|l| l.contains("liblasapi") || l.contains("shims/") || l.contains("pa_reconnect"));
+        let has_salsa_name = lc_comm.contains("lasapi") || lc_comm.contains("salsa") || saw_salsa_fd;
         let classification = if is_daemon {
             "Salsa Daemon"
         } else if has_salsa_map || has_salsa_name {
@@ -1207,7 +1207,7 @@ fn scan_ss_unix_sockets() -> Vec<JsonValue> {
     let txt = String::from_utf8_lossy(&res.stdout);
     for line in txt.lines() {
         let lc = line.to_ascii_lowercase();
-        if lc.contains("lwasapi")
+        if lc.contains("lasapi")
             || lc.contains("salsa")
             || lc.contains("pulse")
             || lc.contains("pipewire")
@@ -1281,8 +1281,8 @@ fn scan_configs(base_dir: &Path) -> JsonValue {
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".config"));
 
-    let repo_plugin = base_dir.join("build/libasound_module_pcm_lwasapi.so");
-    let sys_plugin = PathBuf::from("/usr/lib/alsa-lib/libasound_module_pcm_lwasapi.so");
+    let repo_plugin = base_dir.join("build/libasound_module_pcm_lasapi.so");
+    let sys_plugin = PathBuf::from("/usr/lib/alsa-lib/libasound_module_pcm_lasapi.so");
     let repo_sha = sha256_file(&repo_plugin);
     let sys_sha = sha256_file(&sys_plugin);
     let plugin_matches = repo_sha.is_some() && repo_sha == sys_sha;
@@ -1340,11 +1340,11 @@ impl ExternalLogManager {
             .args([
                 "--user",
                 "-u",
-                "lwasapi-audiodg.service",
+                "lasapi-audiodg.service",
                 "-u",
-                "lwasapi-tray.service",
+                "lasapi-tray.service",
                 "-u",
-                "lwasapi-module-watcher.service",
+                "lasapi-module-watcher.service",
                 "-n",
                 &n,
                 "--no-pager",
@@ -1395,7 +1395,7 @@ pub struct DiagnosticProbes;
 
 impl DiagnosticProbes {
     pub fn run_all_probes(base_dir: &Path) -> JsonValue {
-        let ctl_path = base_dir.join("build/lwasapi-ctl");
+        let ctl_path = base_dir.join("build/lasapi-ctl");
         let ctl_ok = if ctl_path.is_file() {
             Command::new(&ctl_path)
                 .arg("status")
@@ -1411,11 +1411,11 @@ impl DiagnosticProbes {
         let ping_rtt_ms = probe_debug_ping(&dbg_sock).map(|_| t0.elapsed().as_secs_f64() * 1000.0);
         let snap_res = snapshot_once(Some(&dbg_sock), Duration::from_millis(900));
 
-        let alsa_plugin = base_dir.join("build/libasound_module_pcm_lwasapi.so");
-        let alsa_plugin_ok = dlopen_symbol_check(&alsa_plugin, "_snd_pcm_lwasapi_open");
+        let alsa_plugin = base_dir.join("build/libasound_module_pcm_lasapi.so");
+        let alsa_plugin_ok = dlopen_symbol_check(&alsa_plugin, "_snd_pcm_lasapi_open");
 
-        let liblwasapi = base_dir.join("build/liblwasapi.so");
-        let liblwasapi_ok = dlopen_symbol_check(&liblwasapi, "LWASAPI_GetEngineStatus");
+        let liblasapi = base_dir.join("build/liblasapi.so");
+        let liblasapi_ok = dlopen_symbol_check(&liblasapi, "LASAPI_GetEngineStatus");
 
         let shim_alsa_ok = base_dir.join("build/shims/libasound.so.2").is_file();
         let shim_pulse_ok = base_dir.join("build/shims/libpulse.so.0").is_file();
@@ -1433,7 +1433,7 @@ impl DiagnosticProbes {
                 ping_rtt_ms.map(JsonValue::Float).unwrap_or(JsonValue::Null),
             ),
             ("alsa_plugin_dlopen_ok", JsonValue::Bool(alsa_plugin_ok)),
-            ("liblwasapi_dlopen_ok", JsonValue::Bool(liblwasapi_ok)),
+            ("liblasapi_dlopen_ok", JsonValue::Bool(liblasapi_ok)),
             ("shim_alsa_present", JsonValue::Bool(shim_alsa_ok)),
             ("shim_pulse_present", JsonValue::Bool(shim_pulse_ok)),
             ("shim_jack_present", JsonValue::Bool(shim_jack_ok)),
@@ -1445,17 +1445,17 @@ impl DiagnosticProbes {
     }
 
     pub fn play_test_tone(freq_hz: f64, duration_ms: u32, amp: f32) -> Result<String, String> {
-        let mut client: *mut lwasapi::IAudioClient = core::ptr::null_mut();
+        let mut client: *mut lasapi::IAudioClient = core::ptr::null_mut();
         let hr = unsafe {
-            lwasapi::LWASAPI_ActivateAudioClient(c"salsa-debug-tone".as_ptr(), &mut client)
+            lasapi::LASAPI_ActivateAudioClient(c"salsa-debug-tone".as_ptr(), &mut client)
         };
         if hr < 0 || client.is_null() {
-            return Err(format!("LWASAPI_ActivateAudioClient failed (0x{hr:08x})"));
+            return Err(format!("LASAPI_ActivateAudioClient failed (0x{hr:08x})"));
         }
 
         let res = (|| {
             let mut wfx = WaveFormatEx::default();
-            let hr_fmt = unsafe { lwasapi::IAudioClient_GetMixFormat(client, &mut wfx) };
+            let hr_fmt = unsafe { lasapi::IAudioClient_GetMixFormat(client, &mut wfx) };
             if hr_fmt < 0 {
                 return Err(format!("GetMixFormat failed (0x{hr_fmt:08x})"));
             }
@@ -1465,7 +1465,7 @@ impl DiagnosticProbes {
             let buf_frames = period_frames * 4;
 
             let hr_init = unsafe {
-                lwasapi::IAudioClient_Initialize(
+                lasapi::IAudioClient_Initialize(
                     client,
                     AUDCLNT_SHAREMODE_SHARED,
                     AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -1477,8 +1477,8 @@ impl DiagnosticProbes {
             if hr_init < 0 {
                 return Err(format!("Initialize failed (0x{hr_init:08x})"));
             }
-            let _ = unsafe { lwasapi::ISimpleAudioVolume_SetMasterVolume(client, 1.0) };
-            let hr_start = unsafe { lwasapi::IAudioClient_Start(client) };
+            let _ = unsafe { lasapi::ISimpleAudioVolume_SetMasterVolume(client, 1.0) };
+            let hr_start = unsafe { lasapi::IAudioClient_Start(client) };
             if hr_start < 0 {
                 return Err(format!("Start failed (0x{hr_start:08x})"));
             }
@@ -1506,22 +1506,22 @@ impl DiagnosticProbes {
                     }
                 }
                 let hr_w = unsafe {
-                    lwasapi::IAudioRenderClient_WriteFrames(
+                    lasapi::IAudioRenderClient_WriteFrames(
                         client,
                         chunk.as_ptr().cast::<c_void>(),
                         n as u32,
-                        LWASAPI_FMT_FLOAT32,
+                        LASAPI_FMT_FLOAT32,
                     )
                 };
                 if hr_w < 0 {
-                    let _ = unsafe { lwasapi::IAudioClient_Stop(client) };
+                    let _ = unsafe { lasapi::IAudioClient_Stop(client) };
                     return Err(format!("WriteFrames failed (0x{hr_w:08x})"));
                 }
                 rendered += n;
                 thread::sleep(Duration::from_millis((u64::from(n as u32) * 1000 / u64::from(rate)).max(2)));
             }
             thread::sleep(Duration::from_millis(60));
-            let _ = unsafe { lwasapi::IAudioClient_Stop(client) };
+            let _ = unsafe { lasapi::IAudioClient_Stop(client) };
             Ok(format!(
                 "Rendered {rendered} frames ({:.1} Hz sine @ {rate} Hz, {ch}ch)",
                 freq_hz
@@ -1529,32 +1529,32 @@ impl DiagnosticProbes {
         })();
 
         unsafe {
-            lwasapi::IAudioClient_Release(client);
+            lasapi::IAudioClient_Release(client);
         }
         res
     }
 
     pub fn send_test_midi_note(note: u8, velocity: u8, duration_ms: u32) -> Result<String, String> {
-        let on = LwasapiMidiEvent {
+        let on = LasapiMidiEvent {
             frame_offset: 0,
             size: 3,
             port: 0,
             data: [0x90, note & 0x7F, velocity.clamp(1, 127), 0],
             timestamp_ns: mono_ns(),
         };
-        let hr_on = unsafe { lwasapi::IAudioClient_WriteMidiEvent(core::ptr::null_mut(), &on) };
+        let hr_on = unsafe { lasapi::IAudioClient_WriteMidiEvent(core::ptr::null_mut(), &on) };
         if hr_on < 0 {
             return Err(format!("WriteMidiEvent NoteOn failed (0x{hr_on:08x})"));
         }
         thread::sleep(Duration::from_millis(u64::from(duration_ms.clamp(20, 2000))));
-        let off = LwasapiMidiEvent {
+        let off = LasapiMidiEvent {
             frame_offset: 0,
             size: 3,
             port: 0,
             data: [0x80, note & 0x7F, 0, 0],
             timestamp_ns: mono_ns(),
         };
-        let _ = unsafe { lwasapi::IAudioClient_WriteMidiEvent(core::ptr::null_mut(), &off) };
+        let _ = unsafe { lasapi::IAudioClient_WriteMidiEvent(core::ptr::null_mut(), &off) };
         Ok(format!(
             "Injected MIDI NoteOn/Off note={} vel={} ({} ms)",
             note & 0x7F,
@@ -1576,7 +1576,7 @@ impl DiagnosticProbes {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
         let _ = writeln!(out, "================================================================================");
-        let _ = writeln!(out, "SALSA (LWASAPI) DETAILED TEXT DIAGNOSTIC REPORT");
+        let _ = writeln!(out, "SALSA (LASAPI) DETAILED TEXT DIAGNOSTIC REPORT");
         let _ = writeln!(out, "Generated: {} (epoch_ms={now_ms})", format_ts_ms(now_ms));
         let _ = writeln!(out, "================================================================================\n");
 
@@ -1761,12 +1761,12 @@ impl DiagnosticProbes {
         } else {
             let _ = writeln!(out, "  (No live snapshot available — audiodg offline or unreachable)");
         }
-        let ctl_path = base_dir.join("build/lwasapi-ctl");
+        let ctl_path = base_dir.join("build/lasapi-ctl");
         if ctl_path.is_file() {
             if let Ok(ctl_out) = Command::new(&ctl_path).arg("status").output() {
                 let txt = String::from_utf8_lossy(&ctl_out.stdout);
                 if !txt.trim().is_empty() {
-                    let _ = writeln!(out, "  [lwasapi-ctl status]");
+                    let _ = writeln!(out, "  [lasapi-ctl status]");
                     for line in txt.lines() {
                         let _ = writeln!(out, "    {line}");
                     }
@@ -1999,10 +1999,10 @@ impl DiagnosticProbes {
         out.push('\n');
 
         // [5] ACTIVE AUDIO CLIENTS & STREAMS
-        let _ = writeln!(out, "[5] ACTIVE WASAPI SESSIONS, PULSEAUDIO CLIENTS & STREAMS");
+        let _ = writeln!(out, "[5] ACTIVE LASAPI SESSIONS, PULSEAUDIO CLIENTS & STREAMS");
         if let Some(snap) = snapshot {
-            if let Some(ws) = snap.get("wasapi_sessions").and_then(JsonValue::as_array) {
-                let _ = writeln!(out, "  WASAPI Sessions ({}):", ws.len());
+            if let Some(ws) = snap.get("lasapi_sessions").and_then(JsonValue::as_array) {
+                let _ = writeln!(out, "  LASAPI Sessions ({}):", ws.len());
                 for s in ws {
                     let _ = writeln!(
                         out,
@@ -2401,7 +2401,7 @@ pub struct ScreenCastShmReader {
 
 impl ScreenCastShmReader {
     pub fn open(shm_name: &str) -> Result<Self, String> {
-        let map_size = mem::size_of::<LwasapiPwPreviewShm>();
+        let map_size = mem::size_of::<LasapiPwPreviewShm>();
         let trimmed = shm_name.trim_start_matches('/');
         if trimmed.is_empty() {
             return Err("empty preview shm name".to_string());
@@ -2430,10 +2430,10 @@ impl ScreenCastShmReader {
         let fd: OwnedFd = f.into();
         let map = MappedMem::map_fd(fd.as_raw_fd(), map_size, true, 0)
             .ok_or_else(|| format!("mmap {} failed", path.display()))?;
-        let shm = unsafe { &*(map.as_ptr() as *const LwasapiPwPreviewShm) };
+        let shm = unsafe { &*(map.as_ptr() as *const LasapiPwPreviewShm) };
         let magic = unsafe { core::ptr::read_volatile(&shm.magic) };
         let version = unsafe { core::ptr::read_volatile(&shm.version) };
-        if magic != LWASAPI_PW_PREVIEW_MAGIC || version != LWASAPI_PW_PREVIEW_VERSION {
+        if magic != LASAPI_PW_PREVIEW_MAGIC || version != LASAPI_PW_PREVIEW_VERSION {
             return Err(format!(
                 "invalid preview shm header in {} (magic=0x{magic:08x}, version={version})",
                 path.display()
@@ -2455,14 +2455,14 @@ impl ScreenCastShmReader {
             return;
         }
         unsafe {
-            let ping_ptr = base.add(offset_of!(LwasapiPwPreviewShm, last_gui_ping_ns)) as *const AtomicU64;
-            let req_ptr = base.add(offset_of!(LwasapiPwPreviewShm, preview_requested)) as *const AtomicU32;
-            let tw_ptr = base.add(offset_of!(LwasapiPwPreviewShm, target_max_w)) as *const AtomicU32;
-            let th_ptr = base.add(offset_of!(LwasapiPwPreviewShm, target_max_h)) as *const AtomicU32;
-            let tf_ptr = base.add(offset_of!(LwasapiPwPreviewShm, target_fps)) as *const AtomicU32;
-            let cap_ptr = base.add(offset_of!(LwasapiPwPreviewShm, cast_fps_cap)) as *const AtomicU32;
-            (*tw_ptr).store(max_w.min(LWASAPI_PW_PREVIEW_MAX_W), Ordering::Relaxed);
-            (*th_ptr).store(max_h.min(LWASAPI_PW_PREVIEW_MAX_H), Ordering::Relaxed);
+            let ping_ptr = base.add(offset_of!(LasapiPwPreviewShm, last_gui_ping_ns)) as *const AtomicU64;
+            let req_ptr = base.add(offset_of!(LasapiPwPreviewShm, preview_requested)) as *const AtomicU32;
+            let tw_ptr = base.add(offset_of!(LasapiPwPreviewShm, target_max_w)) as *const AtomicU32;
+            let th_ptr = base.add(offset_of!(LasapiPwPreviewShm, target_max_h)) as *const AtomicU32;
+            let tf_ptr = base.add(offset_of!(LasapiPwPreviewShm, target_fps)) as *const AtomicU32;
+            let cap_ptr = base.add(offset_of!(LasapiPwPreviewShm, cast_fps_cap)) as *const AtomicU32;
+            (*tw_ptr).store(max_w.min(LASAPI_PW_PREVIEW_MAX_W), Ordering::Relaxed);
+            (*th_ptr).store(max_h.min(LASAPI_PW_PREVIEW_MAX_H), Ordering::Relaxed);
             (*tf_ptr).store(target_fps, Ordering::Relaxed);
             (*cap_ptr).store(cast_fps_cap, Ordering::Relaxed);
             (*req_ptr).store(u32::from(enabled), Ordering::Release);
@@ -2479,14 +2479,14 @@ impl ScreenCastShmReader {
         if base.is_null() {
             return None;
         }
-        let shm = unsafe { &*(base as *const LwasapiPwPreviewShm) };
+        let shm = unsafe { &*(base as *const LasapiPwPreviewShm) };
         let magic = unsafe { core::ptr::read_volatile(&shm.magic) };
         let version = unsafe { core::ptr::read_volatile(&shm.version) };
-        if magic != LWASAPI_PW_PREVIEW_MAGIC || version != LWASAPI_PW_PREVIEW_VERSION {
+        if magic != LASAPI_PW_PREVIEW_MAGIC || version != LASAPI_PW_PREVIEW_VERSION {
             return None;
         }
         let seqlock_ptr =
-            unsafe { base.add(offset_of!(LwasapiPwPreviewShm, seqlock)) as *const AtomicU64 };
+            unsafe { base.add(offset_of!(LasapiPwPreviewShm, seqlock)) as *const AtomicU64 };
         let mut deadline: Option<Instant> = None;
         for attempt in 0..64 {
             let s1 = unsafe { (*seqlock_ptr).load(Ordering::Acquire) };
@@ -2540,10 +2540,10 @@ impl ScreenCastShmReader {
                 let rgba = if !unchanged
                     && w > 0
                     && h > 0
-                    && w <= LWASAPI_PW_PREVIEW_MAX_W
-                    && h <= LWASAPI_PW_PREVIEW_MAX_H
+                    && w <= LASAPI_PW_PREVIEW_MAX_W
+                    && h <= LASAPI_PW_PREVIEW_MAX_H
                     && (stride as usize) >= row_bytes
-                    && byte_len <= LWASAPI_PW_PREVIEW_MAX_BYTES
+                    && byte_len <= LASAPI_PW_PREVIEW_MAX_BYTES
                     && byte_len <= shm.pixels.len()
                 {
                     let total_out = row_bytes.saturating_mul(h as usize);
@@ -2623,8 +2623,8 @@ pub struct DryRunDesktopCapturer {
 
 impl DryRunDesktopCapturer {
     pub fn new(width: u32, height: u32) -> Self {
-        let cw = width.clamp(16, LWASAPI_PW_PREVIEW_MAX_W);
-        let ch = height.clamp(16, LWASAPI_PW_PREVIEW_MAX_H);
+        let cw = width.clamp(16, LASAPI_PW_PREVIEW_MAX_W);
+        let ch = height.clamp(16, LASAPI_PW_PREVIEW_MAX_H);
         let w = cw as usize;
         let h = ch as usize;
         let mut base_rgba = vec![0u8; w * h * 4];
@@ -2682,10 +2682,10 @@ mod tests {
 
     #[test]
     fn pw_preview_shm_pixel_offset_matches_c() {
-        assert_eq!(offset_of!(LwasapiPwPreviewShm, pixels), 520);
+        assert_eq!(offset_of!(LasapiPwPreviewShm, pixels), 520);
         assert_eq!(
-            mem::size_of::<LwasapiPwPreviewShm>(),
-            520 + LWASAPI_PW_PREVIEW_MAX_BYTES
+            mem::size_of::<LasapiPwPreviewShm>(),
+            520 + LASAPI_PW_PREVIEW_MAX_BYTES
         );
     }
 
@@ -2738,7 +2738,7 @@ mod tests {
     #[test]
     fn screencast_shm_reader_waits_for_seqlock_and_skips_unchanged_seq() {
         let shm_path = env::temp_dir().join(format!("salsa_sc_shm_test_{}", std::process::id()));
-        let map_size = mem::size_of::<LwasapiPwPreviewShm>();
+        let map_size = mem::size_of::<LasapiPwPreviewShm>();
         {
             let f = OpenOptions::new()
                 .read(true)
@@ -2754,9 +2754,9 @@ mod tests {
         let mut map = MappedMem::map_fd(fd.as_raw_fd(), map_size, true, 0).unwrap();
         let base = map.as_mut_slice().as_mut_ptr();
         unsafe {
-            let shm = &mut *(base as *mut LwasapiPwPreviewShm);
-            shm.magic = LWASAPI_PW_PREVIEW_MAGIC;
-            shm.version = LWASAPI_PW_PREVIEW_VERSION;
+            let shm = &mut *(base as *mut LasapiPwPreviewShm);
+            shm.magic = LASAPI_PW_PREVIEW_MAGIC;
+            shm.version = LASAPI_PW_PREVIEW_VERSION;
             shm.active_stream = 1;
             shm.dst_width = 4;
             shm.dst_height = 2;
@@ -2782,15 +2782,15 @@ mod tests {
 
         // Hold writer seqlock odd for 2ms, simulating a slow 1440p SHM copy.
         unsafe {
-            let seq_ptr = base.add(offset_of!(LwasapiPwPreviewShm, seqlock)) as *const AtomicU64;
+            let seq_ptr = base.add(offset_of!(LasapiPwPreviewShm, seqlock)) as *const AtomicU64;
             (*seq_ptr).store(3, Ordering::Release);
         }
         let shm_addr = base as usize;
         let writer = thread::spawn(move || {
             let base_p = shm_addr as *mut u8;
             let seq_ptr =
-                unsafe { base_p.add(offset_of!(LwasapiPwPreviewShm, seqlock)) as *const AtomicU64 };
-            let shm = unsafe { &mut *(base_p as *mut LwasapiPwPreviewShm) };
+                unsafe { base_p.add(offset_of!(LasapiPwPreviewShm, seqlock)) as *const AtomicU64 };
+            let shm = unsafe { &mut *(base_p as *mut LasapiPwPreviewShm) };
             thread::sleep(Duration::from_millis(2));
             shm.frame_seq = 2;
             for px in shm.pixels[..32].as_chunks_mut::<4>().0 {

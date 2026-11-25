@@ -1,4 +1,4 @@
-# Contributing to Salsa (`lwasapi`)
+# Contributing to Salsa (`lasapi`)
 
 Thank you for contributing to **Salsa**! Salsa is a high-frequency (`192,000 Hz / 32-bit Float`) WaveRT zero-copy Linux audio engine, PulseAudio v35 server, Wayland `ScreenCast` video broker, direct BlueZ A2DP/AVRCP engine, 10-band Dynamic EQ APO, and native Wayland Qt6 Studio/Debugger/Tray suite.
 
@@ -8,13 +8,13 @@ By participating in this project, you agree to abide by our [Code of Conduct](CO
 
 ## Repository Layout
 
-- `rust/salsa_net/` (`salsa_wire`): Core real-time audio engine (`audiodg_engine.rs`), DSP/Dynamic EQ (`dsp.rs`), PulseAudio v35 wire & server (`pa_wire.rs`, `pa_server.rs`), Wayland ScreenCast PipeWire-0 video broker (`pw_wire.rs`, `pw_broker.rs`), direct BlueZ D-Bus A2DP/HFP/AVRCP runtime (`bluez_*.rs`), hardware analog & HID controls (`hw_analog.rs`), DAW MIDI hub (`midi_hub.rs`), and `lwasapi-ctl` (`ctl_cli.rs`).
-- `rust/lwasapi_client/`: Client-side WaveRT shared-memory ring library (`liblwasapi.so`), unit suite (`lwasapi-test`), and benchmark runner (`lwasapi-bench`).
+- `rust/salsa_net/` (`salsa_wire`): Core real-time audio engine (`audiodg_engine.rs`), DSP/Dynamic EQ (`dsp.rs`), PulseAudio v35 wire & server (`pa_wire.rs`, `pa_server.rs`), Wayland ScreenCast PipeWire-0 video broker (`pw_wire.rs`, `pw_broker.rs`), direct BlueZ D-Bus A2DP/HFP/AVRCP runtime (`bluez_*.rs`), hardware analog & HID controls (`hw_analog.rs`), DAW MIDI hub (`midi_hub.rs`), and `lasapi-ctl` (`ctl_cli.rs`).
+- `rust/lasapi_client/`: Client-side WaveRT shared-memory ring library (`liblasapi.so`), unit suite (`lasapi-test`), and benchmark runner (`lasapi-bench`).
 - `rust/salsa_pa_reconnect/` & `rust/salsa_pa_reconnect_proxy/`: Drop-in `libpulse.so.0` transparent reconnect proxy.
-- `rust/alsa_plugin_lwasapi/`, `rust/shim_alsa/`, `rust/shim_pulse/`, `rust/shim_jack/`: Native ALSA PCM plugin and zero-IPC hollow ABI shims (`lwasapi-run`).
+- `rust/alsa_plugin_lasapi/`, `rust/shim_alsa/`, `rust/shim_pulse/`, `rust/shim_jack/`: Native ALSA PCM plugin and zero-IPC hollow ABI shims (`lasapi-run`).
 - `rust/salsa_ui/`: Pure-Rust Studio/Tray/Debugger backend, themes, AutoEQ parser, GDBus StatusNotifierItem host (`sni.rs`), and C FFI bridge (`qt_bridge.rs`).
-- `rust/salsa_tools/`: Installer (`salsa-installer`), host ELF autosync (`lwasapi-autosync`), live debugger CLI (`salsa-debug-cli`), regression harness (`salsa-regression`), and packager (`salsa-dist`).
-- `qt6/`: Native C++20 Qt6 user interfaces (`salsa_studio.cpp`, `salsa_debug.cpp`, `lwasapi_tray.cpp`).
+- `rust/salsa_tools/`: Installer (`salsa-installer`), host ELF autosync (`lasapi-autosync`), live debugger CLI (`salsa-debug-cli`), regression harness (`salsa-regression`), and packager (`salsa-dist`).
+- `qt6/`: Native C++20 Qt6 user interfaces (`salsa_studio.cpp`, `salsa_debug.cpp`, `lasapi_tray.cpp`).
 
 ---
 
@@ -23,7 +23,7 @@ By participating in this project, you agree to abide by our [Code of Conduct](CO
 Every pull request must preserve Salsa's foundational engineering guarantees:
 
 1. **Zero PipeWire / WirePlumber Audio Dependency**: Salsa replaces user-space audio daemons by driving kernel `/dev/snd/pcmC*D*` and BlueZ `MediaEndpoint1` directly. `$XDG_RUNTIME_DIR/pipewire-0` (`pw_broker.rs`) exists strictly to relay Wayland Portal `ScreenCast` video frames (`DmaBuf` / `MemFd`) and must never route audio through PipeWire.
-2. **Wayland-First Native UI & Zero X11 in Core**: Core crates (`salsa_net`, `lwasapi_client`, `salsa_tools`) must have zero X11 dependencies. GUI binaries (`salsa-studio`, `salsa-debug`, `lwasapi-tray`) must run natively on Wayland (`QT_QPA_PLATFORM=wayland;xcb`, using runtime `dlopen` of `libLayerShellQtInterface.so.6` where available) and only touch X11/EWMH helpers when Qt resolves to `xcb`.
+2. **Wayland-First Native UI & Zero X11 in Core**: Core crates (`salsa_net`, `lasapi_client`, `salsa_tools`) must have zero X11 dependencies. GUI binaries (`salsa-studio`, `salsa-debug`, `lasapi-tray`) must run natively on Wayland (`QT_QPA_PLATFORM=wayland;xcb`, using runtime `dlopen` of `libLayerShellQtInterface.so.6` where available) and only touch X11/EWMH helpers when Qt resolves to `xcb`.
 3. **Strict Multi-PC Portability**: Never hardcode user home paths (`/home/...`), numeric UIDs (`1000`), hostnames, soundcard numbers, or single-vendor assumptions. Always resolve runtime/config paths via `$XDG_RUNTIME_DIR`, `$XDG_CONFIG_HOME`, `$XDG_DATA_HOME`, `$HOME`, and portable systemd specifiers (`%h`, `%t`).
 4. **Real-Time Audio Safety**: Never allocate heap memory, lock contended mutexes, perform blocking disk/socket I/O, or spawn processes inside the `SCHED_FIFO` real-time mixing callback (`audiodg_engine.rs` / `dsp.rs`). Scrub non-finite (`NaN`/`Inf`) samples at DSP boundaries.
 5. **LGPL-3.0-Only & Runtime `dlopen` Codec Policy**:

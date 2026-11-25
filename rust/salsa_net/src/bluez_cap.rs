@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -30,8 +30,8 @@ use crate::audiodg_engine::{
 };
 use crate::bluez_media::{CAP_RING_FRAMES, CAP_RING_MASK};
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, LwasapiDeviceEntry, LwasapiDeviceList, LWASAPI_DBG_ALSA,
-    LWASAPI_DBG_INFO, LWASAPI_DBG_WARN, LWASAPI_MAX_DEVICES,
+    c_str_to_string, copy_str_to_c, LasapiDeviceEntry, LasapiDeviceList, LASAPI_DBG_ALSA,
+    LASAPI_DBG_INFO, LASAPI_DBG_WARN, LASAPI_MAX_DEVICES,
 };
 use crate::hw_analog::{
     SndCtlElemId, SndCtlElemInfo, SndCtlElemList, SndCtlElemValue, SNDRV_CTL_ELEM_ID_NAME_MAXLEN,
@@ -44,7 +44,7 @@ use crate::unix_sys::{
 };
 
 pub const MAX_ALSA_CARDS_SCAN: usize = 32;
-const LWASAPI_MAX_CAP_CHANNELS: u32 = 32;
+const LASAPI_MAX_CAP_CHANNELS: u32 = 32;
 
 #[derive(Clone)]
 pub struct AlsaCardJacks {
@@ -498,7 +498,7 @@ pub fn alsa_hw_fingerprint_seed() -> u64 {
 }
 
 pub fn append_alsa_devices(
-    out_list: &mut LwasapiDeviceList,
+    out_list: &mut LasapiDeviceList,
     active_pb_id: &str,
     active_cap_id: &str,
     card_names: &[String; MAX_ALSA_CARDS_SCAN],
@@ -509,7 +509,7 @@ pub fn append_alsa_devices(
         return;
     };
     for line in pcm_text.lines() {
-        if (out_list.num_devices as usize) >= LWASAPI_MAX_DEVICES {
+        if (out_list.num_devices as usize) >= LASAPI_MAX_DEVICES {
             break;
         }
         let Some((c, d, pcm_name)) = parse_proc_pcm_line(line) else {
@@ -519,7 +519,7 @@ pub fn append_alsa_devices(
             continue;
         }
         for is_cap in [false, true] {
-            if (out_list.num_devices as usize) >= LWASAPI_MAX_DEVICES {
+            if (out_list.num_devices as usize) >= LASAPI_MAX_DEVICES {
                 break;
             }
             let kw = if is_cap { "capture" } else { "playback" };
@@ -556,7 +556,7 @@ pub fn append_alsa_devices(
 
             let idx = out_list.num_devices as usize;
             out_list.num_devices += 1;
-            let mut e: LwasapiDeviceEntry = unsafe { mem::zeroed() };
+            let mut e: LasapiDeviceEntry = unsafe { mem::zeroed() };
             copy_str_to_c(&mut e.id, &id_str);
             copy_str_to_c(&mut e.name, &disp_name);
             copy_str_to_c(&mut e.driver, "alsa-kernel");
@@ -649,7 +649,7 @@ fn query_capture_min_channels(fd: c_int, fmt: i32, rate: u32) -> Option<u32> {
         &mut params,
         SNDRV_PCM_HW_PARAM_CHANNELS,
         1,
-        LWASAPI_MAX_CAP_CHANNELS,
+        LASAPI_MAX_CAP_CHANNELS,
     );
     if unsafe {
         ioctl_raw(
@@ -662,7 +662,7 @@ fn query_capture_min_channels(fd: c_int, fmt: i32, rate: u32) -> Option<u32> {
         return None;
     }
     let cmin = params.intervals[SNDRV_PCM_HW_PARAM_CHANNELS - 8].min;
-    if (1..=LWASAPI_MAX_CAP_CHANNELS).contains(&cmin) {
+    if (1..=LASAPI_MAX_CAP_CHANNELS).contains(&cmin) {
         Some(cmin)
     } else {
         None
@@ -741,7 +741,7 @@ pub fn open_kernel_capture_pcm(dev_path: &str, req_rate: u32) -> Option<(c_int, 
     }
 
     let out_rate = if actual_rate > 0 { actual_rate } else { req_rate };
-    let out_ch = if (1..=LWASAPI_MAX_CAP_CHANNELS).contains(&actual_ch) {
+    let out_ch = if (1..=LASAPI_MAX_CAP_CHANNELS).contains(&actual_ch) {
         actual_ch
     } else {
         2
@@ -811,12 +811,12 @@ pub fn prime_usb_capture_clock(dev_path: &str, target_rate: u32) -> bool {
     let Some((alt_fd, _got_rate, got_ch, _got_fmt)) = open_res else {
         return false;
     };
-    let ch = if (1..=LWASAPI_MAX_CAP_CHANNELS).contains(&got_ch) {
+    let ch = if (1..=LASAPI_MAX_CAP_CHANNELS).contains(&got_ch) {
         got_ch
     } else {
         2
     };
-    let mut dummy = vec![0u8; 128 * (LWASAPI_MAX_CAP_CHANNELS as usize) * 4];
+    let mut dummy = vec![0u8; 128 * (LASAPI_MAX_CAP_CHANNELS as usize) * 4];
     unsafe {
         let _ = ioctl_raw(alt_fd, SNDRV_PCM_IOCTL_START, core::ptr::null_mut());
     }
@@ -829,7 +829,7 @@ pub fn prime_usb_capture_clock(dev_path: &str, target_rate: u32) -> bool {
         let mut xf = SndXferi {
             result: 0,
             buf: dummy.as_mut_ptr().cast::<c_void>(),
-            frames: if ch <= LWASAPI_MAX_CAP_CHANNELS { 64 } else { 16 },
+            frames: if ch <= LASAPI_MAX_CAP_CHANNELS { 64 } else { 16 },
         };
         unsafe {
             let _ = ioctl_raw(
@@ -952,7 +952,7 @@ pub fn spawn_capture_thread(cap: Arc<CapState>) {
         let cap = cap_bg;
         enable_realtime(62, -15);
         const CHUNK: u32 = 128;
-        let mut raw_buf = vec![0u8; 256 * (LWASAPI_MAX_CAP_CHANNELS as usize) * 4];
+        let mut raw_buf = vec![0u8; 256 * (LASAPI_MAX_CAP_CHANNELS as usize) * 4];
         let mut src_float = vec![0.0f32; 256 * 2];
         let mut smooth_gain = 1.0f32;
 
@@ -1053,11 +1053,11 @@ pub fn spawn_capture_thread(cap: Arc<CapState>) {
                                         kick_attempts += 1;
                                         cap.cap_kick_count.fetch_add(1, Ordering::Relaxed);
                                         eprintln!(
-                                            "[LWASAPI-Capture] Clock rate mismatch on {pcm_path} (nominal={nominal_rate}Hz actual={actual_hz:.0}Hz) -> cycling UAC2 clock (attempt {kick_attempts}/2)"
+                                            "[LASAPI-Capture] Clock rate mismatch on {pcm_path} (nominal={nominal_rate}Hz actual={actual_hz:.0}Hz) -> cycling UAC2 clock (attempt {kick_attempts}/2)"
                                         );
                                         dbg_emit(
-                                            LWASAPI_DBG_ALSA,
-                                            LWASAPI_DBG_WARN,
+                                            LASAPI_DBG_ALSA,
+                                            LASAPI_DBG_WARN,
                                             0,
                                             0,
                                             "ALSA_CAP_CLK_KICK",
@@ -1080,11 +1080,11 @@ pub fn spawn_capture_thread(cap: Arc<CapState>) {
                                     rate_locked_fallback = true;
                                     mismatch_streak = 0;
                                     eprintln!(
-                                        "[LWASAPI-Capture] Using measured hardware clock {snapped}Hz (actual={actual_hz:.0}Hz) on {pcm_path} for artifact-free capture"
+                                        "[LASAPI-Capture] Using measured hardware clock {snapped}Hz (actual={actual_hz:.0}Hz) on {pcm_path} for artifact-free capture"
                                     );
                                     dbg_emit(
-                                        LWASAPI_DBG_ALSA,
-                                        LWASAPI_DBG_WARN,
+                                        LASAPI_DBG_ALSA,
+                                        LASAPI_DBG_WARN,
                                         0,
                                         0,
                                         "ALSA_CAP_CLK_FALLBACK",
@@ -1113,7 +1113,7 @@ pub fn spawn_capture_thread(cap: Arc<CapState>) {
             let ch = cap
                 .cap_hw_channels
                 .load(Ordering::Relaxed)
-                .clamp(1, LWASAPI_MAX_CAP_CHANNELS) as usize;
+                .clamp(1, LASAPI_MAX_CAP_CHANNELS) as usize;
             let cap_fmt = cap.cap_hw_format.load(Ordering::Relaxed);
 
             for i in 0..got as usize {
@@ -1259,12 +1259,12 @@ pub fn open_alsa_capture(
             cap.cap_thread_running.store(true, Ordering::Release);
             spawn_capture_thread(Arc::clone(cap));
             eprintln!(
-                "[LWASAPI-Capture] Direct Kernel ALSA Capture active: {} [{} @ {}Hz {}ch]",
+                "[LASAPI-Capture] Direct Kernel ALSA Capture active: {} [{} @ {}Hz {}ch]",
                 cand.alias, cand.path, actual_rate, actual_ch
             );
             dbg_emit(
-                LWASAPI_DBG_ALSA,
-                LWASAPI_DBG_INFO,
+                LASAPI_DBG_ALSA,
+                LASAPI_DBG_INFO,
                 0,
                 0,
                 "ALSA_CAP_OPEN",
@@ -1284,8 +1284,8 @@ pub fn open_alsa_capture(
         m.capture_device_alias = "No Hardware Mic".to_string();
     }
     dbg_emit(
-        LWASAPI_DBG_ALSA,
-        LWASAPI_DBG_WARN,
+        LASAPI_DBG_ALSA,
+        LASAPI_DBG_WARN,
         0,
         0,
         "ALSA_CAP_NONE",

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -25,7 +25,7 @@ pub fn salsa_version() -> &'static str {
 pub fn short_legal_notice(app_name: &str) -> String {
     let ver = salsa_version();
     format!(
-        "{app_name} — Salsa (LWASAPI) {ver}\n\
+        "{app_name} — Salsa — LASAPI (Linux Audio Session API) {ver}\n\
          {COPYRIGHT_NOTICE}\n\
          License: {LICENSE_NAME} ({SPDX_ID})\n\
          Source:  {REPO_URL}\n\
@@ -37,13 +37,14 @@ pub fn short_legal_notice(app_name: &str) -> String {
          \n\
          Library Relinking & Source (LGPL-3.0 §4): Full Corresponding Source and build rules\n\
          (rust/, qt6/, Makefile) are distributed alongside Salsa so shared and static\n\
-         libraries (liblwasapi.so, build/shims/*.so, libsalsa_wire.a, libsalsa_ui.a) and\n\
+         libraries (liblasapi.so, build/shims/*.so, libsalsa_wire.a, libsalsa_ui.a) and\n\
          dynamically linked Qt6 components can be modified, rebuilt, and replaced.\n\
          \n\
          Optional Host Libraries (Runtime dlopen Only): Salsa does NOT bundle or statically\n\
-         link libfdk-aac, libldac, libfreeaptx, libsbc, librnnoise, or libdbus-1. If present\n\
-         on the host, optional codecs (including libfdk-aac.so.2 under Fraunhofer terms)\n\
-         are loaded solely via dlopen() at runtime and fall back safely when absent.\n\
+         link libfdk-aac, libldac, libfreeaptx, libsbc, libLayerShellQtInterface,\n\
+         libKF6WindowSystem, or libdbus-1. If present on the host, optional codecs (including\n\
+         libfdk-aac.so.2 under Fraunhofer terms) and Wayland helpers are loaded solely via\n\
+         dlopen() at runtime and fall back safely when absent.\n\
          See THIRD_PARTY_LICENSES.md or ~/.local/share/licenses/salsa/."
     )
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -751,12 +751,12 @@ pub fn ensure_private_dir() -> Option<String> {
         }
     }
     if let Some(b) = base {
-        let out = format!("{b}/lwasapi");
+        let out = format!("{b}/lasapi");
         if ensure_owned_dir_0700(&out, uid) {
             return Some(out);
         }
     }
-    let tmp = format!("/tmp/lwasapi-{uid}");
+    let tmp = format!("/tmp/lasapi-{uid}");
     if ensure_owned_dir_0700(&tmp, uid) {
         return Some(tmp);
     }
@@ -939,14 +939,14 @@ pub fn resolve_sock_path_common(env_var: &str, sock_name: &str, fallback: &str) 
 }
 
 pub fn audiodg_sock_path() -> String {
-    resolve_sock_path_common("LWASAPI_SOCKET", "audiodg.sock", "/tmp/lwasapi-audiodg.sock")
+    resolve_sock_path_common("LASAPI_SOCKET", "audiodg.sock", "/tmp/lasapi-audiodg.sock")
 }
 
 pub fn debug_in_sock_path() -> String {
     resolve_sock_path_common(
-        "LWASAPI_DEBUG_IN_SOCK",
+        "LASAPI_DEBUG_IN_SOCK",
         "debug-in.sock",
-        "/tmp/lwasapi-debug-in.sock",
+        "/tmp/lasapi-debug-in.sock",
     )
 }
 

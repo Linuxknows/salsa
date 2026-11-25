@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -22,16 +22,16 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use lwasapi::{
+use lasapi::{
     IAudioCaptureClient_GetNextPacketSize, IAudioCaptureClient_ReadFrames, IAudioClient,
     IAudioClient_Initialize, IAudioClient_Release, IAudioClient_Reset, IAudioClient_Start,
     IAudioClient_Stop, IAudioClient_WaitForPeriod, IAudioRenderClient_GetBuffer,
-    IAudioRenderClient_ReleaseBuffer, IAudioRenderClient_WriteFrames, LWASAPI_ActivateAudioClient,
-    LWASAPI_GetEngineStatus, LWASAPI_SetEngineConfig,
+    IAudioRenderClient_ReleaseBuffer, IAudioRenderClient_WriteFrames, LASAPI_ActivateAudioClient,
+    LASAPI_GetEngineStatus, LASAPI_SetEngineConfig,
 };
 use salsa_wire::c_abi::{
-    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, LWASAPI_CMD_SET_VOLUME,
-    LWASAPI_FMT_FLOAT32, LwasapiEngineStatus, LwasapiIpcReq, LwasapiIpcResp, WaveFormatEx, S_OK,
+    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, LASAPI_CMD_SET_VOLUME,
+    LASAPI_FMT_FLOAT32, LasapiEngineStatus, LasapiIpcReq, LasapiIpcResp, WaveFormatEx, S_OK,
 };
 use salsa_wire::unix_sys::{
     audiodg_sock_path, connect_unix_stream_blocking, current_pid, current_uid,
@@ -101,17 +101,17 @@ unsafe fn dl_sym_ptr(h: *mut c_void, name: &str) -> *mut c_void {
     unsafe { dlsym(h, cs.as_ptr()) }
 }
 
-fn bench_init_lwasapi_native() -> f64 {
+fn bench_init_lasapi_native() -> f64 {
     let t0 = now_ns();
     let mut client: *mut IAudioClient = ptr::null_mut();
     unsafe {
-        if LWASAPI_ActivateAudioClient(c"Bench-LWASAPI-Native".as_ptr(), &mut client)
+        if LASAPI_ActivateAudioClient(c"Bench-LASAPI-Native".as_ptr(), &mut client)
             != S_OK
         {
             return -1.0;
         }
         let fmt = WaveFormatEx {
-            w_format_tag: LWASAPI_FMT_FLOAT32 as u16,
+            w_format_tag: LASAPI_FMT_FLOAT32 as u16,
             n_channels: 2,
             n_samples_per_sec: 48000,
             w_bits_per_sample: 32,
@@ -244,14 +244,14 @@ fn bench_init_alsa_lib(so_path: &str, pcm_name: &str) -> f64 {
     }
 }
 
-fn bench_commit_lwasapi_zerocopy() -> Option<(f64, f64, f64)> {
+fn bench_commit_lasapi_zerocopy() -> Option<(f64, f64, f64)> {
     let mut client: *mut IAudioClient = ptr::null_mut();
     unsafe {
-        if LWASAPI_ActivateAudioClient(c"Bench-ZeroCopy".as_ptr(), &mut client) != S_OK {
+        if LASAPI_ActivateAudioClient(c"Bench-ZeroCopy".as_ptr(), &mut client) != S_OK {
             return None;
         }
         let fmt = WaveFormatEx {
-            w_format_tag: LWASAPI_FMT_FLOAT32 as u16,
+            w_format_tag: LASAPI_FMT_FLOAT32 as u16,
             n_channels: 2,
             n_samples_per_sec: 48000,
             w_bits_per_sample: 32,
@@ -413,7 +413,7 @@ unsafe fn drain_loopback(loopback: *mut IAudioClient) {
             loopback,
             drain.as_mut_ptr().cast(),
             chunk,
-            LWASAPI_FMT_FLOAT32,
+            LASAPI_FMT_FLOAT32,
         );
     }
 }
@@ -448,7 +448,7 @@ unsafe fn wait_for_loopback_impulse_ms(
                 loopback,
                 cap_buf.as_mut_ptr().cast(),
                 to_read,
-                LWASAPI_FMT_FLOAT32,
+                LASAPI_FMT_FLOAT32,
             );
             if cap_buf[..(to_read as usize) * 2]
                 .iter()
@@ -464,15 +464,15 @@ unsafe fn wait_for_loopback_impulse_ms(
     -1.0
 }
 
-fn bench_roundtrip_lwasapi(rate: u32, period_frames: u32) -> (f64, f64, u32, u32) {
-    LWASAPI_SetEngineConfig(rate, period_frames, 32);
+fn bench_roundtrip_lasapi(rate: u32, period_frames: u32) -> (f64, f64, u32, u32) {
+    LASAPI_SetEngineConfig(rate, period_frames, 32);
     thread::sleep(Duration::from_millis(40));
 
     let mut actual_rate = rate;
     let mut actual_period = period_frames;
     unsafe {
-        let mut cur_st: LwasapiEngineStatus = mem::zeroed();
-        if LWASAPI_GetEngineStatus(&mut cur_st) == S_OK
+        let mut cur_st: LasapiEngineStatus = mem::zeroed();
+        if LASAPI_GetEngineStatus(&mut cur_st) == S_OK
             && cur_st.hw_sample_rate > 0
             && cur_st.hw_period_frames > 0
         {
@@ -484,10 +484,10 @@ fn bench_roundtrip_lwasapi(rate: u32, period_frames: u32) -> (f64, f64, u32, u32
 
         let mut render: *mut IAudioClient = ptr::null_mut();
         let mut loopback: *mut IAudioClient = ptr::null_mut();
-        if LWASAPI_ActivateAudioClient(c"Bench-RT-Render".as_ptr(), &mut render) != S_OK {
+        if LASAPI_ActivateAudioClient(c"Bench-RT-Render".as_ptr(), &mut render) != S_OK {
             return (-1.0, 0.0, actual_rate, actual_period);
         }
-        if LWASAPI_ActivateAudioClient(c"Bench-RT-Loopback".as_ptr(), &mut loopback)
+        if LASAPI_ActivateAudioClient(c"Bench-RT-Loopback".as_ptr(), &mut loopback)
             != S_OK
         {
             IAudioClient_Release(render);
@@ -495,7 +495,7 @@ fn bench_roundtrip_lwasapi(rate: u32, period_frames: u32) -> (f64, f64, u32, u32
         }
 
         let fmt = WaveFormatEx {
-            w_format_tag: LWASAPI_FMT_FLOAT32 as u16,
+            w_format_tag: LASAPI_FMT_FLOAT32 as u16,
             n_channels: 2,
             n_samples_per_sec: actual_rate,
             w_bits_per_sample: 32,
@@ -552,7 +552,7 @@ fn bench_roundtrip_lwasapi(rate: u32, period_frames: u32) -> (f64, f64, u32, u32
                 render,
                 impulse.as_ptr().cast(),
                 64,
-                LWASAPI_FMT_FLOAT32,
+                LASAPI_FMT_FLOAT32,
             );
             let measured = wait_for_loopback_impulse_ms(loopback, t_send, 0.004, 250_000_000);
             if measured > 0.0 {
@@ -634,14 +634,14 @@ fn bench_roundtrip_pulse_impulse(so_path: &str, rate: u32, period_frames: u32) -
     let Ok(cpath) = CString::new(so_path) else {
         return -1.0;
     };
-    LWASAPI_SetEngineConfig(rate, period_frames, 32);
+    LASAPI_SetEngineConfig(rate, period_frames, 32);
     thread::sleep(Duration::from_millis(40));
 
     unsafe {
-        let mut cur_st: LwasapiEngineStatus = mem::zeroed();
+        let mut cur_st: LasapiEngineStatus = mem::zeroed();
         let mut actual_rate = rate;
         let mut actual_period = period_frames;
-        if LWASAPI_GetEngineStatus(&mut cur_st) == S_OK
+        if LASAPI_GetEngineStatus(&mut cur_st) == S_OK
             && cur_st.hw_sample_rate > 0
             && cur_st.hw_period_frames > 0
         {
@@ -682,12 +682,12 @@ fn bench_roundtrip_pulse_impulse(so_path: &str, rate: u32, period_frames: u32) -
         let _rt_guard = RtPriorityGuard::acquire(60);
 
         let mut loopback: *mut IAudioClient = ptr::null_mut();
-        if LWASAPI_ActivateAudioClient(c"Bench-PA-Loopback".as_ptr(), &mut loopback) != S_OK {
+        if LASAPI_ActivateAudioClient(c"Bench-PA-Loopback".as_ptr(), &mut loopback) != S_OK {
             dlclose(h);
             return -1.0;
         }
         let fmt = WaveFormatEx {
-            w_format_tag: LWASAPI_FMT_FLOAT32 as u16,
+            w_format_tag: LASAPI_FMT_FLOAT32 as u16,
             n_channels: 2,
             n_samples_per_sec: actual_rate,
             w_bits_per_sample: 32,
@@ -888,7 +888,7 @@ fn pick_sandbox_base_dir() -> PathBuf {
 }
 
 fn run_in_virtual_sandbox(exe_dir: &str, forward_args: &[String]) -> Option<i32> {
-    let daemon_bin = Path::new(exe_dir).join("lwasapi-audiodg");
+    let daemon_bin = Path::new(exe_dir).join("lasapi-audiodg");
     if !daemon_bin.is_file() {
         return None;
     }
@@ -900,21 +900,21 @@ fn run_in_virtual_sandbox(exe_dir: &str, forward_args: &[String]) -> Option<i32>
     let root = base.join(format!("lb-{}-{}", current_pid(), now_ns()));
     let home_dir = root.join("h");
     let run_dir = root.join("r");
-    let lwasapi_dir = run_dir.join("lwasapi");
+    let lasapi_dir = run_dir.join("lasapi");
     let pulse_dir = run_dir.join("pulse");
     if !create_private_dir(&root)
         || !create_private_dir(&home_dir)
         || !create_private_dir(&run_dir)
-        || !create_private_dir(&lwasapi_dir)
+        || !create_private_dir(&lasapi_dir)
         || !create_private_dir(&pulse_dir)
     {
         let _ = fs::remove_dir_all(&root);
         return None;
     }
 
-    let audiodg_sock = lwasapi_dir.join("audiodg.sock");
-    let dbg_sock = lwasapi_dir.join("debug.sock");
-    let dbg_in_sock = lwasapi_dir.join("debug-in.sock");
+    let audiodg_sock = lasapi_dir.join("audiodg.sock");
+    let dbg_sock = lasapi_dir.join("debug.sock");
+    let dbg_in_sock = lasapi_dir.join("debug-in.sock");
     let pulse_sock = pulse_dir.join("native");
 
     extern "C" {
@@ -928,10 +928,10 @@ fn run_in_virtual_sandbox(exe_dir: &str, forward_args: &[String]) -> Option<i32>
         .arg("--virtual")
         .env("HOME", &home_dir)
         .env("XDG_RUNTIME_DIR", &run_dir)
-        .env("LWASAPI_SOCKET", &audiodg_sock)
-        .env("LWASAPI_DEBUG_SOCK", &dbg_sock)
-        .env("LWASAPI_DEBUG_IN_SOCK", &dbg_in_sock)
-        .env("LWASAPI_VIRTUAL_NO_MIDI", "1")
+        .env("LASAPI_SOCKET", &audiodg_sock)
+        .env("LASAPI_DEBUG_SOCK", &dbg_sock)
+        .env("LASAPI_DEBUG_IN_SOCK", &dbg_in_sock)
+        .env("LASAPI_VIRTUAL_NO_MIDI", "1")
         .env_remove("PULSE_SERVER")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -971,12 +971,12 @@ fn run_in_virtual_sandbox(exe_dir: &str, forward_args: &[String]) -> Option<i32>
     let pulse_uri = format!("unix:{}", pulse_sock.display());
     let status = Command::new(cur_exe)
         .args(forward_args)
-        .env("LWASAPI_BENCH_SANDBOXED", "1")
+        .env("LASAPI_BENCH_SANDBOXED", "1")
         .env("HOME", &home_dir)
         .env("XDG_RUNTIME_DIR", &run_dir)
-        .env("LWASAPI_SOCKET", &audiodg_sock)
-        .env("LWASAPI_DEBUG_SOCK", &dbg_sock)
-        .env("LWASAPI_DEBUG_IN_SOCK", &dbg_in_sock)
+        .env("LASAPI_SOCKET", &audiodg_sock)
+        .env("LASAPI_DEBUG_SOCK", &dbg_sock)
+        .env("LASAPI_DEBUG_IN_SOCK", &dbg_in_sock)
         .env("PULSE_SERVER", &pulse_uri)
         .status()
         .ok()?;
@@ -988,10 +988,10 @@ fn send_master_volume_restore_ipc(target_session_id: u32, vol_pct: u32, muted: u
     let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
         return;
     };
-    let mut req: LwasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LWASAPI_CMD_SET_VOLUME;
+    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
+    req.cmd = LASAPI_CMD_SET_VOLUME;
     req.client_pid = current_pid();
-    let tag = b"lwasapi-bench";
+    let tag = b"lasapi-bench";
     req.client_name[..tag.len()].copy_from_slice(tag);
     req.target_session_id = target_session_id;
     req.volume_milli = vol_pct.clamp(0, 150) * 10;
@@ -999,7 +999,7 @@ fn send_master_volume_restore_ipc(target_session_id: u32, vol_pct: u32, muted: u
     if unsafe { send_all_nosignal(sock.as_raw_fd(), as_bytes_raw(&req)) }.is_err() {
         return;
     }
-    let mut resp: LwasapiIpcResp = unsafe { mem::zeroed() };
+    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
     let _ = unsafe { recv_waitall(sock.as_raw_fd(), as_bytes_mut_raw(&mut resp)) };
 }
 
@@ -1013,7 +1013,7 @@ unsafe fn as_bytes_mut_raw<T>(v: &mut T) -> &mut [u8] {
 
 struct LiveStateRestoreGuard {
     active: bool,
-    orig: LwasapiEngineStatus,
+    orig: LasapiEngineStatus,
 }
 
 impl LiveStateRestoreGuard {
@@ -1021,8 +1021,8 @@ impl LiveStateRestoreGuard {
         if !self.active {
             return;
         }
-        let mut cur: LwasapiEngineStatus = unsafe { mem::zeroed() };
-        if unsafe { LWASAPI_GetEngineStatus(&mut cur) } != S_OK {
+        let mut cur: LasapiEngineStatus = unsafe { mem::zeroed() };
+        if unsafe { LASAPI_GetEngineStatus(&mut cur) } != S_OK {
             return;
         }
         if cur.desktop_volume_pct != self.orig.desktop_volume_pct
@@ -1052,7 +1052,7 @@ impl Drop for LiveStateRestoreGuard {
             return;
         }
         if self.orig.hw_sample_rate > 0 {
-            LWASAPI_SetEngineConfig(
+            LASAPI_SetEngineConfig(
                 self.orig.hw_sample_rate,
                 self.orig.hw_period_frames,
                 self.orig.hw_format_bits,
@@ -1066,15 +1066,15 @@ fn main() {
     reset_sigpipe_default();
     let args: Vec<String> = env::args().collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
-        println!("Usage: lwasapi-bench [--sandbox|--live]");
+        println!("Usage: lasapi-bench [--sandbox|--live]");
         println!("  --sandbox  Run in an isolated virtual audiodg sandbox (default; preserves live volume/audio)");
         println!("  --live     Run directly against the active system engine (restores clock & volume afterward)");
         return;
     }
 
     let force_live =
-        args.iter().any(|a| a == "--live") || env::var("LWASAPI_BENCH_LIVE").as_deref() == Ok("1");
-    let already_sandboxed = env::var("LWASAPI_BENCH_SANDBOXED").as_deref() == Ok("1");
+        args.iter().any(|a| a == "--live") || env::var("LASAPI_BENCH_LIVE").as_deref() == Ok("1");
+    let already_sandboxed = env::var("LASAPI_BENCH_SANDBOXED").as_deref() == Ok("1");
     let build_dir = get_exe_dir();
 
     if !force_live && !already_sandboxed {
@@ -1088,13 +1088,13 @@ fn main() {
             std::process::exit(rc);
         }
         eprintln!(
-            "lwasapi-bench: failed to launch isolated virtual sandbox (pass --live to benchmark active daemon)"
+            "lasapi-bench: failed to launch isolated virtual sandbox (pass --live to benchmark active daemon)"
         );
         std::process::exit(1);
     }
 
-    let mut orig_st: LwasapiEngineStatus = unsafe { mem::zeroed() };
-    let have_orig = unsafe { LWASAPI_GetEngineStatus(&mut orig_st) } == S_OK;
+    let mut orig_st: LasapiEngineStatus = unsafe { mem::zeroed() };
+    let have_orig = unsafe { LASAPI_GetEngineStatus(&mut orig_st) } == S_OK;
     let live_guard = LiveStateRestoreGuard {
         active: have_orig && !already_sandboxed,
         orig: orig_st,
@@ -1108,7 +1108,7 @@ fn main() {
     let (cpu_name, os_name) = detect_pc_info();
 
     println!("========================================================================================");
-    println!(" SALSA — LINUX WASAPI vs. LINUX AUDIO STACKS REAL-TIME LATENCY BENCHMARK");
+    println!(" SALSA — LASAPI vs. LINUX AUDIO STACKS REAL-TIME LATENCY BENCHMARK");
     println!(" System: {cpu_name} | {os_name} | SCHED_FIFO Real-Time Audio Engine");
     if already_sandboxed {
         println!(" Mode  : Isolated Virtual Sandbox (Live Volume, DAC & Active Audio Untouched)");
@@ -1117,7 +1117,7 @@ fn main() {
     }
     println!("========================================================================================\n");
 
-    let init_lwasapi = bench_init_lwasapi_native();
+    let init_lasapi = bench_init_lasapi_native();
     let init_shim_pulse = bench_init_pulse_lib(&shim_pulse);
     let init_shim_alsa = bench_init_alsa_lib(&shim_alsa, "default");
     let init_stock_pulse = bench_init_pulse_lib(&sys_pulse);
@@ -1153,18 +1153,18 @@ fn main() {
     println!("----------------------------------------------------------------------------------------");
     println!(
         "  {:<46} : {:8.3} ms  (Baseline Reference)",
-        "Salsa LWASAPI Native (IAudioClient_Initialize)", init_lwasapi
+        "Salsa LASAPI Native (IAudioClient_Initialize)", init_lasapi
     );
     println!(
         "  {:<46} : {:8.3} ms  (Zero-IPC ABI Shim)",
-        "LWASAPI Hollow ALSA Shim (libasound.so.2)", init_shim_alsa
+        "LASAPI Hollow ALSA Shim (libasound.so.2)", init_shim_alsa
     );
     println!(
         "  {:<46} : {:8.3} ms  (Zero-IPC ABI Shim)",
-        "LWASAPI Hollow Pulse Shim (libpulse-simple)", init_shim_pulse
+        "LASAPI Hollow Pulse Shim (libpulse-simple)", init_shim_pulse
     );
-    let init_denom = if init_lwasapi > 0.001 {
-        init_lwasapi
+    let init_denom = if init_lasapi > 0.001 {
+        init_lasapi
     } else {
         0.1
     };
@@ -1186,8 +1186,8 @@ fn main() {
     }
     println!();
 
-    let (commit_lwasapi_zc, zc_min, zc_max) =
-        bench_commit_lwasapi_zerocopy().unwrap_or((-1.0, 0.0, 0.0));
+    let (commit_lasapi_zc, zc_min, zc_max) =
+        bench_commit_lasapi_zerocopy().unwrap_or((-1.0, 0.0, 0.0));
     let (commit_shim_pulse, sp_min, sp_max) =
         bench_commit_pulse_lib(&shim_pulse, 100).unwrap_or((-1.0, 0.0, 0.0));
     let stock_commit = bench_commit_pulse_lib(&sys_pulse, 100);
@@ -1196,11 +1196,11 @@ fn main() {
     println!("----------------------------------------------------------------------------------------");
     println!(
         "  {:<46} : {:8.3} µs  (min: {zc_min:.3} µs | max: {zc_max:.3} µs) [memfd atomic]",
-        "Salsa LWASAPI WaveRT Zero-Copy Ring", commit_lwasapi_zc
+        "Salsa LASAPI WaveRT Zero-Copy Ring", commit_lasapi_zc
     );
     println!(
         "  {:<46} : {:8.3} µs  (min: {sp_min:.3} µs | max: {sp_max:.3} µs) [SHM direct]",
-        "LWASAPI Hollow Pulse Shim (pa_simple_write)", commit_shim_pulse
+        "LASAPI Hollow Pulse Shim (pa_simple_write)", commit_shim_pulse
     );
     if let Some((commit_stock_pulse, pw_min, pw_max)) = stock_commit {
         if commit_stock_pulse > 0.0 {
@@ -1208,22 +1208,22 @@ fn main() {
                 "  {:<46} : {:8.3} µs  (min: {pw_min:.3} µs | max: {pw_max:.3} µs) [Socket IPC]",
                 pa_wr_lbl, commit_stock_pulse
             );
-            let denom = if commit_lwasapi_zc > 0.0001 {
-                commit_lwasapi_zc
+            let denom = if commit_lasapi_zc > 0.0001 {
+                commit_lasapi_zc
             } else {
                 0.05
             };
             println!(
-                "  -> Zero-Copy LWASAPI Commit Speedup            : {:.1}x faster per audio block than Socket IPC",
+                "  -> Zero-Copy LASAPI Commit Speedup            : {:.1}x faster per audio block than Socket IPC",
                 commit_stock_pulse / denom
             );
         }
     }
     println!();
 
-    let (rt_192_64, jitter_192_64, act_r1, act_p1) = bench_roundtrip_lwasapi(192000, 64);
-    let (rt_192_128, jitter_192_128, act_r2, act_p2) = bench_roundtrip_lwasapi(192000, 128);
-    let (rt_48_256, jitter_48_256, act_r3, act_p3) = bench_roundtrip_lwasapi(48000, 256);
+    let (rt_192_64, jitter_192_64, act_r1, act_p1) = bench_roundtrip_lasapi(192000, 64);
+    let (rt_192_128, jitter_192_128, act_r2, act_p2) = bench_roundtrip_lasapi(192000, 128);
+    let (rt_48_256, jitter_48_256, act_r3, act_p3) = bench_roundtrip_lasapi(48000, 256);
     let rt_shim_pulse = if salsa_pa_active {
         bench_roundtrip_pulse_impulse(&shim_pulse, 192000, 64)
     } else {
@@ -1237,7 +1237,7 @@ fn main() {
     let stock_pw_lat = bench_roundtrip_stock_pulse();
 
     if have_orig && orig_st.hw_sample_rate > 0 {
-        LWASAPI_SetEngineConfig(
+        LASAPI_SetEngineConfig(
             orig_st.hw_sample_rate,
             orig_st.hw_period_frames,
             orig_st.hw_format_bits,
@@ -1246,17 +1246,17 @@ fn main() {
     live_guard.restore_volumes_if_drifted();
 
     let lbl_r1 = format!(
-        "Salsa LWASAPI Ultra-HD ({:3} kHz / {:3} frames)",
+        "Salsa LASAPI Ultra-HD ({:3} kHz / {:3} frames)",
         act_r1 / 1000,
         act_p1
     );
     let lbl_r2 = format!(
-        "Salsa LWASAPI Hi-Res   ({:3} kHz / {:3} frames)",
+        "Salsa LASAPI Hi-Res   ({:3} kHz / {:3} frames)",
         act_r2 / 1000,
         act_p2
     );
     let lbl_r3 = format!(
-        "Salsa LWASAPI Studio   ({:3} kHz / {:3} frames)",
+        "Salsa LASAPI Studio   ({:3} kHz / {:3} frames)",
         act_r3 / 1000,
         act_p3
     );
@@ -1283,8 +1283,8 @@ fn main() {
     );
     if rt_shim_pulse > 0.0 {
         println!(
-            "  {:<46} : {:8.2} ms  (lwasapi-run Zero-IPC WaveRT SHM)",
-            "LWASAPI Hollow Pulse Shim (libpulse-simple)", rt_shim_pulse
+            "  {:<46} : {:8.2} ms  (lasapi-run Zero-IPC WaveRT SHM)",
+            "LASAPI Hollow Pulse Shim (libpulse-simple)", rt_shim_pulse
         );
     }
     if rt_salsa_pa_lowlat > 0.0 {
@@ -1300,7 +1300,7 @@ fn main() {
     if rt_192_64 > 0.0 && stock_pw_lat > 0.0 {
         println!("----------------------------------------------------------------------------------------");
         println!(
-            "  SUMMARY: Salsa LWASAPI ({}kHz/{}f) achieves {rt_192_64:.2} ms full-duplex round-trip latency",
+            "  SUMMARY: Salsa LASAPI ({}kHz/{}f) achieves {rt_192_64:.2} ms full-duplex round-trip latency",
             act_r1 / 1000,
             act_p1
         );

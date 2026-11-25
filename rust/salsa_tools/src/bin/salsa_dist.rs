@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -77,7 +77,7 @@ fn collect_entries(
             let rel = path
                 .strip_prefix(root)
                 .map_err(|e| format!("strip_prefix {}: {e}", path.display()))?;
-            let archive_name = format!("salsa-lwasapi/{}", rel.to_string_lossy());
+            let archive_name = format!("salsa-lasapi/{}", rel.to_string_lossy());
             out.push((archive_name, path, meta));
         }
     }
@@ -159,7 +159,7 @@ fn main() -> ExitCode {
         format!("v{rev}")
     };
     let out_path = out_override
-        .unwrap_or_else(|| root.join(format!("salsa-lwasapi-installer ({tag}).zip")));
+        .unwrap_or_else(|| root.join(format!("salsa-lasapi-installer ({tag}).zip")));
 
     let mut entries = Vec::new();
     if let Err(e) = collect_entries(&root, &root, &mut entries) {

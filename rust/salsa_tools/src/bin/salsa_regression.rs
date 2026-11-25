@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LWASAPI) is free software: you can redistribute it and/or modify it
+// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -27,11 +27,11 @@ use salsa_tools::ipc::{
     get_engine_status, gui_settings_path, load_gui_settings, load_screencast_prefs,
     normalize_vol_step_pct, save_gui_settings, set_bt_codec_config, set_capture_sample_rate,
     set_engine_config, set_hw_analog, set_mic_apo, set_parametric_eq, set_session_control,
-    LwasapiEngineStatus, LWASAPI_BT_PREF_LDAC, LWASAPI_MAX_SESSIONS,
+    LasapiEngineStatus, LASAPI_BT_PREF_LDAC, LASAPI_MAX_SESSIONS,
 };
 use salsa_tools::json::JsonValue;
 use salsa_tools::zlib_png::{decode_png_rgba, encode_png_rgba, resize_rgba, RgbaImage};
-use salsa_wire::hw_analog::{lwasapi_hw_analog_default_cfg, lwasapi_hw_analog_score_card};
+use salsa_wire::hw_analog::{lasapi_hw_analog_default_cfg, lasapi_hw_analog_score_card};
 use salsa_wire::unix_sys::reset_sigpipe_default;
 
 struct TempDirGuard {
@@ -113,7 +113,7 @@ impl Drop for AppVolBackupGuard {
             let _ = write_atomic_secure(&self.path, bytes, 0o600);
             if is_audiodg_active() {
                 let _ = Command::new("systemctl")
-                    .args(["--user", "restart", "lwasapi-audiodg.service"])
+                    .args(["--user", "restart", "lasapi-audiodg.service"])
                     .status();
             }
         } else if self.path.is_file() {
@@ -131,7 +131,7 @@ impl Drop for AppVolBackupGuard {
                     }
                     if is_audiodg_active() {
                         let _ = Command::new("systemctl")
-                            .args(["--user", "restart", "lwasapi-audiodg.service"])
+                            .args(["--user", "restart", "lasapi-audiodg.service"])
                             .status();
                     }
                 }
@@ -141,7 +141,7 @@ impl Drop for AppVolBackupGuard {
 }
 
 struct StudioStateRestoreGuard {
-    orig: LwasapiEngineStatus,
+    orig: LasapiEngineStatus,
     orig_cap_pref: u32,
 }
 
@@ -162,7 +162,7 @@ impl Drop for StudioStateRestoreGuard {
 
 fn is_audiodg_active() -> bool {
     Command::new("systemctl")
-        .args(["--user", "is-active", "--quiet", "lwasapi-audiodg.service"])
+        .args(["--user", "is-active", "--quiet", "lasapi-audiodg.service"])
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
@@ -199,7 +199,7 @@ fn readelf_dynamic_text(so_path: &Path) -> Result<String, String> {
 
 fn test_c_unit_suite(base_dir: &Path) -> Result<String, String> {
     if is_audiodg_active() {
-        let ctl_bin = base_dir.join("build/lwasapi-ctl");
+        let ctl_bin = base_dir.join("build/lasapi-ctl");
         for _ in 0..30 {
             if Command::new(&ctl_bin)
                 .arg("status")
@@ -215,27 +215,27 @@ fn test_c_unit_suite(base_dir: &Path) -> Result<String, String> {
         }
     }
 
-    let test_bin = base_dir.join("build/lwasapi-test");
+    let test_bin = base_dir.join("build/lasapi-test");
     if !test_bin.is_file() {
         return Err(format!("Missing {}", test_bin.display()));
     }
     let out = Command::new(&test_bin)
         .output()
-        .map_err(|e| format!("exec lwasapi-test: {e}"))?;
+        .map_err(|e| format!("exec lasapi-test: {e}"))?;
     if !out.status.success() {
         return Err(format!(
-            "lwasapi-test failed (rc={:?}):\n{}\n{}",
+            "lasapi-test failed (rc={:?}):\n{}\n{}",
             out.status.code(),
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         ));
     }
-    Ok("build/lwasapi-test passed".to_string())
+    Ok("build/lasapi-test passed".to_string())
 }
 
 fn test_tools_and_settings_security(base_dir: &Path) -> Result<String, String> {
     for retired in [
-        "lwasapi-tray.py",
+        "lasapi-tray.py",
         "salsa-debug.py",
         "salsa_debug_core.py",
         "salsa_debug_ui.py",
@@ -251,7 +251,7 @@ fn test_tools_and_settings_security(base_dir: &Path) -> Result<String, String> {
 
     for self_test_bin in [
         "build/salsa-gen-pa-proxy",
-        "build/lwasapi-tray",
+        "build/lasapi-tray",
         "build/salsa-debug",
         "build/salsa-studio",
     ] {
@@ -330,25 +330,25 @@ fn test_tools_and_settings_security(base_dir: &Path) -> Result<String, String> {
         return Err("load_screencast_prefs returned empty res_key".to_string());
     }
 
-    let run_out = Command::new(base_dir.join("build/lwasapi-run"))
+    let run_out = Command::new(base_dir.join("build/lasapi-run"))
         .args([
             "sh",
             "-c",
             "printf '%s|%s|%s' \"$SDL_AUDIODRIVER\" \"$PROTON_USE_PIPEWIRE\" \"$LD_LIBRARY_PATH\"",
         ])
         .output()
-        .map_err(|e| format!("lwasapi-run: {e}"))?;
+        .map_err(|e| format!("lasapi-run: {e}"))?;
     let run_str = String::from_utf8_lossy(&run_out.stdout);
     if !run_str.starts_with("pulse|0|") || !run_str.contains("build/shims:") {
-        return Err(format!("lwasapi-run env unexpected: {run_str}"));
+        return Err(format!("lasapi-run env unexpected: {run_str}"));
     }
 
-    let fp_out = Command::new(base_dir.join("build/lwasapi-autosync"))
+    let fp_out = Command::new(base_dir.join("build/lasapi-autosync"))
         .arg("--print-fingerprint")
         .output()
-        .map_err(|e| format!("lwasapi-autosync --print-fingerprint: {e}"))?;
+        .map_err(|e| format!("lasapi-autosync --print-fingerprint: {e}"))?;
     if !fp_out.status.success() || fp_out.stdout.is_empty() {
-        return Err("lwasapi-autosync --print-fingerprint failed".to_string());
+        return Err("lasapi-autosync --print-fingerprint failed".to_string());
     }
 
     let dist_zip = tmp.path.join("dist_test.zip");
@@ -533,7 +533,7 @@ fn verify_lgpl_compliance(base_dir: &Path) -> Result<(), String> {
         }
     }
 
-    for bin_name in ["build/lwasapi-ctl", "build/salsa-installer", "build/salsa-debug-cli", "build/lwasapi-audiodg"] {
+    for bin_name in ["build/lasapi-ctl", "build/salsa-installer", "build/salsa-debug-cli", "build/lasapi-audiodg"] {
         let out = Command::new(base_dir.join(bin_name))
             .arg("--version")
             .output()
@@ -550,18 +550,18 @@ fn verify_lgpl_compliance(base_dir: &Path) -> Result<(), String> {
 }
 
 fn test_elf_hardening_and_proxy_parity(base_dir: &Path) -> Result<String, String> {
-    let audiodg = base_dir.join("build/lwasapi-audiodg");
+    let audiodg = base_dir.join("build/lasapi-audiodg");
     if !audiodg.is_file() {
-        return Err("missing build/lwasapi-audiodg".to_string());
+        return Err("missing build/lasapi-audiodg".to_string());
     }
     let ad_dyn = readelf_dynamic_text(&audiodg)?;
     if !ad_dyn.contains("BIND_NOW") && !ad_dyn.contains(" NOW") {
-        return Err("build/lwasapi-audiodg missing BIND_NOW hardening flag".to_string());
+        return Err("build/lasapi-audiodg missing BIND_NOW hardening flag".to_string());
     }
 
     let so_checks = [
-        "build/liblwasapi.so",
-        "build/libasound_module_pcm_lwasapi.so",
+        "build/liblasapi.so",
+        "build/libasound_module_pcm_lasapi.so",
         "build/shims/libasound.so.2",
         "build/shims/libpulse.so.0",
         "build/shims/libjack.so.0",
@@ -660,7 +660,7 @@ fn test_elf_hardening_and_proxy_parity(base_dir: &Path) -> Result<String, String
 
 fn test_rev62_hw_analog_scoring_and_defaults(_base_dir: &Path) -> Result<String, String> {
     let mut cfg = unsafe { mem::zeroed() };
-    unsafe { lwasapi_hw_analog_default_cfg(&mut cfg) };
+    unsafe { lasapi_hw_analog_default_cfg(&mut cfg) };
     if cfg.hw_dac_unity_vol != 1
         || cfg.hp_amp_tier != 0
         || cfg.output_route != 0
@@ -668,13 +668,13 @@ fn test_rev62_hw_analog_scoring_and_defaults(_base_dir: &Path) -> Result<String,
         || cfg.analog_boost_db.abs() > 1e-5
         || cfg.mic_hw_boost_db.abs() > 1e-5
     {
-        return Err("lwasapi_hw_analog_default_cfg unexpected defaults".to_string());
+        return Err("lasapi_hw_analog_default_cfg unexpected defaults".to_string());
     }
 
-    let sc_strix = unsafe { lwasapi_hw_analog_score_card(99, c"STRIX RAID DLX USB Audio".as_ptr()) };
-    let sc_soar = unsafe { lwasapi_hw_analog_score_card(99, c"ASUS STRIX SOAR Audio".as_ptr()) };
-    let sc_scar = unsafe { lwasapi_hw_analog_score_card(99, c"Scarlett 2i2 4th Gen".as_ptr()) };
-    let sc_hdmi = unsafe { lwasapi_hw_analog_score_card(99, c"HDA ATI HDMI".as_ptr()) };
+    let sc_strix = unsafe { lasapi_hw_analog_score_card(99, c"STRIX RAID DLX USB Audio".as_ptr()) };
+    let sc_soar = unsafe { lasapi_hw_analog_score_card(99, c"ASUS STRIX SOAR Audio".as_ptr()) };
+    let sc_scar = unsafe { lasapi_hw_analog_score_card(99, c"Scarlett 2i2 4th Gen".as_ptr()) };
+    let sc_hdmi = unsafe { lasapi_hw_analog_score_card(99, c"HDA ATI HDMI".as_ptr()) };
     if sc_strix <= sc_hdmi + 100 || sc_soar <= sc_hdmi + 100 || sc_scar <= sc_hdmi + 100 {
         return Err(format!(
             "unexpected scores strix={sc_strix} soar={sc_soar} scarlett={sc_scar} hdmi={sc_hdmi}"
@@ -740,7 +740,7 @@ fn test_rust_wire_core_workspace(base_dir: &Path) -> Result<String, String> {
 }
 
 fn test_live_daemon_security_and_pw_broker(base_dir: &Path) -> Result<String, String> {
-    let rt = xdg_runtime_dir().join("lwasapi");
+    let rt = xdg_runtime_dir().join("lasapi");
     let rmode = fs::metadata(&rt)
         .map_err(|e| format!("stat {}: {e}", rt.display()))?
         .permissions()
@@ -769,12 +769,12 @@ fn test_live_daemon_security_and_pw_broker(base_dir: &Path) -> Result<String, St
         }
     }
 
-    let ctl_out = Command::new(base_dir.join("build/lwasapi-ctl"))
+    let ctl_out = Command::new(base_dir.join("build/lasapi-ctl"))
         .arg("status")
         .output()
-        .map_err(|e| format!("lwasapi-ctl status: {e}"))?;
+        .map_err(|e| format!("lasapi-ctl status: {e}"))?;
     if !ctl_out.status.success() {
-        return Err("lwasapi-ctl status failed".to_string());
+        return Err("lasapi-ctl status failed".to_string());
     }
 
     let snap = snapshot_once(None, Duration::from_millis(1200))?;
@@ -807,12 +807,12 @@ fn test_live_daemon_security_and_pw_broker(base_dir: &Path) -> Result<String, St
             "-p",
             "ActiveState,MainPID",
             "--value",
-            "lwasapi-tray.service",
+            "lasapi-tray.service",
         ])
         .output()
-        .map_err(|e| format!("systemctl show lwasapi-tray.service: {e}"))?;
+        .map_err(|e| format!("systemctl show lasapi-tray.service: {e}"))?;
     if !show_out.status.success() {
-        return Err("systemctl show lwasapi-tray.service failed".to_string());
+        return Err("systemctl show lasapi-tray.service failed".to_string());
     }
     let show_txt = String::from_utf8_lossy(&show_out.stdout);
     let mut show_lines = show_txt.lines().map(str::trim);
@@ -823,7 +823,7 @@ fn test_live_daemon_security_and_pw_broker(base_dir: &Path) -> Result<String, St
         .unwrap_or(0);
     if active_state != "active" || main_pid == 0 {
         return Err(format!(
-            "lwasapi-tray.service not active (ActiveState={active_state}, MainPID={main_pid})"
+            "lasapi-tray.service not active (ActiveState={active_state}, MainPID={main_pid})"
         ));
     }
     let cmd_bytes = fs::read(format!("/proc/{main_pid}/cmdline"))
@@ -834,9 +834,9 @@ fn test_live_daemon_security_and_pw_broker(base_dir: &Path) -> Result<String, St
         .map(|s| String::from_utf8_lossy(s).into_owned())
         .collect::<Vec<_>>()
         .join(" ");
-    if !cmdline.contains("lwasapi-tray") || cmdline.contains("python") {
+    if !cmdline.contains("lasapi-tray") || cmdline.contains("python") {
         return Err(format!(
-            "lwasapi-tray.service MainPID={main_pid} unexpected cmdline: {cmdline}"
+            "lasapi-tray.service MainPID={main_pid} unexpected cmdline: {cmdline}"
         ));
     }
 
@@ -913,14 +913,14 @@ fn test_live_daemon_security_and_pw_broker(base_dir: &Path) -> Result<String, St
         return Err("Neither gdbus nor busctl available to verify SNI registration".to_string());
     }
 
-    let ctl_bin = base_dir.join("build/lwasapi-ctl");
+    let ctl_bin = base_dir.join("build/lasapi-ctl");
     let pw_out = Command::new(&ctl_bin)
         .arg("pw-self-test")
         .output()
         .map_err(|e| format!("exec {} pw-self-test: {e}", ctl_bin.display()))?;
     if !pw_out.status.success() {
         return Err(format!(
-            "lwasapi-ctl pw-self-test failed: {}",
+            "lasapi-ctl pw-self-test failed: {}",
             String::from_utf8_lossy(&pw_out.stderr)
         ));
     }
@@ -928,9 +928,9 @@ fn test_live_daemon_security_and_pw_broker(base_dir: &Path) -> Result<String, St
     Ok("0700/0600 runtime & socket peercred + PW broker + pw-self-test + pure-Rust tray SNI + build freshness OK".to_string())
 }
 
-fn find_regtest_session() -> Option<(salsa_tools::ipc::LwasapiSessionInfo, LwasapiEngineStatus)> {
+fn find_regtest_session() -> Option<(salsa_tools::ipc::LasapiSessionInfo, LasapiEngineStatus)> {
     let st = get_engine_status()?;
-    let n = (st.num_sessions as usize).min(LWASAPI_MAX_SESSIONS);
+    let n = (st.num_sessions as usize).min(LASAPI_MAX_SESSIONS);
     for i in 0..n {
         let s = st.sessions[i];
         let nm = cstr_to_string(&s.client_name);
@@ -1114,12 +1114,12 @@ int main(int argc, char **argv) {
     }
 
     let rr = Command::new("systemctl")
-        .args(["--user", "restart", "lwasapi-audiodg.service"])
+        .args(["--user", "restart", "lasapi-audiodg.service"])
         .output()
         .map_err(|e| format!("systemctl restart: {e}"))?;
     if !rr.status.success() {
         return Err(format!(
-            "Failed restarting lwasapi-audiodg.service: {}",
+            "Failed restarting lasapi-audiodg.service: {}",
             String::from_utf8_lossy(&rr.stderr)
         ));
     }
@@ -1302,7 +1302,7 @@ fn test_live_rev61_studio_apis(base_dir: &Path) -> Result<String, String> {
     let sup_mask = orig.bt_codec_cfg.supported_codecs_mask;
     if orig.bt_active != 0 && sup_mask != 0 && (sup_mask & 1) == 0 {
         let mut bt_rej = orig.bt_codec_cfg;
-        bt_rej.preferred_codec = LWASAPI_BT_PREF_LDAC;
+        bt_rej.preferred_codec = LASAPI_BT_PREF_LDAC;
         if set_bt_codec_config(&bt_rej) != 0 {
             return Err("set_bt_codec_config preflight check failed".to_string());
         }
@@ -1353,7 +1353,7 @@ fn test_live_rev61_studio_apis(base_dir: &Path) -> Result<String, String> {
         ));
     }
 
-    let ctl_bin = base_dir.join("build/lwasapi-ctl");
+    let ctl_bin = base_dir.join("build/lasapi-ctl");
     let st_m0 = get_engine_status().ok_or("status before midi-send failed")?;
     if !Command::new(&ctl_bin)
         .args(["midi-send", "60", "0"])
@@ -1361,7 +1361,7 @@ fn test_live_rev61_studio_apis(base_dir: &Path) -> Result<String, String> {
         .map(|s| s.success())
         .unwrap_or(false)
     {
-        return Err("lwasapi-ctl midi-send 60 0 failed".to_string());
+        return Err("lasapi-ctl midi-send 60 0 failed".to_string());
     }
     thread::sleep(Duration::from_millis(80));
     let st_m1 = get_engine_status().ok_or("status after vel=0 failed")?;
@@ -1374,7 +1374,7 @@ fn test_live_rev61_studio_apis(base_dir: &Path) -> Result<String, String> {
         .map(|s| s.success())
         .unwrap_or(false)
     {
-        return Err("lwasapi-ctl midi-send 60 100 failed".to_string());
+        return Err("lasapi-ctl midi-send 60 100 failed".to_string());
     }
     let mut midi_ok = false;
     for _ in 0..10 {
@@ -1576,11 +1576,11 @@ fn main() -> ExitCode {
     if !live_up {
         if require_live {
             failed += 1;
-            eprintln!("[FAIL] live daemon check: lwasapi-audiodg.service is not active (--require-live)");
+            eprintln!("[FAIL] live daemon check: lasapi-audiodg.service is not active (--require-live)");
         } else {
             skipped += live_suites.len();
             println!(
-                "[SKIP] live daemon suites ({} suites skipped; lwasapi-audiodg.service not active)",
+                "[SKIP] live daemon suites ({} suites skipped; lasapi-audiodg.service not active)",
                 live_suites.len()
             );
         }

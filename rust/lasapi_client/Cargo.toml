@@ -1,22 +1,22 @@
 [package]
-name = "lwasapi_client"
+name = "lasapi_client"
 version = "0.1.0"
 edition = "2021"
 license = "LGPL-3.0-only"
 publish = false
 
 [lib]
-name = "lwasapi"
+name = "lasapi"
 crate-type = ["staticlib", "rlib"]
 path = "src/lib.rs"
 
 [[bin]]
-name = "lwasapi-test"
-path = "src/bin/lwasapi_test.rs"
+name = "lasapi-test"
+path = "src/bin/lasapi_test.rs"
 
 [[bin]]
-name = "lwasapi-bench"
-path = "src/bin/lwasapi_bench.rs"
+name = "lasapi-bench"
+path = "src/bin/lasapi_bench.rs"
 
 [dependencies]
 salsa_net = { path = "../salsa_net" }
