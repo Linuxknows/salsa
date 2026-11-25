@@ -1477,6 +1477,7 @@ private:
     int lastSniGlow_ = -1;
     int anchorPanelLoc_ = 4;
     int anchorBottom_ = 0;
+    int anchorRawLocalOffset_ = -1;
     QRect anchorAvail_;
     QPointer<QScreen> lastPopupScreen_;
     QPointer<QScreen> lastMenuScreen_;
@@ -2664,21 +2665,24 @@ void TrayController::positionAndShowPopup(const QPoint& rawPt) {
                 ls.setCloseOnDismissed(lsw, false);
                 if (loc == 5 || loc == 6) {
                     const int horizAnchor = (loc == 5) ? LayerShellDyn::AnchorLeft : LayerShellDyn::AnchorRight;
+                    anchorRawLocalOffset_ = hasRaw ? (qtPt.y() - sg.y() - iconHalfW) : -1;
                     const int localY = hasRaw
-                        ? std::clamp(qtPt.y() - sg.y() - iconHalfW, 8, std::max(8, sg.height() - popH - 8))
+                        ? std::clamp(anchorRawLocalOffset_, 8, std::max(8, sg.height() - popH - 8))
                         : std::max(8, sg.height() - popH - 16);
                     ls.setAnchors(lsw, LayerShellDyn::AnchorTop | horizAnchor);
                     ls.setMargins(lsw, QMargins(8, localY, 8, 8));
                 } else {
                     const int vertAnchor = (loc == 3) ? LayerShellDyn::AnchorTop : LayerShellDyn::AnchorBottom;
                     if (hasRaw) {
+                        anchorRawLocalOffset_ = qtPt.x() - sg.x() - iconHalfW;
                         const int localX = std::clamp(
-                            qtPt.x() - sg.x() - iconHalfW,
+                            anchorRawLocalOffset_,
                             8,
                             std::max(8, sg.width() - popW - 8));
                         ls.setAnchors(lsw, LayerShellDyn::AnchorLeft | vertAnchor);
                         ls.setMargins(lsw, QMargins(localX, 8, 0, 8));
                     } else {
+                        anchorRawLocalOffset_ = -1;
                         ls.setAnchors(lsw, LayerShellDyn::AnchorRight | vertAnchor);
                         ls.setMargins(lsw, QMargins(0, 8, std::max(16, logicalPad), 8));
                     }
@@ -2731,6 +2735,22 @@ void TrayController::keepBottomAnchored() {
             if (QWindow* qw = popupWin_->windowHandle()) {
                 const auto& ls = LayerShellDyn::instance();
                 if (QObject* lsw = ls.get(qw)) {
+                    if (anchorRawLocalOffset_ >= 0 && lastPopupScreen_) {
+                        const QRect sg = lastPopupScreen_->geometry();
+                        if (anchorPanelLoc_ == 5 || anchorPanelLoc_ == 6) {
+                            const int localY = std::clamp(
+                                anchorRawLocalOffset_,
+                                8,
+                                std::max(8, sg.height() - popH - 8));
+                            ls.setMargins(lsw, QMargins(8, localY, 8, 8));
+                        } else {
+                            const int localX = std::clamp(
+                                anchorRawLocalOffset_,
+                                8,
+                                std::max(8, sg.width() - popW - 8));
+                            ls.setMargins(lsw, QMargins(localX, 8, 0, 8));
+                        }
+                    }
                     ls.setDesiredSize(lsw, QSize(popW, popH));
                 }
             }
