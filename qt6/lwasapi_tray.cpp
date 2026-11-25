@@ -245,35 +245,21 @@ inline ResolvedTrayTarget resolveTrayTarget(const QPoint& rawPt, bool hasRawPt) 
     const int gy = rawPt.y();
 
     if (!isXcb) {
-        QScreen* kwinScr = queryKwinActiveScreen();
-        const QString desk = qEnvironmentVariable("XDG_CURRENT_DESKTOP") + QLatin1Char(':')
-            + qEnvironmentVariable("XDG_SESSION_DESKTOP");
-        const bool isKde = (kwinScr != nullptr) || desk.contains(QLatin1String("KDE"), Qt::CaseInsensitive);
-
-        if (kwinScr) {
-            QPoint pt;
-            if (isKde) {
-                if (tryPlasmaMixedPointOnScreen(kwinScr, gx, gy, &pt)) {
-                    return {kwinScr, pt};
-                }
-                if (kwinScr->geometry().contains(QPoint(gx, gy))) {
-                    return {kwinScr, QPoint(gx, gy)};
-                }
-            } else {
-                if (kwinScr->geometry().contains(QPoint(gx, gy))) {
-                    return {kwinScr, QPoint(gx, gy)};
-                }
-                if (tryPlasmaMixedPointOnScreen(kwinScr, gx, gy, &pt)) {
-                    return {kwinScr, pt};
-                }
+        // Plasma 6 SystemTray on Wayland (`WindowId == 0` native Wayland SNI) as well as
+        // Waybar, COSMIC, Sway, Hyprland, and LXQt pass pure Qt logical global coordinates
+        // directly inside `QScreen::geometry()`. Check disjoint logical screen bounds first
+        // before falling back to fractional-DPR scaling for older hosts.
+        for (QScreen* s : screens) {
+            if (s && s->geometry().contains(QPoint(gx, gy))) {
+                return {s, QPoint(gx, gy)};
             }
         }
 
-        if (!isKde) {
-            for (QScreen* s : screens) {
-                if (s && s->geometry().contains(QPoint(gx, gy))) {
-                    return {s, QPoint(gx, gy)};
-                }
+        QScreen* kwinScr = queryKwinActiveScreen();
+        if (kwinScr) {
+            QPoint pt;
+            if (tryPlasmaMixedPointOnScreen(kwinScr, gx, gy, &pt)) {
+                return {kwinScr, pt};
             }
         }
 
@@ -293,12 +279,6 @@ inline ResolvedTrayTarget resolveTrayTarget(const QPoint& rawPt, bool hasRawPt) 
         }
         if (bestPlasmaScr) {
             return {bestPlasmaScr, bestPlasmaPt};
-        }
-
-        for (QScreen* s : screens) {
-            if (s && s->geometry().contains(QPoint(gx, gy))) {
-                return {s, QPoint(gx, gy)};
-            }
         }
 
         for (QScreen* s : screens) {
