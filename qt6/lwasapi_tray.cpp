@@ -2602,7 +2602,7 @@ void TrayController::applyThemeAndFont(bool /*saveFont*/) {
 
 int TrayController::computePopupWidth() const {
     const int minHintW = card_ ? card_->minimumSizeHint().width() : 0;
-    return std::clamp(std::max(scaledPx(488, fontPct_), minHintW), 472, 660);
+    return std::clamp(std::max(scaledPx(444, fontPct_), minHintW), 436, 660);
 }
 
 QString TrayController::playbackDisplayLabel(const SalsaEngineStatus& st) const {
@@ -2650,7 +2650,7 @@ void TrayController::positionAndShowPopup(const QPoint& rawPt) {
         }
         lastPopupScreen_ = scr;
         const QRect sg = scr ? scr->geometry() : avail;
-        const int iconHalfW = scaledPx(12, fontPct_);
+        const int iconHalfW = scaledPx(10, fontPct_);
         (void)popupWin_->winId();
         if (QWindow* qw = popupWin_->windowHandle()) {
             if (scr) qw->setScreen(scr);
@@ -2667,7 +2667,7 @@ void TrayController::positionAndShowPopup(const QPoint& rawPt) {
                     const int horizAnchor = (loc == 5) ? LayerShellDyn::AnchorLeft : LayerShellDyn::AnchorRight;
                     anchorRawLocalOffset_ = hasRaw ? (qtPt.y() - sg.y() - iconHalfW) : -1;
                     const int localY = hasRaw
-                        ? std::clamp(anchorRawLocalOffset_, 8, std::max(8, sg.height() - popH - 8))
+                        ? std::clamp(anchorRawLocalOffset_, 4, std::max(4, sg.height() - popH - 4))
                         : std::max(8, sg.height() - popH - 16);
                     ls.setAnchors(lsw, LayerShellDyn::AnchorTop | horizAnchor);
                     ls.setMargins(lsw, QMargins(8, localY, 8, 8));
@@ -2677,8 +2677,8 @@ void TrayController::positionAndShowPopup(const QPoint& rawPt) {
                         anchorRawLocalOffset_ = qtPt.x() - sg.x() - iconHalfW;
                         const int localX = std::clamp(
                             anchorRawLocalOffset_,
-                            8,
-                            std::max(8, sg.width() - popW - 8));
+                            2,
+                            std::max(2, sg.width() - popW - 2));
                         ls.setAnchors(lsw, LayerShellDyn::AnchorLeft | vertAnchor);
                         ls.setMargins(lsw, QMargins(localX, 8, 0, 8));
                     } else {
@@ -2698,9 +2698,9 @@ void TrayController::positionAndShowPopup(const QPoint& rawPt) {
         return;
     }
 
-    const int iconHalfW = scaledPx(12, fontPct_);
+    const int iconHalfW = scaledPx(10, fontPct_);
     int px = hasRaw ? (qtPt.x() - iconHalfW) : (avail.right() + 1 - popW - std::max(16, logicalPad));
-    px = std::clamp(px, avail.left() + 8, avail.right() + 1 - popW - 8);
+    px = std::clamp(px, avail.left() + 2, avail.right() + 1 - popW - 2);
     int py = (loc == 3) ? (avail.top() + 8) : (avail.bottom() + 1 - popH - 8);
     py = std::clamp(py, avail.top() + 8, avail.bottom() + 1 - popH - 8);
     anchorBottom_ = avail.bottom() + 1 - 8;
@@ -2740,14 +2740,14 @@ void TrayController::keepBottomAnchored() {
                         if (anchorPanelLoc_ == 5 || anchorPanelLoc_ == 6) {
                             const int localY = std::clamp(
                                 anchorRawLocalOffset_,
-                                8,
-                                std::max(8, sg.height() - popH - 8));
+                                4,
+                                std::max(4, sg.height() - popH - 4));
                             ls.setMargins(lsw, QMargins(8, localY, 8, 8));
                         } else {
                             const int localX = std::clamp(
                                 anchorRawLocalOffset_,
-                                8,
-                                std::max(8, sg.width() - popW - 8));
+                                2,
+                                std::max(2, sg.width() - popW - 2));
                             ls.setMargins(lsw, QMargins(localX, 8, 0, 8));
                         }
                     }
