@@ -209,14 +209,78 @@ inline QScreen* queryKwinActiveScreen() {
     return nullptr;
 }
 
+inline QMap<QString, double> queryKwinOutputScales() {
+    static QString cachedGeoSig;
+    static QMap<QString, double> cachedScales;
+
+    QString sig;
+    for (QScreen* s : QGuiApplication::screens()) {
+        if (!s) continue;
+        const QRect g = s->geometry();
+        sig += QStringLiteral("%1:%2,%3,%4x%5;")
+                   .arg(s->name())
+                   .arg(g.x())
+                   .arg(g.y())
+                   .arg(g.width())
+                   .arg(g.height());
+    }
+    if (!sig.isEmpty() && sig == cachedGeoSig && !cachedScales.isEmpty()) {
+        return cachedScales;
+    }
+
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected()) return cachedScales;
+    QDBusMessage msg = QDBusMessage::createMethodCall(
+        QStringLiteral("org.kde.KWin"),
+        QStringLiteral("/KWin"),
+        QStringLiteral("org.kde.KWin"),
+        QStringLiteral("supportInformation"));
+    QDBusReply<QString> rep = bus.call(msg, QDBus::Block, 80);
+    if (!rep.isValid()) return cachedScales;
+
+    QMap<QString, double> parsed;
+    QString curName;
+    const QStringList lines = rep.value().split(QLatin1Char('\n'));
+    for (const QString& raw : lines) {
+        const QString ln = raw.trimmed();
+        if (ln.startsWith(QLatin1String("Name:"))) {
+            curName = ln.mid(5).trimmed();
+        } else if (!curName.isEmpty() && ln.startsWith(QLatin1String("Scale:"))) {
+            bool ok = false;
+            const double sc = ln.mid(6).trimmed().toDouble(&ok);
+            if (ok && sc >= 0.5 && sc <= 8.0) {
+                parsed.insert(curName.toLower(), sc);
+            }
+            curName.clear();
+        }
+    }
+    if (!parsed.isEmpty()) {
+        cachedGeoSig = sig;
+        cachedScales = parsed;
+    }
+    return cachedScales;
+}
+
+inline double effectiveWaylandScale(QScreen* s) {
+    if (!s) return 1.0;
+    const QMap<QString, double> kwinScales = queryKwinOutputScales();
+    const auto it = kwinScales.constFind(s->name().trimmed().toLower());
+    if (it != kwinScales.constEnd() && it.value() >= 0.5) {
+        return it.value();
+    }
+    return std::max(1.0, static_cast<double>(s->devicePixelRatio()));
+}
+
 inline bool tryPlasmaMixedPointOnScreen(QScreen* s, int gx, int gy, QPoint* outPt) {
     if (!s) return false;
     const QRect sg = s->geometry();
     if (sg.width() <= 0 || sg.height() <= 0) return false;
-    const double dpr = std::max(1.0, static_cast<double>(s->devicePixelRatio()));
-    // Plasma 6 SystemTray::popupPosition on Wayland sends:
-    //   gx = screen->geometry().x() + local_x * dpr
-    //   gy = screen->geometry().y() + local_y * dpr
+    // On Wayland fractional scaling (e.g. 1.5x), QScreen::devicePixelRatio() reports
+    // wl_output's integer ceiling (2.0), whereas Plasma's QQuickWindow uses KWin's true
+    // wp_fractional_scale_v1 factor (1.5):
+    //   gx = screen->geometry().x() + local_x * fractional_scale
+    //   gy = screen->geometry().y() + local_y * fractional_scale
+    const double dpr = effectiveWaylandScale(s);
     const int lx = static_cast<int>(std::lround((gx - sg.x()) / dpr));
     const int ly = static_cast<int>(std::lround((gy - sg.y()) / dpr));
     if (lx >= -6 && lx <= sg.width() + 6 && ly >= -6 && ly <= sg.height() + 6) {
@@ -245,21 +309,23 @@ inline ResolvedTrayTarget resolveTrayTarget(const QPoint& rawPt, bool hasRawPt) 
     const int gy = rawPt.y();
 
     if (!isXcb) {
-        // Plasma 6 SystemTray on Wayland (`WindowId == 0` native Wayland SNI) as well as
-        // Waybar, COSMIC, Sway, Hyprland, and LXQt pass pure Qt logical global coordinates
-        // directly inside `QScreen::geometry()`. Check disjoint logical screen bounds first
-        // before falling back to fractional-DPR scaling for older hosts.
-        for (QScreen* s : screens) {
-            if (s && s->geometry().contains(QPoint(gx, gy))) {
-                return {s, QPoint(gx, gy)};
-            }
-        }
-
         QScreen* kwinScr = queryKwinActiveScreen();
-        if (kwinScr) {
+        const QString desk = qEnvironmentVariable("XDG_CURRENT_DESKTOP") + QLatin1Char(':')
+            + qEnvironmentVariable("XDG_SESSION_DESKTOP");
+        const bool isKde = (kwinScr != nullptr) || desk.contains(QLatin1String("KDE"), Qt::CaseInsensitive);
+
+        if (kwinScr && isKde) {
             QPoint pt;
             if (tryPlasmaMixedPointOnScreen(kwinScr, gx, gy, &pt)) {
                 return {kwinScr, pt};
+            }
+        }
+
+        if (!isKde) {
+            for (QScreen* s : screens) {
+                if (s && s->geometry().contains(QPoint(gx, gy))) {
+                    return {s, QPoint(gx, gy)};
+                }
             }
         }
 
@@ -282,8 +348,14 @@ inline ResolvedTrayTarget resolveTrayTarget(const QPoint& rawPt, bool hasRawPt) 
         }
 
         for (QScreen* s : screens) {
+            if (s && s->geometry().contains(QPoint(gx, gy))) {
+                return {s, QPoint(gx, gy)};
+            }
+        }
+
+        for (QScreen* s : screens) {
             if (!s) continue;
-            const double dpr = std::max(1.0, static_cast<double>(s->devicePixelRatio()));
+            const double dpr = effectiveWaylandScale(s);
             const QPoint scaled(static_cast<int>(std::lround(gx / dpr)),
                                 static_cast<int>(std::lround(gy / dpr)));
             if (s->geometry().contains(scaled)) {
