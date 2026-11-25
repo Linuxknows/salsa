@@ -14,7 +14,7 @@
 
 **"You can't spell Salsa without ALSA — because even the cleanest audio chips sound flat until they have a zero-latency dip to taste, with zero chunks dropped and plenty of Dynamic EQ heat!"**
 
-High-Frequency (Up to **192,000 Hz / 32-Bit Float**) WASAPI style Architecture / WaveRT Zero-Copy Audio Engine, **100% Pure Rust Backend Daemon & CLI (`lwasapi-audiodg` / `lwasapi-ctl`), PA v35 Server & Zero-Downtime `pipewire-0` Video Broker**, **Direct BlueZ D-Bus A2DP/HFP/AVRCP Audio (`LDAC / aptX HD / aptX / AAC / SBC`)**, **10-Band Real-Time Dynamic EQ & Mic APO**, Sample-Accurate **DAW MIDI Hub**, **Native Wayland Qt6 UI (`LayerShellQt`)**, and Automatic **`qpwgraph`-Equivalent Signal Topology & Owner's Manual**, **Designed to remove all PipeWire-Pulse or WirePlumber audio dependencies**.  
+High-Frequency (Up to **192,000 Hz / 32-Bit Float**) WASAPI style Architecture / WaveRT Zero-Copy Audio Engine, **100% Pure Rust Backend Daemon & CLI (`lwasapi-audiodg` / `lwasapi-ctl`), PA v35 Server & Zero-Downtime `pipewire-0` Video Broker**, **Direct BlueZ D-Bus A2DP/HFP/AVRCP Audio (`LDAC / aptX HD / aptX / AAC / SBC`)**, **10-Band Real-Time Dynamic EQ APO**, Sample-Accurate **DAW MIDI Hub**, **Native Wayland Qt6 UI (`LayerShellQt`)**, and Automatic **`qpwgraph`-Equivalent Signal Topology & Owner's Manual**, **Designed to remove all PipeWire-Pulse or WirePlumber audio dependencies**.  
 
 ---
 
@@ -85,7 +85,7 @@ Read the complete 4-stage engine walkthrough, zero-copy WaveRT shared-memory rin
 
 1. **Inputs & Applications (`pa_server.rs`, `build/shims/`, `~/.asoundrc`)**: Auto-routes Native WASAPI (`liblwasapi.so`, bridged into virtual PA `direct_on_input` monitor taps for Discord/OBS app sound share), Native PulseAudio v35 (`$XDG_RUNTIME_DIR/pulse/native`), ALSA/OpenAL Soft clients, and zero-IPC hollow ABI shims (`lwasapi-run`).
 2. **WaveRT Zero-Copy Engine (`memfd_create` + `eventfd`)**: Streams up to `192,000 Hz / 32-bit Float` through anonymous `32,768`-frame shared-memory rings mapped via `SCM_RIGHTS` with atomic commits (`~75–80 ns`).
-3. **Salsa APO & DAW MIDI Hub (`lwasapi-audiodg`, `SCHED_FIFO 65`, `mlockall`)**: Mixes multi-rate streams into a fixed or split playback/capture master clock, applies the 10-band dynamic parametric EQ (`31 Hz–16 kHz`), Bauer headphone stereo crossfeed, Capture Mic APO (noise gate, contour, optional `librnnoise`), and soft-knee limiter, and routes raw MIDI (`RawMIDI` / ALSA Sequencer).
+3. **Salsa APO & DAW MIDI Hub (`lwasapi-audiodg`, `SCHED_FIFO 65`, `mlockall`)**: Mixes multi-rate streams into a fixed or split playback/capture master clock, applies the 10-band dynamic parametric EQ (`31 Hz–16 kHz`), Bauer headphone stereo crossfeed, and soft-knee limiter, and routes raw MIDI (`RawMIDI` / ALSA Sequencer).
 4. **Hardware Endpoints & Video ScreenCast Broker (`pw_broker.rs`)**: Outputs directly to kernel `/dev/snd/pcmC*D*` DACs (with smart headphone/USB/jack hotplug priority) or `org.bluez.MediaEndpoint1` Bluetooth A2DP/HFP endpoints (**LDAC / aptX HD / aptX / AAC / SBC**), provides full-duplex loopback capture, and serves zero-downtime socket-activated `$XDG_RUNTIME_DIR/pipewire-0` strictly for Wayland ScreenCast `DmaBuf`/`MemFd` video relays while rejecting PipeWire audio.
 
 👉 Open the full document with ASCII signal topology diagrams: **[SALSA Architecture Breakdown.md](SALSA%20Architecture%20Breakdown.md)**
@@ -190,7 +190,7 @@ Salsa (LWASAPI) is licensed under the **GNU Lesser General Public License v3.0 o
 
 - [COPYING.LESSER](COPYING.LESSER) — GNU Lesser General Public License v3.0 permissions
 - [COPYING](COPYING) — GNU General Public License v3.0 base terms (required alongside LGPL-3.0)
-- [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) — Dynamically linked frameworks (Qt6 under `LGPL-3.0-only`, ALSA/Pulse/JACK), library relinking & source instructions (`make all`), and optional runtime `dlopen()` codec/Wayland disclosures (`libfdk-aac`, `libldac`, `libfreeaptx`, `libsbc`, `librnnoise`, `libLayerShellQtInterface`, `libKF6WindowSystem` — never bundled or vendored)
+- [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) — Dynamically linked frameworks (Qt6 under `LGPL-3.0-only`, ALSA/Pulse/JACK), library relinking & source instructions (`make all`), and optional runtime `dlopen()` codec/Wayland disclosures (`libfdk-aac`, `libldac`, `libfreeaptx`, `libsbc`, `libLayerShellQtInterface`, `libKF6WindowSystem` — never bundled or vendored)
 
 ---
 

@@ -8,7 +8,7 @@ body:
     attributes:
       label: Feature Area
       options:
-        - DSP / Dynamic Parametric EQ / Limiter / Mic APO
+        - DSP / Dynamic Parametric EQ / Crossfeed / Limiter
         - Hardware ALSA / USB DAC / Analog Mixer Controls
         - Bluetooth Audio / Codecs / AVRCP
         - Salsa Studio / System Tray Quick Mixer / Theme Studio

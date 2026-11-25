@@ -24,7 +24,7 @@ In traditional Linux pro-audio workflows, patchbay utilities like `qpwgraph` or 
 ┌──────────────────────────────────┐       ┌────────────────▼─────────────────┐                        └────────────────────────►│ 📹 Full-Duplex Capture Apps      │
 │ 🎙️ Hardware Microphone Input     │       │ 🚀 lwasapi-audiodg RT Thread     │                                                  │  • Discord Voice & App SoundShare│
 │  • USB / HDA Kernel Mic Auto-Bind├──────►│  • SCHED_FIFO Priority 65        ├─────────────────────────────────────────────────►│  • OBS Desktop Loopback Monitor  │
-│  • Capture Mic APO + RNNoise     │       │  • mlockall() RAM Pinned         │              Mic Capture Ring                    │  • DAW Audio & MIDI Recording    │
+│  • Native PA v35 + ALSA Vol Sync │       │  • mlockall() RAM Pinned         │              Mic Capture Ring                    │  • DAW Audio & MIDI Recording    │
 └──────────────────────────────────┘       │  • Up to 192,000 Hz / 32-Bit Flt │                                                  └─────────────────▲────────────────┘
                                            └──────────────────────────────────┘                                                                    │
 ┌──────────────────────────────────┐       ┌──────────────────────────────────┐                                                                    │
@@ -55,10 +55,10 @@ In traditional Linux pro-audio workflows, patchbay utilities like `qpwgraph` or 
 - Audio samples for WASAPI/WaveRT and shimmed apps never cross UNIX domain sockets. Instead, `lwasapi-audiodg` maps an anonymous shared-memory ring buffer (`lwasapi_shm_ring_t`) into the client process via `SCM_RIGHTS`.
 - Committing a 64-frame stereo `float32` block takes **0.075 µs (75 nanoseconds)**—orders of magnitude faster than legacy `pipewire-pulse` socket writes.
 
-### Stage 3: `lwasapi-audiodg` Real-Time `SCHED_FIFO` Engine, 10-Band Dynamic EQ & Mic APO
+### Stage 3: `lwasapi-audiodg` Real-Time `SCHED_FIFO` Engine & 10-Band Dynamic EQ APO
 - Runs under Linux `SCHED_FIFO` real-time priority 65 with all memory locked into physical RAM (`mlockall`).
 - Supports live clock switching across `44.1 kHz`, `48 kHz`, `88.2 kHz`, `96 kHz`, `176.4 kHz`, and **`192 kHz`** (`64` to `2048` frame period quantums), plus independent capture clock pinning.
-- Processes playback through a 10-band RBJ parametric equalizer (`31 Hz`–`16 kHz`, supporting AutoEQ / Oratory1990 profiles and per-device EQ memory) with per-band envelope followers for real-time downward compression or upward transient expansion, Bauer stereo headphone crossfeed, hardware analog drive, and a soft-knee mastering limiter, alongside a dedicated Capture Mic APO (noise gate, tonal contour, and optional `librnnoise` suppression).
+- Processes playback through a 10-band RBJ parametric equalizer (`31 Hz`–`16 kHz`, supporting AutoEQ / Oratory1990 profiles and per-device EQ memory) with per-band envelope followers for real-time downward compression or upward transient expansion, Bauer stereo headphone crossfeed, hardware analog drive, and a soft-knee mastering limiter.
 
 ### Stage 4: Direct Hardware Endpoints, Multi-Codec BlueZ, DAW MIDI Hub & Video ScreenCast Broker
 - **Render Sink, Smart Hotplug & Direct BlueZ Audio:** Streams 32-bit float audio directly over `org.bluez.MediaEndpoint1` (**LDAC** + wireless ABR via `libldacBT_enc.so.2`, **aptX HD** & **aptX** via `libfreeaptx.so.0`, **AAC** + ABR via `libfdk-aac.so.2`, **SBC**, and **HFP** mSBC/CVSD + bidirectional AVRCP volume) or kernel `/dev/snd/pcmC*D*` (`S32_LE`, `S24_3LE`, `S16_LE`, `FLOAT_LE`), with `HotplugTracker` automatically switching to newly connected USB/Bluetooth/3.5 mm headphones and restoring your prior speaker output on unplug.

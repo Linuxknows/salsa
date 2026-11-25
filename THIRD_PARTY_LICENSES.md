@@ -46,7 +46,7 @@ degrades gracefully with safe fallbacks if any library is absent:
 | **`libldacBT_enc.so.2`, `libldacBT_abr.so.2`** (`libldac`) | `Apache-2.0` | Optional runtime `dlopen` for Bluetooth LDAC A2DP encoding and ABR rate adaptation (Apache-2.0 is compatible with GPLv3/LGPLv3). |
 | **`libfreeaptx.so.0`** (`libfreeaptx`) | `LGPL-2.1-or-later` | Optional runtime `dlopen` for Bluetooth aptX / aptX HD encoding and decoding. |
 | **`libsbc.so.1`** (`sbc`) | `LGPL-2.1-or-later` | Runtime `dlopen` for Bluetooth A2DP SBC & HFP mSBC codec frames. |
-| **`librnnoise.so.0`** (`rnnoise`) | `BSD-3-Clause` | Optional runtime `dlopen` for neural microphone noise suppression in the Capture Mic APO. |
+| **`librnnoise.so.0`** (`rnnoise`) | `BSD-3-Clause` | Optional legacy ABI runtime `dlopen` symbol in `rust/salsa_net/src/dsp.rs` (disabled by default; not used or exposed in Salsa UI). |
 | **`libdbus-1.so.3`** (`dbus`) | `AFL-2.1 OR GPL-2.0-or-later` | Runtime `dlopen` for BlueZ D-Bus A2DP MediaEndpoint / MediaTransport coordination. |
 | **`libglib-2.0.so.0`, `libgobject-2.0.so.0`, `libgio-2.0.so.0`** (`glib2`) | `LGPL-2.1-or-later` | Runtime `dlopen` for StatusNotifierItem tray integration and xdg-desktop-portal ScreenCast D-Bus coordination. |
 | **`libgbm.so.1`, `libEGL.so.1`, `libGLESv2.so.2`** (`mesa`, `libglvnd`) | `MIT` / `BSD-3-Clause` | Runtime `dlopen` for zero-copy DMA-BUF Wayland ScreenCast preview conversion. |
