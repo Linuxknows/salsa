@@ -1,0 +1,40 @@
+name: Feature Request
+description: Propose an enhancement for Salsa's DSP/APO pipeline, device support, Bluetooth codecs, CLI, or Qt6 Studio/Tray UI
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Feature Area
+      options:
+        - DSP / Dynamic Parametric EQ / Limiter / Mic APO
+        - Hardware ALSA / USB DAC / Analog Mixer Controls
+        - Bluetooth Audio / Codecs / AVRCP
+        - Salsa Studio / System Tray Quick Mixer / Theme Studio
+        - Live Debugger / Wayland ScreenCast Broker
+        - Installer / Multi-Distro Packaging / CLI
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Use Case
+      description: What workflow or audio/desktop scenario would this feature solve or improve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe how you envision the feature working while preserving Salsa's zero-PipeWire-audio, native-Wayland, and multi-PC design
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context or Hardware Details
+      description: Optional ALSA control names (`amixer`), AutoEQ formats, protocol specs, or UI mockups

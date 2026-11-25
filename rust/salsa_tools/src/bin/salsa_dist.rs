@@ -17,6 +17,7 @@ use salsa_wire::unix_sys::reset_sigpipe_default;
 const SKIP_DIRS: &[&str] = &[
     "__pycache__",
     ".git",
+    ".github",
     ".pytest_cache",
     "qt6_obj",
     "target",

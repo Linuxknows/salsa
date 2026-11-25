@@ -1,0 +1,64 @@
+name: Bug Report
+description: Report a bug in Salsa's audio engine, Bluetooth A2DP/HFP stack, Wayland ScreenCast broker, or Qt6 Studio/Tray/Debugger UI
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue with **Salsa (`lwasapi`)**! For security vulnerabilities, please stop here and use [Private Vulnerability Reporting](https://github.com/Linuxknows/salsa/security/advisories/new) instead.
+
+  - type: input
+    id: salsa_version
+    attributes:
+      label: Salsa Version
+      description: Output of `lwasapi-ctl --version` or release tag (e.g., `V1.24.14`)
+      placeholder: "V1.24.14"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Component
+      options:
+        - Audio Engine / WaveRT / ALSA Direct (`lwasapi-audiodg`)
+        - PulseAudio v35 Compatibility / App Audio (`pa_server` / `pa_reconnect`)
+        - Bluetooth Audio (`BlueZ` LDAC / aptX / AAC / SBC / HFP / AVRCP)
+        - Wayland ScreenCast `pipewire-0` Video Broker (`pw_broker`)
+        - Salsa Studio / Live Debugger / System Tray (`qt6/` Wayland & X11 UI)
+        - Installer / Autosync / CLI (`install-salsa.sh` / `salsa-installer` / `lwasapi-ctl`)
+        - DAW MIDI Hub / Shims (`lwasapi-run`)
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Linux Distribution, Kernel & Desktop Session
+      description: Distro, kernel (`uname -r`), and compositor/desktop (e.g., KDE Plasma 6 Wayland, Hyprland, Sway, GNOME, X11)
+      placeholder: "CachyOS, Linux 6.x, KDE Plasma 6 (Wayland, 1.5x fractional scaling)"
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Audio / Bluetooth Hardware
+      description: Soundcard, USB DAC/interface, or Bluetooth headset model & negotiated codec
+      placeholder: "Focusrite Scarlett 2i2 4th Gen / Bose QC Ultra 2 (AAC)"
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What Happened & Steps to Reproduce
+      description: Clear step-by-step instructions to reproduce the behavior vs. what you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic Output (`salsa-installer --check` / `journalctl`)
+      description: Paste output from `./build/salsa-installer --check`, `lwasapi-ctl status`, or `journalctl --user -u lwasapi-audiodg.service -n 50 --no-pager`
+      render: shell
