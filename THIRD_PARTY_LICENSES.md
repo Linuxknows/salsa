@@ -50,7 +50,9 @@ degrades gracefully with safe fallbacks if any library is absent:
 | **`libdbus-1.so.3`** (`dbus`) | `AFL-2.1 OR GPL-2.0-or-later` | Runtime `dlopen` for BlueZ D-Bus A2DP MediaEndpoint / MediaTransport coordination. |
 | **`libglib-2.0.so.0`, `libgobject-2.0.so.0`, `libgio-2.0.so.0`** (`glib2`) | `LGPL-2.1-or-later` | Runtime `dlopen` for StatusNotifierItem tray integration and xdg-desktop-portal ScreenCast D-Bus coordination. |
 | **`libgbm.so.1`, `libEGL.so.1`, `libGLESv2.so.2`** (`mesa`, `libglvnd`) | `MIT` / `BSD-3-Clause` | Runtime `dlopen` for zero-copy DMA-BUF Wayland ScreenCast preview conversion. |
-| **`libX11.so.6`, `libXrandr.so.2`** (`libx11`, `libxrandr`) | `MIT` / `X11` | Runtime `dlopen` for XCB/XWayland tray popup screen-bounds alignment. |
+| **`libLayerShellQtInterface.so.6`** (`layer-shell-qt`) | `LGPL-3.0-only` / `LGPL-2.1-only` | Optional runtime `dlopen` in `qt6/lwasapi_tray.cpp` for native Wayland `zwlr_layer_shell_v1` tray popups, menus, and click-through OSD overlays (zero panel taskbar icon); falls back to standard Qt/EWMH windows if absent. |
+| **`libKF6WindowSystem.so.6`** (`kwindowsystem`) | `LGPL-2.1-only OR LGPL-3.0-only` | Optional runtime `dlopen` in `qt6/salsa_common.cpp` to mint Wayland `XDG_ACTIVATION_TOKEN` focus tokens when raising single-instance windows. |
+| **`libX11.so.6`, `libXrandr.so.2`** (`libx11`, `libxrandr`) | `MIT` / `X11` | Optional runtime `dlopen` used exclusively on X11/XCB fallback sessions (`window_uses_x11()`) for EWMH popup hints and X11 monitor geometry; never opened during native Wayland execution. |
 | **`libz.so.1`** (`zlib`) | `Zlib` | Runtime `dlopen` for PNG asset encoding/decoding in installer & tray icons. |
 
 ---

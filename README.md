@@ -5,13 +5,16 @@
   <a href="#screenshots">🖼️ Screenshots</a> &nbsp;|&nbsp;
   <a href="SALSA%20Architecture%20Breakdown.md">📐 Architecture Breakdown</a> &nbsp;|&nbsp;
   <a href="PATCH_NOTES.md">📝 Patch Notes (V1.24.14)</a> &nbsp;|&nbsp;
+  <a href="SUPPORT.md">🛠️ Support &amp; Debugger</a> &nbsp;|&nbsp;
+  <a href="CONTRIBUTING.md">🤝 Contributing</a> &nbsp;|&nbsp;
+  <a href="SECURITY.md">🔒 Security</a> &nbsp;|&nbsp;
   <a href="THIRD_PARTY_LICENSES.md">🔌 Third-Party &amp; Codecs</a> &nbsp;|&nbsp;
   <a href="COPYING.LESSER">⚖️ LGPL-3.0 License</a>
 </p>
 
-"**"You can't spell Salsa without ALSA — because even the cleanest audio chips sound flat until they have a zero-latency dip to taste, with zero chunks dropped and plenty of Dynamic EQ heat!"**
+**"You can't spell Salsa without ALSA — because even the cleanest audio chips sound flat until they have a zero-latency dip to taste, with zero chunks dropped and plenty of Dynamic EQ heat!"**
 
-High-Frequency (Up to **192,000 Hz / 32-Bit Float**) WASAPI style Architecture / WaveRT Zero-Copy Audio Engine, **100% Pure Rust Backend Daemon & CLI (`lwasapi-audiodg` / `lwasapi-ctl`), PA v35 Server & PipeWire-0 Video Broker**, **Direct BlueZ D-Bus A2DP/AVRCP Audio**, **10-Band Real-Time Dynamic EQ APO**, Sample-Accurate **DAW MIDI Hub**, and Automatic **`qpwgraph`-Equivalent Signal Topology & Owner's Manual**, **Designed to remove all PipeWire-Pulse or WirePlumber audio dependencies**.  
+High-Frequency (Up to **192,000 Hz / 32-Bit Float**) WASAPI style Architecture / WaveRT Zero-Copy Audio Engine, **100% Pure Rust Backend Daemon & CLI (`lwasapi-audiodg` / `lwasapi-ctl`), PA v35 Server & Zero-Downtime `pipewire-0` Video Broker**, **Direct BlueZ D-Bus A2DP/HFP/AVRCP Audio (`LDAC / aptX HD / aptX / AAC / SBC`)**, **10-Band Real-Time Dynamic EQ & Mic APO**, Sample-Accurate **DAW MIDI Hub**, **Native Wayland Qt6 UI (`LayerShellQt`)**, and Automatic **`qpwgraph`-Equivalent Signal Topology & Owner's Manual**, **Designed to remove all PipeWire-Pulse or WirePlumber audio dependencies**.  
 
 ---
 
@@ -80,10 +83,10 @@ Read the complete 4-stage engine walkthrough, zero-copy WaveRT shared-memory rin
 <details>
 <summary>📐 Preview Signal Flow &amp; Zero-PipeWire Architecture Summary</summary>
 
-1. **Inputs & Applications (`pa_server.rs`, `build/shims/`, `~/.asoundrc`)**: Auto-routes Native WASAPI (`liblwasapi.so`), Native PulseAudio v35 (`$XDG_RUNTIME_DIR/pulse/native`), ALSA/OpenAL Soft clients, and zero-IPC hollow ABI shims (`lwasapi-run`).
+1. **Inputs & Applications (`pa_server.rs`, `build/shims/`, `~/.asoundrc`)**: Auto-routes Native WASAPI (`liblwasapi.so`, bridged into virtual PA `direct_on_input` monitor taps for Discord/OBS app sound share), Native PulseAudio v35 (`$XDG_RUNTIME_DIR/pulse/native`), ALSA/OpenAL Soft clients, and zero-IPC hollow ABI shims (`lwasapi-run`).
 2. **WaveRT Zero-Copy Engine (`memfd_create` + `eventfd`)**: Streams up to `192,000 Hz / 32-bit Float` through anonymous `32,768`-frame shared-memory rings mapped via `SCM_RIGHTS` with atomic commits (`~75–80 ns`).
-3. **Salsa APO & DAW MIDI Hub (`lwasapi-audiodg`, `SCHED_FIFO 65`, `mlockall`)**: Mixes multi-rate streams into a fixed/split master clock, applies the 10-band dynamic parametric EQ (`31 Hz–16 kHz`) + soft-knee limiter, and routes raw MIDI (`RawMIDI` / ALSA Sequencer).
-4. **Hardware Endpoints & Video ScreenCast Broker (`pw_broker.rs`)**: Outputs directly to kernel `/dev/snd/pcmC*D*` DACs or `org.bluez.MediaEndpoint1` Bluetooth A2DP sinks, provides full-duplex loopback capture, and serves `/run/user/$UID/pipewire-0` strictly for Wayland ScreenCast `DmaBuf`/`MemFd` video relays while rejecting PipeWire audio.
+3. **Salsa APO & DAW MIDI Hub (`lwasapi-audiodg`, `SCHED_FIFO 65`, `mlockall`)**: Mixes multi-rate streams into a fixed or split playback/capture master clock, applies the 10-band dynamic parametric EQ (`31 Hz–16 kHz`), Bauer headphone stereo crossfeed, Capture Mic APO (noise gate, contour, optional `librnnoise`), and soft-knee limiter, and routes raw MIDI (`RawMIDI` / ALSA Sequencer).
+4. **Hardware Endpoints & Video ScreenCast Broker (`pw_broker.rs`)**: Outputs directly to kernel `/dev/snd/pcmC*D*` DACs (with smart headphone/USB/jack hotplug priority) or `org.bluez.MediaEndpoint1` Bluetooth A2DP/HFP endpoints (**LDAC / aptX HD / aptX / AAC / SBC**), provides full-duplex loopback capture, and serves zero-downtime socket-activated `$XDG_RUNTIME_DIR/pipewire-0` strictly for Wayland ScreenCast `DmaBuf`/`MemFd` video relays while rejecting PipeWire audio.
 
 👉 Open the full document with ASCII signal topology diagrams: **[SALSA Architecture Breakdown.md](SALSA%20Architecture%20Breakdown.md)**
 
@@ -109,11 +112,12 @@ cd salsa-lwasapi
    - Configures Pure Zero-PipeWire isolation with built-in ScreenCast `$XDG_RUNTIME_DIR/pipewire-0` video broker, `~/.asoundrc`, `~/.config/OpenAL/alsoft.conf`, `~/.config/environment.d/99-salsa-direct.conf`, native `$XDG_RUNTIME_DIR/pulse/native` PA v35 UNIX socket server, persistent `0600` `~/.config/lwasapi/app_volumes.conf`, and direct BlueZ `MediaEndpoint1` (**LDAC / aptX HD / aptX / AAC / SBC**) + kernel `/dev/snd/pcmC*D*`.
    - Applies scoped Flatpak `--user` overrides (`--socket=pulseaudio`, `--filesystem=xdg-run/pipewire-0:ro`) for installed gaming/media Flatpaks and tracks them for clean `--uninstall` rollback.
 5. **Configures & Starts Systemd User Services & Shortcuts**:
+   - `lwasapi-pipewire.socket` (Zero-downtime `$XDG_RUNTIME_DIR/pipewire-0` & `pipewire-0-manager` socket activation so KDE `libKPipeWire` `MediaMonitor` never drops across restarts)
    - `lwasapi-audiodg.service` (Real-time `SCHED_FIFO` WaveRT audio, PA v35 server, direct BlueZ, MIDI hub, & live debug telemetry socket)
-   - `lwasapi-tray.service` (System tray controller for Pure Salsa Audio)
-   - `lwasapi-module-watcher.path` (Automatic self-healing rebuild trigger whenever system libraries or packages update; optional root-safe ALPM trigger via `./install-salsa.sh --install-pacman-hook`)
-   - Application Launcher shortcuts (`~/.local/share/applications/`): **Salsa — Linux WASAPI Studio** (`salsa-lwasapi.desktop`), **Salsa — Live Interaction Debugger** (`salsa-debug.desktop`), and **Salsa — Audio System Tray** (`lwasapi-tray.desktop`)
-   - CLI Commands in `~/.local/bin/`: `salsa`, `salsa-graph`, `salsa-debug`, `lwasapi-ctl`, `lwasapi-run`, `lwasapi-bench`
+   - `lwasapi-tray.service` (Pure native Wayland `LayerShellQt` system tray Quick Mixer & volume OSD with automatic X11/EWMH fallback)
+   - `lwasapi-module-watcher.path` & `lwasapi-module-watcher.timer` (Automatic self-healing SHA-256 ABI sync whenever host audio, Bluetooth codec, or D-Bus shared libraries update; optional root-safe ALPM trigger via `./install-salsa.sh --install-pacman-hook`)
+   - Application Launcher shortcuts (`~/.local/share/applications/`): **Salsa Audio Studio** (`salsa-lwasapi.desktop`), **Salsa — Live Interaction Debugger** (`salsa-debug.desktop`), and **Salsa — Audio System Tray** (`lwasapi-tray.desktop`)
+   - CLI & GUI Commands in `~/.local/bin/`: `salsa`, `salsa-graph`, `salsa-debug`, `salsa-debug-cli`, `lwasapi-ctl`, `lwasapi-run`, `lwasapi-bench`, `lwasapi-tray`
 
 ---
 
@@ -136,6 +140,8 @@ cd salsa-lwasapi
   salsa-debug
   salsa-debug --tab 2
   salsa-debug --tab 4 --live-feed
+  salsa-debug --export
+  salsa-debug --text
   salsa-debug --snapshot
   salsa-debug --audit
   salsa-debug --export-text [output.txt]
@@ -157,9 +163,9 @@ cd salsa-lwasapi
   make test
   lwasapi-bench
   ```
-- **Rebuild the Portable Installer Archive (`salsa-lwasapi-installer.zip`)**:
+- **Rebuild the Portable Installer Archive (`salsa-lwasapi-installer (V1.24.14).zip`)**:
   ```bash
-  make installer
+  make dist
   ```
 - **Inspect Host PC Hardware Readiness Without Installing**:
   ```bash
@@ -184,7 +190,7 @@ Salsa (LWASAPI) is licensed under the **GNU Lesser General Public License v3.0 o
 
 - [COPYING.LESSER](COPYING.LESSER) — GNU Lesser General Public License v3.0 permissions
 - [COPYING](COPYING) — GNU General Public License v3.0 base terms (required alongside LGPL-3.0)
-- [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) — Dynamically linked frameworks (Qt6 under `LGPL-3.0-only`, ALSA/Pulse/JACK), library relinking & source instructions (`make all`), and optional runtime `dlopen()` codec disclosure (`libfdk-aac`, `libldac`, `libfreeaptx`, `libsbc`, `librnnoise` — never bundled or vendored)
+- [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) — Dynamically linked frameworks (Qt6 under `LGPL-3.0-only`, ALSA/Pulse/JACK), library relinking & source instructions (`make all`), and optional runtime `dlopen()` codec/Wayland disclosures (`libfdk-aac`, `libldac`, `libfreeaptx`, `libsbc`, `librnnoise`, `libLayerShellQtInterface`, `libKF6WindowSystem` — never bundled or vendored)
 
 ---
 

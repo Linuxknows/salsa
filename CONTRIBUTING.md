@@ -28,7 +28,7 @@ Every pull request must preserve Salsa's foundational engineering guarantees:
 4. **Real-Time Audio Safety**: Never allocate heap memory, lock contended mutexes, perform blocking disk/socket I/O, or spawn processes inside the `SCHED_FIFO` real-time mixing callback (`audiodg_engine.rs` / `dsp.rs`). Scrub non-finite (`NaN`/`Inf`) samples at DSP boundaries.
 5. **LGPL-3.0-Only & Runtime `dlopen` Codec Policy**:
    - All new source files must include the `SPDX-License-Identifier: LGPL-3.0-only` header.
-   - Optional third-party codec or desktop libraries (`libfdk-aac.so.2`, `libldacBT_enc.so.2`, `libfreeaptx.so.0`, `libsbc.so.1`, `librnnoise.so.0`, `libdbus-1.so.3`, `libLayerShellQtInterface.so.6`) must **never** be bundled or linked via `DT_NEEDED`; load them exclusively at runtime via `dlopen()` with graceful fallback when absent.
+   - Optional third-party codec or desktop libraries (`libfdk-aac.so.2`, `libldacBT_enc.so.2`, `libfreeaptx.so.0`, `libsbc.so.1`, `librnnoise.so.0`, `libdbus-1.so.3`, `libLayerShellQtInterface.so.6`, `libKF6WindowSystem.so.6`) must **never** be bundled or linked via `DT_NEEDED`; load them exclusively at runtime via `dlopen()` with graceful fallback when absent.
 
 ---
 

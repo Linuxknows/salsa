@@ -27,7 +27,7 @@ Salsa ships with a standalone zero-overhead debugger (**`salsa-debug`**, also ac
   ```
 
 - **Interactive Owner's Manual & Architecture Docs**:
-  - Run `salsa --topology` (or `salsa-graph`) to browse all 15 built-in Owner's Manual chapters alongside your live signal graph.
+  - Run `salsa --topology` (or `salsa-graph`) to browse all 13 built-in Owner's Manual chapters alongside your live signal graph.
   - Read [README.md](README.md), [SALSA Architecture Breakdown.md](SALSA%20Architecture%20Breakdown.md), and [PATCH_NOTES.md](PATCH_NOTES.md).
 
 ---
