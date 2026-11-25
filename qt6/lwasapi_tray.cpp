@@ -2602,7 +2602,7 @@ void TrayController::applyThemeAndFont(bool /*saveFont*/) {
 
 int TrayController::computePopupWidth() const {
     const int minHintW = card_ ? card_->minimumSizeHint().width() : 0;
-    return std::clamp(std::max(scaledPx(444, fontPct_), minHintW), 436, 660);
+    return std::clamp(std::max(scaledPx(476, fontPct_), minHintW), 460, 660);
 }
 
 QString TrayController::playbackDisplayLabel(const SalsaEngineStatus& st) const {
@@ -2650,7 +2650,6 @@ void TrayController::positionAndShowPopup(const QPoint& rawPt) {
         }
         lastPopupScreen_ = scr;
         const QRect sg = scr ? scr->geometry() : avail;
-        const int iconHalfW = scaledPx(10, fontPct_);
         (void)popupWin_->winId();
         if (QWindow* qw = popupWin_->windowHandle()) {
             if (scr) qw->setScreen(scr);
@@ -2665,20 +2664,20 @@ void TrayController::positionAndShowPopup(const QPoint& rawPt) {
                 ls.setCloseOnDismissed(lsw, false);
                 if (loc == 5 || loc == 6) {
                     const int horizAnchor = (loc == 5) ? LayerShellDyn::AnchorLeft : LayerShellDyn::AnchorRight;
-                    anchorRawLocalOffset_ = hasRaw ? (qtPt.y() - sg.y() - iconHalfW) : -1;
+                    anchorRawLocalOffset_ = hasRaw ? (qtPt.y() - sg.y()) : -1;
                     const int localY = hasRaw
-                        ? std::clamp(anchorRawLocalOffset_, 4, std::max(4, sg.height() - popH - 4))
+                        ? std::clamp(anchorRawLocalOffset_ - popH / 2, 8, std::max(8, sg.height() - popH - 8))
                         : std::max(8, sg.height() - popH - 16);
                     ls.setAnchors(lsw, LayerShellDyn::AnchorTop | horizAnchor);
                     ls.setMargins(lsw, QMargins(8, localY, 8, 8));
                 } else {
                     const int vertAnchor = (loc == 3) ? LayerShellDyn::AnchorTop : LayerShellDyn::AnchorBottom;
                     if (hasRaw) {
-                        anchorRawLocalOffset_ = qtPt.x() - sg.x() - iconHalfW;
+                        anchorRawLocalOffset_ = qtPt.x() - sg.x();
                         const int localX = std::clamp(
-                            anchorRawLocalOffset_,
-                            2,
-                            std::max(2, sg.width() - popW - 2));
+                            anchorRawLocalOffset_ - popW / 2,
+                            8,
+                            std::max(8, sg.width() - popW - 8));
                         ls.setAnchors(lsw, LayerShellDyn::AnchorLeft | vertAnchor);
                         ls.setMargins(lsw, QMargins(localX, 8, 0, 8));
                     } else {
@@ -2698,9 +2697,8 @@ void TrayController::positionAndShowPopup(const QPoint& rawPt) {
         return;
     }
 
-    const int iconHalfW = scaledPx(10, fontPct_);
-    int px = hasRaw ? (qtPt.x() - iconHalfW) : (avail.right() + 1 - popW - std::max(16, logicalPad));
-    px = std::clamp(px, avail.left() + 2, avail.right() + 1 - popW - 2);
+    int px = hasRaw ? (qtPt.x() - popW / 2) : (avail.right() + 1 - popW - std::max(16, logicalPad));
+    px = std::clamp(px, avail.left() + 8, avail.right() + 1 - popW - 8);
     int py = (loc == 3) ? (avail.top() + 8) : (avail.bottom() + 1 - popH - 8);
     py = std::clamp(py, avail.top() + 8, avail.bottom() + 1 - popH - 8);
     anchorBottom_ = avail.bottom() + 1 - 8;
@@ -2739,15 +2737,15 @@ void TrayController::keepBottomAnchored() {
                         const QRect sg = lastPopupScreen_->geometry();
                         if (anchorPanelLoc_ == 5 || anchorPanelLoc_ == 6) {
                             const int localY = std::clamp(
-                                anchorRawLocalOffset_,
-                                4,
-                                std::max(4, sg.height() - popH - 4));
+                                anchorRawLocalOffset_ - popH / 2,
+                                8,
+                                std::max(8, sg.height() - popH - 8));
                             ls.setMargins(lsw, QMargins(8, localY, 8, 8));
                         } else {
                             const int localX = std::clamp(
-                                anchorRawLocalOffset_,
-                                2,
-                                std::max(2, sg.width() - popW - 2));
+                                anchorRawLocalOffset_ - popW / 2,
+                                8,
+                                std::max(8, sg.width() - popW - 8));
                             ls.setMargins(lsw, QMargins(localX, 8, 0, 8));
                         }
                     }
@@ -2788,7 +2786,6 @@ void TrayController::showMenuAt(const QPoint& rawPt) {
         int loc = 4, clearance = 48, rightPad = 24;
         salsa_plasma_panel_info(&loc, &clearance, &rightPad);
         const int logicalPad = rightPad;
-        const int iconHalfW = scaledPx(12, fontPct_);
         const QSize mh = ctxMenu_->sizeHint();
         (void)ctxMenu_->winId();
         if (QWindow* qw = ctxMenu_->windowHandle()) {
@@ -2805,7 +2802,7 @@ void TrayController::showMenuAt(const QPoint& rawPt) {
                 if (loc == 5 || loc == 6) {
                     const int horizAnchor = (loc == 5) ? LayerShellDyn::AnchorLeft : LayerShellDyn::AnchorRight;
                     const int localY = hasRaw
-                        ? std::clamp(qtPt.y() - sg.y() - iconHalfW, 8, std::max(8, sg.height() - mh.height() - 8))
+                        ? std::clamp(qtPt.y() - sg.y() - mh.height() / 2, 8, std::max(8, sg.height() - mh.height() - 8))
                         : std::max(8, sg.height() - mh.height() - 16);
                     ls.setAnchors(lsw, LayerShellDyn::AnchorTop | horizAnchor);
                     ls.setMargins(lsw, QMargins(8, localY, 8, 8));
@@ -2813,7 +2810,7 @@ void TrayController::showMenuAt(const QPoint& rawPt) {
                     const int vertAnchor = (loc == 3) ? LayerShellDyn::AnchorTop : LayerShellDyn::AnchorBottom;
                     if (hasRaw) {
                         const int localX = std::clamp(
-                            qtPt.x() - sg.x() - iconHalfW,
+                            qtPt.x() - sg.x() - mh.width() / 2,
                             8,
                             std::max(8, sg.width() - mh.width() - 8));
                         ls.setAnchors(lsw, LayerShellDyn::AnchorLeft | vertAnchor);

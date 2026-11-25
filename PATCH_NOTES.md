@@ -4,7 +4,21 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.21.13 — Current (`2026-11-23`)
+## V1.24.14 — Current (`2026-11-24`)
+
+### 1. Zero-Downtime `pipewire-0` Systemd Socket Activation & Autosync Hardening
+- Added systemd `LISTEN_FDS` / `LISTEN_PID` socket-activation support (`claim_systemd_unix_listeners()`, `take_systemd_unix_listener()`, `dup_unix_listener_nonblock()`) in [`unix_sys.rs`](rust/salsa_net/src/unix_sys.rs), adopted pre-opened `$XDG_RUNTIME_DIR/pipewire-0` and `pipewire-0-manager` sockets in [`pw_broker.rs`](rust/salsa_net/src/pw_broker.rs) without unlinking them on stop, and moved `lwasapi_pw_broker_start()` ahead of `init_hardware()` in [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) so KDE Plasma's `libKPipeWire` (`MediaMonitor`) never encounters a missing `pipewire-0` socket or poisoned `PipeWireCore` singleton across engine restarts (falling back automatically to standalone socket bind on non-systemd systems).
+- Added portable `lwasapi-pipewire.socket` lifecycle management across [`ctl_cli.rs`](rust/salsa_net/src/ctl_cli.rs), [`salsa_installer.rs`](rust/salsa_tools/src/bin/salsa_installer.rs), and [`debug_core.rs`](rust/salsa_tools/src/debug_core.rs).
+- Updated [`lwasapi_autosync.rs`](rust/salsa_tools/src/bin/lwasapi_autosync.rs) (`compute_fingerprint()`, `pipewire_zero_drifted()`) to replace `/var/lib/pacman/local` directory `mtime` hashing with SHA-256 content hashes of actual audio, Bluetooth codec (`libfdk-aac`, `libldacBT_enc`, `libfreeaptx`), and D-Bus `.so` libraries so unrelated package installations no longer trigger unnecessary rebuilds or daemon restarts.
+
+### 2. Pure Native Wayland `LayerShellQt` Tray, Multi-Monitor Fractional-DPI Placement & Full Suite Wayland Support
+- Upgraded [`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp) to run 100% natively on Wayland (`QT_QPA_PLATFORM=wayland;xcb`, zero `libQt6XcbQpa.so`) using runtime `dlopen()` of `libLayerShellQtInterface.so.6` (`zwlr_layer_surface_v1` surfaces for Quick Mixer, context menu, and click-through `osd` volume overlay) so opening the tray popup never creates a panel taskbar icon or Alt+Tab entry, while preserving `_NET_WM_STATE_SKIP_TASKBAR` / `_KDE_NET_WM_STATE_SKIP_SWITCHER` fallback in [`x11_util.rs`](rust/salsa_ui/src/x11_util.rs) for X11 and compositors without `zwlr_layer_shell_v1`.
+- Added `queryKwinActiveScreen()`, `effectiveWaylandScale()` (reading live per-connector fractional scales from `org.kde.KWin.supportInformation`), `resolveTrayTarget()`, and `anchorRawLocalOffset_` layout-settle margin updates in [`lwasapi_tray.cpp`](qt6/lwasapi_tray.cpp) so the Quick Mixer centers directly above the Salsa tray icon across multi-monitor fractional-DPI setups and all four panel edges.
+- Added `preferNativeWaylandPlatform()` and `syncResolvedPlatformEnv()` in [`salsa_common.hpp`](qt6/salsa_common.hpp), [`salsa_common.cpp`](qt6/salsa_common.cpp), [`salsa_studio.cpp`](qt6/salsa_studio.cpp), and [`salsa_debug.cpp`](qt6/salsa_debug.cpp), and guarded [`x11_util.rs`](rust/salsa_ui/src/x11_util.rs) with `window_uses_x11()` so `libX11.so.6` is never opened during native Wayland execution.
+
+---
+
+## V1.21.13 (`2026-11-23`)
 
 ### 1. Automatic Headphone Hotplug Switching, Card Priority & Mute-Switch Safety
 - Updated [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) (`HotplugTracker`, `evaluate_playback_hotplug_with()`, `sync_hotplug_topology()`, `seed_hotplug_baseline()`): plugging in USB headphones/headsets (`hw:6,0`), connecting Bluetooth A2DP headsets, or inserting a 3.5 mm analog headphone jack (`card_has_plugged_headphone_jack()`) now automatically switches playback even when switching from another USB audio interface (e.g., Focusrite Scarlett 2i2) or a previously selected speaker device, remembers the prior speaker target to restore seamlessly on unplug (or fails over immediately to connected Bluetooth / available ALSA endpoints instead of stranding on silent `WaveRT-Virtual-Clock`), and ignores HDMI/DisplayPort monitor wakeups.
