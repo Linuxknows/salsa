@@ -1,9 +1,9 @@
-# Salsa — LASAPI (Linux Audio Session API) Automatic Signal Architecture Breakdown
+# Salsa — Automatic Signal Architecture Breakdown
 
-## 1. Philosophy: Why Salsa LASAPI Needs Zero Manual Patching
+## 1. Philosophy: Why Salsa Needs Zero Manual Patching
 In traditional Linux pro-audio workflows, patchbay utilities like `qpwgraph` or `QjackCtl` require you to manually drag virtual cables between applications, PulseAudio/JACK bridges, resamplers, and hardware sinks. Whenever an application restarts, changes sample rate, or switches APIs, those manual routes frequently disconnect.
 
-**Salsa — LASAPI (*Linux Audio Session API*, `lasapi`)** eliminates manual patching completely by implementing a clean-room **Windows-style LASAPI / WaveRT Audio Device Graph (`lasapi-audiodg`)** architecture natively on Linux (with zero proprietary Windows code):
+**Salsa** eliminates manual patching completely by implementing a **Linux Audio Session API (`LASAPI`) / WaveRT Audio Device Graph (`lasapi-audiodg`)** architecture natively on Linux:
 - **100% Automatic Self-Wiring Topology:** Every playback application, microphone capture stream, desktop loopback stream, Discord/OBS per-app capture tap, and hardware MIDI controller is automatically discovered and connected in `0.25 ms` without user intervention.
 - **Automatic Multi-Rate Resampling & Split Clocking:** Applications streaming at `44.1 kHz`, `48 kHz`, `88.2 kHz`, `96 kHz`, `176.4 kHz`, or `192 kHz` are automatically resampled and mixed into your high-resolution master clock (up to **`192,000 Hz` / `32-bit Float`**, with optional independent capture clock pinning).
 
@@ -62,7 +62,7 @@ In traditional Linux pro-audio workflows, patchbay utilities like `qpwgraph` or 
 
 ### Stage 4: Direct Hardware Endpoints, Multi-Codec BlueZ, DAW MIDI Hub & Video ScreenCast Broker
 - **Render Sink, Smart Hotplug & Direct BlueZ Audio:** Streams 32-bit float audio directly over `org.bluez.MediaEndpoint1` (**LDAC** + wireless ABR via `libldacBT_enc.so.2`, **aptX HD** & **aptX** via `libfreeaptx.so.0`, **AAC** + ABR via `libfdk-aac.so.2`, **SBC**, and **HFP** mSBC/CVSD + bidirectional AVRCP volume) or kernel `/dev/snd/pcmC*D*` (`S32_LE`, `S24_3LE`, `S16_LE`, `FLOAT_LE`), with `HotplugTracker` automatically switching to newly connected USB/Bluetooth/3.5 mm headphones and restoring your prior speaker output on unplug.
-- **Capture Source & Loopback:** Distributes microphone input and post-EQ desktop loopback (`AUDCLNT_STREAMFLAGS_LOOPBACK`) to recording apps in **0.33 ms** round-trip at `192 kHz / 64f`, with live switching via Salsa Studio, the native Wayland `LayerShellQt` System Tray (`lasapi-tray`), or `lasapi-ctl set-sink` / `set-source`.
+- **Capture Source & Loopback:** Distributes microphone input and post-EQ desktop loopback (`AUDCLNT_STREAMFLAGS_LOOPBACK`) to recording apps in **0.33 ms** round-trip at `192 kHz / 64f`, with live switching via Salsa, the native Wayland `LayerShellQt` System Tray (`lasapi-tray`), or `lasapi-ctl set-sink` / `set-source`.
 - **DAW MIDI Hub:** Automatically binds detected hardware MIDI controllers (`/dev/snd/midiC*D*`) and routes sample-accurate MIDI events to JACK MIDI and ALSA Sequencer DAWs.
 - **Zero-Downtime Video-Only ScreenCast Broker ([`pw_broker.rs`](rust/salsa_net/src/pw_broker.rs)):** Adopts systemd socket-activated `$XDG_RUNTIME_DIR/pipewire-0` and `pipewire-0-manager` descriptors from `lasapi-pipewire.socket` before hardware initialization (with automatic standalone bind fallback on non-systemd setups) using pure Rust protocol handling (zero `libpipewire` / `libspa` linkage). Wayland `xdg-desktop-portal` ScreenCast streams route `DmaBuf` and `MemFd` buffers to Discord, OBS Studio, browsers, and KDE `libKPipeWire` (`MediaMonitor`) with zero restart disconnects, live Resolution/FPS caps (`PW_CAST_LIMITS`), and zero-overhead Preview HUD telemetry (`PW_PREVIEW`).
 

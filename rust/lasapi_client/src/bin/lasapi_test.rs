@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
+// Salsa is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -821,7 +821,7 @@ fn main() -> ExitCode {
         .nth(1)
         .unwrap_or_else(|| "./build/shims".to_string());
     println!("========================================================================");
-    println!(" Running LASAPI Universal Windows-Style Audio & MIDI Verification Suite");
+    println!(" Running LASAPI Universal Audio & MIDI Verification Suite");
     println!("========================================================================");
 
     if test_lasapi_shared_and_resampling() != 0 {

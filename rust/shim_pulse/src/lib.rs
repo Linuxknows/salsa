@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
+// Salsa is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -909,7 +909,7 @@ unsafe fn fill_default_sink_info(si: &mut pa_sink_info) {
     *si = unsafe { mem::zeroed() };
     si.name = c"lasapi_default_sink".as_ptr();
     si.index = 0;
-    si.description = c"LASAPI Universal Windows-Style Audio Sink".as_ptr();
+    si.description = c"LASAPI Universal Audio Sink".as_ptr();
     si.sample_spec.format = PA_SAMPLE_FLOAT32LE;
     si.sample_spec.rate = 48000;
     si.sample_spec.channels = 2;
@@ -931,7 +931,7 @@ unsafe fn fill_source_info(src: &mut pa_source_info, is_monitor: bool) {
         src.name = c"lasapi_default_sink.monitor".as_ptr();
         src.index = 1;
         src.description =
-            c"Monitor of LASAPI Universal Windows-Style Audio Sink (Desktop Loopback)".as_ptr();
+            c"Monitor of LASAPI Universal Audio Sink (Desktop Loopback)".as_ptr();
         src.monitor_of_sink = 0;
         src.monitor_of_sink_name = c"lasapi_default_sink".as_ptr();
     } else {

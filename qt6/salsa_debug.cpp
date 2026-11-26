@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
+// Salsa is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -65,8 +65,8 @@ public:
         titleCol->addWidget(lblSub_);
         topLay->addLayout(titleCol, 1);
 
-        auto* btnStudio = new QPushButton(QStringLiteral("Open Salsa Studio"), topCard);
-        btnStudio->setToolTip(QStringLiteral("Open Salsa Studio — Launches the main Salsa mixer, 10-band EQ, and Advanced Options window."));
+        auto* btnStudio = new QPushButton(QStringLiteral("Open Salsa"), topCard);
+        btnStudio->setToolTip(QStringLiteral("Open Salsa — Launches the main Salsa mixer, 10-band EQ, and Advanced Options window."));
         connect(btnStudio, &QPushButton::clicked, this, [this]() {
             spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--studio")}, this);
         });

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
+// Salsa is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -57,7 +57,7 @@ Target = dbus\n\
 Target = qt6-base\n\
 \n\
 [Action]\n\
-Description = Marking Salsa LASAPI runtime modules for ABI auto-sync...\n\
+Description = Marking Salsa runtime modules for ABI auto-sync...\n\
 When = PostTransaction\n\
 Exec = /bin/sh -c '/usr/bin/mkdir -p /var/lib/salsa-autosync && /usr/bin/date +%s%N > /var/lib/salsa-autosync/libpulse-updated'\n";
 
@@ -267,7 +267,7 @@ WantedBy=sockets.target default.target
 
     let audiodg_unit = format!(
         "[Unit]\n\
-         Description=Salsa — LASAPI (lasapi-audiodg) WaveRT 192kHz, Native PA v35, Direct BlueZ, Video Broker & Dynamic EQ Engine\n\
+         Description=Salsa (lasapi-audiodg) WaveRT 192kHz, Native PA v35, Direct BlueZ, Video Broker & Dynamic EQ Engine\n\
          After=bluetooth.target sound.target lasapi-pipewire.socket\n\
          Wants=bluetooth.target sound.target lasapi-pipewire.socket\n\
          \n\
@@ -288,7 +288,7 @@ WantedBy=sockets.target default.target
 
     let tray_unit = format!(
         "[Unit]\n\
-         Description=Salsa — LASAPI Pure Native Audio System Tray Switcher\n\
+         Description=Salsa Pure Native Audio System Tray Switcher\n\
          PartOf=graphical-session.target\n\
          After=graphical-session.target lasapi-audiodg.service\n\
          \n\
@@ -308,7 +308,7 @@ WantedBy=sockets.target default.target
 
     let watcher_svc = format!(
         "[Unit]\n\
-         Description=Salsa — LASAPI Automatic Audio Module ABI & Config Sync Service\n\
+         Description=Salsa Automatic Audio Module ABI & Config Sync Service\n\
          After=network.target\n\
          StartLimitIntervalSec=0\n\
          \n\
@@ -328,7 +328,7 @@ WantedBy=sockets.target default.target
     let pkg_db = detect_pkg_db_path();
     let mut path_lines = format!(
         "[Unit]\n\
-         Description=Salsa — LASAPI Automatic Audio Module Update Watcher (Path Trigger)\n\
+         Description=Salsa Automatic Audio Module Update Watcher (Path Trigger)\n\
          StartLimitIntervalSec=0\n\
          \n\
          [Path]\n\
@@ -447,7 +447,7 @@ fn install_icons_and_desktop(root: &Path) -> Result<(), String> {
     let desktop = format!(
         "[Desktop Entry]\n\
          Type=Application\n\
-         Name=Salsa Audio Studio\n\
+         Name=Salsa\n\
          Comment=LASAPI Engine Control, Equalizer & Audio Matrix\n\
          Exec={studio_exec}\n\
          Icon=salsa-lasapi\n\
@@ -483,7 +483,7 @@ fn install_icons_and_desktop(root: &Path) -> Result<(), String> {
          Type=Application\n\
          Name=Salsa — Audio System Tray\n\
          GenericName=Salsa 192kHz Audio Control\n\
-         Comment=Control Salsa LASAPI (192kHz WaveRT, Dynamic EQ, Sample Rate, and Status) from the system tray\n\
+         Comment=Control Salsa (192kHz WaveRT, Dynamic EQ, Sample Rate, and Status) from the system tray\n\
          Exec={tray_exec}\n\
          Icon=salsa-lasapi\n\
          Terminal=false\n\
@@ -767,11 +767,11 @@ fn send_completion_notification(ver: &str, warnings: usize, gui_only: bool, no_n
     }
 
     let title = if warnings == 0 {
-        format!("Salsa (LASAPI) {ver} Installed")
+        format!("Salsa {ver} Installed")
     } else {
-        format!("Salsa (LASAPI) {ver} Installed ({warnings} warning(s))")
+        format!("Salsa {ver} Installed ({warnings} warning(s))")
     };
-    let body = "Setup complete. Open 'Salsa Audio Studio' from your App Launcher, click the Salsa system tray icon, or run 'salsa' in a terminal.";
+    let body = "Setup complete. Open 'Salsa' from your App Launcher, click the Salsa system tray icon, or run 'salsa' in a terminal.";
 
     if which("notify-send").is_some()
         && Command::new("notify-send")
@@ -818,7 +818,7 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
     let mut warnings = 0usize;
 
     println!("================================================================================");
-    println!("  Salsa (LASAPI) {ver} — Installer");
+    println!("  Salsa {ver} — Installer");
     println!("  Source directory : {}", root.display());
     println!("================================================================================");
 
@@ -1012,9 +1012,9 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
     println!();
     println!("================================================================================");
     if warnings == 0 {
-        println!("  [OK] Salsa (LASAPI) {ver} installation complete!");
+        println!("  [OK] Salsa {ver} installation complete!");
     } else {
-        println!("  [DONE] Salsa (LASAPI) {ver} installed with {warnings} warning(s).");
+        println!("  [DONE] Salsa {ver} installed with {warnings} warning(s).");
     }
     println!("--------------------------------------------------------------------------------");
     println!("  What Was Installed & Configured:");
@@ -1024,14 +1024,14 @@ fn do_install(root: &Path, no_notify: bool) -> ExitCode {
     println!("--------------------------------------------------------------------------------");
     println!("  Where To Find & Open Salsa:");
     println!("    1. System Tray           : Click the 'Salsa' icon in your panel tray for quick");
-    println!("                               output/mic selection, EQ presets & Studio launch.");
+    println!("                               output/mic selection, EQ presets & mixer launch.");
     println!("    2. Application Launcher  : Search your app menu (Multimedia / Audio) for:");
-    println!("                               - Salsa Audio Studio");
+    println!("                               - Salsa");
     println!("                               - Salsa — Live Interaction Debugger");
     println!("                               - Salsa — Audio System Tray");
     println!("                               Desktop files: {}", apps_dir.display());
     println!("    3. Terminal Commands     : Installed in {}:", bdir.display());
-    println!("                               - salsa              (Open Salsa Audio Studio GUI)");
+    println!("                               - salsa              (Open Salsa GUI)");
     println!("                               - salsa-graph        (Open Signal Topology Graph)");
     println!("                               - salsa-debug        (Open Live Interaction Debugger)");
     println!("                               - lasapi-ctl status (Inspect audio engine & devices)");

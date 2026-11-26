@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
+// Salsa is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -1030,7 +1030,7 @@ MiniSalsaPreview::MiniSalsaPreview(const SalsaThemeData& theme, QWidget* parent)
 
     auto* tCol = new QVBoxLayout();
     tCol->setSpacing(1);
-    auto* lblT = new QLabel(QStringLiteral("SALSA — LASAPI STUDIO"), topCard);
+    auto* lblT = new QLabel(QStringLiteral("SALSA"), topCard);
     lblT->setObjectName(QStringLiteral("TitleBanner"));
     auto* lblSub = new QLabel(QStringLiteral("WaveRT Zero-Copy • 192 kHz / 32-Bit • 10-Band Dynamic EQ"), topCard);
     lblSub->setObjectName(QStringLiteral("SubBanner"));
@@ -1291,7 +1291,7 @@ SalsaCustomThemeDialog::SalsaCustomThemeDialog(
     int fontPct,
     QWidget* parent)
     : QDialog(parent), fontPct_(normalizeFontScalePct(fontPct)) {
-    setWindowTitle(QStringLiteral("Salsa Studio — Custom Theme Studio (Live Interactive Preview)"));
+    setWindowTitle(QStringLiteral("Salsa — Custom Theme Studio (Live Interactive Preview)"));
     resize(scaledPx(1180, fontPct_), scaledPx(720, fontPct_));
     workingTheme_ = normalizeThemeData(initialTheme);
     initialSnapshot_ = workingTheme_;
@@ -1371,7 +1371,7 @@ void SalsaCustomThemeDialog::buildUi() {
 
     topRow->addStretch(1);
     chkMirrorMain_ = new QCheckBox(QStringLiteral("Mirror Live on Main Salsa Window"), this);
-    chkMirrorMain_->setToolTip(QStringLiteral("Mirror Live — Previews unsaved custom palette edits directly on the main Salsa Studio windows as you edit."));
+    chkMirrorMain_->setToolTip(QStringLiteral("Mirror Live — Previews unsaved custom palette edits directly on the main Salsa windows as you edit."));
     connect(chkMirrorMain_, &QCheckBox::toggled, this, [this](bool on) {
         if (on) emit liveThemeChanged(workingTheme_);
         else emit mirrorStopped();

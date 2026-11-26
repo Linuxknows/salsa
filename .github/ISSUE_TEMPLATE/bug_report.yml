@@ -37,7 +37,7 @@ body:
         - PulseAudio v35 Compatibility / App Audio (`pa_server` / `pa_reconnect`)
         - Bluetooth Audio (`BlueZ` LDAC / aptX / AAC / SBC / HFP / AVRCP)
         - Wayland ScreenCast `pipewire-0` Video Broker (`pw_broker`)
-        - Salsa Studio / Live Debugger / System Tray (`qt6/` Wayland & X11 UI)
+        - Salsa / Live Debugger / System Tray (`qt6/` Wayland & X11 UI)
         - Installer / Autosync / CLI (`install-salsa.sh` / `salsa-installer` / `lasapi-ctl`)
         - DAW MIDI Hub / Shims (`lasapi-run`)
     validations:

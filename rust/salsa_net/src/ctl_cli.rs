@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
+// Salsa is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -244,7 +244,7 @@ fn cmd_status() -> i32 {
 
     println!("================================================================================");
     println!(
-        " Salsa {} — LASAPI Studio Engine (Fixed/Split Clock + HW Analog)",
+        " Salsa {} — Audio Engine (Fixed/Split Clock + HW Analog)",
         salsa_version()
     );
     println!(" {}", one_line_legal_notice("lasapi-ctl"));

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
+// Salsa is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -1060,8 +1060,12 @@ void showAboutLicenseDialog(
     int fontPct) {
     QDialog dlg(parent);
     const SalsaStr ver(salsa_version_str());
+    const QString verQ = ver.toQString();
+    const bool exactSalsa = (appName.compare(QLatin1String("Salsa"), Qt::CaseInsensitive) == 0);
     dlg.setWindowTitle(
-        QStringLiteral("About %1 — Salsa %2 (LGPL-3.0-only)").arg(appName, ver.toQString()));
+        exactSalsa
+            ? QStringLiteral("About Salsa %1 (LGPL-3.0-only)").arg(verQ)
+            : QStringLiteral("About %1 — %2 (LGPL-3.0-only)").arg(appName, verQ));
     dlg.resize(scaledPx(860, fontPct), scaledPx(580, fontPct));
     dlg.setPalette(buildSalsaPalette(theme));
     dlg.setStyleSheet(buildSalsaStylesheet(theme, false, fontPct));
@@ -1070,13 +1074,16 @@ void showAboutLicenseDialog(
     lay->setContentsMargins(12, 10, 12, 10);
     lay->setSpacing(8);
 
+    const QString headLine = exactSalsa
+                                 ? QStringLiteral("<b>Salsa %1</b><br>").arg(verQ)
+                                 : QStringLiteral("<b>%1 — %2</b><br>").arg(appName.toHtmlEscaped(), verQ);
     auto* hdr = new QLabel(
-        QStringLiteral("<b>Salsa (LASAPI) %1 — %2</b><br>"
-                       "Copyright (C) 2026 Linuxknows &nbsp;|&nbsp; "
-                       "License: <b>GNU Lesser General Public License v3.0 only (LGPL-3.0-only)</b><br>"
-                       "<span style=\"color:%3;\">Distributed WITHOUT ANY WARRANTY; without even the implied warranty of "
-                       "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.</span>")
-            .arg(ver.toQString(), appName.toHtmlEscaped(), theme.colors.value(QStringLiteral("text_secondary"), QStringLiteral("#94A3B8"))),
+        headLine
+            + QStringLiteral("Copyright (C) 2026 Linuxknows &nbsp;|&nbsp; "
+                             "License: <b>GNU Lesser General Public License v3.0 only (LGPL-3.0-only)</b><br>"
+                             "<span style=\"color:%1;\">Distributed WITHOUT ANY WARRANTY; without even the implied warranty of "
+                             "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.</span>")
+                  .arg(theme.colors.value(QStringLiteral("text_secondary"), QStringLiteral("#94A3B8"))),
         &dlg);
     hdr->setWordWrap(true);
     lay->addWidget(hdr);

@@ -1,4 +1,4 @@
-# Salsa — LASAPI (`lasapi`) Patch Notes
+# Salsa Patch Notes
 
 Chronological changelog organized by installer revision.
 

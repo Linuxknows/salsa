@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
+// Salsa is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -24,8 +24,15 @@ pub fn salsa_version() -> &'static str {
 
 pub fn short_legal_notice(app_name: &str) -> String {
     let ver = salsa_version();
+    let header = if app_name.eq_ignore_ascii_case("Salsa") {
+        format!("Salsa {ver}")
+    } else if app_name.to_ascii_lowercase().contains("salsa") {
+        format!("{app_name} ({ver})")
+    } else {
+        format!("{app_name} — Salsa {ver}")
+    };
     format!(
-        "{app_name} — Salsa — LASAPI (Linux Audio Session API) {ver}\n\
+        "{header}\n\
          {COPYRIGHT_NOTICE}\n\
          License: {LICENSE_NAME} ({SPDX_ID})\n\
          Source:  {REPO_URL}\n\

@@ -1,4 +1,4 @@
-# Salsa — LASAPI (Linux Audio Session API) Portable Installer
+# Salsa
 
 <p align="center">
   <strong>📖 Overview</strong> &nbsp;|&nbsp;
@@ -14,14 +14,14 @@
 
 **"You can't spell Salsa without ALSA — because even the cleanest audio chips sound flat until they have a zero-latency dip to taste, with zero chunks dropped and plenty of Dynamic EQ heat!"**
 
-High-Frequency (Up to **192,000 Hz / 32-Bit Float**) **Linux Audio Session API (`LASAPI`)** — Windows-style Architecture / WaveRT Zero-Copy Audio Engine, **100% Pure Rust Backend Daemon & CLI (`lasapi-audiodg` / `lasapi-ctl`), PA v35 Server & Zero-Downtime `pipewire-0` Video Broker**, **Direct BlueZ D-Bus A2DP/HFP/AVRCP Audio (`LDAC / aptX HD / aptX / AAC / SBC`)**, **10-Band Real-Time Dynamic EQ APO**, Sample-Accurate **DAW MIDI Hub**, **Native Wayland Qt6 UI (`LayerShellQt`)**, and Automatic **`qpwgraph`-Equivalent Signal Topology & Owner's Manual**, **Designed to remove all PipeWire-Pulse or WirePlumber audio dependencies**.  
+High-Frequency (Up to **192,000 Hz / 32-Bit Float**) **Linux Audio Session API (`LASAPI`)** / WaveRT Zero-Copy Audio Engine, **100% Pure Rust Backend Daemon & CLI (`lasapi-audiodg` / `lasapi-ctl`), PA v35 Server & Zero-Downtime `pipewire-0` Video Broker**, **Direct BlueZ D-Bus A2DP/HFP/AVRCP Audio (`LDAC / aptX HD / aptX / AAC / SBC`)**, **10-Band Real-Time Dynamic EQ APO**, Sample-Accurate **DAW MIDI Hub**, **Native Wayland Qt6 UI (`LayerShellQt`)**, and Automatic **`qpwgraph`-Equivalent Signal Topology & Owner's Manual**, **Designed to remove all PipeWire-Pulse or WirePlumber audio dependencies**.  
 
 ---
 
 ## Screenshots
 
-### Salsa Studio — Main Mixer, 10-Band Dynamic EQ & Sessions (`salsa`)
-![Salsa Studio — Main Mixer & 10-Band Dynamic EQ](assets/screenshots/salsa-studio.png)
+### Salsa — Main Mixer, 10-Band Dynamic EQ & Sessions (`salsa`)
+![Salsa — Main Mixer & 10-Band Dynamic EQ](assets/screenshots/salsa-studio.png)
 
 ### Auto-Graph Topology & Interactive Owner's Manual (`salsa-graph`)
 ![Salsa — Auto-Graph Topology & Owner's Manual](assets/screenshots/salsa-topology-manual.png)
@@ -30,7 +30,7 @@ High-Frequency (Up to **192,000 Hz / 32-Bit Float**) **Linux Audio Session API (
 ![Salsa — Advanced Options, DSP, Hardware Analog & Diagnostics](assets/screenshots/salsa-advanced-options.png)
 
 ### Custom Theme Studio — Live Interactive Preview (`salsa --theme-studio`)
-![Salsa Studio — Custom Theme Studio](assets/screenshots/salsa-custom-theme-studio.png)
+![Salsa — Custom Theme Studio](assets/screenshots/salsa-custom-theme-studio.png)
 
 ### System Tray Quick Mixer (`lasapi-tray`) & About / LGPL-3.0 Viewer (`salsa --about`)
 <table>
@@ -43,7 +43,7 @@ High-Frequency (Up to **192,000 Hz / 32-Bit Float**) **Linux Audio Session API (
       <img src="assets/screenshots/salsa-tray-quick-mixer.png" alt="Salsa — System Tray Quick Mixer" width="340" />
     </td>
     <td align="center" width="58%">
-      <img src="assets/screenshots/salsa-about-license.png" alt="About Salsa Studio — LGPL-3.0 License Viewer" width="480" />
+      <img src="assets/screenshots/salsa-about-license.png" alt="About Salsa — LGPL-3.0 License Viewer" width="480" />
     </td>
   </tr>
 </table>
@@ -116,14 +116,14 @@ cd salsa-lasapi
    - `lasapi-audiodg.service` (Real-time `SCHED_FIFO` WaveRT audio, PA v35 server, direct BlueZ, MIDI hub, & live debug telemetry socket)
    - `lasapi-tray.service` (Pure native Wayland `LayerShellQt` system tray Quick Mixer & volume OSD with automatic X11/EWMH fallback)
    - `lasapi-module-watcher.path` & `lasapi-module-watcher.timer` (Automatic self-healing SHA-256 ABI sync whenever host audio, Bluetooth codec, or D-Bus shared libraries update; optional root-safe ALPM trigger via `./install-salsa.sh --install-pacman-hook`)
-   - Application Launcher shortcuts (`~/.local/share/applications/`): **Salsa Audio Studio** (`salsa-lasapi.desktop`), **Salsa — Live Interaction Debugger** (`salsa-debug.desktop`), and **Salsa — Audio System Tray** (`lasapi-tray.desktop`)
+   - Application Launcher shortcuts (`~/.local/share/applications/`): **Salsa** (`salsa-lasapi.desktop`), **Salsa — Live Interaction Debugger** (`salsa-debug.desktop`), and **Salsa — Audio System Tray** (`lasapi-tray.desktop`)
    - CLI & GUI Commands in `~/.local/bin/`: `salsa`, `salsa-graph`, `salsa-debug`, `salsa-debug-cli`, `lasapi-ctl`, `lasapi-run`, `lasapi-bench`, `lasapi-tray`
 
 ---
 
 ## Useful Commands
 
-- **Open Salsa Studio Mixer, Device Switcher, Advanced Options, Theme Studio, or About Dialog**:
+- **Open Salsa Mixer, Device Switcher, Advanced Options, Theme Studio, or About Dialog**:
   ```bash
   salsa
   salsa --studio
@@ -186,7 +186,7 @@ cd salsa-lasapi
 
 Copyright (C) 2026 **Linuxknows**
 
-Salsa (LASAPI) is licensed under the **GNU Lesser General Public License v3.0 only (`LGPL-3.0-only`)** and is distributed **WITHOUT ANY WARRANTY**:
+Salsa is licensed under the **GNU Lesser General Public License v3.0 only (`LGPL-3.0-only`)** and is distributed **WITHOUT ANY WARRANTY**:
 
 - [COPYING.LESSER](COPYING.LESSER) — GNU Lesser General Public License v3.0 permissions
 - [COPYING](COPYING) — GNU General Public License v3.0 base terms (required alongside LGPL-3.0)

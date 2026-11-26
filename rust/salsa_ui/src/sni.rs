@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
+// Salsa is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -629,7 +629,7 @@ unsafe extern "C" fn sni_get_property(
             "ToolTip" => {
                 let c_ico = cstr(&st.icon_name);
                 let c_title = cstr(&st.title);
-                let c_sub = cstr("Salsa — LASAPI Studio");
+                let c_sub = cstr("Salsa");
                 let empty_pix_ty = (gl.g_variant_type_checked_)(c"(iiay)".as_ptr());
                 let ch0 = (gl.g_variant_new_string)(c_ico.as_ptr());
                 let ch1 = (gl.g_variant_new_array)(empty_pix_ty, ptr::null(), 0);

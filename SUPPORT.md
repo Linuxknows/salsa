@@ -1,6 +1,6 @@
 # Support & Troubleshooting Guide
 
-Need help diagnosing **Salsa (`lasapi`)**? Use Salsa's built-in **Live Architecture & Interaction Debugger (`salsa-debug`)** first so you can inspect live routing, probes, and telemetry right on your machine.
+Need help diagnosing **Salsa**? Use Salsa's built-in **Live Architecture & Interaction Debugger (`salsa-debug`)** first so you can inspect live routing, probes, and telemetry right on your machine.
 
 ---
 

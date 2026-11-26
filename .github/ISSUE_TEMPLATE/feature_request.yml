@@ -11,7 +11,7 @@ body:
         - DSP / Dynamic Parametric EQ / Crossfeed / Limiter
         - Hardware ALSA / USB DAC / Analog Mixer Controls
         - Bluetooth Audio / Codecs / AVRCP
-        - Salsa Studio / System Tray Quick Mixer / Theme Studio
+        - Salsa / System Tray Quick Mixer / Theme Studio
         - Live Debugger / Wayland ScreenCast Broker
         - Installer / Multi-Distro Packaging / CLI
     validations:

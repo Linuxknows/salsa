@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
+// Salsa is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -671,7 +671,7 @@ void StudioController::buildMainWindow() {
         QApplication::quit();
         return true;
     });
-    mainWin_->setWindowTitle(QStringLiteral("Salsa — LASAPI Studio"));
+    mainWin_->setWindowTitle(QStringLiteral("Salsa"));
     QSize scrSz = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->availableSize() : QSize(1600, 960);
     mainWin_->resize(
         std::min(scrSz.width() - 32, scaledPx(1320, fontPct_)),
@@ -693,7 +693,7 @@ void StudioController::buildMainWindow() {
     auto* titleCol = new QVBoxLayout();
     auto* titleRow = new QHBoxLayout();
     titleRow->setSpacing(8);
-    lblTitle_ = new QLabel(QStringLiteral("SALSA — LASAPI STUDIO"), topCard);
+    lblTitle_ = new QLabel(QStringLiteral("SALSA"), topCard);
     lblTitle_->setObjectName(QStringLiteral("TitleBanner"));
     titleRow->addWidget(lblTitle_);
     lblVerPill_ = new QLabel(SalsaStr(salsa_version_str()).toQString(), topCard);
@@ -767,7 +767,7 @@ void StudioController::buildMainWindow() {
     cmbTheme_ = new QComboBox(topCard);
     for (const QString& tn : allThemeNames(false)) cmbTheme_->addItem(tn);
     cmbTheme_->setCurrentText(currentThemeName_);
-    cmbTheme_->setToolTip(QStringLiteral("UI Color Theme — Applies built-in palettes or your saved Custom Theme across all Salsa Studio windows and persists it."));
+    cmbTheme_->setToolTip(QStringLiteral("UI Color Theme — Applies built-in palettes or your saved Custom Theme across all Salsa windows and persists it."));
     connect(cmbTheme_, &QComboBox::activated, this, [this](int idx) { onThemeActivated(idx); });
     themeCol->addWidget(cmbTheme_);
     themeCol->addStretch(1);
@@ -804,7 +804,7 @@ void StudioController::buildMainWindow() {
     auto* btnAboutMain = new QPushButton(QStringLiteral("About / LGPL-3.0"), topCard);
     btnAboutMain->setToolTip(QStringLiteral("About & LGPL-3.0 License — Displays Salsa copyright, no-warranty disclaimer, relinking/source terms, third-party dlopen disclosures, and full COPYING/COPYING.LESSER texts."));
     connect(btnAboutMain, &QPushButton::clicked, this, [this]() {
-        showAboutLicenseDialog(mainWin_, QStringLiteral("Salsa Studio"), currentTheme_, fontPct_);
+        showAboutLicenseDialog(mainWin_, QStringLiteral("Salsa"), currentTheme_, fontPct_);
     });
     hdrBtns->addWidget(btnAboutMain, 1, 1);
     engCol->addLayout(hdrBtns);
@@ -1344,14 +1344,14 @@ void StudioController::buildTopologyWindow() {
     });
     footRow->addWidget(chkHideIntroStartup_);
 
-    auto* lblHint = new QLabel(QStringLiteral("Shortcuts: Enter / Esc -> Studio • F1 -> Topology • Ctrl+, -> Advanced Options"), introFooter);
+    auto* lblHint = new QLabel(QStringLiteral("Shortcuts: Enter / Esc -> Mixer • F1 -> Topology • Ctrl+, -> Advanced Options"), introFooter);
     lblHint->setObjectName(QStringLiteral("BandDynLabel"));
     footRow->addWidget(lblHint, 1);
 
     auto* btnAboutIntro = new QPushButton(QStringLiteral("About / LGPL-3.0"), introFooter);
     btnAboutIntro->setToolTip(QStringLiteral("About & LGPL-3.0 License — Opens Salsa copyright, warranty disclaimer, relinking rights, and COPYING/COPYING.LESSER viewer."));
     connect(btnAboutIntro, &QPushButton::clicked, this, [this]() {
-        showAboutLicenseDialog(introWin_, QStringLiteral("Salsa Studio"), currentTheme_, fontPct_);
+        showAboutLicenseDialog(introWin_, QStringLiteral("Salsa"), currentTheme_, fontPct_);
     });
     footRow->addWidget(btnAboutIntro);
     auto* btnAdv = new QPushButton(QStringLiteral("Advanced Options (Ctrl+,)"), introFooter);
@@ -1359,10 +1359,10 @@ void StudioController::buildTopologyWindow() {
     connect(btnAdv, &QPushButton::clicked, this, [this]() { openAdvancedWindow(); });
     footRow->addWidget(btnAdv);
 
-    auto* btnEnter = new QPushButton(QStringLiteral("Enter Studio Mixer  ->"), introFooter);
+    auto* btnEnter = new QPushButton(QStringLiteral("Open Mixer  ->"), introFooter);
     btnEnter->setObjectName(QStringLiteral("PrimaryBtn"));
     btnEnter->setMinimumHeight(32);
-    btnEnter->setToolTip(QStringLiteral("Enter Studio Mixer — Switches focus to the full 10-band Dynamic EQ, mixer, and active client session controls."));
+    btnEnter->setToolTip(QStringLiteral("Open Mixer — Switches focus to the full 10-band Dynamic EQ, mixer, and active client session controls."));
     connect(btnEnter, &QPushButton::clicked, this, [this]() { enterStudioFromTopology(); });
     footRow->addWidget(btnEnter);
     graphLayout->addWidget(introFooter);
@@ -1408,7 +1408,7 @@ void StudioController::buildAdvancedWindow() {
     auto* btnAboutAdv = new QPushButton(QStringLiteral("About / LGPL-3.0"), hdrCard);
     btnAboutAdv->setToolTip(QStringLiteral("About & LGPL-3.0 License — Opens Salsa copyright, no-warranty notice, third-party dlopen disclosures, and COPYING/COPYING.LESSER texts."));
     connect(btnAboutAdv, &QPushButton::clicked, this, [this]() {
-        showAboutLicenseDialog(advWin_, QStringLiteral("Salsa Studio"), currentTheme_, fontPct_);
+        showAboutLicenseDialog(advWin_, QStringLiteral("Salsa"), currentTheme_, fontPct_);
     });
     hcLay->addWidget(btnAboutAdv);
     auto* btnCloseAdv = new QPushButton(QStringLiteral("Close (Esc)"), hdrCard);
@@ -1569,7 +1569,7 @@ void StudioController::buildAdvancedWindow() {
 
     chkShowIntroAdv_ = new QCheckBox(QStringLiteral("Show Auto-Graph Topology Intro window on startup"), engCard);
     chkShowIntroAdv_->setChecked(guiSettings_.value(QStringLiteral("show_topology_intro")).toBool(true));
-    chkShowIntroAdv_->setToolTip(QStringLiteral("Startup Topology Intro — Shows the Auto-Graph Topology & Owner's Manual window first whenever launching Salsa Studio."));
+    chkShowIntroAdv_->setToolTip(QStringLiteral("Startup Topology Intro — Shows the Auto-Graph Topology & Owner's Manual window first whenever launching Salsa."));
     connect(chkShowIntroAdv_, &QCheckBox::toggled, this, [this](bool on) {
         guiSettings_.insert(QStringLiteral("show_topology_intro"), on);
         updateGuiSettingsPatch(QJsonObject{{QStringLiteral("show_topology_intro"), on}});
@@ -1872,7 +1872,7 @@ void StudioController::buildAdvancedWindow() {
     scHdr->addStretch(1);
     auto* btnScReset = new QPushButton(QStringLiteral("Restore Defaults"), scCard);
     btnScReset->setObjectName(QStringLiteral("CompactBtn"));
-    btnScReset->setToolTip(QStringLiteral("Restore Default Shortcuts — Reverts all Salsa Studio keyboard shortcuts to their built-in factory bindings."));
+    btnScReset->setToolTip(QStringLiteral("Restore Default Shortcuts — Reverts all Salsa keyboard shortcuts to their built-in factory bindings."));
     connect(btnScReset, &QPushButton::clicked, this, [this]() {
         const QJsonArray defSc = parseJsonArr(SalsaStr(salsa_default_shortcuts_json()).toQString());
         QJsonObject scObj;
@@ -3054,7 +3054,7 @@ void StudioController::openAboutWindow(bool standaloneQuit) {
     if (mainWin_ && mainWin_->isVisible()) parent = mainWin_;
     else if (introWin_ && introWin_->isVisible()) parent = introWin_;
     else if (advWin_ && advWin_->isVisible()) parent = advWin_;
-    showAboutLicenseDialog(parent, QStringLiteral("Salsa Studio"), currentTheme_, fontPct_);
+    showAboutLicenseDialog(parent, QStringLiteral("Salsa"), currentTheme_, fontPct_);
     if (standaloneQuit
         && !closingAll_
         && (!mainWin_ || !mainWin_->isVisible())

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
+// Salsa is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -2217,10 +2217,10 @@ void TrayController::buildPopup() {
     root->addWidget(makeHLine(card_));
     auto* foot = new QHBoxLayout();
     foot->setSpacing(6);
-    auto* btnStudio = new QPushButton(QStringLiteral("Open Studio"), card_);
+    auto* btnStudio = new QPushButton(QStringLiteral("Open Salsa"), card_);
     btnStudio->setObjectName(QStringLiteral("PrimaryBtn"));
     btnStudio->setCursor(Qt::PointingHandCursor);
-    btnStudio->setToolTip(QStringLiteral("Open Salsa Studio — Launches the full 10-band Dynamic EQ, session routing, and hardware stage window."));
+    btnStudio->setToolTip(QStringLiteral("Open Salsa — Launches the full 10-band Dynamic EQ, session routing, and hardware stage window."));
     connect(btnStudio, &QPushButton::clicked, this, [this]() {
         spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--studio")}, popupWin_);
         if (!pinned_) popupWin_->hide();
@@ -2230,7 +2230,7 @@ void TrayController::buildPopup() {
     auto* btnGraph = new QPushButton(QStringLiteral("Graph"), card_);
     btnGraph->setObjectName(QStringLiteral("FooterBtn"));
     btnGraph->setCursor(Qt::PointingHandCursor);
-    btnGraph->setToolTip(QStringLiteral("Signal Flow Graph — Opens Salsa Studio directly on the live interactive pipeline topology & Owner's Manual."));
+    btnGraph->setToolTip(QStringLiteral("Signal Flow Graph — Opens Salsa directly on the live interactive pipeline topology & Owner's Manual."));
     connect(btnGraph, &QPushButton::clicked, this, [this]() {
         spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--topology")}, popupWin_);
         if (!pinned_) popupWin_->hide();
@@ -2282,14 +2282,14 @@ void TrayController::buildContextMenu() {
         positionAndShowPopup(lastTrayRawPt_);
     });
 
-    auto* aStudio = ctxMenu_->addAction(QStringLiteral("Open Salsa Studio"));
-    aStudio->setToolTip(QStringLiteral("Launches the full Salsa Studio equalizer, mixer, and advanced configuration window."));
+    auto* aStudio = ctxMenu_->addAction(QStringLiteral("Open Salsa"));
+    aStudio->setToolTip(QStringLiteral("Launches the full Salsa equalizer, mixer, and advanced configuration window."));
     connect(aStudio, &QAction::triggered, this, [this]() {
         spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--studio")}, ctxMenu_);
     });
 
     auto* aGraph = ctxMenu_->addAction(QStringLiteral("Signal Flow Graph"));
-    aGraph->setToolTip(QStringLiteral("Opens Salsa Studio directly on the live topology pipeline diagram."));
+    aGraph->setToolTip(QStringLiteral("Opens Salsa directly on the live topology pipeline diagram."));
     connect(aGraph, &QAction::triggered, this, [this]() {
         spawnDetachedWaylandBinary(QStringLiteral("salsa-studio"), {QStringLiteral("--topology")}, ctxMenu_);
     });

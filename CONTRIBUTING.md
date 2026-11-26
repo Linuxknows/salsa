@@ -1,4 +1,4 @@
-# Contributing to Salsa (`lasapi`)
+# Contributing to Salsa
 
 Thank you for contributing to **Salsa**! Salsa is a high-frequency (`192,000 Hz / 32-bit Float`) WaveRT zero-copy Linux audio engine, PulseAudio v35 server, Wayland `ScreenCast` video broker, direct BlueZ A2DP/AVRCP engine, 10-band Dynamic EQ APO, and native Wayland Qt6 Studio/Debugger/Tray suite.
 

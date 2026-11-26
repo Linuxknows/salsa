@@ -1,6 +1,6 @@
 # Third-Party Libraries, Linking & LGPL-3.0 Compliance
 
-Salsa (LASAPI) is Copyright (C) 2026 Linuxknows and is licensed under the
+Salsa is Copyright (C) 2026 Linuxknows and is licensed under the
 **GNU Lesser General Public License, version 3.0 only (`LGPL-3.0-only`)**.
 The complete license terms consist of [COPYING.LESSER](COPYING.LESSER) (LGPL-3.0
 additional permissions) together with [COPYING](COPYING) (GNU GPL-3.0 base terms).

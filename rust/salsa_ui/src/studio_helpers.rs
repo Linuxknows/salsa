@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
+// Salsa is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -41,7 +41,7 @@ pub const DEFAULT_SHORTCUTS: &[(&str, &str, &str)] = &[
     ("bt_reset", "Reset Bluetooth", "Ctrl+Shift+B"),
     ("save_config", "Save Settings", "Ctrl+S"),
     ("refresh", "Force Poll / Sync UI", "F5"),
-    ("quit", "Quit Salsa Studio", "Ctrl+Q"),
+    ("quit", "Quit Salsa", "Ctrl+Q"),
 ];
 
 pub fn c_bytes_to_str(buf: &[u8]) -> String {

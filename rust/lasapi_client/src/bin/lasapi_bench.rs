@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // Copyright (C) 2026 Linuxknows
 //
-// Salsa (LASAPI) is free software: you can redistribute it and/or modify it
+// Salsa is free software: you can redistribute it and/or modify it
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
@@ -1108,7 +1108,7 @@ fn main() {
     let (cpu_name, os_name) = detect_pc_info();
 
     println!("========================================================================================");
-    println!(" SALSA — LASAPI vs. LINUX AUDIO STACKS REAL-TIME LATENCY BENCHMARK");
+    println!(" SALSA vs. LINUX AUDIO STACKS REAL-TIME LATENCY BENCHMARK");
     println!(" System: {cpu_name} | {os_name} | SCHED_FIFO Real-Time Audio Engine");
     if already_sandboxed {
         println!(" Mode  : Isolated Virtual Sandbox (Live Volume, DAC & Active Audio Untouched)");
@@ -1153,7 +1153,7 @@ fn main() {
     println!("----------------------------------------------------------------------------------------");
     println!(
         "  {:<46} : {:8.3} ms  (Baseline Reference)",
-        "Salsa LASAPI Native (IAudioClient_Initialize)", init_lasapi
+        "LASAPI Native (IAudioClient_Initialize)", init_lasapi
     );
     println!(
         "  {:<46} : {:8.3} ms  (Zero-IPC ABI Shim)",
@@ -1196,7 +1196,7 @@ fn main() {
     println!("----------------------------------------------------------------------------------------");
     println!(
         "  {:<46} : {:8.3} µs  (min: {zc_min:.3} µs | max: {zc_max:.3} µs) [memfd atomic]",
-        "Salsa LASAPI WaveRT Zero-Copy Ring", commit_lasapi_zc
+        "Salsa WaveRT Zero-Copy Ring", commit_lasapi_zc
     );
     println!(
         "  {:<46} : {:8.3} µs  (min: {sp_min:.3} µs | max: {sp_max:.3} µs) [SHM direct]",
@@ -1246,17 +1246,17 @@ fn main() {
     live_guard.restore_volumes_if_drifted();
 
     let lbl_r1 = format!(
-        "Salsa LASAPI Ultra-HD ({:3} kHz / {:3} frames)",
+        "Salsa Ultra-HD ({:3} kHz / {:3} frames)",
         act_r1 / 1000,
         act_p1
     );
     let lbl_r2 = format!(
-        "Salsa LASAPI Hi-Res   ({:3} kHz / {:3} frames)",
+        "Salsa Hi-Res   ({:3} kHz / {:3} frames)",
         act_r2 / 1000,
         act_p2
     );
     let lbl_r3 = format!(
-        "Salsa LASAPI Studio   ({:3} kHz / {:3} frames)",
+        "Salsa          ({:3} kHz / {:3} frames)",
         act_r3 / 1000,
         act_p3
     );
@@ -1300,7 +1300,7 @@ fn main() {
     if rt_192_64 > 0.0 && stock_pw_lat > 0.0 {
         println!("----------------------------------------------------------------------------------------");
         println!(
-            "  SUMMARY: Salsa LASAPI ({}kHz/{}f) achieves {rt_192_64:.2} ms full-duplex round-trip latency",
+            "  SUMMARY: Salsa ({}kHz/{}f) achieves {rt_192_64:.2} ms full-duplex round-trip latency",
             act_r1 / 1000,
             act_p1
         );
