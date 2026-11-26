@@ -294,7 +294,7 @@ test-sanitized: rust-test fuzz-wire
 test: all
 	$(BUILD_DIR)/salsa-regression
 
-REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo V1.24.14))
+REV ?= $(strip $(shell cat VERSION 2>/dev/null || echo V1.26.15))
 
 installer: all
 	$(BUILD_DIR)/salsa-dist "$(REV)"

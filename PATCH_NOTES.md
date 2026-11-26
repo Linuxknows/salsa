@@ -4,7 +4,24 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.24.14 — Current (`2026-11-24`)
+## V1.26.15 — Current (`2026-11-26`)
+
+### 1. Zero-Drop Bluetooth A2DP AAC Streaming, `PEAK_BITRATE` Sink Compliance & Immediate `TIOCOUTQ` ABR
+- Updated [`bluez_runtime.rs`](rust/salsa_net/src/bluez_runtime.rs) (`init_bt_encoder()`, `configure_bt_l2cap_socket()`, `send_l2cap_packet()`, `adapt_bt_bitrate_after_tx()`, `spawn_tx_thread()`), [`bluez_wire.rs`](rust/salsa_net/src/bluez_wire.rs) (`abr_step_aac()`, `abr_step_ldac()`), and [`unix_sys.rs`](rust/salsa_net/src/unix_sys.rs) (`socket_outq_bytes()` / `TIOCOUTQ`):
+  - Configured `libfdk-aac` in `FDK_PARAM_BITRATEMODE = 0` (CBR with psychoacoustic bit reservoir) bounded strictly by the peer A2DP sink's negotiated `remote_bps` peak ceiling (`160 kbps` average / `192 kbps` peak on `192 kbps` VBR headsets) instead of `VBR_5` (`~228–331 kbps`), which ignored `AACENC_BITRATE` and saturated shared USB `hci0` BR/EDR + BLE radios during dense game transients.
+  - Tightened L2CAP `SO_SNDBUF` to prevent multi-second kernel `sk_buff` bufferbloat, added proactive `TIOCOUTQ` queue-depth sensing, and made `adapt_bt_bitrate_after_tx()` step down AAC (`160 -> 128 -> 96 kbps` with matching `PEAK_BITRATE` scaling) and LDAC immediately on the first sign of backpressure (`sres > 0 && had_eagain` or `EAGAIN`), recovering smoothly after sustained clean streaks.
+  - Added lossless userspace `pending_pkt_len` hold-and-retry up to `120 ms` across transient radio contention stalls while `BT_TX_RING` (`341 ms`) cushions incoming PCM, preserving RTP sequence numbers and FDK-AAC MDCT overlap continuity with zero audible packet-loss muting.
+
+### 2. Zero-Gap `audiodg.sock` Startup, Client Restart Resilience & Partial-Read Smoothing
+- Updated [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) to bind `audiodg.sock` immediately before `init_hardware()` so active games and LASAPI clients opening streams across a daemon restart enter the kernel listen backlog instead of hitting `ENOENT`/`ECONNREFUSED` during BlueZ RFCOMM/A2DP negotiation, alongside rate-limited `LASAPI_UNDERRUN`, `LASAPI_PARTIAL`, and `LASAPI_XRUN` live debugger telemetry.
+- Added `connect_audiodg_with_retry()` and `LASAPI_WRITE_STALL` telemetry in [`lib.rs`](rust/lasapi_client/src/lib.rs), and added a linear ramp-out taper on live partial session reads in [`dsp.rs`](rust/salsa_net/src/dsp.rs) (`consume_session_frames()`).
+
+### 3. PulseAudio Protocol v35 `adjust_latency` Floor & Cork/Start Lifecycle
+- Updated [`pa_server.rs`](rust/salsa_net/src/pa_server.rs) (`enforce_playback_attr()`, `CMD_CORK_PLAYBACK_STREAM`, `CMD_STARTED` `86`) to enforce a safe `>= 30 ms` / `3 * minreq` `tlength` floor when `PA_STREAM_ADJUST_LATENCY` is requested and deliver `CMD_STARTED` notifications cleanly across cork/uncork transitions.
+
+---
+
+## V1.24.14 (`2026-11-24`)
 
 ### 1. Zero-Downtime `pipewire-0` Systemd Socket Activation & Autosync Hardening
 - Added systemd `LISTEN_FDS` / `LISTEN_PID` socket-activation support (`claim_systemd_unix_listeners()`, `take_systemd_unix_listener()`, `dup_unix_listener_nonblock()`) in [`unix_sys.rs`](rust/salsa_net/src/unix_sys.rs), adopted pre-opened `$XDG_RUNTIME_DIR/pipewire-0` and `pipewire-0-manager` sockets in [`pw_broker.rs`](rust/salsa_net/src/pw_broker.rs) without unlinking them on stop, and moved `lasapi_pw_broker_start()` ahead of `init_hardware()` in [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) so KDE Plasma's `libKPipeWire` (`MediaMonitor`) never encounters a missing `pipewire-0` socket or poisoned `PipeWireCore` singleton across engine restarts (falling back automatically to standalone socket bind on non-systemd systems).

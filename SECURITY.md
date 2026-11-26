@@ -6,8 +6,8 @@ Security fixes are maintained on `main` and shipped in the latest stable release
 
 | Version | Supported |
 | :--- | :--- |
-| `V1.24.x` (`main` / Latest Release) | :white_check_mark: Supported |
-| `< V1.24.0` | :x: Unsupported — please upgrade to the latest release |
+| `V1.26.x` (`main` / Latest Release) | :white_check_mark: Supported |
+| `< V1.26.0` | :x: Unsupported — please upgrade to the latest release |
 
 ---
 
