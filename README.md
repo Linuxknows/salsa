@@ -197,5 +197,5 @@ Salsa is licensed under the **GNU Lesser General Public License v3.0 only (`LGPL
 ## Contributors
 
 - **Linuxknows** — Creator & Maintainer
-- **Antigravity (Google DeepMind — Gemini 4 Hydrogen)** — AI Pair-Programming Contributor
+- **Antigravity (Google DeepMind — Gemini 4 Carbon)** — AI Pair-Programming Contributor
 - **Thorr1337** — Beta Tester
