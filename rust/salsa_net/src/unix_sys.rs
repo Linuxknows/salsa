@@ -82,6 +82,7 @@ pub const DMA_BUF_IOCTL_SYNC: c_ulong = 0x4008_6200;
 pub const DMA_BUF_SYNC_READ: u64 = 0x1;
 pub const DMA_BUF_SYNC_START: u64 = 0x0;
 pub const DMA_BUF_SYNC_END: u64 = 0x4;
+pub const TIOCOUTQ: c_ulong = 0x5411;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -1541,6 +1542,20 @@ pub fn send_raw(fd: c_int, buf: &[u8], flags: c_int) -> isize {
         return -1;
     }
     unsafe { send(fd, buf.as_ptr().cast::<c_void>(), buf.len(), flags) }
+}
+
+#[inline]
+pub fn socket_outq_bytes(fd: c_int) -> Option<usize> {
+    if fd < 0 {
+        return None;
+    }
+    let mut queued: c_int = 0;
+    let rc = unsafe { ioctl(fd, TIOCOUTQ, &mut queued as *mut c_int) };
+    if rc == 0 && queued >= 0 {
+        Some(queued as usize)
+    } else {
+        None
+    }
 }
 
 #[inline]

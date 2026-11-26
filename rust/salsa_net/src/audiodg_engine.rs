@@ -3694,6 +3694,17 @@ fn consume_lasapi_playback_slot(
     }
     let watch_doi = !pa.is_null() && slot_idx < 32 && ((doi_mask >> slot_idx) & 1) != 0;
     let total_samples = (period as usize) * (ch as usize);
+    let (pre_active, pre_w, pre_rd, pre_buf, pre_xruns) = unsafe {
+        (
+            (*ptr::addr_of!((*r).active)).load(Ordering::Acquire),
+            (*ptr::addr_of!((*r).write_frame)).load(Ordering::Acquire),
+            (*ptr::addr_of!((*r).read_frame)).load(Ordering::Relaxed),
+            ptr::addr_of!((*r).buffer_frames).read(),
+            (*ptr::addr_of!((*r).xruns)).load(Ordering::Relaxed),
+        )
+    };
+    let pre_live = slot.stream_live;
+    let pre_pending = slot.underrun_pending;
     if watch_doi && total_samples <= lasapi_doi_buf.len() && total_samples <= mix_buf.len() {
         let doi_slice = &mut lasapi_doi_buf[..total_samples];
         doi_slice.fill(0.0);
@@ -3739,6 +3750,43 @@ fn consume_lasapi_playback_slot(
                 exclusive,
                 now_ns,
             );
+        }
+    }
+    if pre_active != 0 && pre_live {
+        static LAST_LASAPI_XRUN_LOG_NS: AtomicU64 = AtomicU64::new(0);
+        let avail = pre_w.saturating_sub(pre_rd);
+        let post_xruns = unsafe { (*ptr::addr_of!((*r).xruns)).load(Ordering::Relaxed) };
+        let empty_trip = !pre_pending && slot.underrun_pending;
+        let partial_trip = avail > 0 && avail < u64::from(period);
+        let recover_trip = post_xruns > pre_xruns;
+        if empty_trip || partial_trip || recover_trip {
+            let prev_t = LAST_LASAPI_XRUN_LOG_NS.load(Ordering::Relaxed);
+            if now_ns.saturating_sub(prev_t) >= 200_000_000 {
+                LAST_LASAPI_XRUN_LOG_NS.store(now_ns, Ordering::Relaxed);
+                let cname = c_str_to_string(&slot.client_name);
+                let tag = if partial_trip {
+                    "LASAPI_PARTIAL"
+                } else if recover_trip {
+                    "LASAPI_XRUN"
+                } else {
+                    "LASAPI_UNDERRUN"
+                };
+                dbg_emit_vals(
+                    LASAPI_DBG_LASAPI,
+                    LASAPI_DBG_WARN,
+                    slot.client_pid,
+                    slot.session_id,
+                    avail.min(i32::MAX as u64) as i32,
+                    period as i32,
+                    post_xruns as i32,
+                    tag,
+                    if cname.is_empty() { "session" } else { &cname },
+                    &format!(
+                        "sid={} avail={avail}/{period} buf={pre_buf} xruns={post_xruns}",
+                        slot.session_id
+                    ),
+                );
+            }
         }
     }
 }
@@ -4230,6 +4278,14 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     let hwa_ptr = lasapi_hw_analog_create();
     engine.hw_analog.store(hwa_ptr, Ordering::Release);
 
+    // Bind `audiodg.sock` BEFORE `init_hardware()` so active games/WASAPI clients
+    // opening streams across a daemon restart connect immediately into the kernel
+    // listen backlog instead of hitting ENOENT/ECONNREFUSED during BlueZ negotiation.
+    let Some(listener) = bind_unix_listener_0600(&sock_path) else {
+        eprintln!("bind failed for {sock_path}");
+        return 1;
+    };
+
     // Start the Video-Only PipeWire-0 ScreenCast broker BEFORE `init_hardware()` so
     // KDE `KPipeWire`/`MediaMonitor` and `xdg-desktop-portal` clients reconnecting
     // across daemon restarts complete their PipeWire handshake immediately without
@@ -4263,15 +4319,6 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         mm.seq_client_id = mh.0.seq_client_id;
         mm.seq_in_port = mh.0.seq_in_port;
     }
-
-    let Some(listener) = bind_unix_listener_0600(&sock_path) else {
-        eprintln!("bind failed for {sock_path}");
-        let pw_cleanup = engine.pw_brk.swap(ptr::null_mut(), Ordering::AcqRel);
-        if !pw_cleanup.is_null() {
-            unsafe { lasapi_pw_broker_stop(pw_cleanup) };
-        }
-        return 1;
-    };
 
     let ctx_ptr = Arc::as_ptr(&engine) as *mut c_void;
     let pa_cbs = LasapiPaCallbacks {

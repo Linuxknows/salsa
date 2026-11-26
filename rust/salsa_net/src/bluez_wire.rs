@@ -599,7 +599,7 @@ pub fn msbc_rx_strip_offset(rx: &[u8]) -> usize {
 
 #[inline]
 pub fn abr_step_ldac(cur_eqmid: i32, congest_streak: u32, clean_streak: u32) -> (i32, bool, bool) {
-    if congest_streak >= 4 && cur_eqmid < 2 {
+    if congest_streak >= 2 && cur_eqmid < 2 {
         (cur_eqmid + 1, true, false)
     } else if clean_streak >= 250 && cur_eqmid > 0 {
         (cur_eqmid - 1, false, true)
@@ -615,12 +615,18 @@ pub fn abr_step_aac(
     congest_streak: u32,
     clean_streak: u32,
 ) -> (u32, bool, bool) {
-    let cur = if cur_bps == 0 { 192_000 } else { cur_bps };
+    let cur = if cur_bps == 0 { 160_000 } else { cur_bps };
     let cap = if max_bps == 0 { 256_000 } else { max_bps };
-    if congest_streak >= 4 && cur > 128_000 {
-        let next = if cur > 192_000 { 192_000 } else { 128_000 };
+    if congest_streak >= 1 && cur > 96_000 {
+        let next = if cur > 192_000 {
+            160_000
+        } else if cur > 128_000 {
+            128_000
+        } else {
+            96_000
+        };
         (next, true, false)
-    } else if clean_streak >= 300 && cur < cap {
+    } else if clean_streak >= 400 && cur < cap {
         let next = cur.saturating_add(32_000).min(cap);
         (next, false, true)
     } else {
@@ -703,5 +709,17 @@ mod tests {
         );
         assert_eq!(msbc_rx_strip_offset(&[0x01, 0x38, 0xAD]), 2);
         assert_eq!(msbc_rx_strip_offset(&[0xAD, 0x00]), 0);
+    }
+
+    #[test]
+    fn aac_abr_steps_down_and_recovers_cleanly() {
+        assert_eq!(abr_step_aac(192_000, 192_000, 0, 0), (192_000, false, false));
+        assert_eq!(abr_step_aac(192_000, 192_000, 1, 0), (128_000, true, false));
+        assert_eq!(abr_step_aac(160_000, 160_000, 1, 0), (128_000, true, false));
+        assert_eq!(abr_step_aac(128_000, 160_000, 1, 0), (96_000, true, false));
+        assert_eq!(abr_step_aac(96_000, 160_000, 3, 0), (96_000, false, false));
+        assert_eq!(abr_step_aac(96_000, 160_000, 0, 399), (96_000, false, false));
+        assert_eq!(abr_step_aac(96_000, 160_000, 0, 400), (128_000, false, true));
+        assert_eq!(abr_step_aac(128_000, 160_000, 0, 400), (160_000, false, true));
     }
 }

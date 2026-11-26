@@ -251,6 +251,26 @@ pub unsafe extern "C" fn IAudioClient_GetMixFormat(
     S_OK
 }
 
+fn connect_audiodg_with_retry(sock_path: &str) -> Option<OwnedFd> {
+    if let Some(fd) = connect_unix_stream_blocking(sock_path) {
+        return Some(fd);
+    }
+    if std::env::var_os("LASAPI_SOCKET").is_some() {
+        return None;
+    }
+    for _ in 0..60 {
+        let err = last_errno();
+        if err != 2 && err != 11 && err != 111 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        if let Some(fd) = connect_unix_stream_blocking(sock_path) {
+            return Some(fd);
+        }
+    }
+    None
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn IAudioClient_Initialize(
     client: *mut IAudioClient,
@@ -271,7 +291,7 @@ pub unsafe extern "C" fn IAudioClient_Initialize(
     let cname = cbuf_to_str(&c.client_name).to_string();
 
     let sock_path = audiodg_sock_path();
-    let Some(sock) = connect_unix_stream_blocking(&sock_path) else {
+    let Some(sock) = connect_audiodg_with_retry(&sock_path) else {
         let err = last_errno();
         dbg_emit_dgram(
             LASAPI_DBG_LASAPI,
@@ -863,6 +883,20 @@ pub unsafe extern "C" fn IAudioRenderClient_WriteFrames(
                 stall_waits += 1;
             } else {
                 stall_waits = 0;
+            }
+            if stall_waits == 1 {
+                let c_ref = unsafe { &*client };
+                dbg_emit_dgram(
+                    LASAPI_DBG_LASAPI,
+                    LASAPI_DBG_WARN,
+                    c_ref.session_id,
+                    padding as i32,
+                    buf_frames as i32,
+                    S_OK,
+                    "LASAPI_WRITE_STALL",
+                    cbuf_to_str(&c_ref.client_name),
+                    &format!("WriteFrames waiting on full ring pad={padding}/{buf_frames} rem={remaining}"),
+                );
             }
             prev_pad = padding;
             if (active == 0 && stall_waits >= 25) || stall_waits >= 250 {

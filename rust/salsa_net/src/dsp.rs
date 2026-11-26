@@ -1670,11 +1670,23 @@ pub unsafe extern "C" fn salsa_dsp_consume_session_frames(
     let pcm_base = unsafe { ptr::addr_of!((*r).pcm_data.0) as *const f32 };
     if client_rate == hw_rate {
         let to_read = (avail.min(out_fr as u64)) as usize;
+        let is_live = unsafe { *io_stream_live };
+        let fade_frames = if is_live && to_read > 0 && to_read < out_fr {
+            to_read.min(32)
+        } else {
+            0
+        };
+        let fade_start = to_read.saturating_sub(fade_frames);
         for f in 0..to_read {
             let slot = ((rd.wrapping_add(f as u64) as usize) & LASAPI_RING_MASK) * ch;
+            let env = if fade_frames > 0 && f >= fade_start {
+                ((to_read - 1 - f) as f32) / (fade_frames as f32)
+            } else {
+                1.0f32
+            };
             for c in 0..out_ch {
                 let raw = unsafe { pcm_base.add(slot + (c % ch)).read() };
-                let sample = if raw.is_finite() { raw * vol } else { 0.0 };
+                let sample = if raw.is_finite() { raw * vol * env } else { 0.0 };
                 let dst = &mut mix[f * out_ch + c];
                 if replace_output {
                     *dst = sample;
@@ -2067,5 +2079,47 @@ mod tests {
             );
         }
         assert_eq!(ring.read_frame.load(Ordering::Acquire), 10);
+    }
+
+    #[test]
+    fn consume_session_frames_softens_live_partial_underrun() {
+        let mut ring: Box<LasapiShmRing> = unsafe {
+            let mut u = Box::<LasapiShmRing>::new_uninit();
+            ptr::write_bytes(u.as_mut_ptr(), 0, 1);
+            u.assume_init()
+        };
+        ring.active.store(1, Ordering::Release);
+        ring.volume_milli.store(1000, Ordering::Release);
+        for i in 0..64 {
+            let slot = (i & LASAPI_RING_MASK) * 2;
+            ring.pcm_data.0[slot] = 0.5;
+            ring.pcm_data.0[slot + 1] = 0.5;
+        }
+        ring.write_frame.store(64, Ordering::Release);
+        let mut phase = 0.0;
+        let mut live = true;
+        let mut underrun = false;
+        let mut last_ns = 999_000_000u64;
+        let mut mix = vec![0.0f32; 256 * 2];
+
+        unsafe {
+            salsa_dsp_consume_session_frames(
+                &mut *ring,
+                &mut phase,
+                48_000,
+                2,
+                &mut live,
+                &mut underrun,
+                &mut last_ns,
+                mix.as_mut_ptr(),
+                256,
+                2,
+                48_000,
+                true,
+                1_000_000_000,
+            );
+        }
+        assert!((mix[0] - 0.5).abs() < 1e-5);
+        assert!(mix[63 * 2].abs() < 1e-5, "partial tail should ramp smoothly to 0");
     }
 }

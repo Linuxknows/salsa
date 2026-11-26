@@ -1757,6 +1757,11 @@ impl PaState {
         {
             rs.in_prebuf.store(0, Ordering::Release);
             self.send_stream_started(si);
+        } else if rs.in_prebuf.load(Ordering::Acquire) == 0
+            && rs.corked.load(Ordering::Relaxed) == 0
+            && !self.streams[si].started_sent
+        {
+            self.send_stream_started(si);
         }
     }
 
@@ -2924,7 +2929,10 @@ impl PaState {
                 if adjust_latency && eff_tl != PA_INVALID_INDEX && eff_tl > 0 {
                     let sink_bytes =
                         ((5000u64 * ss.rate as u64) / 1_000_000u64) * frame_size as u64;
-                    let floor_bytes = (ss.rate as u64 / 50u64) * frame_size as u64;
+                    let mut floor_bytes = ((ss.rate as u64 * 30) / 1000) * frame_size as u64;
+                    if minr != PA_INVALID_INDEX && minr > 0 {
+                        floor_bytes = floor_bytes.max((minr as u64).saturating_mul(3));
+                    }
                     if (eff_tl as u64) > sink_bytes + floor_bytes {
                         eff_tl = (eff_tl as u64 - sink_bytes) as u32;
                     }
@@ -3031,12 +3039,16 @@ impl PaState {
                 let s_fmt = sm.ss.format;
                 let s_prebuf = sm.prebuf;
                 let s_minreq = sm.minreq;
+                let send_initial_started = !corked && s_prebuf == 0;
                 let s_name = if sm.name.is_empty() {
                     self.clients[ci].name.clone()
                 } else {
                     sm.name.clone()
                 };
                 self.clients[ci].queue_tb(tb);
+                if send_initial_started {
+                    self.send_stream_started(si);
+                }
 
                 dbg_emit_vals(
                     LASAPI_DBG_PA,
@@ -3356,16 +3368,20 @@ impl PaState {
                     return;
                 };
                 let is_pb = self.streams[si].is_playback;
-                if is_pb && !cork {
-                    let rs = &rt.streams[si];
-                    let wr = rs.wr_frame.load(Ordering::Acquire);
-                    let rd = rs.rd_frame.load(Ordering::Acquire);
-                    let fsz = self.streams[si].frame_size as u64;
-                    let queued_bytes = wr.saturating_sub(rd) * fsz;
-                    let preb = self.streams[si].prebuf as u64;
-                    if preb > 0 && queued_bytes < preb {
-                        rs.in_prebuf.store(1, Ordering::Release);
+                if is_pb {
+                    if cork {
                         self.streams[si].started_sent = false;
+                    } else {
+                        let rs = &rt.streams[si];
+                        let wr = rs.wr_frame.load(Ordering::Acquire);
+                        let rd = rs.rd_frame.load(Ordering::Acquire);
+                        let fsz = self.streams[si].frame_size as u64;
+                        let queued_bytes = wr.saturating_sub(rd) * fsz;
+                        let preb = self.streams[si].prebuf as u64;
+                        if preb > 0 && queued_bytes < preb {
+                            rs.in_prebuf.store(1, Ordering::Release);
+                            self.streams[si].started_sent = false;
+                        }
                     }
                 }
                 rt.streams[si]
@@ -3395,6 +3411,9 @@ impl PaState {
                 );
                 self.clients[ci].reply_simple_ack(tag);
                 if is_pb && !cork && rt.streams[si].draining.load(Ordering::Relaxed) == 0 {
+                    if rt.streams[si].in_prebuf.load(Ordering::Acquire) == 0 {
+                        self.send_stream_started(si);
+                    }
                     let rs = &rt.streams[si];
                     let wr = rs.wr_frame.load(Ordering::Acquire);
                     let rd = rs.rd_frame.load(Ordering::Acquire);
@@ -6774,5 +6793,123 @@ mod tests {
         emit_fade_out(rs, &mut cur, &mut out, 10, 54, 48_000, 128);
         assert_eq!(f32::from_bits(rs.period_l[30].load(Ordering::Relaxed)), 0.0);
         assert_eq!(f32::from_bits(rs.period_r[30].load(Ordering::Relaxed)), 0.0);
+    }
+
+    #[test]
+    fn adjust_latency_preserves_3x_minreq_and_cork_sends_started() {
+        use std::os::unix::net::UnixStream;
+
+        let mut st = PaState::new(empty_pa_callbacks(), String::new(), String::new());
+        st.cookie = [0x33u8; PA_NATIVE_COOKIE_LEN];
+        st.cookie_valid = true;
+        let Ok((sock_a, _sock_b)) = UnixStream::pair() else {
+            panic!("UnixStream::pair failed");
+        };
+        let owned: OwnedFd = sock_a.into();
+        st.accept_client_fd(owned, Some((1000, 99124)), false);
+        let rt = Arc::new(PaRtShared::new(-1));
+        let vol_lock = Mutex::new(());
+
+        let mut auth_tb = TagBuilder::new(320);
+        auth_tb.put_u32(PA_TAG_U32, CMD_AUTH);
+        auth_tb.put_u32(PA_TAG_U32, 1);
+        auth_tb.put_u32(PA_TAG_U32, PA_PROTO_VERSION);
+        auth_tb.put_arbitrary(&st.cookie.clone());
+        st.handle_control_packet(0, &auth_tb.into_vec(), &rt, &vol_lock);
+        assert!(st.clients[0].authed);
+
+        // 1. Mimic winepulse.drv: 30ms tlength (11520B), 10ms minreq (3840B), prebuf=0, corked=true, adjust_latency=true.
+        st.clients[0].out_q.clear();
+        let mut pb_tb = TagBuilder::new(256);
+        pb_tb.put_u32(PA_TAG_U32, CMD_CREATE_PLAYBACK_STREAM);
+        pb_tb.put_u32(PA_TAG_U32, 2);
+        pb_tb.put_ss(&PaSampleSpec {
+            format: FMT_FLOAT32LE,
+            channels: 2,
+            rate: 48_000,
+        });
+        pb_tb.put_map(&std_channel_map(2));
+        pb_tb.put_u32(PA_TAG_U32, PA_INVALID_INDEX);
+        pb_tb.put_str(None);
+        pb_tb.put_u32(PA_TAG_U32, 11_520); // maxl
+        pb_tb.put_bool(true); // corked
+        pb_tb.put_u32(PA_TAG_U32, 11_520); // tlength
+        pb_tb.put_u32(PA_TAG_U32, 0); // prebuf
+        pb_tb.put_u32(PA_TAG_U32, 3_840); // minreq
+        pb_tb.put_u32(PA_TAG_U32, 0); // syncid
+        pb_tb.put_cvol(&milli_to_cvol(1000, 2));
+        for _ in 0..7 {
+            pb_tb.put_bool(false);
+        }
+        pb_tb.put_bool(false); // muted
+        pb_tb.put_bool(true); // adjust_latency
+        pb_tb.put_proplist(None);
+        st.handle_control_packet(0, &pb_tb.into_vec(), &rt, &vol_lock);
+
+        assert!(st.streams[0].in_use);
+        assert_eq!(st.streams[0].tlength, 11_520);
+        assert!(!st.streams[0].started_sent);
+        let ch = st.streams[0].channel;
+
+        let has_cmd_started = |q: &VecDeque<OutPacket>| {
+            q.iter().any(|p| {
+                p.data.len() > PA_PSTREAM_DESC_BYTES
+                    && TagReader::new(&p.data[PA_PSTREAM_DESC_BYTES..], 0)
+                        .and_then(|mut tr| tr.read_u32())
+                        == Some(CMD_STARTED)
+            })
+        };
+        assert!(!has_cmd_started(&st.clients[0].out_q));
+
+        // 2. Uncork stream -> must emit CMD_STARTED immediately when prebuf == 0.
+        st.clients[0].out_q.clear();
+        let mut uncork_tb = TagBuilder::new(64);
+        uncork_tb.put_u32(PA_TAG_U32, CMD_CORK_PLAYBACK_STREAM);
+        uncork_tb.put_u32(PA_TAG_U32, 3);
+        uncork_tb.put_u32(PA_TAG_U32, ch);
+        uncork_tb.put_bool(false);
+        st.handle_control_packet(0, &uncork_tb.into_vec(), &rt, &vol_lock);
+        assert!(st.streams[0].started_sent);
+        assert!(has_cmd_started(&st.clients[0].out_q));
+
+        // 3. Re-cork stream -> resets started_sent so future uncork emits CMD_STARTED again.
+        let mut cork_tb = TagBuilder::new(64);
+        cork_tb.put_u32(PA_TAG_U32, CMD_CORK_PLAYBACK_STREAM);
+        cork_tb.put_u32(PA_TAG_U32, 4);
+        cork_tb.put_u32(PA_TAG_U32, ch);
+        cork_tb.put_bool(true);
+        st.handle_control_packet(0, &cork_tb.into_vec(), &rt, &vol_lock);
+        assert!(!st.streams[0].started_sent);
+
+        // 4. Stream created already uncorked with prebuf == 0 immediately emits CMD_STARTED.
+        st.clients[0].out_q.clear();
+        let mut pb2_tb = TagBuilder::new(256);
+        pb2_tb.put_u32(PA_TAG_U32, CMD_CREATE_PLAYBACK_STREAM);
+        pb2_tb.put_u32(PA_TAG_U32, 5);
+        pb2_tb.put_ss(&PaSampleSpec {
+            format: FMT_FLOAT32LE,
+            channels: 2,
+            rate: 48_000,
+        });
+        pb2_tb.put_map(&std_channel_map(2));
+        pb2_tb.put_u32(PA_TAG_U32, PA_INVALID_INDEX);
+        pb2_tb.put_str(None);
+        pb2_tb.put_u32(PA_TAG_U32, 11_520);
+        pb2_tb.put_bool(false); // corked = false
+        pb2_tb.put_u32(PA_TAG_U32, 11_520);
+        pb2_tb.put_u32(PA_TAG_U32, 0); // prebuf = 0
+        pb2_tb.put_u32(PA_TAG_U32, 3_840);
+        pb2_tb.put_u32(PA_TAG_U32, 0);
+        pb2_tb.put_cvol(&milli_to_cvol(1000, 2));
+        for _ in 0..7 {
+            pb2_tb.put_bool(false);
+        }
+        pb2_tb.put_bool(false);
+        pb2_tb.put_bool(true);
+        pb2_tb.put_proplist(None);
+        st.handle_control_packet(0, &pb2_tb.into_vec(), &rt, &vol_lock);
+        assert!(st.streams[1].in_use);
+        assert!(st.streams[1].started_sent);
+        assert!(has_cmd_started(&st.clients[0].out_q));
     }
 }
