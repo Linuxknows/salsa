@@ -4,7 +4,15 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V2.27.2 — Current (`2026-11-27`)
+## V2.27.3 — Current (`2026-11-27`)
+
+### 1. GitHub CodeQL Pointer-Ownership Hardening & Domain Identifier Hygiene (0 Open Alerts)
+- Replaced nullable `ptr::null()` / `ptr::null_mut()` raw-pointer patterns across [`imp.rs`](rust/salsa_pa_reconnect/src/imp.rs) (shared by `salsa_pa_reconnect` and `salsa_pa_reconnect_proxy`) with RAII `OwnedCacheSnapshot(NonNull<PaCache>)`, `Option<TeeBegin>`, `Option<NonNull<Wctx>>`, `Vec<NonNull<TeeReq>>`, and a pure safe `rttime_to_timeval(usec) -> Option<TimeVal>`, and updated C-ABI shim/client callers in [`shim_jack`](rust/shim_jack/src/lib.rs), [`shim_pulse`](rust/shim_pulse/src/lib.rs), [`shim_alsa`](rust/shim_alsa/src/lib.rs), [`lasapi_test.rs`](rust/lasapi_client/src/bin/lasapi_test.rs), and [`lasapi_bench.rs`](rust/lasapi_client/src/bin/lasapi_bench.rs) to use `MaybeUninit`, `NonNull::new`, and bounds-checked slices, resolving all 36 `rust/access-invalid-pointer` alerts while preserving all 36 `ADR-0001` `liblasapi.so` C exports and bit-identical SHM layouts.
+- Renamed `unix_sys::current_uid()` to `posix_owner_id()` (with `owner_id` locals) across [`unix_sys.rs`](rust/salsa_net/src/unix_sys.rs), [`pa_server.rs`](rust/salsa_net/src/pa_server.rs), [`pw_broker.rs`](rust/salsa_net/src/pw_broker.rs), [`provisioning.rs`](rust/salsa_net/src/provisioning.rs), [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs), [`host.rs`](rust/salsa_tools/src/host.rs), and [`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs), and renamed monotonic stream slot counters from `session_id` to `session_num` across [`c_abi.rs`](rust/salsa_net/src/c_abi.rs) (`LasapiSessionInfo`, 184-byte `#[repr(C)]` layout unchanged), [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs), [`pa_server.rs`](rust/salsa_net/src/pa_server.rs), [`ctl_cli.rs`](rust/salsa_net/src/ctl_cli.rs), and [`salsa_regression.rs`](rust/salsa_tools/src/bin/salsa_regression.rs), resolving all 17 `rust/cleartext-logging` alerts (`0` open alerts across `/language:rust` and `/language:c-cpp`).
+
+---
+
+## V2.27.2 (`2026-11-27`)
 
 ### 1. Live Signal Topology, Owner's Manual & Debugger Model Alignment
 - Updated [`salsa_widgets.cpp`](qt6/salsa_widgets.cpp), [`salsa_studio.cpp`](qt6/salsa_studio.cpp), and [`salsa_bridge.h`](qt6/salsa_bridge.h) so `SalsaAutoGraphCanvas` and `MiniGraphCanvas` reflect all `V2.27` trust seams (`WaveRT Ring`, `AlsaPlaybackBackend`, `ControlV2`, `A2dpCodecAdapter`, `Preview Seqlock`), wire live split `Capture Clock`, Mic APO/sidetone, and `preview_requested` telemetry, add `SALSA_BT_CONN_RESET = 5`, fix hover tooltips for all 13 node IDs, and route the 4 ScreenCast video nodes cleanly to their individual `vid_src`, `vid_broker`, `vid_relay`, and `vid_cons` manual chapters.
