@@ -22,7 +22,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::unix_sys::{
-    current_uid, resolve_sock_path_common, user_home_dir, write_atomic_secure_file, ERRNO_ELOOP,
+    posix_owner_id, resolve_sock_path_common, user_home_dir, write_atomic_secure_file, ERRNO_ELOOP,
     O_CLOEXEC, O_NOFOLLOW,
 };
 
@@ -114,7 +114,7 @@ impl SalsaHostPaths {
         xdg_config_home: Option<&str>,
         xdg_data_home: Option<&str>,
         xdg_runtime_dir: Option<&str>,
-        uid: u32,
+        owner_id: u32,
         install_root: PathBuf,
     ) -> Self {
         let config_home = xdg_config_home
@@ -132,7 +132,7 @@ impl SalsaHostPaths {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(format!("/run/user/{uid}")));
+            .unwrap_or_else(|| PathBuf::from(format!("/run/user/{owner_id}")));
         Self {
             home,
             config_home,
@@ -156,7 +156,7 @@ impl SalsaHostPaths {
             cfg.as_deref(),
             data.as_deref(),
             rt.as_deref(),
-            current_uid(),
+            posix_owner_id(),
             install_root,
         )
     }
@@ -1313,7 +1313,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "salsa_prov_sym_{}_{}",
             std::process::id(),
-            current_uid()
+            posix_owner_id()
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();

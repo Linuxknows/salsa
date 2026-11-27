@@ -224,9 +224,9 @@ pub fn funlock_fd(fd: RawFd) {
 }
 
 pub fn ensure_dir_0700_safe(path: &Path) -> io::Result<()> {
-    let uid = current_uid();
+    let owner_id = posix_owner_id();
     let s = path.to_string_lossy();
-    if ensure_owned_dir_0700(&s, uid) {
+    if ensure_owned_dir_0700(&s, owner_id) {
         return Ok(());
     }
     match fs::symlink_metadata(path) {
@@ -241,7 +241,7 @@ pub fn ensure_dir_0700_safe(path: &Path) -> io::Result<()> {
                         Ok(pm) => {
                             if pm.file_type().is_symlink() {
                                 let target_meta = fs::metadata(parent)?;
-                                if !target_meta.is_dir() || (pm.uid() != 0 && pm.uid() != uid) {
+                                if !target_meta.is_dir() || (pm.uid() != 0 && pm.uid() != owner_id) {
                                     return Err(io::Error::new(
                                         io::ErrorKind::PermissionDenied,
                                         format!("refusing symlinked parent: {}", parent.display()),
@@ -261,7 +261,7 @@ pub fn ensure_dir_0700_safe(path: &Path) -> io::Result<()> {
                     }
                 }
             }
-            if ensure_owned_dir_0700(&s, uid) {
+            if ensure_owned_dir_0700(&s, owner_id) {
                 Ok(())
             } else {
                 Err(io::Error::new(
@@ -328,7 +328,7 @@ pub fn read_verified_regular_file_utf8(
 ) -> io::Result<Option<String>> {
     use std::io::Read;
 
-    let uid = current_uid();
+    let owner_id = posix_owner_id();
     let lmeta = match fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -340,7 +340,7 @@ pub fn read_verified_regular_file_utf8(
             format!("refusing non-regular or symlinked file: {}", path.display()),
         ));
     }
-    if lmeta.uid() != uid {
+    if lmeta.uid() != owner_id {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!("refusing unowned file: {}", path.display()),
@@ -359,7 +359,7 @@ pub fn read_verified_regular_file_utf8(
         .custom_flags(O_NOFOLLOW | O_CLOEXEC)
         .open(path)?;
     let fmeta = f.metadata()?;
-    if !fmeta.file_type().is_file() || fmeta.uid() != uid {
+    if !fmeta.file_type().is_file() || fmeta.uid() != owner_id {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!("refusing changed file metadata on {}", path.display()),
@@ -385,7 +385,7 @@ pub fn read_verified_regular_file_utf8(
 }
 
 #[inline]
-pub fn current_uid() -> u32 {
+pub fn posix_owner_id() -> u32 {
     unsafe { getuid() }
 }
 
@@ -730,7 +730,7 @@ pub fn memfd_size_valid(fd: RawFd, mapoffset: u64, maxsize: u64) -> bool {
     st_sz > 0 && mapoffset <= st_sz && maxsize <= st_sz - mapoffset
 }
 
-pub fn is_safe_owner_dir(path: &Path, uid: u32, require_private: bool) -> bool {
+pub fn is_safe_owner_dir(path: &Path, owner_id: u32, require_private: bool) -> bool {
     let s = match path.to_str() {
         Some(v) if v.starts_with('/') => v,
         _ => return false,
@@ -739,7 +739,7 @@ pub fn is_safe_owner_dir(path: &Path, uid: u32, require_private: bool) -> bool {
     let Ok(meta) = fs::symlink_metadata(path) else {
         return false;
     };
-    if !meta.is_dir() || meta.uid() != uid {
+    if !meta.is_dir() || meta.uid() != owner_id {
         return false;
     }
     if require_private && (meta.mode() & 0o077) != 0 {
@@ -749,40 +749,40 @@ pub fn is_safe_owner_dir(path: &Path, uid: u32, require_private: bool) -> bool {
 }
 
 pub fn ensure_private_dir() -> Option<String> {
-    let uid = current_uid();
+    let owner_id = posix_owner_id();
     let mut base: Option<String> = None;
     if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
         let p = Path::new(&xdg);
-        if is_safe_owner_dir(p, uid, true) {
+        if is_safe_owner_dir(p, owner_id, true) {
             base = Some(xdg);
         }
     }
     if base.is_none() {
-        let fb = format!("/run/user/{uid}");
+        let fb = format!("/run/user/{owner_id}");
         let p = Path::new(&fb);
-        if is_safe_owner_dir(p, uid, true) {
+        if is_safe_owner_dir(p, owner_id, true) {
             base = Some(fb);
         }
     }
     if let Some(b) = base {
         let out = format!("{b}/lasapi");
-        if ensure_owned_dir_0700(&out, uid) {
+        if ensure_owned_dir_0700(&out, owner_id) {
             return Some(out);
         }
     }
-    let tmp = format!("/tmp/lasapi-{uid}");
-    if ensure_owned_dir_0700(&tmp, uid) {
+    let tmp = format!("/tmp/lasapi-{owner_id}");
+    if ensure_owned_dir_0700(&tmp, owner_id) {
         return Some(tmp);
     }
     None
 }
 
-pub fn ensure_owned_dir_0700(path: &str, uid: u32) -> bool {
+pub fn ensure_owned_dir_0700(path: &str, owner_id: u32) -> bool {
     let _ = fs::create_dir(path);
     let Ok(meta) = fs::symlink_metadata(path) else {
         return false;
     };
-    if !meta.is_dir() || meta.uid() != uid {
+    if !meta.is_dir() || meta.uid() != owner_id {
         return false;
     }
     if (meta.mode() & 0o777) != 0o700 {
@@ -984,8 +984,8 @@ pub fn connect_unix_stream_verified_with_timeout(
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
     let uc = socket_peercred(stream.as_raw_fd())?;
-    let my_uid = current_uid();
-    if uc.uid != my_uid && uc.uid != 0 {
+    let owner_id = posix_owner_id();
+    if uc.uid != owner_id && uc.uid != 0 {
         return None;
     }
     Some(stream)
@@ -1438,17 +1438,17 @@ pub fn user_home_dir() -> String {
             return h;
         }
     }
-    let uid = current_uid().to_string();
+    let owner_id = posix_owner_id().to_string();
     if let Ok(passwd) = fs::read_to_string("/etc/passwd") {
         for line in passwd.lines() {
             let mut cols = line.split(':');
             let _name = cols.next();
             let _pw = cols.next();
-            let p_uid = cols.next();
+            let col_id = cols.next();
             let _gid = cols.next();
             let _gecos = cols.next();
             let home = cols.next();
-            if p_uid == Some(uid.as_str()) {
+            if col_id == Some(owner_id.as_str()) {
                 if let Some(h) = home {
                     if h.starts_with('/') {
                         return h.to_string();
@@ -1466,14 +1466,14 @@ pub fn current_username() -> String {
             return u;
         }
     }
-    let uid = current_uid().to_string();
+    let owner_id = posix_owner_id().to_string();
     if let Ok(passwd) = fs::read_to_string("/etc/passwd") {
         for line in passwd.lines() {
             let mut cols = line.split(':');
             let name = cols.next();
             let _pw = cols.next();
-            let p_uid = cols.next();
-            if p_uid == Some(uid.as_str()) {
+            let col_id = cols.next();
+            if col_id == Some(owner_id.as_str()) {
                 if let Some(n) = name {
                     if !n.is_empty() {
                         return n.to_string();

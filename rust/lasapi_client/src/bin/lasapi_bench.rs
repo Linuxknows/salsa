@@ -34,8 +34,8 @@ use salsa_wire::c_abi::{
     LASAPI_FMT_FLOAT32, LasapiEngineStatus, LasapiIpcReq, LasapiIpcResp, WaveFormatEx, S_OK,
 };
 use salsa_wire::unix_sys::{
-    audiodg_sock_path, connect_unix_stream_blocking, current_pid, current_uid,
-    is_safe_owner_dir, recv_waitall, reset_sigpipe_default, send_all_nosignal,
+    audiodg_sock_path, connect_unix_stream_blocking, current_pid, is_safe_owner_dir,
+    posix_owner_id, recv_waitall, reset_sigpipe_default, send_all_nosignal,
 };
 
 const RTLD_NOW: c_int = 2;
@@ -268,11 +268,15 @@ fn bench_commit_lasapi_zerocopy() -> Option<(f64, f64, f64)> {
         let mut max_us = 0.0f64;
         for _ in 0..iters {
             IAudioClient_Reset(client);
-            let mut buf: *mut f32 = ptr::null_mut();
+            let mut buf_slot = mem::MaybeUninit::<*mut f32>::zeroed();
             let t0 = now_ns();
-            if IAudioRenderClient_GetBuffer(client, 64, &mut buf) == S_OK && !buf.is_null() {
-                ptr::write_bytes(buf, 0, 64 * 2);
-                IAudioRenderClient_ReleaseBuffer(client, 64, 0);
+            if IAudioRenderClient_GetBuffer(client, 64, buf_slot.as_mut_ptr()) == S_OK {
+                if let Some(buf) = ptr::NonNull::new(buf_slot.assume_init()) {
+                    for sample in core::slice::from_raw_parts_mut(buf.as_ptr(), 64 * 2) {
+                        *sample = 0.0;
+                    }
+                    IAudioRenderClient_ReleaseBuffer(client, 64, 0);
+                }
             }
             let t1 = now_ns();
             let us = (t1.saturating_sub(t0) as f64) / 1000.0;
@@ -873,15 +877,15 @@ fn create_private_dir(p: &Path) -> bool {
 }
 
 fn pick_sandbox_base_dir() -> PathBuf {
-    let uid = current_uid();
+    let owner_id = posix_owner_id();
     if let Ok(xdg) = env::var("XDG_RUNTIME_DIR") {
         let p = PathBuf::from(&xdg);
-        if is_safe_owner_dir(&p, uid, true) {
+        if is_safe_owner_dir(&p, owner_id, true) {
             return p;
         }
     }
-    let run_user = PathBuf::from(format!("/run/user/{uid}"));
-    if is_safe_owner_dir(&run_user, uid, true) {
+    let run_user = PathBuf::from(format!("/run/user/{owner_id}"));
+    if is_safe_owner_dir(&run_user, owner_id, true) {
         return run_user;
     }
     PathBuf::from("/tmp")

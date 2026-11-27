@@ -50,7 +50,7 @@ use salsa_wire::legal::{
 };
 use salsa_wire::provisioning::{all_pacman_hook_paths, SalsaHostPaths, UNIFIED_SETTINGS_FILENAME};
 use salsa_wire::unix_sys::{
-    current_uid, ensure_dir_0700_safe, reset_sigpipe_default, O_CLOEXEC, O_NOFOLLOW,
+    ensure_dir_0700_safe, posix_owner_id, reset_sigpipe_default, O_CLOEXEC, O_NOFOLLOW,
 };
 
 use crate::gio_dbus::{cstr as dbus_cstr, gio};
@@ -704,7 +704,7 @@ fn compute_single_instance_sock_path(sock_file_name: &str) -> Option<PathBuf> {
     {
         return None;
     }
-    let uid = current_uid();
+    let owner_id = posix_owner_id();
     let mut candidates: Vec<PathBuf> = Vec::with_capacity(3);
     if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
         let xt = xdg.trim();
@@ -712,8 +712,8 @@ fn compute_single_instance_sock_path(sock_file_name: &str) -> Option<PathBuf> {
             candidates.push(PathBuf::from(xt).join("lasapi"));
         }
     }
-    candidates.push(PathBuf::from(format!("/run/user/{uid}/lasapi")));
-    candidates.push(PathBuf::from(format!("/tmp/lasapi-{uid}")));
+    candidates.push(PathBuf::from(format!("/run/user/{owner_id}/lasapi")));
+    candidates.push(PathBuf::from(format!("/tmp/lasapi-{owner_id}")));
     for dir in candidates {
         if ensure_dir_0700_safe(&dir).is_ok() {
             return Some(dir.join(clean));

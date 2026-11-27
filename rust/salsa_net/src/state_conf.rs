@@ -25,7 +25,7 @@ pub use crate::settings::{
     DEFAULT_BAND_FREQS_HZ as K_EQ_FREQS,
 };
 use crate::unix_sys::{
-    current_pid, current_uid, ensure_dir_0700_safe, flock_fd, funlock_fd, is_safe_owner_dir,
+    current_pid, ensure_dir_0700_safe, flock_fd, funlock_fd, is_safe_owner_dir, posix_owner_id,
     read_verified_regular_file_utf8, user_home_dir, write_atomic_secure_file, O_CLOEXEC,
     O_NOFOLLOW,
 };
@@ -978,7 +978,7 @@ pub fn save_state_to_path(dir: &Path, path: &Path, st: &SalsaRuntimeState) -> bo
         return false;
     }
     let _ = fs::set_permissions(dir, Permissions::from_mode(0o700));
-    if !is_safe_owner_dir(dir, current_uid(), false) {
+    if !is_safe_owner_dir(dir, posix_owner_id(), false) {
         return false;
     }
     let tmp = PathBuf::from(format!("{}.tmp.{}", path.display(), current_pid()));

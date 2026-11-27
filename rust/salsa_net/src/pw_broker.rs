@@ -28,12 +28,12 @@ use crate::pw_wire::{
     PWB_MAX_PACKET_SZ, SPA_ASYNC_BIT, SPA_ID_INVALID, SPA_OBJECT, SPA_STRUCT,
 };
 use crate::unix_sys::{
-    bind_unix_listener_0600, create_memfd, current_hostname, current_pid, current_uid,
-    current_username, dbg_emit, dmabuf_sync, do_poll, dup_fd_cloexec, dup_unix_listener_nonblock,
+    bind_unix_listener_0600, create_memfd, current_hostname, current_pid, current_username,
+    dbg_emit, dmabuf_sync, do_poll, dup_fd_cloexec, dup_unix_listener_nonblock,
     ensure_private_dir, eventfd_drain, eventfd_signal, memfd_size_valid, mono_ns, new_eventfd,
-    open_private_shm, recvmsg_with_fds, seal_memfd_size, sendmsg_all_with_fds, set_thread_nice,
-    socket_peercred, take_systemd_unix_listener, unix_socket_actively_served, unlink_shm_path,
-    MappedMem, PollFd, RecvFdsResult, POLLERR, POLLHUP, POLLIN,
+    open_private_shm, posix_owner_id, recvmsg_with_fds, seal_memfd_size, sendmsg_all_with_fds,
+    set_thread_nice, socket_peercred, take_systemd_unix_listener, unix_socket_actively_served,
+    unlink_shm_path, MappedMem, PollFd, RecvFdsResult, POLLERR, POLLHUP, POLLIN,
 };
 
 use core::mem::size_of;
@@ -3881,8 +3881,8 @@ impl PwState {
         let Some(uc) = socket_peercred(stream.as_raw_fd()) else {
             return;
         };
-        let my_uid = current_uid();
-        if uc.uid != my_uid && uc.uid != 0 {
+        let owner_id = posix_owner_id();
+        if uc.uid != owner_id && uc.uid != 0 {
             return;
         }
         let pid = uc.pid.max(0) as u32;
@@ -4063,7 +4063,7 @@ fn preview_shm_name_string() -> String {
             return cand;
         }
     }
-    format!("/lasapi_pw_preview_{}", current_uid())
+    format!("/lasapi_pw_preview_{}", posix_owner_id())
 }
 
 pub fn empty_debug_json() -> JsonValue {
@@ -4104,7 +4104,7 @@ pub fn start_pw_broker(opts: Option<PwBrokerStartOpts>) -> Option<PwBrokerHandle
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("LASAPI_PW_TEST_DIR").ok().filter(|s| !s.is_empty()))
         .or_else(|| std::env::var("XDG_RUNTIME_DIR").ok().filter(|s| !s.is_empty()))
-        .unwrap_or_else(|| format!("/run/user/{}", current_uid()));
+        .unwrap_or_else(|| format!("/run/user/{}", posix_owner_id()));
     let sname = opts
         .socket_name
         .filter(|s| !s.is_empty() && !s.contains('/') && *s != "." && *s != "..")
@@ -4124,7 +4124,7 @@ pub fn start_pw_broker(opts: Option<PwBrokerStartOpts>) -> Option<PwBrokerHandle
     let shm_name = if isolated {
         format!("{}/pw_preview_test", st.runtime_dir)
     } else {
-        unlink_shm_path(&format!("/lasapi_pw_preview_{}", current_uid()), true);
+        unlink_shm_path(&format!("/lasapi_pw_preview_{}", posix_owner_id()), true);
         preview_shm_name_string()
     };
     st.preview_shm_name = shm_name.clone();

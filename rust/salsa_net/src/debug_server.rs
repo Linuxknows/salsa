@@ -24,8 +24,8 @@ pub trait DebugEngineHost: Send + Sync {
     fn handle_debug_cmd(&self, cmd: &str) -> Result<String, (i32, String)>;
 }
 use crate::unix_sys::{
-    bind_unix_dgram_passcred_0600, bind_unix_listener_0600, current_pid, current_uid, do_poll,
-    mono_ns, nb_recv, nb_send, realtime_ms, recv_dgram_with_ucred, resolve_sock_path_common,
+    bind_unix_dgram_passcred_0600, bind_unix_listener_0600, current_pid, do_poll, mono_ns,
+    nb_recv, nb_send, posix_owner_id, realtime_ms, recv_dgram_with_ucred, resolve_sock_path_common,
     socket_peercred, PollFd, RecvDgramCred, POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT,
 };
 
@@ -220,7 +220,7 @@ pub fn parse_dgram_bytes(raw: &[u8]) -> Option<LasapiDbgDgram> {
 }
 
 fn peer_uid_allowed(peer_uid: u32) -> bool {
-    if peer_uid == current_uid() || peer_uid == 0 {
+    if peer_uid == posix_owner_id() || peer_uid == 0 {
         return true;
     }
     std::env::var("LASAPI_DEBUG_ALLOW_ALL")

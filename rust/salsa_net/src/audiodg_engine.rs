@@ -65,12 +65,11 @@ use crate::state_conf::{
     save_runtime_state,
 };
 use crate::unix_sys::{
-    bind_unix_listener_0600, claim_systemd_unix_listeners, current_pid, current_uid, dbg_emit,
-    dbg_emit_vals, do_poll, install_term_signals, mono_ns, nb_recv, new_eventfd,
+    bind_unix_listener_0600, claim_systemd_unix_listeners, current_pid, dbg_emit, dbg_emit_vals,
+    do_poll, install_term_signals, mono_ns, nb_recv, new_eventfd, posix_owner_id,
     resolve_sock_path_common, send_all_nosignal, sendmsg_all_with_fds, sleep_abs_mono_ns,
     socket_peercred, term_signal_requested, try_realtime_fifo, PollFd, ERRNO_EINTR, ERRNO_EINVAL,
-    ERRNO_ENOSYS, POLLERR,
-    POLLHUP, POLLIN,
+    ERRNO_ENOSYS, POLLERR, POLLHUP, POLLIN,
 };
 use crate::wavert_ring::{
     RingMuteOp, SessionResampleState, SessionRingSpec, WaveRtEngineRing,
@@ -114,7 +113,7 @@ impl HwState {
 
 struct EngineSession {
     in_use: bool,
-    session_id: u32,
+    session_num: u32,
     client_pid: u32,
     client_name: [u8; 64],
     share_mode: u32,
@@ -134,7 +133,7 @@ impl EngineSession {
     const fn empty() -> Self {
         Self {
             in_use: false,
-            session_id: 0,
+            session_num: 0,
             client_pid: 0,
             client_name: [0; 64],
             share_mode: 0,
@@ -154,8 +153,8 @@ impl EngineSession {
 
 struct SessionsState {
     sessions: [EngineSession; LASAPI_MAX_SESSIONS],
-    next_session_id: u32,
-    exclusive_session_id: i32,
+    next_session_num: u32,
+    exclusive_session_num: i32,
     eq_cfg: LasapiEqConfig,
     param_eq: LasapiParamEqExt,
     mic_apo: LasapiMicApoCfg,
@@ -166,8 +165,8 @@ impl SessionsState {
     fn from_runtime(rt: &SalsaRuntimeState) -> Self {
         Self {
             sessions: [const { EngineSession::empty() }; LASAPI_MAX_SESSIONS],
-            next_session_id: 1,
-            exclusive_session_id: -1,
+            next_session_num: 1,
+            exclusive_session_num: -1,
             eq_cfg: rt.eq_cfg,
             param_eq: rt.param_eq,
             mic_apo: rt.mic_apo,
@@ -1250,7 +1249,7 @@ impl AudiodgEngine {
         {
             let ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
             st.realtime_priority = self.rt_priority.load(Ordering::Relaxed);
-            st.exclusive_owner_id = ss.exclusive_session_id;
+            st.exclusive_owner_id = ss.exclusive_session_num;
             st.eq_cfg = ss.eq_cfg;
             st.param_eq = ss.param_eq;
             st.mic_apo = ss.mic_apo;
@@ -1269,7 +1268,7 @@ impl AudiodgEngine {
                     let tel = ring.telemetry();
                     let info = &mut st.sessions[count];
                     count += 1;
-                    info.session_id = slot.session_id;
+                    info.session_num = slot.session_num;
                     info.client_pid = slot.client_pid;
                     info.is_capture = u32::from(slot.is_capture);
                     info.client_name.copy_from_slice(&slot.client_name);
@@ -1813,9 +1812,9 @@ impl AudiodgEngine {
         };
 
         let mut ss = self.sessions_lock.lock().unwrap();
-        if ss.exclusive_session_id >= 0 {
+        if ss.exclusive_session_num >= 0 {
             resp.hr = AUDCLNT_E_DEVICE_IN_USE;
-            let holder = ss.exclusive_session_id;
+            let holder = ss.exclusive_session_num;
             drop(ss);
             dbg_emit_vals(
                 LASAPI_DBG_LASAPI,
@@ -1840,8 +1839,8 @@ impl AudiodgEngine {
             return;
         };
 
-        let sid = ss.next_session_id;
-        ss.next_session_id = ss.next_session_id.wrapping_add(1);
+        let sid = ss.next_session_num;
+        ss.next_session_num = ss.next_session_num.wrapping_add(1);
 
         let req_rate = if (8_000..=768_000).contains(&req.sample_rate) {
             req.sample_rate
@@ -1909,7 +1908,7 @@ impl AudiodgEngine {
         let is_loopback = (req.stream_flags & AUDCLNT_STREAMFLAGS_LOOPBACK) != 0;
         ss.sessions[slot_idx] = EngineSession {
             in_use: true,
-            session_id: sid,
+            session_num: sid,
             client_pid: auth_pid,
             client_name: auth_name,
             share_mode: req.share_mode,
@@ -1925,7 +1924,7 @@ impl AudiodgEngine {
             last_pa_ctl_seq: 0,
         };
         if req.share_mode == AUDCLNT_SHAREMODE_EXCLUSIVE {
-            ss.exclusive_session_id = sid as i32;
+            ss.exclusive_session_num = sid as i32;
         }
 
         resp.hr = S_OK;
@@ -1938,7 +1937,7 @@ impl AudiodgEngine {
 
         if sendmsg_all_with_fds(sock_raw, &resp.to_bytes(), &fds_to_send).is_err() {
             let mut ss = self.sessions_lock.lock().unwrap();
-            if ss.sessions[slot_idx].in_use && ss.sessions[slot_idx].session_id == sid {
+            if ss.sessions[slot_idx].in_use && ss.sessions[slot_idx].session_num == sid {
                 destroy_session_slot(&mut ss, slot_idx);
             }
             return;
@@ -2128,12 +2127,12 @@ impl AudiodgEngine {
                         if let Some(ring) = slot
                             .ring
                             .as_ref()
-                            .filter(|_| slot.in_use && slot.session_id == session_id)
+                            .filter(|_| slot.in_use && slot.session_num == session_id)
                         {
                             let muted_now = ring.set_volume_milli_query_muted(volume_milli);
                             if !slot.is_capture && !slot.is_loopback {
                                 upd_pa =
-                                    Some((slot_idx as u32, slot.session_id, volume_milli, muted_now));
+                                    Some((slot_idx as u32, slot.session_num, volume_milli, muted_now));
                             }
                             hr = S_OK;
                             found = true;
@@ -2181,7 +2180,7 @@ impl AudiodgEngine {
                                 if let Some(ring) = slot
                                     .ring
                                     .as_ref()
-                                    .filter(|_| slot.in_use && slot.session_id == sid)
+                                    .filter(|_| slot.in_use && slot.session_num == sid)
                                 {
                                     let op = match mute {
                                         MuteOp::Unmute => RingMuteOp::Unmute,
@@ -2191,7 +2190,7 @@ impl AudiodgEngine {
                                     };
                                     let (vm, mu) = ring.apply_control(volume_milli, op);
                                     if !slot.is_capture && !slot.is_loopback {
-                                        upd_pa = Some((slot_idx as u32, slot.session_id, vm, mu));
+                                        upd_pa = Some((slot_idx as u32, slot.session_num, vm, mu));
                                     }
                                     hr = S_OK;
                                     break;
@@ -3119,12 +3118,12 @@ impl AudiodgEngine {
                     }
                 }
 
-                let exclusive_id = ss.exclusive_session_id;
+                let exclusive_id = ss.exclusive_session_num;
                 let pa = self.pa();
                 let doi_mask = pa.map_or(0, PaServerHandle::lasapi_doi_mask);
                 if exclusive_id >= 0 {
                     for (slot_idx, slot) in ss.sessions.iter_mut().enumerate() {
-                        if slot.in_use && (slot.session_id as i32) == exclusive_id && slot.ring.is_some() {
+                        if slot.in_use && (slot.session_num as i32) == exclusive_id && slot.ring.is_some() {
                             if let Some(ref ring) = slot.ring {
                                 ring.set_hw_clock_ns(now_ns);
                             }
@@ -3359,7 +3358,7 @@ fn destroy_session_slot(ss: &mut SessionsState, slot_idx: usize) {
     if slot_idx >= LASAPI_MAX_SESSIONS || !ss.sessions[slot_idx].in_use {
         return;
     }
-    let sid = ss.sessions[slot_idx].session_id;
+    let sid = ss.sessions[slot_idx].session_num;
     let cpid = ss.sessions[slot_idx].client_pid;
     let cname = c_str_to_string(&ss.sessions[slot_idx].client_name);
     let label = if cname.is_empty() {
@@ -3367,8 +3366,8 @@ fn destroy_session_slot(ss: &mut SessionsState, slot_idx: usize) {
     } else {
         cname
     };
-    if (sid as i32) == ss.exclusive_session_id {
-        ss.exclusive_session_id = -1;
+    if (sid as i32) == ss.exclusive_session_num {
+        ss.exclusive_session_num = -1;
         eprintln!(
             "[LASAPI-audiodg] Exclusive mode released by session {}; Shared Mode restored.",
             sid
@@ -3469,7 +3468,7 @@ fn consume_lasapi_playback_slot(
                     LASAPI_DBG_LASAPI,
                     LASAPI_DBG_WARN,
                     slot.client_pid,
-                    slot.session_id,
+                    slot.session_num,
                     avail.min(i32::MAX as u64) as i32,
                     period as i32,
                     rep.post_xruns as i32,
@@ -3477,7 +3476,7 @@ fn consume_lasapi_playback_slot(
                     if cname.is_empty() { "session" } else { &cname },
                     &format!(
                         "sid={} avail={avail}/{period} buf={} xruns={}",
-                        slot.session_id, rep.pre_buf, rep.post_xruns
+                        slot.session_num, rep.pre_buf, rep.post_xruns
                     ),
                 );
             }
@@ -3590,7 +3589,7 @@ impl DebugEngineHost for AudiodgEngine {
                     let tel = ring.telemetry();
                     let is_cap = u32::from(slot.is_capture);
                     lasapi_sessions.push(JsonValue::obj(vec![
-                        ("session_id", JsonValue::Int(i64::from(slot.session_id))),
+                        ("session_id", JsonValue::Int(i64::from(slot.session_num))),
                         ("pid", JsonValue::Int(i64::from(slot.client_pid))),
                         ("name", JsonValue::Str(c_str_to_string(&slot.client_name))),
                         ("share_mode", JsonValue::Int(i64::from(slot.share_mode))),
@@ -4076,7 +4075,7 @@ pub fn run_audiodg_from_env() -> i32 {
     let mut pending_usb_cap_settle = false;
     let mut last_virtual_failover_fp: Option<u64> = None;
 
-    let my_uid = current_uid();
+    let owner_id = posix_owner_id();
     while engine.is_running() {
         let mut pfd: Vec<PollFd> = Vec::with_capacity(1 + LASAPI_MAX_SESSIONS);
         let mut slot_map: Vec<isize> = Vec::with_capacity(1 + LASAPI_MAX_SESSIONS);
@@ -4134,7 +4133,7 @@ pub fn run_audiodg_from_env() -> i32 {
                         {
                             let mut ss = engine.sessions_lock.lock().unwrap();
                             if ss.sessions[slot_idx].in_use {
-                                let sid = ss.sessions[slot_idx].session_id;
+                                let sid = ss.sessions[slot_idx].session_num;
                                 let is_pb_lasapi =
                                     !ss.sessions[slot_idx].is_capture && !ss.sessions[slot_idx].is_loopback;
                                 let cpid = ss.sessions[slot_idx].client_pid;
@@ -4163,7 +4162,7 @@ pub fn run_audiodg_from_env() -> i32 {
                     let _ = stream.set_nonblocking(false);
                     let fd = stream.as_raw_fd();
                     let uc_ok = socket_peercred(fd)
-                        .map(|uc| uc.uid == my_uid || uc.uid == 0)
+                        .map(|uc| uc.uid == owner_id || uc.uid == 0)
                         .unwrap_or(false);
                     if !uc_ok {
                         continue;

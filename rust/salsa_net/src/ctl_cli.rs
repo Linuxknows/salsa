@@ -553,7 +553,7 @@ fn cmd_status() -> i32 {
             };
             println!(
                 "   [#{:<5} | PID {:<7}] [{dir_tag}] {cname:<24} | {mode:<6} | {:>6} Hz {}ch | Vol:{:>3}%{mute_tag} | {act_tag:<6}{tgt_sfx}",
-                s.session_id,
+                s.session_num,
                 s.client_pid,
                 s.sample_rate,
                 s.channels,
@@ -703,29 +703,29 @@ fn cmd_bt_reset(mac_or_empty: &str) -> i32 {
     if rc == -2 { 2 } else { 1 }
 }
 
-fn cmd_volume(session_id: u32, mut vol: f32) -> i32 {
+fn cmd_volume(session_num: u32, mut vol: f32) -> i32 {
     if vol > 2.0 {
         vol /= 100.0;
     }
     let mut req: LasapiIpcReq = zeroed_struct();
     req.cmd = LASAPI_CMD_SET_VOLUME;
-    req.target_session_id = session_id;
+    req.target_session_id = session_num;
     req.volume_milli = (vol * 1000.0) as u32;
     let Some(resp) = send_req_only(&req) else {
         return 1;
     };
     println!(
-        "Session #{session_id} volume set to {:.0}% (HRESULT=0x{:08x})",
+        "Session #{session_num} volume set to {:.0}% (HRESULT=0x{:08x})",
         vol * 100.0,
         resp.hr as u32
     );
     i32::from(resp.hr != S_OK)
 }
 
-fn cmd_session_control(session_id: u32, vol_pct: i32, mute_mode: i32, dev_id: Option<&str>) -> i32 {
+fn cmd_session_control(session_num: u32, vol_pct: i32, mute_mode: i32, dev_id: Option<&str>) -> i32 {
     let mut req: LasapiIpcReq = zeroed_struct();
     req.cmd = LASAPI_CMD_SET_SESSION_CONTROL;
-    req.target_session_id = session_id;
+    req.target_session_id = session_num;
     let clamped_pct = vol_pct.clamp(0, 150);
     req.volume_milli = if vol_pct >= 0 {
         (clamped_pct as u32) * 10
@@ -747,7 +747,7 @@ fn cmd_session_control(session_id: u32, vol_pct: i32, mute_mode: i32, dev_id: Op
     };
     let hr = resp.hr as u32;
     println!(
-        "Session #{session_id} updated (vol={clamped_pct_disp}% mute={mute_mode} dev={}) -> HRESULT=0x{hr:08x}",
+        "Session #{session_num} updated (vol={clamped_pct_disp}% mute={mute_mode} dev={}) -> HRESULT=0x{hr:08x}",
         dev_id.filter(|d| !d.is_empty()).unwrap_or("-"),
         clamped_pct_disp = if vol_pct >= 0 { clamped_pct } else { vol_pct },
     );

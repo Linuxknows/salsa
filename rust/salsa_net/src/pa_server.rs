@@ -61,10 +61,10 @@ use crate::pa_wire::{
     PA_TAG_VOLUME, PA_VOLUME_NORM,
 };
 use crate::unix_sys::{
-    self, bind_unix_listener_0600, current_hostname, current_pid, current_uid, current_username,
-    dbg_emit_vals, do_poll, enable_realtime, ensure_owned_dir_0700, eventfd_drain, eventfd_signal,
-    is_safe_owner_dir, mono_ns, nb_recv, nb_send, new_eventfd, realtime_sec_usec, socket_peercred,
-    user_home_dir, PollFd, POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT,
+    self, bind_unix_listener_0600, current_hostname, current_pid, current_username, dbg_emit_vals,
+    do_poll, enable_realtime, ensure_owned_dir_0700, eventfd_drain, eventfd_signal,
+    is_safe_owner_dir, mono_ns, nb_recv, nb_send, new_eventfd, posix_owner_id, realtime_sec_usec,
+    socket_peercred, user_home_dir, PollFd, POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT,
 };
 
 const PA_PROTO_VERSION: u32 = 35;
@@ -1930,7 +1930,7 @@ impl PaState {
                 return;
             };
             let uid_ok = self.clients[ci].uid_valid
-                && (self.clients[ci].uid == current_uid() || self.clients[ci].uid == 0);
+                && (self.clients[ci].uid == posix_owner_id() || self.clients[ci].uid == 0);
             let cookie_ok = self.cookie_valid
                 && ck_len == PA_NATIVE_COOKIE_LEN
                 && ct_eq_256(&buf[ck_off..ck_off + PA_NATIVE_COOKIE_LEN], &self.cookie);
@@ -4081,7 +4081,7 @@ fn server_thread_main(
                         let owned: OwnedFd = stream.into();
                         let cred = socket_peercred(owned.as_raw_fd());
                         if let Some(uc) = cred {
-                            if uc.uid != current_uid() && uc.uid != 0 {
+                            if uc.uid != posix_owner_id() && uc.uid != 0 {
                                 continue;
                             }
                         }
@@ -4194,11 +4194,11 @@ fn init_app_vols_path() -> String {
     if !home.starts_with('/') {
         return String::new();
     }
-    let uid = current_uid();
+    let owner_id = posix_owner_id();
     let cfg_dir = format!("{home}/.config");
-    let _ = ensure_owned_dir_0700(&cfg_dir, uid);
+    let _ = ensure_owned_dir_0700(&cfg_dir, owner_id);
     let app_dir = format!("{cfg_dir}/lasapi");
-    let _ = ensure_owned_dir_0700(&app_dir, uid);
+    let _ = ensure_owned_dir_0700(&app_dir, owner_id);
     format!("{app_dir}/app_volumes.conf")
 }
 
@@ -4237,13 +4237,13 @@ fn write_app_volumes_disk(file_lock: &Mutex<()>, path: &str, entries: &[AppVolEn
 
 fn ensure_pulse_cookie(out_cookie: &mut [u8; PA_NATIVE_COOKIE_LEN], out_valid: &mut bool) {
     *out_valid = false;
-    let uid = current_uid();
+    let owner_id = posix_owner_id();
     let home = user_home_dir();
-    if home == "/tmp" || !is_safe_owner_dir(Path::new(&home), uid, false) {
+    if home == "/tmp" || !is_safe_owner_dir(Path::new(&home), owner_id, false) {
         return;
     }
     let dir = format!("{home}/.config/pulse");
-    if !ensure_owned_dir_0700(&dir, uid) {
+    if !ensure_owned_dir_0700(&dir, owner_id) {
         return;
     }
     let cpath = format!("{dir}/cookie");
@@ -4254,7 +4254,7 @@ fn ensure_pulse_cookie(out_cookie: &mut [u8; PA_NATIVE_COOKIE_LEN], out_valid: &
     {
         if let Ok(meta) = f.metadata() {
             if meta.is_file()
-                && meta.uid() == uid
+                && meta.uid() == owner_id
                 && (meta.mode() & 0o077) == 0
                 && meta.len() == PA_NATIVE_COOKIE_LEN as u64
             {
@@ -5136,13 +5136,13 @@ fn bind_loopback_tcp_and_write_port(
     if port == 0 {
         return (None, None, None);
     }
-    let uid = current_uid();
+    let owner_id = posix_owner_id();
     let home = user_home_dir();
-    if home == "/tmp" || !is_safe_owner_dir(Path::new(&home), uid, false) {
+    if home == "/tmp" || !is_safe_owner_dir(Path::new(&home), owner_id, false) {
         return (None, None, None);
     }
     let cfg_dir = format!("{home}/.config/pulse");
-    if !ensure_owned_dir_0700(&cfg_dir, uid) {
+    if !ensure_owned_dir_0700(&cfg_dir, owner_id) {
         return (None, None, None);
     }
     let port_path = format!("{cfg_dir}/salsa-tcp-port");
@@ -5171,13 +5171,13 @@ fn bind_loopback_tcp_and_write_port(
 }
 
 pub fn start_pa_server(host: Arc<dyn PaEngineHost>) -> Option<PaServerHandle> {
-    let uid = current_uid();
+    let owner_id = posix_owner_id();
     let xdg = match std::env::var("XDG_RUNTIME_DIR") {
-        Ok(v) if !v.is_empty() && is_safe_owner_dir(Path::new(&v), uid, true) => v,
-        _ => format!("/run/user/{uid}"),
+        Ok(v) if !v.is_empty() && is_safe_owner_dir(Path::new(&v), owner_id, true) => v,
+        _ => format!("/run/user/{owner_id}"),
     };
     let pulse_dir = format!("{xdg}/pulse");
-    if !ensure_owned_dir_0700(&pulse_dir, uid) {
+    if !ensure_owned_dir_0700(&pulse_dir, owner_id) {
         return None;
     }
     let sock_path = format!("{pulse_dir}/native");
@@ -5916,7 +5916,7 @@ impl PaServerHandle {
         let dst = &mut out.sessions[out.num_sessions as usize];
         out.num_sessions += 1;
         *dst = LasapiSessionInfo::zeroed();
-        dst.session_id = 10000 + s.index;
+        dst.session_num = 10000 + s.index;
         dst.client_pid = s.client_pid;
         let nm = if !s.name.is_empty() {
             s.name.as_str()

@@ -19,9 +19,9 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use salsa_wire::unix_sys::{
-    current_pid, current_uid, ensure_dir_0700_safe, ensure_owned_dir_0700, ensure_private_dir,
-    flock_fd as unix_flock_fd, funlock_fd as unix_funlock_fd, socket_peercred, user_home_dir,
-    write_atomic_secure_file,
+    current_pid, ensure_dir_0700_safe, ensure_owned_dir_0700, ensure_private_dir,
+    flock_fd as unix_flock_fd, funlock_fd as unix_funlock_fd, posix_owner_id, socket_peercred,
+    user_home_dir, write_atomic_secure_file,
 };
 
 pub const LOCK_EX: c_int = 2;
@@ -39,7 +39,7 @@ pub fn funlock_fd(fd: RawFd) {
 }
 
 pub fn getuid() -> u32 {
-    current_uid()
+    posix_owner_id()
 }
 
 pub fn getpid() -> u32 {
@@ -88,13 +88,13 @@ pub fn private_runtime_dir() -> PathBuf {
     if let Some(p) = ensure_private_dir() {
         return PathBuf::from(p);
     }
-    let uid = getuid();
-    let fb = PathBuf::from(format!("/tmp/lasapi-{uid}"));
-    if ensure_owned_dir_0700(&fb.to_string_lossy(), uid) {
+    let owner_id = getuid();
+    let fb = PathBuf::from(format!("/tmp/lasapi-{owner_id}"));
+    if ensure_owned_dir_0700(&fb.to_string_lossy(), owner_id) {
         return fb;
     }
-    let pid_fb = PathBuf::from(format!("/tmp/lasapi-{uid}-{}", getpid()));
-    let _ = ensure_owned_dir_0700(&pid_fb.to_string_lossy(), uid);
+    let pid_fb = PathBuf::from(format!("/tmp/lasapi-{owner_id}-{}", getpid()));
+    let _ = ensure_owned_dir_0700(&pid_fb.to_string_lossy(), owner_id);
     pid_fb
 }
 

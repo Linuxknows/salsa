@@ -1207,10 +1207,11 @@ mod tests {
     fn alsa_playback_and_capture_pcm_lifecycle_against_in_memory_backend() {
         let mem = Arc::new(InMemoryLasapiBackend::new(48_000, 2, 256));
         with_test_lasapi_backend(Arc::clone(&mem) as _, || unsafe {
-            let mut pb: *mut snd_pcm_t = ptr::null_mut();
-            assert_eq!(snd_pcm_open(&raw mut pb, c"default".as_ptr(), 0, 0), 0);
-            assert!(!pb.is_null());
-            let pb_client = (*pb).client;
+            let mut pb_slot = mem::MaybeUninit::<*mut snd_pcm_t>::zeroed();
+            assert_eq!(snd_pcm_open(pb_slot.as_mut_ptr(), c"default".as_ptr(), 0, 0), 0);
+            let pb_nn = ptr::NonNull::new(pb_slot.assume_init()).expect("playback pcm");
+            let pb = pb_nn.as_ptr();
+            let pb_client = pb_nn.as_ref().client;
             assert!(!pb_client.is_null());
 
             assert_eq!(
@@ -1235,9 +1236,11 @@ mod tests {
             assert_eq!(pb_snap.written_frames, 256);
             assert_eq!(pb_snap.release_count, 1);
 
-            let mut cap: *mut snd_pcm_t = ptr::null_mut();
-            assert_eq!(snd_pcm_open(&raw mut cap, c"default".as_ptr(), 1, 0), 0);
-            let cap_client = (*cap).client;
+            let mut cap_slot = mem::MaybeUninit::<*mut snd_pcm_t>::zeroed();
+            assert_eq!(snd_pcm_open(cap_slot.as_mut_ptr(), c"default".as_ptr(), 1, 0), 0);
+            let cap_nn = ptr::NonNull::new(cap_slot.assume_init()).expect("capture pcm");
+            let cap = cap_nn.as_ptr();
+            let cap_client = cap_nn.as_ref().client;
             assert_eq!(
                 snd_pcm_set_params(cap, SND_PCM_FORMAT_FLOAT_LE, 0, 2, 48_000, 1, 20_000),
                 0

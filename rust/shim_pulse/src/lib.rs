@@ -2203,7 +2203,7 @@ mod tests {
                 channels: 2,
             };
             let mut err = -1;
-            let pb = pa_simple_new(
+            let pb_nn = core::ptr::NonNull::new(pa_simple_new(
                 ptr::null(),
                 c"SimpleApp".as_ptr(),
                 1,
@@ -2213,10 +2213,11 @@ mod tests {
                 ptr::null(),
                 ptr::null(),
                 &raw mut err,
-            );
-            assert!(!pb.is_null());
+            ))
+            .expect("pb");
+            let pb = pb_nn.as_ptr();
             assert_eq!(err, 0);
-            let h = (*pb).client;
+            let h = pb_nn.as_ref().client;
 
             let pcm = [0.25f32; 256 * 2];
             assert_eq!(
@@ -2231,7 +2232,7 @@ mod tests {
             assert_eq!(snap.written_frames, 256);
             assert_eq!(snap.release_count, 1);
 
-            let rec = pa_simple_new(
+            let rec_nn = core::ptr::NonNull::new(pa_simple_new(
                 ptr::null(),
                 c"RecApp".as_ptr(),
                 PA_STREAM_RECORD,
@@ -2241,9 +2242,10 @@ mod tests {
                 ptr::null(),
                 ptr::null(),
                 &raw mut err,
-            );
-            assert!(!rec.is_null());
-            let rh = (*rec).client;
+            ))
+            .expect("rec");
+            let rec = rec_nn.as_ptr();
+            let rh = rec_nn.as_ref().client;
             mem.push_capture_bytes(rh, &[0x6Du8; 64 * 8]);
             let mut rx = vec![0u8; 64 * 8];
             assert_eq!(pa_simple_read(rec, rx.as_mut_ptr().cast(), rx.len(), &raw mut err), 0);
@@ -2251,19 +2253,26 @@ mod tests {
             assert_eq!(pa_simple_flush(rec, &raw mut err), 0);
             pa_simple_free(rec);
 
-            let ml = pa_threaded_mainloop_new();
-            let ctx = pa_context_new(pa_threaded_mainloop_get_api(ml), c"AsyncApp".as_ptr());
+            let ml = core::ptr::NonNull::new(pa_threaded_mainloop_new()).expect("ml").as_ptr();
+            let api = core::ptr::NonNull::new(pa_threaded_mainloop_get_api(ml)).expect("api").as_ptr();
+            let ctx = core::ptr::NonNull::new(pa_context_new(api, c"AsyncApp".as_ptr())).expect("ctx").as_ptr();
             let mut cmap = pa_channel_map::default();
             pa_channel_map_init_stereo(&raw mut cmap);
-            let s = pa_stream_new(ctx, c"voice".as_ptr(), &raw const ss, &raw const cmap);
-            assert!(!s.is_null());
+            let s_nn = core::ptr::NonNull::new(pa_stream_new(
+                ctx,
+                c"voice".as_ptr(),
+                &raw const ss,
+                &raw const cmap,
+            ))
+            .expect("stream");
+            let s = s_nn.as_ptr();
             let mut vol = pa_cvolume::default();
             pa_cvolume_set(&raw mut vol, 2, PA_VOLUME_NORM / 2);
             assert_eq!(
                 pa_stream_connect_playback(s, ptr::null(), ptr::null(), 0, &raw const vol, ptr::null_mut()),
                 0
             );
-            let sh = (*s).lasapi;
+            let sh = s_nn.as_ref().lasapi;
             assert!(!sh.is_null());
             assert_eq!(pa_stream_write(s, pcm.as_ptr().cast(), core::mem::size_of_val(&pcm), None, 0, 0), 0);
             let mut lat = 0u64;
@@ -2271,7 +2280,7 @@ mod tests {
             assert_eq!(pa_stream_get_latency(s, &raw mut lat, &raw mut neg), 0);
             assert_eq!(neg, 0);
             assert!(lat > 0);
-            let op = pa_stream_cork(s, 1, None, ptr::null_mut());
+            let op = core::ptr::NonNull::new(pa_stream_cork(s, 1, None, ptr::null_mut())).expect("op").as_ptr();
             pa_operation_unref(op);
             assert!(!mem.snapshot_client(sh).unwrap().started);
             assert_eq!(pa_stream_disconnect(s), 0);

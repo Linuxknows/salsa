@@ -1069,7 +1069,7 @@ int main(int argc, char **argv) {
         thread::sleep(Duration::from_millis(100));
     }
     let (sess, st) = found.ok_or("Test PA stream never appeared in live engine status")?;
-    let sid = sess.session_id;
+    let sid = sess.session_num;
     let active_dev = cstr_to_string(&st.active_playback_id).trim().to_string();
 
     if set_session_control(sid, 73, 1, None) != 0 {

@@ -361,22 +361,19 @@ unsafe extern "C" fn my_jack_process(nframes: u32, arg: *mut c_void) -> c_int {
         let mbuf = unsafe { (ctx.get_buf)(ctx.port_midi, nframes) };
         let cnt = unsafe { (ctx.midi_get_count)(mbuf) };
         for m in 0..cnt {
-            let mut ev = TestJackMidiEvent {
-                time: 0,
-                size: 0,
-                buffer: ptr::null_mut(),
-            };
-            if unsafe { (ctx.midi_event_get)(&mut ev, mbuf, m) } == 0
-                && ev.size >= 3
-                && !ev.buffer.is_null()
-            {
-                let b0 = unsafe { *ev.buffer };
-                if (b0 & 0xF0) == 0x90 {
-                    let b1 = unsafe { *ev.buffer.add(1) };
-                    let b2 = unsafe { *ev.buffer.add(2) };
-                    ctx.last_midi_note.store(i32::from(b1), Ordering::Relaxed);
-                    ctx.last_midi_vel.store(i32::from(b2), Ordering::Relaxed);
-                    ctx.midi_notes_received.fetch_add(1, Ordering::Relaxed);
+            let mut ev_slot = mem::MaybeUninit::<TestJackMidiEvent>::zeroed();
+            if unsafe { (ctx.midi_event_get)(ev_slot.as_mut_ptr(), mbuf, m) } == 0 {
+                let ev = unsafe { ev_slot.assume_init() };
+                if ev.size >= 3 {
+                    if let Some(buf) = ptr::NonNull::new(ev.buffer) {
+                        let bytes = unsafe { core::slice::from_raw_parts(buf.as_ptr(), ev.size) };
+                        let b0 = bytes[0];
+                        if (b0 & 0xF0) == 0x90 {
+                            ctx.last_midi_note.store(i32::from(bytes[1]), Ordering::Relaxed);
+                            ctx.last_midi_vel.store(i32::from(bytes[2]), Ordering::Relaxed);
+                            ctx.midi_notes_received.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                 }
             }
         }

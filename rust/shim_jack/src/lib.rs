@@ -849,19 +849,29 @@ mod tests {
 
     unsafe extern "C" fn test_process_cb(nframes: JackNframes, arg: *mut c_void) -> c_int {
         let ctx = &mut *arg.cast::<JackCtx>();
-        let il = jack_port_get_buffer(ctx.in_l, nframes).cast::<f32>();
-        let ol = jack_port_get_buffer(ctx.out_l, nframes).cast::<f32>();
-        let or_ = jack_port_get_buffer(ctx.out_r, nframes).cast::<f32>();
-        ctx.in_sample_l = *il;
-        for f in 0..nframes as usize {
-            *ol.add(f) = *il.add(f) * 0.5;
-            *or_.add(f) = -0.25;
+        let (Some(il), Some(ol), Some(or_), Some(mi), Some(mo)) = (
+            core::ptr::NonNull::new(jack_port_get_buffer(ctx.in_l, nframes).cast::<f32>()),
+            core::ptr::NonNull::new(jack_port_get_buffer(ctx.out_l, nframes).cast::<f32>()),
+            core::ptr::NonNull::new(jack_port_get_buffer(ctx.out_r, nframes).cast::<f32>()),
+            core::ptr::NonNull::new(jack_port_get_buffer(ctx.midi_in, nframes)),
+            core::ptr::NonNull::new(jack_port_get_buffer(ctx.midi_out, nframes)),
+        ) else {
+            return -1;
+        };
+        let n = nframes as usize;
+        let in_slice = core::slice::from_raw_parts(il.as_ptr(), n);
+        let out_l_slice = core::slice::from_raw_parts_mut(ol.as_ptr(), n);
+        let out_r_slice = core::slice::from_raw_parts_mut(or_.as_ptr(), n);
+        if let Some(&first) = in_slice.first() {
+            ctx.in_sample_l = first;
         }
-        let mi = jack_port_get_buffer(ctx.midi_in, nframes);
-        ctx.got_midi = jack_midi_get_event_count(mi);
-        let mo = jack_port_get_buffer(ctx.midi_out, nframes);
+        for f in 0..n {
+            out_l_slice[f] = in_slice[f] * 0.5;
+            out_r_slice[f] = -0.25;
+        }
+        ctx.got_midi = jack_midi_get_event_count(mi.as_ptr());
         let note_on = [0x90u8, 64, 127];
-        jack_midi_event_write(mo, 4, note_on.as_ptr(), 3);
+        jack_midi_event_write(mo.as_ptr(), 4, note_on.as_ptr(), 3);
         0
     }
 
@@ -870,19 +880,63 @@ mod tests {
         let mem = Arc::new(InMemoryLasapiBackend::new(48_000, 2, 256));
         with_test_lasapi_backend(Arc::clone(&mem) as _, || unsafe {
             let mut status = -1;
-            let jc = jack_client_open(c"ArdourTest".as_ptr(), 0, &raw mut status);
-            assert!(!jc.is_null());
+            let mut jc_nn = core::ptr::NonNull::new(jack_client_open(
+                c"ArdourTest".as_ptr(),
+                0,
+                &raw mut status,
+            ))
+            .expect("jack_client_open");
+            let jc = jc_nn.as_ptr();
             assert_eq!(status, 0);
-            let jref = &mut *jc;
-            assert_eq!(jref.sample_rate, 48_000);
-            assert_eq!(jref.period_frames, 256);
-            let h = jref.lasapi_client;
+            assert_eq!(jc_nn.as_ref().sample_rate, 48_000);
+            assert_eq!(jc_nn.as_ref().period_frames, 256);
+            let h = jc_nn.as_ref().lasapi_client;
 
-            let in_l = jack_port_register(jc, c"cap_1".as_ptr(), c"32 bit float mono audio".as_ptr(), 0x1, 0);
-            let out_l = jack_port_register(jc, c"out_1".as_ptr(), c"32 bit float mono audio".as_ptr(), 0x2, 0);
-            let out_r = jack_port_register(jc, c"out_2".as_ptr(), c"32 bit float mono audio".as_ptr(), 0x2, 0);
-            let midi_in = jack_port_register(jc, c"midi_in".as_ptr(), c"8 bit raw midi".as_ptr(), 0x1, 0);
-            let midi_out = jack_port_register(jc, c"midi_out".as_ptr(), c"8 bit raw midi".as_ptr(), 0x2, 0);
+            let in_l = core::ptr::NonNull::new(jack_port_register(
+                jc,
+                c"cap_1".as_ptr(),
+                c"32 bit float mono audio".as_ptr(),
+                0x1,
+                0,
+            ))
+            .expect("in_l")
+            .as_ptr();
+            let out_l = core::ptr::NonNull::new(jack_port_register(
+                jc,
+                c"out_1".as_ptr(),
+                c"32 bit float mono audio".as_ptr(),
+                0x2,
+                0,
+            ))
+            .expect("out_l")
+            .as_ptr();
+            let out_r = core::ptr::NonNull::new(jack_port_register(
+                jc,
+                c"out_2".as_ptr(),
+                c"32 bit float mono audio".as_ptr(),
+                0x2,
+                0,
+            ))
+            .expect("out_r")
+            .as_ptr();
+            let midi_in = core::ptr::NonNull::new(jack_port_register(
+                jc,
+                c"midi_in".as_ptr(),
+                c"8 bit raw midi".as_ptr(),
+                0x1,
+                0,
+            ))
+            .expect("midi_in")
+            .as_ptr();
+            let midi_out = core::ptr::NonNull::new(jack_port_register(
+                jc,
+                c"midi_out".as_ptr(),
+                c"8 bit raw midi".as_ptr(),
+                0x2,
+                0,
+            ))
+            .expect("midi_out")
+            .as_ptr();
 
             let mut ctx = JackCtx {
                 out_l,
@@ -913,13 +967,13 @@ mod tests {
 
             let mut inter = vec![0.0f32; 256 * 2];
             let mut cap_inter = vec![0.0f32; 256 * 2];
-            run_one_jack_cycle(jref, &mut inter, &mut cap_inter, mem.as_ref());
+            run_one_jack_cycle(jc_nn.as_mut(), &mut inter, &mut cap_inter, mem.as_ref());
 
             assert!((ctx.in_sample_l - 0.8).abs() < 1e-6);
             assert_eq!(ctx.got_midi, 1);
             assert!((inter[0] - 0.4).abs() < 1e-6);
             assert!((inter[1] - (-0.25)).abs() < 1e-6);
-            assert_eq!(jref.frame_counter, 256);
+            assert_eq!(jc_nn.as_ref().frame_counter, 256);
 
             let snap = mem.snapshot_client(h).unwrap();
             assert_eq!(snap.written_frames, 256);

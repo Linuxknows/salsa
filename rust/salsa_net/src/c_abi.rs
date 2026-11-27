@@ -183,7 +183,7 @@ pub struct LasapiHwAnalogInfo {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct LasapiSessionInfo {
-    pub session_id: u32,
+    pub session_num: u32,
     pub client_pid: u32,
     pub client_name: [u8; 64],
     pub share_mode: u32,

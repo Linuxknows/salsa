@@ -7,7 +7,7 @@
 
 use core::cell::UnsafeCell;
 use core::ffi::{c_char, c_int, c_long, c_uint, c_void};
-use core::ptr;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Once;
 
@@ -765,11 +765,28 @@ unsafe fn cache_free(c: *mut PaCache) {
     ptr::write_bytes(c, 0, 1);
 }
 
-unsafe fn clone_cache_snapshot(wctx: *mut Wctx) -> *mut PaCache {
-    let snap = calloc(1, core::mem::size_of::<PaCache>()).cast::<PaCache>();
-    if snap.is_null() {
-        return ptr::null_mut();
+struct OwnedCacheSnapshot(NonNull<PaCache>);
+
+impl core::ops::Deref for OwnedCacheSnapshot {
+    type Target = PaCache;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.0.as_ref() }
     }
+}
+
+impl Drop for OwnedCacheSnapshot {
+    fn drop(&mut self) {
+        unsafe {
+            cache_free(self.0.as_ptr());
+            free(self.0.as_ptr().cast());
+        }
+    }
+}
+
+unsafe fn clone_cache_snapshot(wctx: *mut Wctx) -> Option<OwnedCacheSnapshot> {
+    let snap_nn = NonNull::new(calloc(1, core::mem::size_of::<PaCache>()).cast::<PaCache>())?;
+    let snap = snap_nn.as_ptr();
     let has_wctx = is_valid_wctx(wctx);
     if has_wctx {
         pthread_mutex_lock(&raw mut (*wctx).lock);
@@ -810,7 +827,7 @@ unsafe fn clone_cache_snapshot(wctx: *mut Wctx) -> *mut PaCache {
     if has_wctx {
         pthread_mutex_unlock(&raw mut (*wctx).lock);
     }
-    snap
+    Some(OwnedCacheSnapshot(snap_nn))
 }
 
 #[repr(C)]
@@ -1055,13 +1072,14 @@ unsafe extern "C" fn deliver_synth_op_cb(
         let wctx = (*op).wctx;
         if is_valid_wctx(wctx) {
             pa_context_ref(wctx.cast());
-            let mut cache: *mut PaCache = ptr::null_mut();
-            if !matches!(
+            let cache = if !matches!(
                 (*op).kind,
                 SynthKind::Success | SynthKind::StreamSuccess | SynthKind::EmptyEol
             ) {
-                cache = clone_cache_snapshot(wctx);
-            }
+                clone_cache_snapshot(wctx)
+            } else {
+                None
+            };
 
             match (*op).kind {
                 SynthKind::Success => {
@@ -1083,10 +1101,9 @@ unsafe extern "C" fn deliver_synth_op_cb(
                 }
                 SynthKind::ServerInfo => {
                     if !(*op).user_cb.is_null() {
-                        let si = if !cache.is_null() && (*cache).has_server {
-                            &raw const (*cache).server
-                        } else {
-                            ptr::null()
+                        let si = match cache.as_ref() {
+                            Some(c) if c.has_server => &raw const c.server,
+                            _ => ptr::null(),
                         };
                         let cb: unsafe extern "C" fn(
                             *mut pa_context,
@@ -1104,9 +1121,9 @@ unsafe extern "C" fn deliver_synth_op_cb(
                             c_int,
                             *mut c_void,
                         ) = core::mem::transmute((*op).user_cb);
-                        if !cache.is_null() {
-                            for i in 0..(*cache).n_sinks {
-                                cb(wctx.cast(), (*cache).sinks.add(i), 0, (*op).user_data);
+                        if let Some(ref c) = cache {
+                            for i in 0..c.n_sinks {
+                                cb(wctx.cast(), c.sinks.add(i), 0, (*op).user_data);
                             }
                         }
                         cb(wctx.cast(), ptr::null(), 1, (*op).user_data);
@@ -1120,16 +1137,16 @@ unsafe extern "C" fn deliver_synth_op_cb(
                             c_int,
                             *mut c_void,
                         ) = core::mem::transmute((*op).user_cb);
-                        if !cache.is_null() {
+                        if let Some(ref c) = cache {
                             let mut t: *const c_char = (*op).target_name;
                             if !t.is_null()
                                 && (strcmp(t, c"@DEFAULT_SINK@".as_ptr()) == 0
                                     || strcmp(t, c"default".as_ptr()) == 0)
                             {
-                                t = (*cache).default_sink_name;
+                                t = c.default_sink_name;
                             }
-                            for i in 0..(*cache).n_sinks {
-                                let s = (*cache).sinks.add(i);
+                            for i in 0..c.n_sinks {
+                                let s = c.sinks.add(i);
                                 if (!t.is_null() && !(*s).name.is_null() && strcmp((*s).name, t) == 0)
                                     || (t.is_null() && i == 0)
                                 {
@@ -1149,9 +1166,9 @@ unsafe extern "C" fn deliver_synth_op_cb(
                             c_int,
                             *mut c_void,
                         ) = core::mem::transmute((*op).user_cb);
-                        if !cache.is_null() {
-                            for i in 0..(*cache).n_sinks {
-                                let s = (*cache).sinks.add(i);
+                        if let Some(ref c) = cache {
+                            for i in 0..c.n_sinks {
+                                let s = c.sinks.add(i);
                                 if (*s).index == (*op).target_idx {
                                     cb(wctx.cast(), s, 0, (*op).user_data);
                                     break;
@@ -1169,9 +1186,9 @@ unsafe extern "C" fn deliver_synth_op_cb(
                             c_int,
                             *mut c_void,
                         ) = core::mem::transmute((*op).user_cb);
-                        if !cache.is_null() {
-                            for i in 0..(*cache).n_sources {
-                                cb(wctx.cast(), (*cache).sources.add(i), 0, (*op).user_data);
+                        if let Some(ref c) = cache {
+                            for i in 0..c.n_sources {
+                                cb(wctx.cast(), c.sources.add(i), 0, (*op).user_data);
                             }
                         }
                         cb(wctx.cast(), ptr::null(), 1, (*op).user_data);
@@ -1185,16 +1202,16 @@ unsafe extern "C" fn deliver_synth_op_cb(
                             c_int,
                             *mut c_void,
                         ) = core::mem::transmute((*op).user_cb);
-                        if !cache.is_null() {
+                        if let Some(ref c) = cache {
                             let mut t: *const c_char = (*op).target_name;
                             if !t.is_null()
                                 && (strcmp(t, c"@DEFAULT_SOURCE@".as_ptr()) == 0
                                     || strcmp(t, c"default".as_ptr()) == 0)
                             {
-                                t = (*cache).default_source_name;
+                                t = c.default_source_name;
                             }
-                            for i in 0..(*cache).n_sources {
-                                let s = (*cache).sources.add(i);
+                            for i in 0..c.n_sources {
+                                let s = c.sources.add(i);
                                 if (!t.is_null() && !(*s).name.is_null() && strcmp((*s).name, t) == 0)
                                     || (t.is_null() && i == 0)
                                 {
@@ -1214,9 +1231,9 @@ unsafe extern "C" fn deliver_synth_op_cb(
                             c_int,
                             *mut c_void,
                         ) = core::mem::transmute((*op).user_cb);
-                        if !cache.is_null() {
-                            for i in 0..(*cache).n_sources {
-                                let s = (*cache).sources.add(i);
+                        if let Some(ref c) = cache {
+                            for i in 0..c.n_sources {
+                                let s = c.sources.add(i);
                                 if (*s).index == (*op).target_idx {
                                     cb(wctx.cast(), s, 0, (*op).user_data);
                                     break;
@@ -1238,10 +1255,7 @@ unsafe extern "C" fn deliver_synth_op_cb(
                     }
                 }
             }
-            if !cache.is_null() {
-                cache_free(cache);
-                free(cache.cast());
-            }
+            drop(cache);
             pa_context_unref(wctx.cast());
         }
         if (*op).state == PA_OPERATION_RUNNING {
@@ -1764,7 +1778,13 @@ unsafe fn schedule_reconnect_timer(wctx: *mut Wctx, delay_us: u64) {
     let mut tv = TimeVal::default();
     let tv_ptr = if let Some(now_fn) = real().pa_rtclock_now {
         let now_us = now_fn();
-        rttime_to_timeval(now_us.saturating_add(delay_us), &raw mut tv)
+        match rttime_to_timeval(now_us.saturating_add(delay_us)) {
+            Some(rt_tv) => {
+                tv = rt_tv;
+                &raw const tv
+            }
+            None => ptr::null(),
+        }
     } else {
         gettimeofday(&raw mut tv, ptr::null_mut());
         tv.tv_usec += (delay_us % 1_000_000) as c_long;
@@ -1980,21 +2000,22 @@ unsafe extern "C" fn internal_stream_state_cb(rs: *mut pa_stream, ud: *mut c_voi
     if ws.is_null() {
         return;
     }
-    let mut wctx: *mut Wctx = ptr::null_mut();
+    let mut wctx_opt: Option<NonNull<Wctx>> = None;
     pthread_mutex_lock(G_STREAM_LOCK.get());
     let mut p = *G_STREAM_HEAD.get();
     while !p.is_null() {
         if p == ws {
             (*ws).r#ref.fetch_add(1, Ordering::AcqRel);
-            wctx = (*ws).wctx;
+            wctx_opt = NonNull::new((*ws).wctx);
             break;
         }
         p = (*p).global_next;
     }
     pthread_mutex_unlock(G_STREAM_LOCK.get());
-    if wctx.is_null() {
+    let Some(wctx_nn) = wctx_opt else {
         return;
-    }
+    };
+    let wctx = wctx_nn.as_ptr();
 
     pthread_mutex_lock(&raw mut (*wctx).lock);
     if (*ws).real_stream != rs {
@@ -2947,15 +2968,16 @@ pub unsafe extern "C" fn pa_context_get_index(c: *const pa_context) -> u32 {
 const PA_USEC_INVALID: pa_usec_t = u64::MAX;
 const PA_TIMEVAL_RTCLOCK: c_long = 1 << 30;
 
-unsafe fn rttime_to_timeval(usec: pa_usec_t, tv: *mut TimeVal) -> *const TimeVal {
+fn rttime_to_timeval(usec: pa_usec_t) -> Option<TimeVal> {
     if usec == PA_USEC_INVALID {
-        return ptr::null();
+        return None;
     }
     // Match libpulse's pa_timeval_rtstore(..., rtclock=true) so mainloop_time_new/restart
     // treat `usec` on the monotonic pa_rtclock timeline rather than wallclock gettimeofday.
-    (*tv).tv_sec = (usec / 1_000_000).min(c_long::MAX as u64) as c_long;
-    (*tv).tv_usec = ((usec % 1_000_000) as c_long) | PA_TIMEVAL_RTCLOCK;
-    tv
+    Some(TimeVal {
+        tv_sec: (usec / 1_000_000).min(c_long::MAX as u64) as c_long,
+        tv_usec: ((usec % 1_000_000) as c_long) | PA_TIMEVAL_RTCLOCK,
+    })
 }
 
 #[no_mangle]
@@ -2988,8 +3010,8 @@ pub unsafe extern "C" fn pa_context_rttime_new(
     let Some(time_new) = (*api).time_new else {
         return ptr::null_mut();
     };
-    let mut tv = TimeVal::default();
-    let tv_ptr = rttime_to_timeval(usec, &raw mut tv);
+    let tv = rttime_to_timeval(usec);
+    let tv_ptr = tv.as_ref().map_or(ptr::null(), ptr::from_ref);
     time_new(api, tv_ptr, cb, userdata)
 }
 
@@ -3027,8 +3049,8 @@ pub unsafe extern "C" fn pa_context_rttime_restart(
     let Some(time_restart) = (*api).time_restart else {
         return;
     };
-    let mut tv = TimeVal::default();
-    let tv_ptr = rttime_to_timeval(usec, &raw mut tv);
+    let tv = rttime_to_timeval(usec);
+    let tv_ptr = tv.as_ref().map_or(ptr::null(), ptr::from_ref);
     time_restart(e, tv_ptr);
 }
 
@@ -3145,24 +3167,25 @@ unsafe fn tee_unregister(tr: *mut TeeReq) {
     pthread_mutex_unlock(G_TEE_LOCK.get());
 }
 
-unsafe fn tee_begin_cb(
-    tr: *mut TeeReq,
-    terminal: bool,
-    out_wctx: &mut *mut Wctx,
-    out_replayed: &mut bool,
-    out_cb: &mut *mut c_void,
-    out_ud: &mut *mut c_void,
-) -> bool {
-    let mut found = false;
+struct TeeBegin {
+    wctx: Option<NonNull<Wctx>>,
+    already_replayed: bool,
+    ucb: *mut c_void,
+    uud: *mut c_void,
+}
+
+unsafe fn tee_begin_cb(tr: *mut TeeReq, terminal: bool) -> Option<TeeBegin> {
+    let mut out = None;
     pthread_mutex_lock(G_TEE_LOCK.get());
     let mut pp = G_TEE_HEAD.get();
     while !(*pp).is_null() {
         if *pp == tr {
-            found = true;
-            *out_wctx = (*tr).wctx;
-            *out_replayed = (*tr).replayed;
-            *out_cb = (*tr).user_cb;
-            *out_ud = (*tr).user_data;
+            out = Some(TeeBegin {
+                wctx: NonNull::new((*tr).wctx),
+                already_replayed: (*tr).replayed,
+                ucb: (*tr).user_cb,
+                uud: (*tr).user_data,
+            });
             if terminal {
                 *pp = (*tr).global_next;
                 (*tr).global_next = ptr::null_mut();
@@ -3172,7 +3195,7 @@ unsafe fn tee_begin_cb(
         pp = &raw mut (**pp).global_next;
     }
     pthread_mutex_unlock(G_TEE_LOCK.get());
-    found
+    out
 }
 
 unsafe fn detach_tees_for_wctx(wctx: *mut Wctx) {
@@ -3195,24 +3218,22 @@ unsafe fn reap_tees_for_rc(rc: *mut pa_context) {
     if rc.is_null() {
         return;
     }
-    let mut to_free: *mut TeeReq = ptr::null_mut();
+    let mut to_free: Vec<NonNull<TeeReq>> = Vec::new();
     pthread_mutex_lock(G_TEE_LOCK.get());
     let mut pp = G_TEE_HEAD.get();
-    while !(*pp).is_null() {
-        let tr = *pp;
+    while let Some(tr_nn) = NonNull::new(*pp) {
+        let tr = tr_nn.as_ptr();
         if (*tr).owner_rc == rc {
             *pp = (*tr).global_next;
-            (*tr).global_next = to_free;
-            to_free = tr;
+            (*tr).global_next = ptr::null_mut();
+            to_free.push(tr_nn);
         } else {
             pp = &raw mut (*tr).global_next;
         }
     }
     pthread_mutex_unlock(G_TEE_LOCK.get());
-    while !to_free.is_null() {
-        let nx = (*to_free).global_next;
-        tee_free(to_free);
-        to_free = nx;
+    for tr in to_free {
+        tee_free(tr.as_ptr());
     }
 }
 
@@ -3262,12 +3283,11 @@ unsafe fn replay_inflight_tees(wctx: *mut Wctx, rc: *mut pa_context) {
         let ri = items;
         items = (*ri).next;
         if !(*ri).user_cb.is_null() && is_valid_wctx(wctx) && !(*wctx).user_disconnected {
-            let c = clone_cache_snapshot(wctx);
-            if !c.is_null() {
+            if let Some(c) = clone_cache_snapshot(wctx) {
                 match (*ri).kind {
                     TeeKind::Server => {
-                        let si = if (*c).has_server {
-                            &raw const (*c).server
+                        let si = if c.has_server {
+                            &raw const c.server
                         } else {
                             ptr::null()
                         };
@@ -3286,8 +3306,8 @@ unsafe fn replay_inflight_tees(wctx: *mut Wctx, rc: *mut pa_context) {
                             *mut c_void,
                         ) = core::mem::transmute((*ri).user_cb);
                         if !(*ri).partial_sent {
-                            for k in 0..(*c).n_sinks {
-                                cb(wctx.cast(), (*c).sinks.add(k), 0, (*ri).user_data);
+                            for k in 0..c.n_sinks {
+                                cb(wctx.cast(), c.sinks.add(k), 0, (*ri).user_data);
                             }
                         }
                         cb(wctx.cast(), ptr::null(), 1, (*ri).user_data);
@@ -3300,15 +3320,13 @@ unsafe fn replay_inflight_tees(wctx: *mut Wctx, rc: *mut pa_context) {
                             *mut c_void,
                         ) = core::mem::transmute((*ri).user_cb);
                         if !(*ri).partial_sent {
-                            for k in 0..(*c).n_sources {
-                                cb(wctx.cast(), (*c).sources.add(k), 0, (*ri).user_data);
+                            for k in 0..c.n_sources {
+                                cb(wctx.cast(), c.sources.add(k), 0, (*ri).user_data);
                             }
                         }
                         cb(wctx.cast(), ptr::null(), 1, (*ri).user_data);
                     }
                 }
-                cache_free(c);
-                free(c.cast());
             }
         }
         free(ri.cast());
@@ -3324,24 +3342,19 @@ unsafe extern "C" fn tee_server_info_cb(
     ud: *mut c_void,
 ) {
     let tr = ud.cast::<TeeReq>();
-    let mut wctx: *mut Wctx = ptr::null_mut();
-    let mut already_replayed = false;
-    let mut ucb: *mut c_void = ptr::null_mut();
-    let mut uud: *mut c_void = ptr::null_mut();
-    if !tee_begin_cb(
-        tr,
-        true,
-        &mut wctx,
-        &mut already_replayed,
-        &mut ucb,
-        &mut uud,
-    ) {
+    let Some(tb) = tee_begin_cb(tr, true) else {
         return;
-    }
-    if already_replayed || !is_valid_wctx(wctx) {
+    };
+    let Some(wctx_nn) = tb.wctx else {
+        tee_free(tr);
+        return;
+    };
+    let wctx = wctx_nn.as_ptr();
+    if tb.already_replayed || !is_valid_wctx(wctx) {
         tee_free(tr);
         return;
     }
+    let (ucb, uud) = (tb.ucb, tb.uud);
     pa_context_ref(wctx.cast());
     if !i.is_null() {
         pthread_mutex_lock(&raw mut (*wctx).lock);
@@ -3358,20 +3371,16 @@ unsafe extern "C" fn tee_server_info_cb(
         }
     } else if !(*wctx).user_disconnected {
         let c = clone_cache_snapshot(wctx);
-        let si = if !c.is_null() && (*c).has_server {
-            &raw const (*c).server
-        } else {
-            ptr::null()
+        let si = match c.as_ref() {
+            Some(cache) if cache.has_server => &raw const cache.server,
+            _ => ptr::null(),
         };
         if !ucb.is_null() {
             let cb: unsafe extern "C" fn(*mut pa_context, *const pa_server_info, *mut c_void) =
                 core::mem::transmute(ucb);
             cb(wctx.cast(), si, uud);
         }
-        if !c.is_null() {
-            cache_free(c);
-            free(c.cast());
-        }
+        drop(c);
     } else if !ucb.is_null() {
         let cb: unsafe extern "C" fn(*mut pa_context, *const pa_server_info, *mut c_void) =
             core::mem::transmute(ucb);
@@ -3388,25 +3397,19 @@ unsafe extern "C" fn tee_sink_list_cb(
     ud: *mut c_void,
 ) {
     let tr = ud.cast::<TeeReq>();
-    let mut wctx: *mut Wctx = ptr::null_mut();
-    let mut already_replayed = false;
-    let mut ucb: *mut c_void = ptr::null_mut();
-    let mut uud: *mut c_void = ptr::null_mut();
 
     if eol == 0 && !i.is_null() {
-        if !tee_begin_cb(
-            tr,
-            false,
-            &mut wctx,
-            &mut already_replayed,
-            &mut ucb,
-            &mut uud,
-        ) {
+        let Some(tb) = tee_begin_cb(tr, false) else {
+            return;
+        };
+        let Some(wctx_nn) = tb.wctx else {
+            return;
+        };
+        let wctx = wctx_nn.as_ptr();
+        if tb.already_replayed || !is_valid_wctx(wctx) {
             return;
         }
-        if already_replayed || !is_valid_wctx(wctx) {
-            return;
-        }
+        let (ucb, uud) = (tb.ucb, tb.uud);
         if (*tr).n_sinks == (*tr).cap_sinks {
             let nc = if (*tr).cap_sinks != 0 {
                 (*tr).cap_sinks * 2
@@ -3442,26 +3445,24 @@ unsafe extern "C" fn tee_sink_list_cb(
         return;
     }
 
-    if !tee_begin_cb(
-        tr,
-        true,
-        &mut wctx,
-        &mut already_replayed,
-        &mut ucb,
-        &mut uud,
-    ) {
+    let Some(tb) = tee_begin_cb(tr, true) else {
         return;
-    }
-    if already_replayed || !is_valid_wctx(wctx) {
+    };
+    let Some(wctx_nn) = tb.wctx else {
+        tee_free(tr);
+        return;
+    };
+    let wctx = wctx_nn.as_ptr();
+    if tb.already_replayed || !is_valid_wctx(wctx) {
         tee_free(tr);
         return;
     }
+    let (ucb, uud) = (tb.ucb, tb.uud);
 
     pa_context_ref(wctx.cast());
     if eol < 0 && (*tr).n_sinks == 0 && !(*wctx).user_disconnected {
         let c = clone_cache_snapshot(wctx);
-        let has_cached = !c.is_null() && (*c).n_sinks > 0;
-        if has_cached {
+        if let Some(cache) = c.as_ref().filter(|cache| cache.n_sinks > 0) {
             if !ucb.is_null() {
                 let cb: unsafe extern "C" fn(
                     *mut pa_context,
@@ -3469,8 +3470,8 @@ unsafe extern "C" fn tee_sink_list_cb(
                     c_int,
                     *mut c_void,
                 ) = core::mem::transmute(ucb);
-                for k in 0..(*c).n_sinks {
-                    cb(wctx.cast(), (*c).sinks.add(k), 0, uud);
+                for k in 0..cache.n_sinks {
+                    cb(wctx.cast(), cache.sinks.add(k), 0, uud);
                 }
                 cb(wctx.cast(), ptr::null(), 1, uud);
             }
@@ -3484,10 +3485,7 @@ unsafe extern "C" fn tee_sink_list_cb(
             ) = core::mem::transmute(ucb);
             cb(wctx.cast(), i, out_eol, uud);
         }
-        if !c.is_null() {
-            cache_free(c);
-            free(c.cast());
-        }
+        drop(c);
     } else if !ucb.is_null() {
         let out_eol = if eol < 0
             && ((*tr).n_sinks > 0 || (*wctx).reconnecting)
@@ -3530,25 +3528,19 @@ unsafe extern "C" fn tee_source_list_cb(
     ud: *mut c_void,
 ) {
     let tr = ud.cast::<TeeReq>();
-    let mut wctx: *mut Wctx = ptr::null_mut();
-    let mut already_replayed = false;
-    let mut ucb: *mut c_void = ptr::null_mut();
-    let mut uud: *mut c_void = ptr::null_mut();
 
     if eol == 0 && !i.is_null() {
-        if !tee_begin_cb(
-            tr,
-            false,
-            &mut wctx,
-            &mut already_replayed,
-            &mut ucb,
-            &mut uud,
-        ) {
+        let Some(tb) = tee_begin_cb(tr, false) else {
+            return;
+        };
+        let Some(wctx_nn) = tb.wctx else {
+            return;
+        };
+        let wctx = wctx_nn.as_ptr();
+        if tb.already_replayed || !is_valid_wctx(wctx) {
             return;
         }
-        if already_replayed || !is_valid_wctx(wctx) {
-            return;
-        }
+        let (ucb, uud) = (tb.ucb, tb.uud);
         if (*tr).n_sources == (*tr).cap_sources {
             let nc = if (*tr).cap_sources != 0 {
                 (*tr).cap_sources * 2
@@ -3584,26 +3576,24 @@ unsafe extern "C" fn tee_source_list_cb(
         return;
     }
 
-    if !tee_begin_cb(
-        tr,
-        true,
-        &mut wctx,
-        &mut already_replayed,
-        &mut ucb,
-        &mut uud,
-    ) {
+    let Some(tb) = tee_begin_cb(tr, true) else {
         return;
-    }
-    if already_replayed || !is_valid_wctx(wctx) {
+    };
+    let Some(wctx_nn) = tb.wctx else {
+        tee_free(tr);
+        return;
+    };
+    let wctx = wctx_nn.as_ptr();
+    if tb.already_replayed || !is_valid_wctx(wctx) {
         tee_free(tr);
         return;
     }
+    let (ucb, uud) = (tb.ucb, tb.uud);
 
     pa_context_ref(wctx.cast());
     if eol < 0 && (*tr).n_sources == 0 && !(*wctx).user_disconnected {
         let c = clone_cache_snapshot(wctx);
-        let has_cached = !c.is_null() && (*c).n_sources > 0;
-        if has_cached {
+        if let Some(cache) = c.as_ref().filter(|cache| cache.n_sources > 0) {
             if !ucb.is_null() {
                 let cb: unsafe extern "C" fn(
                     *mut pa_context,
@@ -3611,8 +3601,8 @@ unsafe extern "C" fn tee_source_list_cb(
                     c_int,
                     *mut c_void,
                 ) = core::mem::transmute(ucb);
-                for k in 0..(*c).n_sources {
-                    cb(wctx.cast(), (*c).sources.add(k), 0, uud);
+                for k in 0..cache.n_sources {
+                    cb(wctx.cast(), cache.sources.add(k), 0, uud);
                 }
                 cb(wctx.cast(), ptr::null(), 1, uud);
             }
@@ -3626,10 +3616,7 @@ unsafe extern "C" fn tee_source_list_cb(
             ) = core::mem::transmute(ucb);
             cb(wctx.cast(), i, out_eol, uud);
         }
-        if !c.is_null() {
-            cache_free(c);
-            free(c.cast());
-        }
+        drop(c);
     } else if !ucb.is_null() {
         let out_eol = if eol < 0
             && ((*tr).n_sources > 0 || (*wctx).reconnecting)
@@ -6494,14 +6481,12 @@ mod tests {
             }
         }
 
-        unsafe {
-            let mut tv = TimeVal::default();
-            assert!(rttime_to_timeval(PA_USEC_INVALID, &raw mut tv).is_null());
-            let p = rttime_to_timeval(12_345_678, &raw mut tv);
-            assert!(!p.is_null());
-            assert_eq!((*p).tv_sec, 12);
-            assert_eq!((*p).tv_usec, 345_678 | PA_TIMEVAL_RTCLOCK);
+        assert!(rttime_to_timeval(PA_USEC_INVALID).is_none());
+        let rt_tv = rttime_to_timeval(12_345_678).expect("valid timeval");
+        assert_eq!(rt_tv.tv_sec, 12);
+        assert_eq!(rt_tv.tv_usec, 345_678 | PA_TIMEVAL_RTCLOCK);
 
+        unsafe {
             let mut fake = FakeTimeState::default();
             let mut api: pa_mainloop_api = core::mem::zeroed();
             api.userdata = (&raw mut fake).cast();
