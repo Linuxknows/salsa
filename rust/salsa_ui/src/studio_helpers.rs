@@ -109,7 +109,7 @@ pub fn apply_json_to_eq_cfg(
 }
 
 // ============================================================================
-// Persistent Imported AutoEQ Preset Library (gui_settings.json)
+// Persistent Imported AutoEQ Preset Library (settings.json)
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
@@ -647,7 +647,7 @@ Filter 3: ON HSC Fc 9500 Hz Gain 2.0 dB Q 0.85
         let mut library = Vec::new();
         upsert_saved_autoeq_preset(&mut library, saved.clone());
 
-        // Round-trip via JSON as stored in gui_settings.json
+        // Round-trip via JSON as stored in settings.json
         let root_json = JsonValue::obj(vec![(
             "imported_eq_presets",
             saved_autoeq_list_to_json(&library),

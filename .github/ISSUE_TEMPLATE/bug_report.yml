@@ -23,8 +23,8 @@ body:
     id: salsa_version
     attributes:
       label: Salsa Version
-      description: Output of `lasapi-ctl --version` or `salsa-debug --version` (e.g., `V2.27.1`)
-      placeholder: "V2.27.1"
+      description: Output of `lasapi-ctl --version` or `salsa-debug --version` (e.g., `V2.27.2`)
+      placeholder: "V2.27.2"
     validations:
       required: true
 

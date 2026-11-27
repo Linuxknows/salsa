@@ -693,7 +693,7 @@ fn test_capture_and_loopback(shim_dir: &str) -> i32 {
 }
 
 fn test_rev61_studio_features() -> i32 {
-    println!("[Test 7/7] v6.x-beta Fixed Clock, Parametric EQ, Mic APO & BT Codec APIs...");
+    println!("[Test 7/8] LASAPI Fixed Master Clock, Parametric EQ, Mic APO & BT Codec APIs...");
     unsafe {
         let mut orig: LasapiEngineStatus = mem::zeroed();
         if LASAPI_GetEngineStatus(&mut orig) != S_OK {
@@ -747,7 +747,7 @@ fn test_rev61_studio_features() -> i32 {
             || (cur.hw_format_bits != 16 && cur.hw_format_bits != 24 && cur.hw_format_bits != 32)
         {
             eprintln!(
-                "  -> FAIL: v6.x-beta state mismatch (eq_type={} cf={} mic={} st={} rate={} bits={})",
+                "  -> FAIL: Studio API state mismatch (eq_type={} cf={} mic={} st={} rate={} bits={})",
                 cur.param_eq.band_type[0],
                 cur.param_eq.crossfeed_enabled,
                 cur.mic_apo.enabled,
@@ -775,11 +775,11 @@ fn test_rev61_studio_features() -> i32 {
 }
 
 fn test_rev62_hw_analog() -> i32 {
-    println!("[Test 8/8] Testing v6.2-beta Hardware DAC Unity, Analog Soft-Knee & Amp Architecture...");
+    println!("[Test 8/8] Testing Analog Stage DAC Unity, Soft-Knee & Amp Architecture...");
     unsafe {
         let mut orig: LasapiEngineStatus = mem::zeroed();
         if LASAPI_GetEngineStatus(&mut orig) != S_OK {
-            println!("  -> SKIP: Daemon not active for standalone v6.2-beta HW analog test.");
+            println!("  -> SKIP: Daemon not active for standalone Analog Stage test.");
             return 0;
         }
 
@@ -797,7 +797,7 @@ fn test_rev62_hw_analog() -> i32 {
             || cur.hw_analog_cfg.mic_hw_boost_db < 5.9
         {
             eprintln!(
-                "  -> FAIL: v6.2-beta HW analog readback mismatch (boost={:.2} mic={:.2})",
+                "  -> FAIL: Analog Stage readback mismatch (boost={:.2} mic={:.2})",
                 cur.hw_analog_cfg.analog_boost_db, cur.hw_analog_cfg.mic_hw_boost_db
             );
             rc = 1;
@@ -808,7 +808,7 @@ fn test_rev62_hw_analog() -> i32 {
             let arch = salsa_wire::c_abi::c_str_to_string(&cur.hw_analog_info.card_arch_name);
             let arch_disp = if arch.is_empty() { "Virtual" } else { &arch };
             println!(
-                "  -> PASS: v6.2-beta HW Analog Architecture API & state restoration verified! (Arch: {arch_disp})"
+                "  -> PASS: Analog Stage API & state restoration verified! (Arch: {arch_disp})"
             );
         }
         rc
@@ -850,7 +850,10 @@ fn main() -> ExitCode {
     }
 
     println!("========================================================================");
-    println!(" ALL 8 LASAPI FULL-DUPLEX AUDIO, ABI SHIM & v6.2-beta TESTS PASSED!");
+    println!(
+        " ALL 8 LASAPI {} FULL-DUPLEX AUDIO, ABI SHIM & ANALOG STAGE TESTS PASSED!",
+        salsa_wire::legal::salsa_version()
+    );
     println!("========================================================================");
     ExitCode::SUCCESS
 }

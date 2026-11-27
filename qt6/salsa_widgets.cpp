@@ -112,23 +112,32 @@ void SalsaAutoGraphCanvas::mouseMoveEvent(QMouseEvent* event) {
             setToolTip(QStringLiteral("Interactive Signal Flow Topology — Displays live app clients, DSP/EQ processing, output sinks, capture mics, and MIDI routes. Click any node to open its Owner's Manual chapter."));
         } else {
             QString desc = QStringLiteral("Click node '%1' to open its corresponding Owner's Manual chapter.").arg(hit);
-            for (const auto& n : hitNodes_) {
-                if (n.key == hit) {
-                    if (n.manualKey == QLatin1String("apps") || hit == QLatin1String("play")) {
-                        desc = QStringLiteral("Active Playback & App Clients — Native LASAPI, Pulse v35, ALSA, and JACK client streams entering Salsa's lock-free mixer. Click to open manual details.");
-                    } else if (n.manualKey == QLatin1String("cap") || hit == QLatin1String("capt")) {
-                        desc = QStringLiteral("Capture & Microphone Input — Direct ALSA capture hardware, loopback monitors, and HFP SCO. Click to open manual details.");
-                    } else if (n.manualKey == QLatin1String("dsp") || hit == QLatin1String("dsp")) {
-                        desc = QStringLiteral("10-Band Dynamic EQ & Spatial DSP — Real-time biquad parametric EQ, dynamic compress/expand, crossfeed, and limiter stage. Click to open manual details.");
-                    } else if (n.manualKey == QLatin1String("out") || hit == QLatin1String("sink")) {
-                        desc = QStringLiteral("Master Output Endpoint — Direct kernel WaveRT ALSA PCM or BlueZ A2DP L2CAP wireless output stage. Click to open manual details.");
-                    } else if (n.manualKey == QLatin1String("midi") || hit == QLatin1String("midi")) {
-                        desc = QStringLiteral("DAW MIDI Hub — Lock-free ALSA Sequencer and JACK MIDI event bridge. Click to open manual details.");
-                    } else if (n.manualKey == QLatin1String("overview")) {
-                        desc = QStringLiteral("Salsa RT Audio Engine — SCHED_FIFO real-time WaveRT mixer coordinating all audio, DSP, Video ScreenCast, and device clocks. Click to open overview.");
-                    }
-                    break;
-                }
+            if (hit == QLatin1String("apps_in")) {
+                desc = QStringLiteral("Audio Sessions & Host Shims — Provisioned via provisioning.rs (.asoundrc, OpenAL, environment.d), Hollow Shims, Reconnect Proxy (salsa_host_dl), native PA v35 server, and liblasapi.so (LASAPI_CMD_CONTROL_V2). Click for Chapter 2.");
+            } else if (hit == QLatin1String("mic_in")) {
+                desc = QStringLiteral("Capture & Mic APO Input — Full-duplex WaveRT capture at independent Capture Clock rate, Mic APO DSP (dsp.rs), and MsbcScoTranscoder HFP BTPROTO_SCO. Click for Chapter 3.");
+            } else if (hit == QLatin1String("midi_in")) {
+                desc = QStringLiteral("Hardware RawMIDI + Sequencer — Scans /dev/snd/midiC*D* and loads ALSA Sequencer via salsa_host_dl::open_verified_optional_lib. Click for Chapter 4.");
+            } else if (hit == QLatin1String("shm_ring")) {
+                desc = QStringLiteral("WaveRT Shared Memory Ring (wavert_ring.rs) — Sealed F_SEAL_SHRINK | F_SEAL_GROW memfd_create ring with PodBytes layout safety, SCM_RIGHTS FD passing, and eventfd wakeups. Click for Chapter 5.");
+            } else if (hit == QLatin1String("engine_core")) {
+                desc = QStringLiteral("lasapi-audiodg Core (audiodg_engine.rs) — #![deny(unsafe_code)] SCHED_FIFO Master Clock graph coordinating AlsaPlaybackBackend, Control IPC (LASAPI_CMD_CONTROL_V2), and Hotplug Tracker. Click for Chapter 6.");
+            } else if (hit == QLatin1String("dyn_eq")) {
+                desc = QStringLiteral("10-Band Dynamic EQ & Spatial APO — Real-time biquads, Per-Device EQ Profiles persisted in settings.json, Bauer crossfeed, and mastering limiter. Click for Chapter 7.");
+            } else if (hit == QLatin1String("midi_hub")) {
+                desc = QStringLiteral("DAW MIDI Hub (midi_hub.rs) — Sample-accurate 512-event lock-free ring bridging ALSA Sequencer (verified host dlopen) and JACK MIDI. Click for Chapter 4.");
+            } else if (hit == QLatin1String("hw_out")) {
+                desc = QStringLiteral("Master Output Sink — AlsaPlaybackBackend (/dev/snd/pcmC*D* + Analog Stage) or RealBluezBackend + A2dpCodecAdapter with peak-capped ABR and LASAPI_BT_CONN_RESET. Click for Chapter 8.");
+            } else if (hit == QLatin1String("capt_out")) {
+                desc = QStringLiteral("Capture & Direct-on-Input Tap — Distributes hardware mic capture, HFP SCO, and post-EQ lasapi_default_sink.monitor streams to OBS/Discord. Click for Chapter 8.");
+            } else if (hit == QLatin1String("vid_src")) {
+                desc = QStringLiteral("Wayland ScreenCast Producer — Unified gio_dbus Portal D-Bus client (open_verified_optional_lib) negotiating OpenPipeWireRemote DmaBuf/MemFd streams. Click for Chapter 11A.");
+            } else if (hit == QLatin1String("vid_broker")) {
+                desc = QStringLiteral("Zero-PipeWire ScreenCast Broker (pw_broker.rs) — Socket-activated pipewire-0 handler routing video buffers while rejecting audio nodes (audio_rejects). Click for Chapter 11B.");
+            } else if (hit == QLatin1String("vid_relay")) {
+                desc = QStringLiteral("Video Frame Relay & Preview Seqlock (preview_shm.rs) — SCM_RIGHTS FD relay, PW_CAST_LIMITS caps, DMA-BUF GL blit, and zero-aliasing PreviewShmWriter/Reader seqlock. Click for Chapter 11C.");
+            } else if (hit == QLatin1String("vid_cons")) {
+                desc = QStringLiteral("ScreenCast Video Consumers — Discord, OBS, browsers, and KDE MediaMonitor paired with 0.33 ms WaveRT Audio + Direct-on-Input Taps. Click for Chapter 11D.");
             }
             setToolTip(desc);
         }
@@ -217,7 +226,7 @@ void SalsaAutoGraphCanvas::drawNode(
     p.setPen(QPen((isSel || isHov) ? accent : theme_.qcolor("node_border", "#2c3340"), borderW));
     p.drawRoundedRect(r, 9.0, 9.0);
 
-    // v6.9-beta translucent tinted node header bar
+    // Translucent tinted node header bar
     const double hdrH = std::clamp(r.height() * 0.25, 19.0, 24.0);
     const QRectF hdrRect(r.x() + 1.0, r.y() + 1.0, r.width() - 2.0, hdrH);
     QColor hdrCol(accent);
@@ -397,12 +406,15 @@ void SalsaAutoGraphCanvas::paintEvent(QPaintEvent*) {
              appsLines, cSec, false, true);
 
     const uint32_t capKhz = std::max<uint32_t>(1, data_.capSampleRate / 1000);
-    const QString micBadge = QStringLiteral("%1k RAW").arg(capKhz);
-    const QString micRateLine = QStringLiteral("Capture: %1 kHz Direct Raw")
+    const QString micBadge = QStringLiteral("%1k %2").arg(capKhz).arg(data_.micApoEnabled ? QStringLiteral("APO") : QStringLiteral("RAW"));
+    const QString micRateLine = QStringLiteral("Capture Clock: %1 kHz")
                                     .arg(data_.capSampleRate / 1000.0, 0, 'g', 4);
-    const QString micBtLine = QStringLiteral("Gain: %1% | HFP SCO: %2")
+    const QString micApoTag = data_.micApoEnabled
+                                  ? (data_.micSidetoneEnabled ? QStringLiteral("APO+ST") : QStringLiteral("APO"))
+                                  : QStringLiteral("RAW");
+    const QString micBtLine = QStringLiteral("Gain: %1% | %2 | HFP: %3")
                                   .arg(data_.micVol)
-                                  .arg(data_.btActive ? QStringLiteral("READY") : QStringLiteral("OFF"));
+                                  .arg(micApoTag, data_.btActive ? QStringLiteral("READY") : QStringLiteral("OFF"));
     drawNode(p, QStringLiteral("mic_in"), QStringLiteral("mic_in"), rMic,
              QStringLiteral("Hardware Mic Input"), micBadge,
              {QStringLiteral("Dev: %1").arg(data_.hwMic), micRateLine, micBtLine},
@@ -418,20 +430,20 @@ void SalsaAutoGraphCanvas::paintEvent(QPaintEvent*) {
 
     const QString shmBadge = data_.hasSnap ? QStringLiteral("%1 µs").arg(data_.rtAvgUs, 0, 'f', 2) : QStringLiteral("0-COPY");
     drawNode(p, QStringLiteral("shm_ring"), QStringLiteral("shm_ring"), rShm,
-             QStringLiteral("WaveRT Shared Mem"), shmBadge,
-             {QStringLiteral("memfd_create + SCM_RIGHTS"),
-              QStringLiteral("Kernel eventfd Wakeups"),
-              QStringLiteral("32,768 Stereo f32 Ring"),
-              QStringLiteral("100% Zero-Copy Commit")},
+             QStringLiteral("WaveRT Ring"), shmBadge,
+             {QStringLiteral("WaveRtRing (Sealed memfd)"),
+              QStringLiteral("SCM_RIGHTS + eventfd Wake"),
+              QStringLiteral("32,768 Stereo f32 Frames"),
+              QStringLiteral("PodBytes Zero-Copy Commit")},
              cPri, true, true);
 
     const double latMs = data_.rate > 0 ? (static_cast<double>(data_.period) * 1000.0 / data_.rate) : 5.33;
     drawNode(p, QStringLiteral("engine_core"), QStringLiteral("engine_core"), rEng,
-             QStringLiteral("lasapi-audiodg"), QStringLiteral("FIXED MASTER"),
+             QStringLiteral("lasapi-audiodg"), QStringLiteral("MASTER CLOCK"),
              {QStringLiteral("Master: %1 kHz / %2-bit").arg(data_.rate / 1000.0, 0, 'f', 1).arg(data_.bits),
               QStringLiteral("Quantum: %1f (%2 ms)").arg(data_.period).arg(latMs, 0, 'f', 2),
-              QStringLiteral("SCHED_FIFO (mlock)"),
-              QStringLiteral("PA v35 Clients: %1").arg(data_.paClients)},
+              QStringLiteral("SCHED_FIFO | Safe Core"),
+              QStringLiteral("PA v35 (%1) + ControlV2").arg(data_.paClients)},
              cPri, true, true);
 
     drawNode(p, QStringLiteral("dyn_eq"), QStringLiteral("dyn_eq"), rEq,
@@ -460,8 +472,8 @@ void SalsaAutoGraphCanvas::paintEvent(QPaintEvent*) {
                                data_.hwHidConnected ? QStringLiteral(" | HID") : QString());
     }
     const QString btLine = data_.btActive
-                               ? QStringLiteral("BT: %1 (%2 ms)").arg(data_.btCodec, QString::number(data_.btDelayMs))
-                               : QStringLiteral("Wired Low-Latency Endpoint");
+                               ? QStringLiteral("BT: %1 (%2 ms) A2DP").arg(data_.btCodec, QString::number(data_.btDelayMs))
+                               : QStringLiteral("AlsaPlaybackBackend Direct");
     drawNode(p, QStringLiteral("hw_out"), QStringLiteral("hw_out"), rOut,
              QStringLiteral("Master Output Sink"),
              data_.spkMuted ? QStringLiteral("MUTED") : QStringLiteral("Vol %1%").arg(data_.spkVol),
@@ -484,18 +496,18 @@ void SalsaAutoGraphCanvas::paintEvent(QPaintEvent*) {
              capLines, cWarn, true, false);
 
     // Video ScreenCast Nodes
-    drawNode(p, QStringLiteral("vid_src"), QStringLiteral("vid_broker"), rVidSrc,
+    drawNode(p, QStringLiteral("vid_src"), QStringLiteral("vid_src"), rVidSrc,
              QStringLiteral("Video Producer"),
              vidLive ? QStringLiteral("CASTING") : QStringLiteral("STANDBY"),
-             {QStringLiteral("Wayland Portal / KWin"),
+             {QStringLiteral("Wayland Portal (gio_dbus)"),
               QStringLiteral("Streams: %1 DMA / %2 MemFd").arg(data_.pwDmabufStreams).arg(data_.pwMemfdStreams),
               QStringLiteral("Portal: OpenPipeWireRemote")},
              cVid, false, true);
 
     drawNode(p, QStringLiteral("vid_broker"), QStringLiteral("vid_broker"), rVidBrk,
-             QStringLiteral("Video PW Broker"),
+             QStringLiteral("ScreenCast Broker"),
              data_.pwBrokerRunning ? QStringLiteral("ONLINE") : QStringLiteral("OFFLINE"),
-             {QStringLiteral("Sock: pipewire-0"),
+             {QStringLiteral("Sock: pipewire-0 (SocketAct)"),
               QStringLiteral("Clients: %1").arg(data_.pwClients.size()),
               QStringLiteral("Audio Rejects: %1").arg(data_.pwAudioRejects)},
              data_.pwBrokerRunning ? cVid : cWarn, true, true);
@@ -503,25 +515,25 @@ void SalsaAutoGraphCanvas::paintEvent(QPaintEvent*) {
     const QString capTxt = data_.pwCastLimitFps > 0
                                ? QStringLiteral("%1x%2@%3").arg(data_.pwCastLimitW).arg(data_.pwCastLimitH).arg(data_.pwCastLimitFps)
                                : QStringLiteral("Source (Uncapped)");
-    drawNode(p, QStringLiteral("vid_relay"), QStringLiteral("vid_broker"), rVidRel,
-             QStringLiteral("Video Relay & Cap"),
+    drawNode(p, QStringLiteral("vid_relay"), QStringLiteral("vid_relay"), rVidRel,
+             QStringLiteral("Video Relay & Seqlock"),
              vidLive ? QStringLiteral("%1 FPS").arg(data_.pwActualFps, 0, 'f', 1) : QStringLiteral("IDLE"),
              {QStringLiteral("Cap: %1").arg(capTxt),
               QStringLiteral("Relayed: %1 (%2 FPS)").arg(data_.pwFramesRelayed).arg(data_.pwActualFps, 0, 'f', 1),
-              QStringLiteral("Dropped: %1 | SHM Zero-Copy").arg(data_.pwFramesDropped)},
+              QStringLiteral("Drop: %1 | Preview: %2").arg(data_.pwFramesDropped).arg(data_.pwPreviewRequested ? QStringLiteral("LIVE") : QStringLiteral("IDLE"))},
              vidLive ? cPri : cVid, true, true);
 
     QStringList consLines;
     if (vidLive) {
         consLines = {QStringLiteral("Active Video Consumer"),
                      QStringLiteral("Handoff: OpenPipeWireRemote OK"),
-                     QStringLiteral("Audio: Native Salsa PA/LASAPI")};
+                     QStringLiteral("Audio: Direct-on-Input Tap")};
     } else {
         consLines = {QStringLiteral("Discord / OBS / WebRTC Ready"),
                      QStringLiteral("OpenPipeWireRemote OK"),
-                     QStringLiteral("Parallel Native Salsa Audio")};
+                     QStringLiteral("Parallel WaveRT + PA v35")};
     }
-    drawNode(p, QStringLiteral("vid_cons"), QStringLiteral("vid_broker"), rVidCon,
+    drawNode(p, QStringLiteral("vid_cons"), QStringLiteral("vid_cons"), rVidCon,
              QStringLiteral("Video Consumers"),
              vidLive ? QStringLiteral("LIVE") : QStringLiteral("STANDBY"),
              consLines, vidLive ? cWarn : cVid, true, false);
@@ -1008,11 +1020,11 @@ void MiniGraphCanvas::paintEvent(QPaintEvent*) {
         p.drawText(QRectF(r.right() - 36, r.top() + 3, 31, 15), Qt::AlignRight | Qt::AlignVCenter, badge);
     };
 
-    box(n1, QStringLiteral("Apps"), QStringLiteral("LIVE"), theme_.qcolor("accent_secondary", "#38bdf8"));
+    box(n1, QStringLiteral("Sessions"), QStringLiteral("LIVE"), theme_.qcolor("accent_secondary", "#38bdf8"));
     box(n2, QStringLiteral("Mic + MIDI"), QStringLiteral("48k"), theme_.qcolor("accent_midi", "#a78bfa"));
     box(n3, QStringLiteral("audiodg"), QStringLiteral("FIFO"), theme_.qcolor("accent_primary", "#00e676"), true);
-    box(n4, QStringLiteral("Output"), QStringLiteral("100%"), theme_.qcolor("accent_out", "#34d399"));
-    box(n5, QStringLiteral("Video"), QStringLiteral("BRK"), theme_.qcolor("accent_warn", "#f59e0b"));
+    box(n4, QStringLiteral("Endpoint"), QStringLiteral("100%"), theme_.qcolor("accent_out", "#34d399"));
+    box(n5, QStringLiteral("ScreenCast"), QStringLiteral("BRK"), theme_.qcolor("accent_warn", "#f59e0b"));
 }
 
 MiniSalsaPreview::MiniSalsaPreview(const SalsaThemeData& theme, QWidget* parent)

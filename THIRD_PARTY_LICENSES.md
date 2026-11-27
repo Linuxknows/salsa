@@ -9,11 +9,11 @@ additional permissions) together with [COPYING](COPYING) (GNU GPL-3.0 base terms
 
 ## 1. Rust Workspace (`rust/Cargo.lock`)
 
-- **Zero external `crates.io` dependencies.** All 10 crates in `rust/`
-  (`alsa_plugin_lasapi`, `lasapi_client`, `salsa_net`, `salsa_pa_reconnect`,
-  `salsa_pa_reconnect_proxy`, `salsa_tools`, `salsa_ui`, `shim_alsa`, `shim_jack`,
-  `shim_pulse`) are authored within this repository and declare
-  `license = "LGPL-3.0-only"`.
+- **Zero external `crates.io` dependencies.** All 11 crates in `rust/`
+  (`alsa_plugin_lasapi`, `lasapi_client`, `salsa_host_dl`, `salsa_net`,
+  `salsa_pa_reconnect`, `salsa_pa_reconnect_proxy`, `salsa_tools`, `salsa_ui`,
+  `shim_alsa`, `shim_jack`, `shim_pulse`) are authored within this repository
+  and declare `license = "LGPL-3.0-only"`.
 
 ---
 
@@ -42,18 +42,18 @@ degrades gracefully with safe fallbacks if any library is absent:
 
 | Shared Object | Upstream License | Notes |
 |---|---|---|
-| **`libfdk-aac.so.2`** (`fdk-aac` / `libfdk-aac`) | `LicenseRef-Fraunhofer` (Fraunhofer FDK AAC Codec Library for Android) | **Not bundled or distributed by Salsa.** Loaded optionally via `dlopen("libfdk-aac.so.2")` in `rust/salsa_net/src/bluez_ffi.rs` only when present on the user's host for Bluetooth A2DP AAC encoding/decoding; falls back to SBC/other codecs if absent. See your distribution's `/usr/share/licenses/fdk-aac/NOTICE` or `/usr/share/licenses/libfdk-aac/NOTICE` for Fraunhofer copyright and patent terms. |
-| **`libldacBT_enc.so.2`, `libldacBT_abr.so.2`** (`libldac`) | `Apache-2.0` | Optional runtime `dlopen` for Bluetooth LDAC A2DP encoding and ABR rate adaptation (Apache-2.0 is compatible with GPLv3/LGPLv3). |
-| **`libfreeaptx.so.0`** (`libfreeaptx`) | `LGPL-2.1-or-later` | Optional runtime `dlopen` for Bluetooth aptX / aptX HD encoding and decoding. |
-| **`libsbc.so.1`** (`sbc`) | `LGPL-2.1-or-later` | Runtime `dlopen` for Bluetooth A2DP SBC & HFP mSBC codec frames. |
-| **`librnnoise.so.0`** (`rnnoise`) | `BSD-3-Clause` | Optional legacy ABI runtime `dlopen` symbol in `rust/salsa_net/src/dsp.rs` (disabled by default; not used or exposed in Salsa UI). |
-| **`libdbus-1.so.3`** (`dbus`) | `AFL-2.1 OR GPL-2.0-or-later` | Runtime `dlopen` for BlueZ D-Bus A2DP MediaEndpoint / MediaTransport coordination. |
-| **`libglib-2.0.so.0`, `libgobject-2.0.so.0`, `libgio-2.0.so.0`** (`glib2`) | `LGPL-2.1-or-later` | Runtime `dlopen` for StatusNotifierItem tray integration and xdg-desktop-portal ScreenCast D-Bus coordination. |
-| **`libgbm.so.1`, `libEGL.so.1`, `libGLESv2.so.2`** (`mesa`, `libglvnd`) | `MIT` / `BSD-3-Clause` | Runtime `dlopen` for zero-copy DMA-BUF Wayland ScreenCast preview conversion. |
+| **`libfdk-aac.so.2`** (`fdk-aac` / `libfdk-aac`) | `LicenseRef-Fraunhofer` (Fraunhofer FDK AAC Codec Library for Android) | **Not bundled or distributed by Salsa.** Loaded optionally via `salsa_host_dl::open_verified_optional_lib("libfdk-aac.so.2")` in `A2dpCodecAdapter` (`rust/salsa_net/src/bluez_ffi.rs`) only when present on the user's host for Bluetooth A2DP AAC encoding/decoding; falls back to SBC/other codecs if absent. See your distribution's `/usr/share/licenses/fdk-aac/NOTICE` or `/usr/share/licenses/libfdk-aac/NOTICE` for Fraunhofer copyright and patent terms. |
+| **`libldacBT_enc.so.2`, `libldacBT_abr.so.2`** (`libldac`) | `Apache-2.0` | Optional verified runtime `dlopen` via `salsa_host_dl::open_verified_optional_lib` (`A2dpCodecAdapter`) for Bluetooth LDAC A2DP encoding and ABR rate adaptation (Apache-2.0 is compatible with GPLv3/LGPLv3). |
+| **`libfreeaptx.so.0`** (`libfreeaptx`) | `LGPL-2.1-or-later` | Optional verified runtime `dlopen` via `salsa_host_dl::open_verified_optional_lib` (`A2dpCodecAdapter`) for Bluetooth aptX / aptX HD encoding and decoding. |
+| **`libsbc.so.1`** (`sbc`) | `LGPL-2.1-or-later` | Runtime `dlopen` via `salsa_host_dl::open_verified_optional_lib` (`A2dpCodecAdapter` & `MsbcScoTranscoder`) for Bluetooth A2DP SBC & HFP mSBC codec frames. |
+| **`librnnoise.so.0`** (`rnnoise`) | `BSD-3-Clause` | Optional runtime `dlopen` via `salsa_host_dl::open_verified_optional_lib` in `rust/salsa_net/src/dsp.rs` for neural noise suppression (falls back cleanly when absent). |
+| **`libdbus-1.so.3`** (`dbus`) | `AFL-2.1 OR GPL-2.0-or-later` | Runtime `dlopen` via `salsa_host_dl::open_verified_optional_lib` for BlueZ D-Bus A2DP MediaEndpoint / MediaTransport coordination. |
+| **`libglib-2.0.so.0`, `libgobject-2.0.so.0`, `libgio-2.0.so.0`** (`glib2`) | `LGPL-2.1-or-later` | Unified verified runtime `dlopen` in `rust/salsa_ui/src/gio_dbus.rs` (`salsa_host_dl::open_verified_optional_lib`) for StatusNotifierItem tray integration and xdg-desktop-portal ScreenCast D-Bus coordination. |
+| **`libgbm.so.1`, `libEGL.so.1`, `libGLESv2.so.2`** (`mesa`, `libglvnd`) | `MIT` / `BSD-3-Clause` | Runtime `dlopen` via `salsa_host_dl::open_verified_optional_lib` (`dmabuf_gl.rs`) for zero-copy DMA-BUF Wayland ScreenCast preview conversion. |
 | **`libLayerShellQtInterface.so.6`** (`layer-shell-qt`) | `LGPL-3.0-only` / `LGPL-2.1-only` | Optional runtime `dlopen` in `qt6/lasapi_tray.cpp` for native Wayland `zwlr_layer_shell_v1` tray popups, menus, and click-through OSD overlays (zero panel taskbar icon); falls back to standard Qt/EWMH windows if absent. |
 | **`libKF6WindowSystem.so.6`** (`kwindowsystem`) | `LGPL-2.1-only OR LGPL-3.0-only` | Optional runtime `dlopen` in `qt6/salsa_common.cpp` to mint Wayland `XDG_ACTIVATION_TOKEN` focus tokens when raising single-instance windows. |
-| **`libX11.so.6`, `libXrandr.so.2`** (`libx11`, `libxrandr`) | `MIT` / `X11` | Optional runtime `dlopen` used exclusively on X11/XCB fallback sessions (`window_uses_x11()`) for EWMH popup hints and X11 monitor geometry; never opened during native Wayland execution. |
-| **`libz.so.1`** (`zlib`) | `Zlib` | Runtime `dlopen` for PNG asset encoding/decoding in installer & tray icons. |
+| **`libX11.so.6`, `libXrandr.so.2`** (`libx11`, `libxrandr`) | `MIT` / `X11` | Optional verified runtime `dlopen` (`x11_util.rs`) used exclusively on X11/XCB fallback sessions (`window_uses_x11()`) for EWMH popup hints and X11 monitor geometry; never opened during native Wayland execution. |
+| **`libz.so.1`** (`zlib`) | `Zlib` | Runtime `dlopen` via `salsa_host_dl::open_verified_optional_lib` (`zlib_png.rs`) for PNG asset encoding/decoding in installer & tray icons. |
 
 ---
 

@@ -1322,7 +1322,7 @@ void StudioController::buildTopologyWindow() {
     splitter->setSizes({500, 240});
     graphLayout->addWidget(splitter, 1);
 
-    // Bottom Footer Card (exact 1:1 match to v6.9-beta)
+    // Bottom Footer Card
     auto* introFooter = new QFrame(introWin_);
     introFooter->setObjectName(QStringLiteral("Card"));
     auto* footRow = new QHBoxLayout(introFooter);
@@ -3511,13 +3511,18 @@ void StudioController::pollEngine(bool initial) {
         ag.btActive = st.bt_active != 0;
         ag.btCodec = cFixedStr(st.bt_codec, sizeof(st.bt_codec));
         ag.btDelayMs = st.bt_delay_ms;
+        ag.btNegReason = cFixedStr(st.bt_codec_cfg.neg_reason, sizeof(st.bt_codec_cfg.neg_reason));
         ag.midiCount = st.midi_events_routed;
         ag.eqEnabled = st.eq_cfg.enabled != 0;
         ag.eqMode = st.eq_cfg.dynamic_mode;
         ag.eqPreset = cFixedStr(st.eq_cfg.preset_name, sizeof(st.eq_cfg.preset_name));
         ag.limiterEnabled = st.eq_cfg.limiter_enabled != 0;
         ag.crossfeedEnabled = st.param_eq.crossfeed_enabled != 0;
-        ag.capSampleRate = st.hw_sample_rate;
+        ag.micApoEnabled = st.mic_apo.enabled != 0;
+        ag.micRnnoiseActive = st.mic_rnnoise_active != 0;
+        ag.micSidetoneEnabled = st.mic_apo.sidetone_enabled != 0;
+        ag.micSidetonePct = st.mic_apo.sidetone_pct;
+        ag.capSampleRate = salsa_status_effective_capture_rate(&st);
         ag.hwArch = cFixedStr(st.hw_analog_info.card_arch_name, sizeof(st.hw_analog_info.card_arch_name));
         ag.hwAmpTier = st.hw_analog_cfg.hp_amp_tier;
         ag.hwDacUnity = st.hw_analog_info.dac_unity_active != 0;
@@ -3538,6 +3543,7 @@ void StudioController::pollEngine(bool initial) {
                     return v.toBool(false) || (v.toInteger(0) != 0);
                 };
                 ag.pwBrokerRunning = pwBool(QStringLiteral("broker_running"));
+                ag.pwPreviewRequested = pwBool(QStringLiteral("preview_requested"));
                 ag.pwActiveCasting = pwBool(QStringLiteral("active_casting"));
                 ag.pwFramesRelayed = static_cast<uint64_t>(pw.value(QStringLiteral("frames_relayed_total")).toInteger(0));
                 ag.pwFramesDropped = static_cast<uint64_t>(pw.value(QStringLiteral("frames_dropped")).toInteger(0));

@@ -48,7 +48,7 @@ use salsa_wire::legal::{
     full_license_bundle, handle_common_cli_flag, salsa_version, short_legal_notice, COPY_TEXT,
     LESSER_COPY_TEXT, THIRD_PARTY_TEXT,
 };
-use salsa_wire::provisioning::{all_pacman_hook_paths, SalsaHostPaths};
+use salsa_wire::provisioning::{all_pacman_hook_paths, SalsaHostPaths, UNIFIED_SETTINGS_FILENAME};
 use salsa_wire::unix_sys::{
     current_uid, ensure_dir_0700_safe, reset_sigpipe_default, O_CLOEXEC, O_NOFOLLOW,
 };
@@ -295,8 +295,16 @@ fn collect_config_texts(base_dir: &Path) -> BTreeMap<String, String> {
         read_or(paths.video_only_pw_conf()),
     );
     map.insert(
+        "settings.json".into(),
+        read_or(paths.config_lasapi_dir().join(UNIFIED_SETTINGS_FILENAME)),
+    );
+    map.insert(
         "module_versions.state".into(),
         read_or(paths.config_lasapi_dir().join("module_versions.state")),
+    );
+    map.insert(
+        "src/alsa.version".into(),
+        read_or(base_dir.join("src/alsa.version")),
     );
     map.insert(
         "src/lasapi.version".into(),

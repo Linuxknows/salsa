@@ -59,3 +59,15 @@ _Avoid_: Auto-enable mode, PipeWire zero hack
 **Preview Seqlock**:
 The lock-free shared-memory frame channel carrying live **ScreenCast Broker** video thumbnails from the daemon to diagnostic and studio viewers.
 _Avoid_: Preview SHM buffer, frame dump slot
+
+**Control IPC**:
+The typed length-prefixed request and response channel over `audiodg.sock` (`LASAPI_CMD_CONTROL_V2`) used for device routing, EQ, analog, and Bluetooth management without mutating fixed C activation packets.
+_Avoid_: Raw control struct, ad-hoc socket command
+
+**Verified Host Loader**:
+The runtime `dlopen` gate (`salsa_host_dl`) that checks `(st_dev, st_ino)` identity and trusted library directories so shims and optional codec/UI loaders never recurse into SALSA's own libraries.
+_Avoid_: Blind dlopen, `dl_open_any`
+
+**A2DP Codec Adapter**:
+The runtime-loaded Bluetooth audio encoding and mSBC voice transcoding boundary isolating optional host codec pointers from the real-time Bluetooth transport state machine.
+_Avoid_: Raw encoder pointer bag, `BtEncoders`

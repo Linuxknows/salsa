@@ -588,53 +588,41 @@ pub struct SystemAuditScanner;
 impl SystemAuditScanner {
     pub fn check_build_freshness(base_dir: &Path) -> JsonValue {
         let mut stale = Vec::new();
-        let net_deps = [
+        let host_dl_deps = [
+            "VERSION",
             "rust/Cargo.toml",
-            "rust/salsa_net/Cargo.toml",
-            "rust/salsa_net/src",
+            "rust/salsa_host_dl/Cargo.toml",
+            "rust/salsa_host_dl/src",
         ];
-        let client_deps = [
-            "rust/Cargo.toml",
-            "rust/salsa_net/Cargo.toml",
-            "rust/salsa_net/src",
-            "rust/lasapi_client/Cargo.toml",
-            "rust/lasapi_client/src",
-        ];
-        let tools_deps = [
-            "rust/Cargo.toml",
-            "rust/salsa_net/Cargo.toml",
-            "rust/salsa_net/src",
-            "rust/lasapi_client/Cargo.toml",
-            "rust/lasapi_client/src",
-            "rust/salsa_tools/Cargo.toml",
-            "rust/salsa_tools/src",
-        ];
-        let ui_shared_deps = [
+        let mut net_deps = host_dl_deps.to_vec();
+        net_deps.extend(["rust/salsa_net/Cargo.toml", "rust/salsa_net/src"]);
+
+        let mut client_deps = net_deps.clone();
+        client_deps.extend(["rust/lasapi_client/Cargo.toml", "rust/lasapi_client/src"]);
+
+        let mut tools_deps = client_deps.clone();
+        tools_deps.extend(["rust/salsa_tools/Cargo.toml", "rust/salsa_tools/src"]);
+
+        let mut ui_shared_deps = tools_deps.clone();
+        ui_shared_deps.extend([
             "Makefile",
             "qt6/salsa_bridge.h",
             "qt6/salsa_common.hpp",
             "qt6/salsa_common.cpp",
-            "rust/Cargo.toml",
             "rust/Cargo.lock",
-            "rust/salsa_net/Cargo.toml",
-            "rust/salsa_net/src",
-            "rust/lasapi_client/Cargo.toml",
-            "rust/lasapi_client/src",
-            "rust/salsa_tools/Cargo.toml",
-            "rust/salsa_tools/src",
             "rust/salsa_ui/Cargo.toml",
             "rust/salsa_ui/src",
-        ];
-        let mut tray_deps = ui_shared_deps.to_vec();
+        ]);
+        let mut tray_deps = ui_shared_deps.clone();
         tray_deps.push("qt6/lasapi_tray.cpp");
-        let mut debug_deps = ui_shared_deps.to_vec();
+        let mut debug_deps = ui_shared_deps.clone();
         debug_deps.extend([
             "qt6/salsa_widgets.hpp",
             "qt6/salsa_widgets.cpp",
             "qt6/salsa_debugger_widget.cpp",
             "qt6/salsa_debug.cpp",
         ]);
-        let mut studio_deps = ui_shared_deps.to_vec();
+        let mut studio_deps = ui_shared_deps;
         studio_deps.extend([
             "qt6/salsa_widgets.hpp",
             "qt6/salsa_widgets.cpp",
@@ -643,35 +631,35 @@ impl SystemAuditScanner {
         ]);
 
         let is_dev_repo = base_dir.join("rust/Cargo.toml").is_file();
-        let mut lasapi_deps = client_deps.to_vec();
+        let mut lasapi_deps = client_deps.clone();
         lasapi_deps.push("src/lasapi.version");
 
         let mut checks: Vec<(&str, Vec<&str>)> = vec![
-            ("build/lasapi-audiodg", net_deps.to_vec()),
-            ("build/lasapi-ctl", net_deps.to_vec()),
+            ("build/lasapi-audiodg", net_deps.clone()),
+            ("build/lasapi-ctl", net_deps.clone()),
             ("build/liblasapi.so", lasapi_deps),
-            ("build/lasapi-test", client_deps.to_vec()),
-            ("build/lasapi-bench", client_deps.to_vec()),
-            ("build/lasapi-run", tools_deps.to_vec()),
-            ("build/lasapi-autosync", tools_deps.to_vec()),
-            ("build/salsa-installer", tools_deps.to_vec()),
-            ("build/salsa-debug-cli", tools_deps.to_vec()),
+            ("build/lasapi-test", client_deps.clone()),
+            ("build/lasapi-bench", client_deps.clone()),
+            ("build/lasapi-run", tools_deps.clone()),
+            ("build/lasapi-autosync", tools_deps.clone()),
+            ("build/salsa-installer", tools_deps.clone()),
+            ("build/salsa-debug-cli", tools_deps.clone()),
             ("build/lasapi-tray", tray_deps),
             ("build/salsa-debug", debug_deps),
             ("build/salsa-studio", studio_deps),
         ];
 
         for (rel, deps) in [
-            ("build/salsa-gen-pa-proxy", net_deps.to_vec()),
-            ("build/salsa-dist", tools_deps.to_vec()),
-            ("build/salsa-regression", tools_deps.to_vec()),
+            ("build/salsa-gen-pa-proxy", net_deps.clone()),
+            ("build/salsa-dist", tools_deps.clone()),
+            ("build/salsa-regression", tools_deps),
         ] {
             if is_dev_repo || base_dir.join(rel).exists() {
                 checks.push((rel, deps));
             }
         }
 
-        let mut alsa_plugin_deps = client_deps.to_vec();
+        let mut alsa_plugin_deps = client_deps.clone();
         alsa_plugin_deps.extend([
             "rust/alsa_plugin_lasapi/Cargo.toml",
             "rust/alsa_plugin_lasapi/src",
@@ -679,24 +667,21 @@ impl SystemAuditScanner {
         ]);
         checks.push(("build/libasound_module_pcm_lasapi.so", alsa_plugin_deps));
 
-        checks.push((
-            "build/libsalsa_pa_reconnect.so",
-            vec![
-                "rust/Cargo.toml",
-                "rust/salsa_pa_reconnect/Cargo.toml",
-                "rust/salsa_pa_reconnect/src",
-                "src/pa_reconnect.version",
-            ],
-        ));
-        checks.push((
-            "build/pa_reconnect/libpulse.so.0",
-            vec![
-                "rust/Cargo.toml",
-                "rust/salsa_pa_reconnect_proxy/Cargo.toml",
-                "rust/salsa_pa_reconnect_proxy/src",
-                "src/pulse.version",
-            ],
-        ));
+        let mut pa_reconnect_deps = host_dl_deps.to_vec();
+        pa_reconnect_deps.extend([
+            "rust/salsa_pa_reconnect/Cargo.toml",
+            "rust/salsa_pa_reconnect/src",
+            "src/pa_reconnect.version",
+        ]);
+        checks.push(("build/libsalsa_pa_reconnect.so", pa_reconnect_deps));
+
+        let mut pa_proxy_deps = net_deps;
+        pa_proxy_deps.extend([
+            "rust/salsa_pa_reconnect_proxy/Cargo.toml",
+            "rust/salsa_pa_reconnect_proxy/src",
+            "src/pulse.version",
+        ]);
+        checks.push(("build/pa_reconnect/libpulse.so.0", pa_proxy_deps));
 
         let mut shim_alsa_deps = client_deps.to_vec();
         shim_alsa_deps.extend([

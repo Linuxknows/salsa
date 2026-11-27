@@ -4,7 +4,7 @@
   <strong>📖 Overview</strong> &nbsp;|&nbsp;
   <a href="#screenshots">🖼️ Screenshots</a> &nbsp;|&nbsp;
   <a href="SALSA%20Architecture%20Breakdown.md">📐 Architecture Breakdown</a> &nbsp;|&nbsp;
-  <a href="PATCH_NOTES.md">📝 Patch Notes (V2.27.1)</a> &nbsp;|&nbsp;
+  <a href="PATCH_NOTES.md">📝 Patch Notes (V2.27.2)</a> &nbsp;|&nbsp;
   <a href="SUPPORT.md">🛠️ Support &amp; Debugger</a> &nbsp;|&nbsp;
   <a href="CONTRIBUTING.md">🤝 Contributing</a> &nbsp;|&nbsp;
   <a href="SECURITY.md">🔒 Security</a> &nbsp;|&nbsp;
@@ -96,10 +96,10 @@ Read the complete 4-stage engine walkthrough, zero-copy WaveRT shared-memory rin
 
 ## Quick 1-Command Install on Any Linux PC
 
-Unzip the archive (for example `V2.27.1` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
+Unzip the archive (for example `V2.27.2` from [VERSION](VERSION)) and run `./install-salsa.sh`. Full chronological change history is available in [PATCH_NOTES.md](PATCH_NOTES.md).
 
 ```bash
-unzip "salsa-lasapi-installer (V2.27.1).zip"
+unzip "salsa-lasapi-installer (V2.27.2).zip"
 cd salsa-lasapi
 ./install-salsa.sh
 ```
@@ -163,7 +163,7 @@ cd salsa-lasapi
   make test
   lasapi-bench
   ```
-- **Rebuild the Portable Installer Archive (`salsa-lasapi-installer (V2.27.1).zip`)**:
+- **Rebuild the Portable Installer Archive (`salsa-lasapi-installer (V2.27.2).zip`)**:
   ```bash
   make dist
   ```

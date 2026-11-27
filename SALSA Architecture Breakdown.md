@@ -15,28 +15,28 @@ In traditional Linux pro-audio workflows, patchbay utilities like `qpwgraph` or 
 ┌──────────────────────────────────┐       ┌──────────────────────────────────┐       ┌──────────────────────────────────┐       ┌──────────────────────────────────┐
 │     1. INPUTS & APPLICATIONS     │       │   2. WAVERT ZERO-COPY ENGINE     │       │  3. SALSA APO & DAW MIDI HUB     │       │  4. HARDWARE & CAPTURE OUTPUTS   │
 ├──────────────────────────────────┤       ├──────────────────────────────────┤       ├──────────────────────────────────┤       ├──────────────────────────────────┤
-│ 🔊 Auto-Recognized Playback Apps │       │ ⚡ WaveRT Shared Memory Ring     │       │ 🎚️ Salsa 10-Band Dynamic EQ APO  │       │ 🎧 Master Hardware Output Sink   │
-│  • Native LASAPI (liblasapi.so) ├──────►│  • memfd_create() 32,768 frames  ├──────►│  • 10 RBJ Parametric EQ Bands    ├──────►│  • BlueZ LDAC/aptX/AAC/SBC/HFP   │
-│  • Native PA v35 ($PULSE/native) │ 75 ns │  • Kernel eventfd() wakeups      │       │  • Dynamic Compress / Expand     │       │  • Kernel /dev/snd/pcm* WaveRT   │
-│  • Hollow Shims & ~/.asoundrc    │       │  • 0.075 µs atomic commit        │       │  • Bauer Crossfeed & Limiter     │       │  • Smart Hotplug + AVRCP Sync    │
+│ 🔊 Audio Sessions & Host Cutover │       │ ⚡ WaveRT Ring (wavert_ring.rs)  │       │ 🎚️ Salsa 10-Band Dynamic EQ APO  │       │ 🎧 Master Hardware Endpoint      │
+│  • Native LASAPI (client_seam)   ├──────►│  • Sealed memfd + PodBytes       ├──────►│  • 10 RBJ Parametric EQ Bands    ├──────►│  • RealBluezBackend + A2dpAdapter│
+│  • Native PA v35 ($PULSE/native) │ 75 ns │  • Kernel eventfd() wakeups      │       │  • Dynamic Compress / Expand     │       │  • AlsaPlaybackBackend + Analog  │
+│  • Hollow Shims & provisioning   │       │  • 0.075 µs atomic commit        │       │  • Bauer Crossfeed & Limiter     │       │  • Hotplug Tracker + Control IPC │
 └──────────────────────────────────┘       └────────────────┬─────────────────┘       └────────────────┬─────────────────┘       └──────────────────────────────────┘
-                                                            │                                          │ Loopback / PA doi Tap   ┌──────────────────────────────────┐
+                                                            │                                          │ Direct-on-Input Tap     ┌──────────────────────────────────┐
 ┌──────────────────────────────────┐       ┌────────────────▼─────────────────┐                        └────────────────────────►│ 📹 Full-Duplex Capture Apps      │
-│ 🎙️ Hardware Microphone Input     │       │ 🚀 lasapi-audiodg RT Thread     │                                                  │  • Discord Voice & App SoundShare│
-│  • USB / HDA Kernel Mic Auto-Bind├──────►│  • SCHED_FIFO Priority 65        ├─────────────────────────────────────────────────►│  • OBS Desktop Loopback Monitor  │
-│  • Native PA v35 + ALSA Vol Sync │       │  • mlockall() RAM Pinned         │              Mic Capture Ring                    │  • DAW Audio & MIDI Recording    │
-└──────────────────────────────────┘       │  • Up to 192,000 Hz / 32-Bit Flt │                                                  └─────────────────▲────────────────┘
+│ 🎙️ Capture Clock & Mic APO       │       │ 🚀 Safe lasapi-audiodg Core      │                                                  │  • Discord Voice & App SoundShare│
+│  • Independent Capture Clock     ├──────►│  • #![deny(unsafe_code)] Engine  ├─────────────────────────────────────────────────►│  • OBS Desktop Loopback Monitor  │
+│  • MsbcScoTranscoder HFP SCO     │       │  • SCHED_FIFO + mlockall()       │              Mic Capture Ring                    │  • DAW Audio & MIDI Recording    │
+└──────────────────────────────────┘       │  • Master Clock up to 192kHz/32f │                                                  └─────────────────▲────────────────┘
                                            └──────────────────────────────────┘                                                                    │
 ┌──────────────────────────────────┐       ┌──────────────────────────────────┐                                                                    │
 │ 🎹 Hardware MIDI Controller      │       │ 🎵 Lock-Free DAW MIDI Hub        │                                                                    │
-│  • Auto RawMIDI (/dev/snd/midi*) ├──────►│  • LASAPI-MIDI-Hub              ├────────────────────────────────────────────────────────────────────┘
-│  • RawMIDI + ALSA Sequencer      │       │  • 512-Event Lock-Free Ring      │
+│  • Auto RawMIDI (/dev/snd/midi*) ├──────►│  • LASAPI-MIDI-Hub (midi_hub.rs) ├────────────────────────────────────────────────────────────────────┘
+│  • Verified Host ALSA Sequencer  │       │  • 512-Event Lock-Free Ring      │
 └──────────────────────────────────┘       └──────────────────────────────────┘
 ═════════════════════════════ ZERO-PIPEWIRE WAYLAND VIDEO & SCREENCAST LANE ════════════════════════════
 ┌──────────────────────────────────┐       ┌──────────────────────────────────┐       ┌──────────────────────────────────┐       ┌──────────────────────────────────┐
-│ 🖥️ Wayland Video Producer        │       │ 🔌 Socket-Activated PW Broker    │       │ 🎞️ Video Relay & Live Cap        │       │ 📡 ScreenCast Consumers          │
-│  • kwin_wayland / wlroots / etc. ├──────►│  • lasapi-pipewire.socket (0ms) ├──────►│  • SCM_RIGHTS DmaBuf / MemFd FD  ├──────►│  • Discord (AV1 VAAPI) / OBS     │
-│  • xdg-desktop-portal Handoff    │       │  • Zero libpipewire / Audio Drop │       │  • Live Cap (PW_CAST_LIMITS)     │       │  • Browsers / KDE MediaMonitor   │
+│ 🖥️ Wayland Video Producer        │       │ 🔌 Socket-Activated PW Broker    │       │ 🎞️ Relay & Preview Seqlock       │       │ 📡 ScreenCast Consumers          │
+│  • kwin_wayland / gio_dbus Portal├──────►│  • lasapi-pipewire.socket (0ms) ├──────►│  • SCM_RIGHTS + PW_CAST_LIMITS   ├──────►│  • Discord (AV1 VAAPI) / OBS     │
+│  • open_verified_optional_lib    │       │  • Zero libpipewire / Audio Guard│       │  • PreviewShmWriter / Reader     │       │  • Browsers / KDE MediaMonitor   │
 └──────────────────────────────────┘       └──────────────────────────────────┘       └──────────────────────────────────┘       └─────────────────▲────────────────┘
                                                                                                                                              (Parallel A/V via WaveRT)
 ```
@@ -45,26 +45,26 @@ In traditional Linux pro-audio workflows, patchbay utilities like `qpwgraph` or 
 
 ## 3. Component-by-Component Owner's Guide
 
-### Stage 1: Automatic Application Recognition, Built-in PA v35 Server & Hollow Shims
-- **Built-in PulseAudio Protocol v35 Server (`$XDG_RUNTIME_DIR/pulse/native`):** `lasapi-audiodg` directly hosts a native PA protocol UNIX socket inside the Rust engine ([`pa_server.rs`](rust/salsa_net/src/pa_server.rs)), serving `pactl`, KDE `plasma-pa`, Chromium/Firefox, Discord, Steam/Proton, and Wine with zero `pipewire-pulse` daemon running, backed by [`libsalsa_pa_reconnect.so`](rust/salsa_pa_reconnect/src/lib.rs) for transparent client reconnects.
-- **LASAPI-to-PulseAudio Stream Capture Bridge (`direct_on_input`):** Active native LASAPI / WaveRT-ASIO / ALSA-shim playback sessions automatically register virtual PA `sink_input` entries with lock-free per-session monitor taps so Discord screen share and OBS application audio capture can tap native WaveRT sessions directly.
-- **ALSA & OpenAL Soft (`~/.asoundrc` & `~/.config/OpenAL/alsoft.conf`):** Automatically routes default ALSA playback and capture streams through `libasound_module_pcm_lasapi.so`.
-- **Hollow ABI Shims (`build/shims/`):** Provides drop-in replacements for `libasound.so.2`, `libpulse.so.0`, `libpulse-simple.so.0`, `libpulse-mainloop-glib.so.0`, and `libjack.so.0` (`lasapi-run`) that bypass socket IPC and write directly into LASAPI shared memory.
+### Stage 1: Audio Sessions, Unified Provisioning & Hollow Shims
+- **Unified Host Provisioning ([`provisioning.rs`](rust/salsa_net/src/provisioning.rs)):** Single canonical owner of `~/.asoundrc`, `~/.config/OpenAL/alsoft.conf` (`drivers = pulse,alsa`), `~/.config/environment.d/99-salsa-direct.conf`, systemd unit state, and pacman hook paths, using symlink-safe `O_NOFOLLOW` atomic writes and `HostEnvOps` fake-host testing.
+- **Built-in PulseAudio Protocol v35 Server (`$XDG_RUNTIME_DIR/pulse/native`):** `lasapi-audiodg` directly hosts a native PA protocol UNIX socket inside the Rust engine ([`pa_server.rs`](rust/salsa_net/src/pa_server.rs)), serving `pactl`, KDE `plasma-pa`, Chromium/Firefox, Discord, Steam/Proton, and Wine with zero `pipewire-pulse` daemon running, backed by [`libsalsa_pa_reconnect.so`](rust/salsa_pa_reconnect/src/lib.rs) and [`salsa_host_dl`](rust/salsa_host_dl/src/lib.rs) self-`dev/ino` recursion guards.
+- **LASAPI-to-PulseAudio Stream Capture Bridge (`Direct-on-Input Tap`):** Active native LASAPI / WaveRT-ASIO / ALSA-shim playback sessions automatically register virtual PA `sink_input` entries with lock-free per-session monitor taps so Discord screen share and OBS application audio capture can tap native WaveRT sessions directly.
+- **Hollow ABI Shims (`build/shims/`) & Native C Client Seam ([`client_seam.rs`](rust/salsa_net/src/client_seam.rs)):** Provides drop-in replacements for `libasound.so.2`, `libpulse.so.0`, `libpulse-simple.so.0`, `libpulse-mainloop-glib.so.0`, and `libjack.so.0` (`lasapi-run`) alongside immutable `liblasapi.so` C exports and typed `Control IPC` (`LASAPI_CMD_CONTROL_V2`, [`control_ipc.rs`](rust/salsa_net/src/control_ipc.rs)).
 
-### Stage 2: WaveRT Zero-Copy Shared Memory (`memfd_create` + `eventfd`)
-- Audio samples for LASAPI/WaveRT and shimmed apps never cross UNIX domain sockets. Instead, `lasapi-audiodg` maps an anonymous shared-memory ring buffer (`lasapi_shm_ring_t`) into the client process via `SCM_RIGHTS`.
+### Stage 2: WaveRT Ring Trust Seam (`memfd_create` + `eventfd` + `PodBytes`)
+- Audio samples for LASAPI/WaveRT and shimmed apps never cross UNIX domain sockets. Instead, [`wavert_ring.rs`](rust/salsa_net/src/wavert_ring.rs) (`WaveRtRing` / `WaveRtRingWriter` / `WaveRtRingReader`) wraps a `F_SEAL_SHRINK | F_SEAL_GROW`-sealed `memfd` (`lasapi_shm_ring_t`) passed via `SCM_RIGHTS` with sealed `PodBytes` layout enforcement ([`c_abi.rs`](rust/salsa_net/src/c_abi.rs)).
 - Committing a 64-frame stereo `float32` block takes **0.075 µs (75 nanoseconds)**—orders of magnitude faster than legacy `pipewire-pulse` socket writes.
 
-### Stage 3: `lasapi-audiodg` Real-Time `SCHED_FIFO` Engine & 10-Band Dynamic EQ APO
-- Runs under Linux `SCHED_FIFO` real-time priority 65 with all memory locked into physical RAM (`mlockall`).
-- Supports live clock switching across `44.1 kHz`, `48 kHz`, `88.2 kHz`, `96 kHz`, `176.4 kHz`, and **`192 kHz`** (`64` to `2048` frame period quantums), plus independent capture clock pinning.
-- Processes playback through a 10-band RBJ parametric equalizer (`31 Hz`–`16 kHz`, supporting AutoEQ / Oratory1990 profiles and per-device EQ memory) with per-band envelope followers for real-time downward compression or upward transient expansion, Bauer stereo headphone crossfeed, hardware analog drive, and a soft-knee mastering limiter.
+### Stage 3: Safe `#![deny(unsafe_code)]` Engine Core (`audiodg_engine.rs`) & 10-Band Dynamic EQ
+- [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) compiles under `#![deny(unsafe_code)]` under Linux `SCHED_FIFO` real-time priority 65 (`mlockall`), delegating kernel hardware playback strictly through the [`AlsaPlaybackBackend`](rust/salsa_net/src/alsa_hw.rs) seam (`KernelAlsaBackend` and deterministic `InMemoryAlsaBackend`).
+- Supports live Master Clock switching across `44.1 kHz`, `48 kHz`, `88.2 kHz`, `96 kHz`, `176.4 kHz`, and **`192 kHz`** (`64` to `2048` frame quantums), independent `Capture Clock` pinning, and unified `~/.config/lasapi/settings.json` persistence ([`settings.rs`](rust/salsa_net/src/settings.rs)).
+- Processes playback through a 10-band RBJ Dynamic EQ (supporting AutoEQ / Oratory1990 profiles and Per-Device EQ Profiles) with envelope compression/expansion, Bauer stereo crossfeed, Analog Stage drive, and a soft-knee mastering limiter.
 
-### Stage 4: Direct Hardware Endpoints, Multi-Codec BlueZ, DAW MIDI Hub & Video ScreenCast Broker
-- **Render Sink, Smart Hotplug & Direct BlueZ Audio:** Streams 32-bit float audio directly over `org.bluez.MediaEndpoint1` (**LDAC** + wireless ABR via `libldacBT_enc.so.2`, **aptX HD** & **aptX** via `libfreeaptx.so.0`, **AAC** + ABR via `libfdk-aac.so.2`, **SBC**, and **HFP** mSBC/CVSD + bidirectional AVRCP volume) or kernel `/dev/snd/pcmC*D*` (`S32_LE`, `S24_3LE`, `S16_LE`, `FLOAT_LE`), with `HotplugTracker` automatically switching to newly connected USB/Bluetooth/3.5 mm headphones and restoring your prior speaker output on unplug.
+### Stage 4: Direct Hardware Endpoints, `A2dpCodecAdapter`, DAW MIDI Hub & ScreenCast Broker
+- **Render Sink, Hotplug Tracker & `RealBluezBackend`:** Loads optional codecs strictly through [`open_verified_optional_lib`](rust/salsa_host_dl/src/lib.rs) inside [`A2dpCodecAdapter`](rust/salsa_net/src/bluez_ffi.rs) and `MsbcScoTranscoder` (**LDAC** + ABR via `libldacBT_enc.so.2`, **aptX HD** & **aptX** via `libfreeaptx.so.0`, peak-capped CBR **FDK-AAC** at `160 / 128 / 96 kbps` via `libfdk-aac.so.2`, **SBC**, and **HFP** mSBC/CVSD + bidirectional AVRCP volume), paired with kernel `/dev/snd/pcmC*D*`, `Hotplug Tracker`, and daemon-backed `LASAPI_BT_CONN_RESET` ([`bluez_runtime.rs`](rust/salsa_net/src/bluez_runtime.rs)).
 - **Capture Source & Loopback:** Distributes microphone input and post-EQ desktop loopback (`AUDCLNT_STREAMFLAGS_LOOPBACK`) to recording apps in **0.33 ms** round-trip at `192 kHz / 64f`, with live switching via Salsa, the native Wayland `LayerShellQt` System Tray (`lasapi-tray`), or `lasapi-ctl set-sink` / `set-source`.
-- **DAW MIDI Hub:** Automatically binds detected hardware MIDI controllers (`/dev/snd/midiC*D*`) and routes sample-accurate MIDI events to JACK MIDI and ALSA Sequencer DAWs.
-- **Zero-Downtime Video-Only ScreenCast Broker ([`pw_broker.rs`](rust/salsa_net/src/pw_broker.rs)):** Adopts systemd socket-activated `$XDG_RUNTIME_DIR/pipewire-0` and `pipewire-0-manager` descriptors from `lasapi-pipewire.socket` before hardware initialization (with automatic standalone bind fallback on non-systemd setups) using pure Rust protocol handling (zero `libpipewire` / `libspa` linkage). Wayland `xdg-desktop-portal` ScreenCast streams route `DmaBuf` and `MemFd` buffers to Discord, OBS Studio, browsers, and KDE `libKPipeWire` (`MediaMonitor`) with zero restart disconnects, live Resolution/FPS caps (`PW_CAST_LIMITS`), and zero-overhead Preview HUD telemetry (`PW_PREVIEW`).
+- **DAW MIDI Hub:** [`midi_hub.rs`](rust/salsa_net/src/midi_hub.rs) loads host ALSA Sequencer via `open_verified_optional_lib`, binds detected hardware MIDI controllers (`/dev/snd/midiC*D*`), and stamps sample-accurate events for JACK MIDI and ALSA Sequencer DAWs.
+- **Zero-Downtime Video-Only ScreenCast Broker ([`pw_broker.rs`](rust/salsa_net/src/pw_broker.rs)) & Preview Seqlock ([`preview_shm.rs`](rust/salsa_net/src/preview_shm.rs)):** Adopts systemd socket-activated `$XDG_RUNTIME_DIR/pipewire-0` and `pipewire-0-manager` descriptors from `lasapi-pipewire.socket` before hardware startup without linking `libpipewire`. Wayland Portal ScreenCast sessions run via the consolidated GLib/GObject/GIO loader in [`gio_dbus.rs`](rust/salsa_ui/src/gio_dbus.rs), routing `DmaBuf` (`dmabuf_gl.rs`) and `MemFd` buffers with live `PW_CAST_LIMITS` caps and zero-aliasing [`PreviewShmWriter`](rust/salsa_net/src/preview_shm.rs) / `PreviewShmReader` seqlock thumbnails.
 
 ---
 

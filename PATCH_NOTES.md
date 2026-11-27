@@ -4,7 +4,17 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V2.27.1 — Current (`2026-11-27`)
+## V2.27.2 — Current (`2026-11-27`)
+
+### 1. Live Signal Topology, Owner's Manual & Debugger Model Alignment
+- Updated [`salsa_widgets.cpp`](qt6/salsa_widgets.cpp), [`salsa_studio.cpp`](qt6/salsa_studio.cpp), and [`salsa_bridge.h`](qt6/salsa_bridge.h) so `SalsaAutoGraphCanvas` and `MiniGraphCanvas` reflect all `V2.27` trust seams (`WaveRT Ring`, `AlsaPlaybackBackend`, `ControlV2`, `A2dpCodecAdapter`, `Preview Seqlock`), wire live split `Capture Clock`, Mic APO/sidetone, and `preview_requested` telemetry, add `SALSA_BT_CONN_RESET = 5`, fix hover tooltips for all 13 node IDs, and route the 4 ScreenCast video nodes cleanly to their individual `vid_src`, `vid_broker`, `vid_relay`, and `vid_cons` manual chapters.
+- Rewrote all 16 chapters of the built-in Owner's Manual in [`studio_manual.rs`](rust/salsa_ui/src/studio_manual.rs) around canonical [`GLOSSARY.md`](GLOSSARY.md) terms covering `audiodg_engine.rs`, `alsa_hw.rs`, `wavert_ring.rs`, `control_ipc.rs`, `provisioning.rs`, `preview_shm.rs`, `gio_dbus.rs`, `salsa_host_dl`, and `settings.json`, plus cleaned up legacy comments/banners in [`studio_helpers.rs`](rust/salsa_ui/src/studio_helpers.rs) and [`lasapi_test.rs`](rust/lasapi_client/src/bin/lasapi_test.rs).
+- Updated [`debug_core.rs`](rust/salsa_tools/src/debug_core.rs) (`SystemAuditScanner::check_build_freshness`), [`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs), and [`salsa_debugger_widget.cpp`](qt6/salsa_debugger_widget.cpp) to track `VERSION` and `rust/salsa_host_dl/`, expose `settings.json` and `src/alsa.version` / `src/lasapi.version` in the boundary inspector, and fix `"stale"` freshness JSON detection.
+- Updated embedded [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) (`All 11 crates` including `salsa_host_dl` and `open_verified_optional_lib` disclosures) alongside [`GLOSSARY.md`](GLOSSARY.md), [`SALSA Architecture Breakdown.md`](SALSA%20Architecture%20Breakdown.md), and [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+---
+
+## V2.27.1 (`2026-11-27`)
 
 ### 1. Safe Engine Loop, Hardware Backend & Wire Trust Seams (`#![deny(unsafe_code)]`)
 - Added [`GLOSSARY.md`](GLOSSARY.md), tightened Cargo workspace dependency boundaries across [`rust/`](rust/), introduced sealed `PodBytes` layouts in [`c_abi.rs`](rust/salsa_net/src/c_abi.rs), isolated unsafe mmap/ALSA UAPI boundaries behind [`wavert_ring.rs`](rust/salsa_net/src/wavert_ring.rs) (`WaveRtRing` / `WaveRtRingWriter` / `WaveRtRingReader`) and [`alsa_hw.rs`](rust/salsa_net/src/alsa_hw.rs) (`AlsaPlaybackBackend` / `KernelAlsaBackend` / `InMemoryAlsaBackend`), and enforced `#![deny(unsafe_code)]` on [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) and [`provisioning.rs`](rust/salsa_net/src/provisioning.rs), while keeping every `liblasapi.so` C ABI export, `LasapiEngineStatus`, `LasapiShmRing`, `LasapiPwPreviewShm`, and `LASAPI_CMD_*` wire format bit-identical.

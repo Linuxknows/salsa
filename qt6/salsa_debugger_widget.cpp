@@ -613,7 +613,9 @@ QWidget* SalsaLiveDebuggerWidget::buildBoundaryTab() {
         QStringLiteral("pipewire_zero_mode"),
         QStringLiteral("99-salsa-direct.conf"),
         QStringLiteral("99-lasapi-video-only.conf"),
+        QStringLiteral("settings.json"),
         QStringLiteral("module_versions.state"),
+        QStringLiteral("src/lasapi.version"),
         QStringLiteral("src/alsa.version"),
         QStringLiteral("src/pulse.version"),
         QStringLiteral("ALSA /proc/asound + Build Freshness"),
@@ -1177,7 +1179,8 @@ void SalsaLiveDebuggerWidget::refreshBoundaryAudit() {
     renderProcTable();
 
     const QJsonObject fresh = audit.value(QStringLiteral("build_freshness")).toObject();
-    const bool stale = fresh.value(QStringLiteral("is_stale")).toBool(false);
+    const bool stale = fresh.value(QStringLiteral("stale")).toBool(
+        fresh.value(QStringLiteral("is_stale")).toBool(false));
     lblStaleWarn_->setText(
         stale ? QStringLiteral("WARNING — Build artifacts look older than source edits: %1").arg(fresh.value(QStringLiteral("summary")).toString())
               : QStringLiteral("Build & Binary Freshness: UP TO DATE (%1)").arg(audit.value(QStringLiteral("pipewire_note")).toString()));
