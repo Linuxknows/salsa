@@ -9,11 +9,9 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::missing_safety_doc)]
 
-use core::ffi::{c_char, c_int};
 use core::mem;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::collections::VecDeque;
-use std::ffi::CStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -25,11 +23,37 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, LasapiDbgPaSnapshot, LasapiDeviceList, LasapiEngineStatus,
-    LasapiPaCallbacks, LASAPI_DBG_INFO, LASAPI_DBG_PA, LASAPI_DBG_TRACE, LASAPI_DBG_WARN,
-    LASAPI_DEBUG_MAX_PA_CLIENTS, LASAPI_DEBUG_MAX_PA_STREAMS, LASAPI_MAX_DEVICES,
-    LASAPI_MAX_SESSIONS,
+    c_str_to_string, copy_str_to_c, LasapiDeviceList, LasapiEngineStatus, LASAPI_DBG_INFO,
+    LASAPI_DBG_PA, LASAPI_DBG_TRACE, LASAPI_DBG_WARN, LASAPI_MAX_DEVICES, LASAPI_MAX_SESSIONS,
 };
+use crate::json::JsonValue;
+
+pub trait PaEngineHost: Send + Sync {
+    fn fill_status(&self, out: &mut LasapiEngineStatus);
+    fn enumerate_devices(&self, out: &mut LasapiDeviceList);
+    fn switch_devices(&self, pb_id: Option<&str>, cap_id: Option<&str>) -> i32;
+    fn set_master_volume(&self, is_capture: bool, vol_pct: i32, mute_flag: i32) -> i32;
+    fn set_mic_gain_ppm(&self, gain_ppm: u32, vol_pct: i32, mute_flag: i32) -> i32;
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct NullPaEngineHost;
+
+#[cfg(test)]
+impl PaEngineHost for NullPaEngineHost {
+    fn fill_status(&self, _out: &mut LasapiEngineStatus) {}
+    fn enumerate_devices(&self, _out: &mut LasapiDeviceList) {}
+    fn switch_devices(&self, _pb_id: Option<&str>, _cap_id: Option<&str>) -> i32 {
+        0
+    }
+    fn set_master_volume(&self, _is_capture: bool, _vol_pct: i32, _mute_flag: i32) -> i32 {
+        0
+    }
+    fn set_mic_gain_ppm(&self, _gain_ppm: u32, _vol_pct: i32, _mute_flag: i32) -> i32 {
+        0
+    }
+}
 use crate::failsafe;
 use crate::pa_wire::{
     self, cvol_to_milli, decode_sample, encode_sample, format_sample_bits, format_sample_size,
@@ -710,7 +734,7 @@ struct LasapiPaProxyMeta {
 }
 
 struct PaState {
-    cbs: LasapiPaCallbacks,
+    host: Arc<dyn PaEngineHost>,
     _sock_path: String,
     _pid_path: String,
     cookie: [u8; PA_NATIVE_COOKIE_LEN],
@@ -737,7 +761,7 @@ struct PaState {
 }
 
 impl PaState {
-    fn new(cbs: LasapiPaCallbacks, sock_path: String, pid_path: String) -> Self {
+    fn new(host: Arc<dyn PaEngineHost>, sock_path: String, pid_path: String) -> Self {
         let mut clients = Vec::with_capacity(PA_MAX_CLIENTS);
         for s in 0..PA_MAX_CLIENTS {
             clients.push(PaClient::new(s));
@@ -746,7 +770,7 @@ impl PaState {
         let lasapi_proxies = vec![LasapiPaProxyMeta::default(); LASAPI_MAX_SESSIONS];
         let stable_ids = vec![StableId::default(); PA_MAX_STABLE_IDS];
         let mut st = Self {
-            cbs,
+            host,
             _sock_path: sock_path,
             _pid_path: pid_path,
             cookie: [0; PA_NATIVE_COOKIE_LEN],
@@ -825,26 +849,20 @@ impl PaState {
     }
 
     fn refresh_status_only(&mut self) {
-        if let Some(f) = self.cbs.get_status {
-            unsafe { f(self.cbs.user_ctx, &mut self.cached_status) };
-        }
+        self.host.fill_status(&mut self.cached_status);
     }
 
     fn refresh_device_cache_force(&mut self) {
         self.refresh_status_only();
-        if let Some(f) = self.cbs.get_devices {
-            unsafe { f(self.cbs.user_ctx, &mut self.cached_devices) };
-            self.devices_cache_valid = true;
-        }
+        self.host.enumerate_devices(&mut self.cached_devices);
+        self.devices_cache_valid = true;
     }
 
     fn refresh_device_cache(&mut self) {
         self.refresh_status_only();
         if !self.devices_cache_valid {
-            if let Some(f) = self.cbs.get_devices {
-                unsafe { f(self.cbs.user_ctx, &mut self.cached_devices) };
-                self.devices_cache_valid = true;
-            }
+            self.host.enumerate_devices(&mut self.cached_devices);
+            self.devices_cache_valid = true;
         }
     }
 
@@ -1159,13 +1177,10 @@ impl PaState {
         if is_mon || peak_detect || !explicit_req {
             return;
         }
-        let Some(set_devs) = self.cbs.set_devices else { return };
         let Some(salsa_id) = self.source_idx_to_salsa_id(actual_src_idx) else { return };
         if !salsa_id.is_empty() && salsa_id != c_str_to_string(&self.cached_status.active_capture_id) {
-            if let Ok(cid) = std::ffi::CString::new(salsa_id) {
-                unsafe { set_devs(self.cbs.user_ctx, core::ptr::null(), cid.as_ptr()) };
-                self.refresh_device_cache();
-            }
+            self.host.switch_devices(None, Some(&salsa_id));
+            self.refresh_device_cache();
         }
     }
 
@@ -2583,11 +2598,7 @@ impl PaState {
                     } else {
                         self.hw_src_pa_vol = avg_pv;
                         self.hw_src_pa_vol_valid = true;
-                        if let Some(f) = self.cbs.set_mic_gain_ppm {
-                            unsafe { f(self.cbs.user_ctx, gain_ppm, pct, -1) };
-                        } else if let Some(f) = self.cbs.set_master_volume {
-                            unsafe { f(self.cbs.user_ctx, 1, pct, -1) };
-                        }
+                        self.host.set_mic_gain_ppm(gain_ppm, pct, -1);
                         self.refresh_status_only();
                     }
                     self.clients[ci].reply_simple_ack(tag);
@@ -2616,9 +2627,7 @@ impl PaState {
                     );
                     self.sink_pa_vol = avg_pv;
                     self.sink_pa_vol_valid = true;
-                    if let Some(f) = self.cbs.set_master_volume {
-                        unsafe { f(self.cbs.user_ctx, 0, pct, -1) };
-                    }
+                    self.host.set_master_volume(false, pct, -1);
                     self.refresh_status_only();
                     self.broadcast_sub_event(SUB_EVENT_SINK, SUB_EVENT_CHANGE, tgt_idx);
                     self.clients[ci].reply_simple_ack(tag);
@@ -2652,9 +2661,7 @@ impl PaState {
                     if is_mon {
                         rt.mon_muted.store(i32::from(mute), Ordering::Relaxed);
                     } else {
-                        if let Some(f) = self.cbs.set_master_volume {
-                            unsafe { f(self.cbs.user_ctx, 1, -1, i32::from(mute)) };
-                        }
+                        self.host.set_master_volume(true, -1, i32::from(mute));
                         self.refresh_status_only();
                     }
                     self.clients[ci].reply_simple_ack(tag);
@@ -2664,9 +2671,7 @@ impl PaState {
                         .resolve_sink_idx_and_name(idx, nm.as_deref())
                         .map(|(ti, _)| ti)
                         .unwrap_or_else(|| self.find_active_sink_idx());
-                    if let Some(f) = self.cbs.set_master_volume {
-                        unsafe { f(self.cbs.user_ctx, 0, -1, i32::from(mute)) };
-                    }
+                    self.host.set_master_volume(false, -1, i32::from(mute));
                     self.refresh_status_only();
                     self.broadcast_sub_event(SUB_EVENT_SINK, SUB_EVENT_CHANGE, tgt_idx);
                     self.clients[ci].reply_simple_ack(tag);
@@ -2778,17 +2783,10 @@ impl PaState {
                             self.clients[ci].reply_err(tag, ERR_NOENTITY);
                             return;
                         };
-                        if let Some(f) = self.cbs.set_devices {
-                            if let Ok(cid) = std::ffi::CString::new(did) {
-                                unsafe {
-                                    f(
-                                        self.cbs.user_ctx,
-                                        if is_cap { core::ptr::null() } else { cid.as_ptr() },
-                                        if is_cap { cid.as_ptr() } else { core::ptr::null() },
-                                    )
-                                };
-                            }
-                        }
+                        self.host.switch_devices(
+                            if is_cap { None } else { Some(&did) },
+                            if is_cap { Some(&did) } else { None },
+                        );
                         self.refresh_status_only();
                     }
                 }
@@ -3912,7 +3910,7 @@ pub struct PaServerHandle {
     pid_path: String,
     tcp_port: Option<u16>,
     tcp_port_path: Option<String>,
-    thread: Option<JoinHandle<()>>,
+    thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 fn collect_pa_facility_ids(dl: &LasapiDeviceList, facility: u32) -> Vec<String> {
@@ -5180,14 +5178,7 @@ fn bind_loopback_tcp_and_write_port(
     (Some(tcp), Some(port), Some(port_path))
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_start(
-    out_srv: *mut *mut PaServerHandle,
-    cbs: LasapiPaCallbacks,
-) -> c_int {
-    if out_srv.is_null() {
-        return -1;
-    }
+pub fn start_pa_server(host: Arc<dyn PaEngineHost>) -> Option<PaServerHandle> {
     let uid = current_uid();
     let xdg = match std::env::var("XDG_RUNTIME_DIR") {
         Ok(v) if !v.is_empty() && is_safe_owner_dir(Path::new(&v), uid, true) => v,
@@ -5195,14 +5186,12 @@ pub unsafe extern "C" fn lasapi_pa_server_start(
     };
     let pulse_dir = format!("{xdg}/pulse");
     if !ensure_owned_dir_0700(&pulse_dir, uid) {
-        return -1;
+        return None;
     }
     let sock_path = format!("{pulse_dir}/native");
     let pid_path = format!("{pulse_dir}/pid");
 
-    let Some(listener) = bind_unix_listener_0600(&sock_path) else {
-        return -1;
-    };
+    let listener = bind_unix_listener_0600(&sock_path)?;
     if let Ok(mut pf) = OpenOptions::new()
         .write(true)
         .create(true)
@@ -5216,11 +5205,11 @@ pub unsafe extern "C" fn lasapi_pa_server_start(
     let Some(wake_efd) = new_eventfd() else {
         let _ = fs::remove_file(&sock_path);
         let _ = fs::remove_file(&pid_path);
-        return -1;
+        return None;
     };
     let wake_raw = wake_efd.as_raw_fd();
     let rt = Arc::new(PaRtShared::new(wake_raw));
-    let mut state_val = PaState::new(cbs, sock_path.clone(), pid_path.clone());
+    let mut state_val = PaState::new(host, sock_path.clone(), pid_path.clone());
     let (tcp_listener, tcp_port, tcp_port_path) =
         bind_loopback_tcp_and_write_port(state_val.cookie_valid);
     state_val.refresh_device_cache_force();
@@ -5253,7 +5242,7 @@ pub unsafe extern "C" fn lasapi_pa_server_start(
         if let Some(ref p) = tcp_port_path {
             let _ = fs::remove_file(p);
         }
-        return -1;
+        return None;
     };
 
     if let Some(port) = tcp_port {
@@ -5263,7 +5252,7 @@ pub unsafe extern "C" fn lasapi_pa_server_start(
     } else {
         println!("[Salsa-PA] Native PulseAudio v35 Rust server bound at {sock_path}");
     }
-    let handle = Box::new(PaServerHandle {
+    Some(PaServerHandle {
         state,
         rt,
         vol_file_lock: vol_lock,
@@ -5273,81 +5262,67 @@ pub unsafe extern "C" fn lasapi_pa_server_start(
         pid_path,
         tcp_port,
         tcp_port_path,
-        thread: Some(thread),
-    });
-    unsafe { *out_srv = Box::into_raw(handle) };
-    0
+        thread: Mutex::new(Some(thread)),
+    })
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_stop(srv: *mut PaServerHandle) {
-    if srv.is_null() {
-        return;
-    }
-    let mut handle = unsafe { Box::from_raw(srv) };
-    handle.running.store(false, Ordering::Release);
-    eventfd_signal(handle.wake_efd.as_raw_fd());
-    if let Some(th) = handle.thread.take() {
-        let _ = th.join();
-    }
-    {
-        let mut st = handle.state.lock().unwrap_or_else(|p| p.into_inner());
-        for ci in 0..PA_MAX_CLIENTS {
-            if st.clients[ci].in_use {
-                st.close_client(ci, &handle.rt);
+impl PaServerHandle {
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::Release);
+        eventfd_signal(self.wake_efd.as_raw_fd());
+        if let Some(th) = self.thread.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            let _ = th.join();
+        }
+        {
+            let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            for ci in 0..PA_MAX_CLIENTS {
+                if st.clients[ci].in_use {
+                    st.close_client(ci, &self.rt);
+                }
             }
         }
-    }
-    let _ = fs::remove_file(&handle.sock_path);
-    let _ = fs::remove_file(&handle.pid_path);
-    if let (Some(port), Some(ref ppath)) = (handle.tcp_port, &handle.tcp_port_path) {
-        if let Ok(f) = OpenOptions::new()
-            .read(true)
-            .custom_flags(unix_sys::O_NOFOLLOW | unix_sys::O_NONBLOCK | unix_sys::O_CLOEXEC)
-            .open(ppath)
-        {
-            if let Ok(meta) = f.metadata() {
-                if meta.is_file() && meta.len() <= 32 {
-                    let mut buf = [0u8; 32];
-                    if let Ok(n) = (&f).read(&mut buf) {
-                        if core::str::from_utf8(&buf[..n])
-                            .ok()
-                            .and_then(|s| s.trim().parse::<u16>().ok())
-                            == Some(port)
-                        {
-                            let _ = fs::remove_file(ppath);
+        let _ = fs::remove_file(&self.sock_path);
+        let _ = fs::remove_file(&self.pid_path);
+        if let (Some(port), Some(ref ppath)) = (self.tcp_port, &self.tcp_port_path) {
+            if let Ok(f) = OpenOptions::new()
+                .read(true)
+                .custom_flags(unix_sys::O_NOFOLLOW | unix_sys::O_NONBLOCK | unix_sys::O_CLOEXEC)
+                .open(ppath)
+            {
+                if let Ok(meta) = f.metadata() {
+                    if meta.is_file() && meta.len() <= 32 {
+                        let mut buf = [0u8; 32];
+                        if let Ok(n) = (&f).read(&mut buf) {
+                            if core::str::from_utf8(&buf[..n])
+                                .ok()
+                                .and_then(|s| s.trim().parse::<u16>().ok())
+                                == Some(port)
+                            {
+                                let _ = fs::remove_file(ppath);
+                            }
                         }
                     }
                 }
             }
         }
     }
-}
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_notify_change(srv: *mut PaServerHandle) {
-    if srv.is_null() {
-        return;
-    }
-    let h = unsafe { &*srv };
-    if !h.running.load(Ordering::Relaxed) {
-        return;
-    }
-    let mut new_st: LasapiEngineStatus = unsafe { mem::zeroed() };
-    let mut new_dl: LasapiDeviceList = unsafe { mem::zeroed() };
-    let (cbs_get_st, cbs_get_dl, ctx) = {
-        let st = h.state.lock().unwrap_or_else(|p| p.into_inner());
-        (st.cbs.get_status, st.cbs.get_devices, st.cbs.user_ctx)
-    };
-    if let Some(f) = cbs_get_st {
-        unsafe { f(ctx, &mut new_st) };
-    }
-    if let Some(f) = cbs_get_dl {
-        unsafe { f(ctx, &mut new_dl) };
-    }
+    pub fn notify_change(&self) {
+        if !self.running.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut new_st: LasapiEngineStatus = unsafe { mem::zeroed() };
+        let mut new_dl: LasapiDeviceList = unsafe { mem::zeroed() };
+        let host = {
+            let st = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            Arc::clone(&st.host)
+        };
+        host.fill_status(&mut new_st);
+        host.enumerate_devices(&mut new_dl);
 
-    {
-        let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
+        let h = self;
+        {
+            let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
         let old_dl = st.cached_devices;
         st.cached_status = new_st;
         st.cached_devices = new_dl;
@@ -5409,31 +5384,22 @@ pub unsafe extern "C" fn lasapi_pa_server_notify_change(srv: *mut PaServerHandle
         for &w_idx in &changed_lasapi[..cw_cnt] {
             st.broadcast_sub_event(SUB_EVENT_SINK_INPUT, SUB_EVENT_CHANGE, w_idx);
         }
-        st.broadcast_sub_event(SUB_EVENT_SERVER, SUB_EVENT_CHANGE, PA_INVALID_INDEX);
+            st.broadcast_sub_event(SUB_EVENT_SERVER, SUB_EVENT_CHANGE, PA_INVALID_INDEX);
+        }
+        h.rt.signal_wake();
     }
-    h.rt.signal_wake();
-}
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_notify_volume(
-    srv: *mut PaServerHandle,
-    is_capture: bool,
-) {
-    if srv.is_null() {
-        return;
-    }
-    let h = unsafe { &*srv };
-    if !h.running.load(Ordering::Relaxed) {
-        return;
-    }
-    let mut new_st: LasapiEngineStatus = unsafe { mem::zeroed() };
-    let (get_st, ctx) = {
-        let st = h.state.lock().unwrap_or_else(|p| p.into_inner());
-        (st.cbs.get_status, st.cbs.user_ctx)
-    };
-    if let Some(f) = get_st {
-        unsafe { f(ctx, &mut new_st) };
-    }
+    pub fn notify_volume(&self, is_capture: bool) {
+        let h = self;
+        if !h.running.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut new_st: LasapiEngineStatus = unsafe { mem::zeroed() };
+        let host = {
+            let st = h.state.lock().unwrap_or_else(|p| p.into_inner());
+            Arc::clone(&st.host)
+        };
+        host.fill_status(&mut new_st);
     {
         let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
         st.cached_status = new_st;
@@ -5460,18 +5426,11 @@ pub unsafe extern "C" fn lasapi_pa_server_notify_volume(
     h.rt.signal_wake();
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_mix_playback(
-    srv: *mut PaServerHandle,
-    stereo_out_ptr: *mut f32,
-    frames: u32,
-    engine_rate: u32,
-) {
-    if srv.is_null() || stereo_out_ptr.is_null() || frames == 0 || engine_rate == 0 {
-        return;
-    }
-    let h = unsafe { &*srv };
-    let stereo_out = unsafe { core::slice::from_raw_parts_mut(stereo_out_ptr, (frames as usize) * 2) };
+    pub fn mix_playback(&self, stereo_out: &mut [f32], frames: u32, engine_rate: u32) {
+        let h = self;
+        if frames == 0 || engine_rate == 0 || stereo_out.len() < (frames as usize) * 2 {
+            return;
+        }
     let mut wake_needed = false;
     let doi_cap = if h.rt.has_active_doi.load(Ordering::Relaxed) {
         (frames as usize).min(PA_MAX_DOI_PERIOD)
@@ -5691,30 +5650,18 @@ pub unsafe extern "C" fn lasapi_pa_server_mix_playback(
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_push_capture(
-    srv: *mut PaServerHandle,
-    mic_ptr: *const f32,
-    mic_frames: u32,
-    mic_rate: u32,
-    mon_ptr: *const f32,
-    mon_frames: u32,
-    mon_rate: u32,
-) {
-    if srv.is_null() {
-        return;
-    }
-    let h = unsafe { &*srv };
-    let mic_slice = if mic_ptr.is_null() || mic_frames == 0 {
-        None
-    } else {
-        Some(unsafe { core::slice::from_raw_parts(mic_ptr, (mic_frames as usize) * 2) })
-    };
-    let mon_slice = if mon_ptr.is_null() || mon_frames == 0 {
-        None
-    } else {
-        Some(unsafe { core::slice::from_raw_parts(mon_ptr, (mon_frames as usize) * 2) })
-    };
+    pub fn push_capture(
+        &self,
+        mic_slice: Option<&[f32]>,
+        mic_rate: u32,
+        mon_slice: Option<&[f32]>,
+        mon_rate: u32,
+    ) {
+        let h = self;
+        let mic_frames = mic_slice.map_or(0, |s| (s.len() / 2) as u32);
+        let mon_frames = mon_slice.map_or(0, |s| (s.len() / 2) as u32);
+        let mic_slice = mic_slice.filter(|s| s.len() >= 2);
+        let mon_slice = mon_slice.filter(|s| s.len() >= 2);
     let mut wake_needed = false;
 
     for rs in &h.rt.streams {
@@ -5956,26 +5903,15 @@ pub unsafe extern "C" fn lasapi_pa_server_push_capture(
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_fill_sessions(
-    srv: *mut PaServerHandle,
-    st_ptr: *mut LasapiEngineStatus,
-    out_num_clients: *mut u32,
-) {
-    if srv.is_null() || st_ptr.is_null() {
-        return;
-    }
-    let h = unsafe { &*srv };
-    let out = unsafe { &mut *st_ptr };
-    let st = h.state.lock().unwrap_or_else(|p| p.into_inner());
-    let nc = st
-        .clients
-        .iter()
-        .filter(|c| c.in_use && c.authed)
-        .count() as u32;
-    if !out_num_clients.is_null() {
-        unsafe { *out_num_clients = nc };
-    }
+    pub fn fill_sessions(&self, out: &mut LasapiEngineStatus) {
+        let h = self;
+        let st = h.state.lock().unwrap_or_else(|p| p.into_inner());
+        let nc = st
+            .clients
+            .iter()
+            .filter(|c| c.in_use && c.authed)
+            .count() as u32;
+        out.pa_clients = nc;
     for si in 0..PA_MAX_STREAMS {
         if out.num_sessions as usize >= LASAPI_MAX_SESSIONS {
             break;
@@ -6015,31 +5951,22 @@ pub unsafe extern "C" fn lasapi_pa_server_fill_sessions(
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_control_stream(
-    srv: *mut PaServerHandle,
-    session_id: u32,
-    mut vol_pct: i32,
-    mute_mode: i32,
-    target_device_ptr: *const c_char,
-) -> c_int {
-    if srv.is_null() || session_id < 10000 {
-        return -1;
-    }
-    let h = unsafe { &*srv };
-    let target_idx = session_id - 10000;
-    if vol_pct > 150 {
-        vol_pct = 150;
-    }
-    let tgt_dev = if target_device_ptr.is_null() {
-        None
-    } else {
-        unsafe { CStr::from_ptr(target_device_ptr) }
-            .to_str()
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-    };
+    pub fn control_stream(
+        &self,
+        session_id: u32,
+        mut vol_pct: i32,
+        mute_mode: i32,
+        target_device: Option<&str>,
+    ) -> i32 {
+        if session_id < 10000 {
+            return -1;
+        }
+        let h = self;
+        let target_idx = session_id - 10000;
+        if vol_pct > 150 {
+            vol_pct = 150;
+        }
+        let tgt_dev = target_device.filter(|s| !s.is_empty()).map(|s| s.to_string());
 
     let mut save_info: Option<(String, Vec<AppVolEntry>)> = None;
     {
@@ -6137,122 +6064,92 @@ pub unsafe extern "C" fn lasapi_pa_server_control_stream(
     0
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_set_stream_volume(
-    srv: *mut PaServerHandle,
-    session_id: u32,
-    vol_pct: u32,
-) -> c_int {
-    unsafe { lasapi_pa_server_control_stream(srv, session_id, vol_pct as i32, -1, core::ptr::null()) }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_get_dominant_rate(
-    srv: *mut PaServerHandle,
-    out_bits: *mut u32,
-) -> u32 {
-    if srv.is_null() {
-        if !out_bits.is_null() {
-            unsafe { *out_bits = 0 };
-        }
-        return 0;
-    }
-    let h = unsafe { &*srv };
-    if !out_bits.is_null() {
-        unsafe { *out_bits = h.rt.dom_stream_bits.load(Ordering::Relaxed) };
-    }
-    h.rt.dom_stream_rate.load(Ordering::Relaxed)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_fill_debug(
-    srv: *mut PaServerHandle,
-    out_ptr: *mut LasapiDbgPaSnapshot,
-) {
-    if out_ptr.is_null() {
-        return;
-    }
-    let out = unsafe { &mut *out_ptr };
-    *out = unsafe { mem::zeroed() };
-    if srv.is_null() {
-        return;
-    }
-    let h = unsafe { &*srv };
-    let st = h.state.lock().unwrap_or_else(|p| p.into_inner());
-
-    for c in &st.clients {
-        if out.num_clients as usize >= LASAPI_DEBUG_MAX_PA_CLIENTS {
-            break;
-        }
-        if !c.in_use {
-            continue;
-        }
-        let dc = &mut out.clients[out.num_clients as usize];
-        out.num_clients += 1;
-        dc.index = c.index;
-        dc.pid = c.pid;
-        copy_str_to_c(&mut dc.name, &c.name);
-        let bin = c.props.get_str("application.process.binary").unwrap_or_default();
-        copy_str_to_c(&mut dc.binary, &bin);
-        dc.version = c.version;
-        dc.authed = u8::from(c.authed);
-        dc.sub_mask = c.sub_mask;
-        dc.out_count = c.out_q.len() as u32;
+    pub fn set_stream_volume(&self, session_id: u32, vol_pct: u32) -> i32 {
+        self.control_stream(session_id, vol_pct as i32, -1, None)
     }
 
-    for si in 0..PA_MAX_STREAMS {
-        if out.num_streams as usize >= LASAPI_DEBUG_MAX_PA_STREAMS {
-            break;
+    pub fn debug_snapshot_json(&self) -> (JsonValue, JsonValue) {
+        let st = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut clients_json = Vec::new();
+        for c in &st.clients {
+            if !c.in_use {
+                continue;
+            }
+            let bin = c.props.get_str("application.process.binary").unwrap_or_default();
+            clients_json.push(JsonValue::obj(vec![
+                ("index", JsonValue::Int(i64::from(c.index))),
+                ("pid", JsonValue::Int(i64::from(c.pid))),
+                ("name", JsonValue::Str(c.name.clone())),
+                ("binary", JsonValue::Str(bin)),
+                ("version", JsonValue::Int(i64::from(c.version))),
+                ("authed", JsonValue::Int(i64::from(c.authed))),
+                ("sub_mask", JsonValue::Int(i64::from(c.sub_mask))),
+                ("out_count", JsonValue::Int(i64::try_from(c.out_q.len()).unwrap_or(i64::MAX))),
+            ]));
         }
-        let s = &st.streams[si];
-        if !s.in_use {
-            continue;
-        }
-        let rs = &h.rt.streams[si];
-        let ds = &mut out.streams[out.num_streams as usize];
-        out.num_streams += 1;
-        ds.index = s.index;
-        ds.client_index = s.client_index;
-        ds.pid = s.client_pid;
-        copy_str_to_c(&mut ds.name, &s.name);
-        copy_str_to_c(&mut ds.device_id, &s.device_id);
-        ds.is_playback = u8::from(s.is_playback);
-        ds.is_monitor = u8::from(s.is_monitor);
-        ds.peak_detect = u8::from(s.peak_detect);
-        ds.direct_on_input = s.direct_on_input;
-        ds.target_dev_idx = s.target_dev_idx;
-        ds.rate = s.ss.rate;
-        ds.channels = s.ss.channels;
-        ds.format = s.ss.format;
-        ds.active = rs.active.load(Ordering::Relaxed) as u8;
-        ds.corked = rs.corked.load(Ordering::Relaxed) as u8;
-        ds.in_prebuf = u8::from(rs.in_prebuf.load(Ordering::Relaxed) != 0);
-        ds.draining = rs.draining.load(Ordering::Relaxed) as u8;
-        ds.muted = rs.muted.load(Ordering::Relaxed) as u8;
-        ds.volume_milli = rs.volume_milli.load(Ordering::Relaxed);
-        let fsz = if s.frame_size != 0 { s.frame_size } else { 4 };
-        ds.frame_size = fsz;
-        let wr = rs.wr_frame.load(Ordering::Relaxed);
-        let rd = rs.rd_frame.load(Ordering::Relaxed);
-        ds.buffered_frames = wr.saturating_sub(rd);
-        ds.ring_cap_frames = PA_STREAM_RING_FRAMES as u32;
-        ds.tlength_frames = s.tlength / fsz;
-        ds.prebuf_frames = s.prebuf / fsz;
-        ds.minreq_frames = s.minreq / fsz;
-        ds.fragsize_frames = s.fragsize / fsz;
-        ds.mix_peak_l = f32::from_bits(rs.mix_peak_l.load(Ordering::Relaxed));
-        ds.mix_peak_r = f32::from_bits(rs.mix_peak_r.load(Ordering::Relaxed));
-        ds.write_index = rs.write_index.load(Ordering::Relaxed);
-        ds.read_index = rs.read_index.load(Ordering::Relaxed);
-    }
-}
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_reset_clients(srv: *mut PaServerHandle) -> c_int {
-    if srv.is_null() {
-        return 0;
+        let mut streams_json = Vec::new();
+        for si in 0..PA_MAX_STREAMS {
+            let s = &st.streams[si];
+            if !s.in_use {
+                continue;
+            }
+            let rs = &self.rt.streams[si];
+            let fsz = if s.frame_size != 0 { s.frame_size } else { 4 };
+            let wr = rs.wr_frame.load(Ordering::Relaxed);
+            let rd = rs.rd_frame.load(Ordering::Relaxed);
+            let peak_l = f32::from_bits(rs.mix_peak_l.load(Ordering::Relaxed));
+            let peak_r = f32::from_bits(rs.mix_peak_r.load(Ordering::Relaxed));
+            streams_json.push(JsonValue::obj(vec![
+                ("index", JsonValue::Int(i64::from(s.index))),
+                ("client_index", JsonValue::Int(i64::from(s.client_index))),
+                ("pid", JsonValue::Int(i64::from(s.client_pid))),
+                ("name", JsonValue::Str(s.name.clone())),
+                ("device_id", JsonValue::Str(s.device_id.clone())),
+                ("is_playback", JsonValue::Int(i64::from(s.is_playback))),
+                ("is_monitor", JsonValue::Int(i64::from(s.is_monitor))),
+                ("peak_detect", JsonValue::Int(i64::from(s.peak_detect))),
+                ("direct_on_input", JsonValue::Int(i64::from(s.direct_on_input))),
+                ("target_dev_idx", JsonValue::Int(i64::from(s.target_dev_idx))),
+                ("rate", JsonValue::Int(i64::from(s.ss.rate))),
+                ("channels", JsonValue::Int(i64::from(s.ss.channels))),
+                ("format", JsonValue::Int(i64::from(s.ss.format))),
+                ("active", JsonValue::Int(i64::from(rs.active.load(Ordering::Relaxed) as u8))),
+                ("corked", JsonValue::Int(i64::from(rs.corked.load(Ordering::Relaxed) as u8))),
+                (
+                    "in_prebuf",
+                    JsonValue::Int(i64::from(rs.in_prebuf.load(Ordering::Relaxed) != 0)),
+                ),
+                (
+                    "draining",
+                    JsonValue::Int(i64::from(rs.draining.load(Ordering::Relaxed) as u8)),
+                ),
+                ("muted", JsonValue::Int(i64::from(rs.muted.load(Ordering::Relaxed) as u8))),
+                (
+                    "volume_milli",
+                    JsonValue::Int(i64::from(rs.volume_milli.load(Ordering::Relaxed))),
+                ),
+                ("frame_size", JsonValue::Int(i64::from(fsz))),
+                ("buffered_frames", JsonValue::from_u64(wr.saturating_sub(rd))),
+                (
+                    "ring_cap_frames",
+                    JsonValue::Int(i64::try_from(PA_STREAM_RING_FRAMES).unwrap_or(i64::MAX)),
+                ),
+                ("tlength_frames", JsonValue::Int(i64::from(s.tlength / fsz))),
+                ("prebuf_frames", JsonValue::Int(i64::from(s.prebuf / fsz))),
+                ("minreq_frames", JsonValue::Int(i64::from(s.minreq / fsz))),
+                ("fragsize_frames", JsonValue::Int(i64::from(s.fragsize / fsz))),
+                ("mix_peak_l", JsonValue::rounded_float(f64::from(peak_l), 10_000.0)),
+                ("mix_peak_r", JsonValue::rounded_float(f64::from(peak_r), 10_000.0)),
+                ("write_index", JsonValue::from_u64(rs.write_index.load(Ordering::Relaxed))),
+                ("read_index", JsonValue::from_u64(rs.read_index.load(Ordering::Relaxed))),
+            ]));
+        }
+        (JsonValue::Array(clients_json), JsonValue::Array(streams_json))
     }
-    let h = unsafe { &*srv };
+
+    pub fn reset_clients(&self) -> i32 {
+        let h = self;
     let mut flushed = 0i32;
     {
         let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -6267,25 +6164,20 @@ pub unsafe extern "C" fn lasapi_pa_server_reset_clients(srv: *mut PaServerHandle
     flushed
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_register_lasapi_session(
-    srv: *mut PaServerHandle,
-    slot_idx: u32,
-    session_id: u32,
-    pid: u32,
-    name_ptr: *const c_char,
-    rate: u32,
-    channels: u32,
-) {
-    if srv.is_null() || (slot_idx as usize) >= LASAPI_MAX_SESSIONS {
-        return;
-    }
-    let h = unsafe { &*srv };
-    let nm = if name_ptr.is_null() {
-        "AudioSession"
-    } else {
-        unsafe { CStr::from_ptr(name_ptr) }.to_str().unwrap_or("AudioSession")
-    };
+    pub fn register_lasapi_session(
+        &self,
+        slot_idx: u32,
+        session_id: u32,
+        pid: u32,
+        name: &str,
+        rate: u32,
+        channels: u32,
+    ) {
+        if (slot_idx as usize) >= LASAPI_MAX_SESSIONS {
+            return;
+        }
+        let h = self;
+        let nm = if name.is_empty() { "AudioSession" } else { name };
     {
         let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
         st.register_lasapi_proxy(
@@ -6301,16 +6193,11 @@ pub unsafe extern "C" fn lasapi_pa_server_register_lasapi_session(
     h.rt.signal_wake();
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_unregister_lasapi_session(
-    srv: *mut PaServerHandle,
-    slot_idx: u32,
-    session_id: u32,
-) {
-    if srv.is_null() || (slot_idx as usize) >= LASAPI_MAX_SESSIONS {
-        return;
-    }
-    let h = unsafe { &*srv };
+    pub fn unregister_lasapi_session(&self, slot_idx: u32, session_id: u32) {
+        if (slot_idx as usize) >= LASAPI_MAX_SESSIONS {
+            return;
+        }
+        let h = self;
     {
         let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
         st.unregister_lasapi_proxy(slot_idx as usize, session_id, &h.rt);
@@ -6318,18 +6205,17 @@ pub unsafe extern "C" fn lasapi_pa_server_unregister_lasapi_session(
     h.rt.signal_wake();
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_update_lasapi_session_vol(
-    srv: *mut PaServerHandle,
-    slot_idx: u32,
-    session_id: u32,
-    volume_milli: u32,
-    muted: bool,
-) {
-    if srv.is_null() || (slot_idx as usize) >= LASAPI_MAX_SESSIONS {
-        return;
-    }
-    let h = unsafe { &*srv };
+    pub fn update_lasapi_session_vol(
+        &self,
+        slot_idx: u32,
+        session_id: u32,
+        volume_milli: u32,
+        muted: bool,
+    ) {
+        if (slot_idx as usize) >= LASAPI_MAX_SESSIONS {
+            return;
+        }
+        let h = self;
     let si = slot_idx as usize;
     let clamped = volume_milli.min(1500);
     let pa_idx = {
@@ -6350,38 +6236,35 @@ pub unsafe extern "C" fn lasapi_pa_server_update_lasapi_session_vol(
     h.rt.signal_wake();
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_lasapi_doi_mask(srv: *mut PaServerHandle) -> u32 {
-    if srv.is_null() {
-        return 0;
+    pub fn lasapi_doi_mask(&self) -> u32 {
+        self.rt.lasapi_doi_mask.load(Ordering::Acquire)
     }
-    let h = unsafe { &*srv };
-    h.rt.lasapi_doi_mask.load(Ordering::Acquire)
-}
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_push_lasapi_period(
-    srv: *mut PaServerHandle,
-    slot_idx: u32,
-    interleaved_ptr: *const f32,
-    frames: u32,
-    channels: u32,
-) {
-    if srv.is_null() || interleaved_ptr.is_null() || frames == 0 || channels == 0 {
-        return;
-    }
-    let si = slot_idx as usize;
-    let h = unsafe { &*srv };
-    if si >= h.rt.lasapi_slots.len() {
-        return;
-    }
-    let ws = &h.rt.lasapi_slots[si];
-    if !ws.active.load(Ordering::Acquire) {
-        return;
-    }
-    let n = (frames as usize).min(PA_MAX_DOI_PERIOD);
-    let ch = channels as usize;
-    let src = unsafe { core::slice::from_raw_parts(interleaved_ptr, (frames as usize) * ch) };
+    pub fn push_lasapi_period(
+        &self,
+        slot_idx: u32,
+        src: &[f32],
+        frames: u32,
+        channels: u32,
+    ) {
+        if frames == 0 || channels == 0 {
+            return;
+        }
+        let si = slot_idx as usize;
+        let h = self;
+        if si >= h.rt.lasapi_slots.len() {
+            return;
+        }
+        let ws = &h.rt.lasapi_slots[si];
+        if !ws.active.load(Ordering::Acquire) {
+            return;
+        }
+        let ch = channels as usize;
+        let need = (frames as usize).saturating_mul(ch);
+        if src.len() < need {
+            return;
+        }
+        let n = (frames as usize).min(PA_MAX_DOI_PERIOD);
     let mut pk_l = 0.0f32;
     let mut pk_r = 0.0f32;
     for f in 0..n {
@@ -6398,48 +6281,32 @@ pub unsafe extern "C" fn lasapi_pa_server_push_lasapi_period(
     ws.period_frames.store(n as u32, Ordering::Release);
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pa_server_poll_lasapi_ctl(
-    srv: *mut PaServerHandle,
-    slot_idx: u32,
-    last_seq: &mut u64,
-    out_vol_milli: &mut u32,
-    out_muted: &mut u32,
-) -> bool {
-    if srv.is_null() {
-        return false;
+    pub fn poll_lasapi_ctl(&self, slot_idx: u32, last_seq: &mut u64) -> Option<(u32, u32)> {
+        let si = slot_idx as usize;
+        let ws = self.rt.lasapi_slots.get(si)?;
+        let seq = ws.pa_ctl_seq.load(Ordering::Acquire);
+        if seq == *last_seq {
+            return None;
+        }
+        *last_seq = seq;
+        Some((
+            ws.pa_target_vol_milli.load(Ordering::Relaxed),
+            u32::from(ws.pa_target_muted.load(Ordering::Relaxed)),
+        ))
     }
-    let si = slot_idx as usize;
-    let h = unsafe { &*srv };
-    if si >= h.rt.lasapi_slots.len() {
-        return false;
-    }
-    let ws = &h.rt.lasapi_slots[si];
-    let seq = ws.pa_ctl_seq.load(Ordering::Acquire);
-    if seq == *last_seq {
-        return false;
-    }
-    *last_seq = seq;
-    *out_vol_milli = ws.pa_target_vol_milli.load(Ordering::Relaxed);
-    *out_muted = u32::from(ws.pa_target_muted.load(Ordering::Relaxed));
-    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn empty_pa_callbacks() -> LasapiPaCallbacks {
-        unsafe { mem::zeroed() }
+    fn null_host() -> Arc<dyn PaEngineHost> {
+        Arc::new(NullPaEngineHost)
     }
 
     #[test]
     fn default_names_and_virtual_aliases_prefer_active_hw_device() {
-        let mut st = PaState::new(
-            empty_pa_callbacks(),
-            String::new(),
-            String::new(),
-        );
+        let mut st = PaState::new(null_host(), String::new(), String::new());
         st.devices_cache_valid = true;
         st.cached_devices.num_devices = 2;
 
@@ -6484,7 +6351,7 @@ mod tests {
     fn tcp_auth_requires_matching_cookie_without_peercred() {
         use std::os::unix::net::UnixStream;
 
-        let mut st = PaState::new(empty_pa_callbacks(), String::new(), String::new());
+        let mut st = PaState::new(null_host(), String::new(), String::new());
         st.cookie = [0xA5u8; PA_NATIVE_COOKIE_LEN];
         st.cookie_valid = true;
 
@@ -6543,9 +6410,9 @@ mod tests {
         assert_eq!(sm_zero.prebuf, 0);
 
         // Partial/empty underrun re-arms in_prebuf cleanly and fades smoothly instead of stuttering
-        let mut h = PaServerHandle {
+        let h = PaServerHandle {
             state: Arc::new(Mutex::new(PaState::new(
-                empty_pa_callbacks(),
+                null_host(),
                 String::new(),
                 String::new(),
             ))),
@@ -6557,7 +6424,7 @@ mod tests {
             pid_path: String::new(),
             tcp_port: None,
             tcp_port_path: None,
-            thread: None,
+            thread: Mutex::new(None),
         };
         let rt_ref = Arc::clone(&h.rt);
         let rs = &rt_ref.streams[0];
@@ -6574,9 +6441,7 @@ mod tests {
             rs.ring_set(i, 0.25, 0.25);
         }
         let mut out = vec![0.0f32; 256];
-        unsafe {
-            lasapi_pa_server_mix_playback(&mut h, out.as_mut_ptr(), 128, 48_000);
-        }
+        h.mix_playback(&mut out, 128, 48_000);
         assert_eq!(rs.rd_frame.load(Ordering::Acquire), 64);
         assert_eq!(rs.in_prebuf.load(Ordering::Acquire), 1);
         assert!(rs.underflow_resync.load(Ordering::Acquire));
@@ -6586,9 +6451,9 @@ mod tests {
     fn lasapi_session_exposes_pa_sink_input_and_feeds_doi_record_stream() {
         use std::os::unix::net::UnixStream;
 
-        let mut h = PaServerHandle {
+        let h = PaServerHandle {
             state: Arc::new(Mutex::new(PaState::new(
-                empty_pa_callbacks(),
+                null_host(),
                 String::new(),
                 String::new(),
             ))),
@@ -6600,22 +6465,11 @@ mod tests {
             pid_path: String::new(),
             tcp_port: None,
             tcp_port_path: None,
-            thread: None,
+            thread: Mutex::new(None),
         };
 
         // 1. Register a LASAPI playback session (e.g., FL64.exe:Salsa-WaveRT-ASIO @ 192kHz).
-        let cname = std::ffi::CString::new("FL64.exe:Salsa-WaveRT-ASIO").unwrap();
-        unsafe {
-            lasapi_pa_server_register_lasapi_session(
-                &mut h,
-                2,
-                77,
-                451327,
-                cname.as_ptr(),
-                192_000,
-                2,
-            );
-        }
+        h.register_lasapi_session(2, 77, 451327, "FL64.exe:Salsa-WaveRT-ASIO", 192_000, 2);
 
         // Authenticate a mock Discord capture PA client.
         let Ok((sock_a, _sock_b)) = UnixStream::pair() else {
@@ -6652,9 +6506,8 @@ mod tests {
 
             // Verify fill_sessions does NOT duplicate the LASAPI proxy in Salsa's PA sessions list.
             let mut eng_st: LasapiEngineStatus = unsafe { mem::zeroed() };
-            let mut n_cli = 0u32;
             drop(st);
-            unsafe { lasapi_pa_server_fill_sessions(&mut h, &mut eng_st, &mut n_cli) };
+            h.fill_sessions(&mut eng_st);
             assert_eq!(eng_st.num_sessions, 0);
 
             let st = h.state.lock().unwrap();
@@ -6691,7 +6544,7 @@ mod tests {
         }
 
         // Verify LASAPI doi mask includes bit 2.
-        let mask = unsafe { lasapi_pa_server_lasapi_doi_mask(&mut h) };
+        let mask = h.lasapi_doi_mask();
         assert_eq!(mask & (1u32 << 2), 1u32 << 2);
 
         // 3. Push one 128-frame LASAPI period and pump capture; verify DOI record stream receives exact samples.
@@ -6700,10 +6553,8 @@ mod tests {
             period_pcm[f * 2] = 0.25;
             period_pcm[f * 2 + 1] = -0.5;
         }
-        unsafe {
-            lasapi_pa_server_push_lasapi_period(&mut h, 2, period_pcm.as_ptr(), 128, 2);
-            lasapi_pa_server_push_capture(&mut h, core::ptr::null(), 0, 48_000, period_pcm.as_ptr(), 128, 48_000);
-        }
+        h.push_lasapi_period(2, &period_pcm, 128, 2);
+        h.push_capture(None, 48_000, Some(&period_pcm), 48_000);
         let wr = h.rt.streams[0].wr_frame.load(Ordering::Acquire);
         assert_eq!(wr, 128);
         let (sl, sr) = h.rt.streams[0].ring_get(10);
@@ -6721,14 +6572,12 @@ mod tests {
             st.handle_control_packet(0, &mute_tb.into_vec(), &h.rt, &h.vol_file_lock);
         }
         let mut seq = 0u64;
-        let mut vm = 0u32;
-        let mut mu = 0u32;
-        assert!(unsafe { lasapi_pa_server_poll_lasapi_ctl(&mut h, 2, &mut seq, &mut vm, &mut mu) });
+        let (_vm, mu) = h.poll_lasapi_ctl(2, &mut seq).expect("ctl");
         assert_eq!(mu, 1);
 
         // 5. Unregister LASAPI session clears mask and proxy state cleanly.
-        unsafe { lasapi_pa_server_unregister_lasapi_session(&mut h, 2, 77) };
-        assert_eq!(unsafe { lasapi_pa_server_lasapi_doi_mask(&mut h) } & (1u32 << 2), 0);
+        h.unregister_lasapi_session(2, 77);
+        assert_eq!(h.lasapi_doi_mask() & (1u32 << 2), 0);
         assert!(!h.state.lock().unwrap().lasapi_proxies[2].active);
     }
 
@@ -6736,7 +6585,7 @@ mod tests {
     fn playback_stream_inherits_pid_and_emit_fade_out_zeros_doi_tail() {
         use std::os::unix::net::UnixStream;
 
-        let mut st = PaState::new(empty_pa_callbacks(), String::new(), String::new());
+        let mut st = PaState::new(null_host(), String::new(), String::new());
         st.cookie = [0x22u8; PA_NATIVE_COOKIE_LEN];
         st.cookie_valid = true;
         let Ok((sock_a, _sock_b)) = UnixStream::pair() else {
@@ -6799,7 +6648,7 @@ mod tests {
     fn adjust_latency_preserves_3x_minreq_and_cork_sends_started() {
         use std::os::unix::net::UnixStream;
 
-        let mut st = PaState::new(empty_pa_callbacks(), String::new(), String::new());
+        let mut st = PaState::new(null_host(), String::new(), String::new());
         st.cookie = [0x33u8; PA_NATIVE_COOKIE_LEN];
         st.cookie_valid = true;
         let Ok((sock_a, _sock_b)) = UnixStream::pair() else {

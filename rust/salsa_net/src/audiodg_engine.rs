@@ -18,34 +18,37 @@ use std::io::Read;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use crate::bluez_runtime::{BluetoothBackend, RealBluezBackend};
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, ptr_to_opt_str, LasapiBtCodecCfg, LasapiDbgCallbacks,
-    LasapiDbgRtStats, LasapiDbgSnapshot, LasapiDeviceList, LasapiEngineStatus, LasapiEqConfig,
-    LasapiHwAnalogCfg, LasapiIpcReq, LasapiIpcResp, LasapiMicApoCfg,
-    LasapiMidiEvent, LasapiMidiHub, LasapiPaCallbacks, LasapiParamEqExt,
-    LasapiParamEqPayload, LasapiPwBrokerOpts, LasapiShmRing, SalsaBtSnapshot,
-    SalsaMicCubicState, SalsaRuntimeState, AUDCLNT_E_DEVICE_IN_USE, AUDCLNT_SHAREMODE_EXCLUSIVE,
-    AUDCLNT_STREAMFLAGS_CAPTURE, AUDCLNT_STREAMFLAGS_LOOPBACK, E_FAIL, E_INVALIDARG, E_OUTOFMEMORY,
-    LASAPI_BT_CONN_CONNECT, LASAPI_BT_CONN_DISCONNECT, LASAPI_BT_CONN_QUERY,
-    LASAPI_BT_CONN_SET_AUTOCONN, LASAPI_BT_RING_FRAMES, LASAPI_BT_STAT_CONNECTED,
-    LASAPI_BT_STAT_OPTIONAL, LASAPI_BT_STAT_TRANSPORT, LASAPI_BT_STAT_USB_MATCHES_BT,
-    LASAPI_CFG_FLAG_CAPTURE_RATE, LASAPI_CMD_BT_CONNECTION, LASAPI_CMD_CREATE_SESSION,
-    LASAPI_CMD_GET_STATUS, LASAPI_CMD_INJECT_MIDI, LASAPI_CMD_LIST_DEVICES,
-    LASAPI_CMD_RELOAD_CONFIG, LASAPI_CMD_SAVE_CONFIG, LASAPI_CMD_SET_BT_CODEC,
-    LASAPI_CMD_SET_DEVICES, LASAPI_CMD_SET_ENGINE_CONFIG,
-    LASAPI_CMD_SET_EQ, LASAPI_CMD_SET_HW_ANALOG, LASAPI_CMD_SET_MIC_APO,
-    LASAPI_CMD_SET_PARAM_EQ, LASAPI_CMD_SET_SESSION_CONTROL, LASAPI_CMD_SET_VOLUME,
-    LASAPI_DBG_ALSA, LASAPI_DBG_BLUEZ, LASAPI_DBG_ENGINE, LASAPI_DBG_ERR, LASAPI_DBG_INFO,
-    LASAPI_DBG_MIDI, LASAPI_DBG_PA, LASAPI_DBG_WARN, LASAPI_DBG_LASAPI, LASAPI_FMT_FLOAT32,
-    LASAPI_MAX_CHANNELS, LASAPI_MAX_DEVICES, LASAPI_MAX_PERIOD, LASAPI_MAX_SESSIONS,
-    LASAPI_RING_FRAMES, LASAPI_RING_MASK, LASAPI_RING_MAGIC, LASAPI_SOCKET_DEFAULT,
-    SALSA_PACK_F32_LE, SALSA_PACK_S16_LE, SALSA_PACK_S24_3LE, SALSA_PACK_S24_LE,
-    SALSA_PACK_S32_LE, S_OK,
+    c_str_to_string, copy_str_to_c, ptr_to_opt_str, LasapiBtCodecCfg, LasapiDbgRtStats,
+    LasapiDeviceList, LasapiEngineStatus, LasapiEqConfig, LasapiHwAnalogCfg, LasapiIpcReq,
+    LasapiIpcResp, LasapiMicApoCfg, LasapiMidiEvent, LasapiMidiHub, LasapiParamEqExt,
+    LasapiParamEqPayload,
+    LasapiShmRing, SalsaMicCubicState, SalsaRuntimeState, AUDCLNT_E_DEVICE_IN_USE,
+    AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_CAPTURE, AUDCLNT_STREAMFLAGS_LOOPBACK,
+    E_FAIL, E_INVALIDARG, E_OUTOFMEMORY, LASAPI_BT_RING_FRAMES,
+    LASAPI_BT_STAT_CONNECTED, LASAPI_BT_STAT_OPTIONAL, LASAPI_BT_STAT_TRANSPORT,
+    LASAPI_BT_STAT_USB_MATCHES_BT, LASAPI_CMD_CONTROL_V2, LASAPI_CMD_CREATE_SESSION,
+    LASAPI_CMD_SET_BT_CODEC, LASAPI_CMD_SET_HW_ANALOG, LASAPI_CMD_SET_MIC_APO,
+    LASAPI_CMD_SET_PARAM_EQ, LASAPI_DBG_ALSA, LASAPI_DBG_BLUEZ, LASAPI_DBG_ENGINE, LASAPI_DBG_ERR,
+    LASAPI_DBG_INFO, LASAPI_DBG_LASAPI, LASAPI_DBG_MIDI, LASAPI_DBG_PA, LASAPI_DBG_WARN,
+    LASAPI_FMT_FLOAT32, LASAPI_MAX_CHANNELS, LASAPI_MAX_DEVICES, LASAPI_MAX_PERIOD,
+    LASAPI_MAX_SESSIONS, LASAPI_RING_FRAMES, LASAPI_RING_MAGIC, LASAPI_RING_MASK,
+    LASAPI_SOCKET_DEFAULT, SALSA_PACK_F32_LE, SALSA_PACK_S16_LE, SALSA_PACK_S24_3LE,
+    SALSA_PACK_S24_LE, SALSA_PACK_S32_LE, S_OK,
 };
-use crate::debug_server::{lasapi_debug_record_rt_period, lasapi_debug_start, lasapi_debug_stop};
+use crate::control_ipc::{
+    control_resp_to_legacy, decode_request, legacy_ipc_req_to_control, write_response_frame,
+    AudioDir, BtConnOp, ControlPayload, ControlRequest, ControlResponse, MuteOp, SessionTarget,
+    MAX_CONTROL_V2_FRAME,
+};
+use crate::debug_server::{
+    debug_start, debug_stop, record_rt_period, rt_stats_to_json, wire_stats_to_json,
+    DebugEngineHost,
+};
 use crate::dsp::{
     salsa_dsp_consume_session_frames, salsa_dsp_get_telem, salsa_dsp_pack_pcm,
     salsa_dsp_process_capture_mic_apo, salsa_dsp_process_dynamic_eq, salsa_dsp_resample_mic_cubic,
@@ -53,8 +56,8 @@ use crate::dsp::{
 };
 use crate::failsafe::{record_trip, FS_MANUAL_RESET};
 use crate::hw_analog::{
-    card_has_plugged_headphone_jack, is_headphone_playback_card,
-    lasapi_hw_analog_clamp_cfg, lasapi_hw_analog_create, lasapi_hw_analog_destroy,
+    card_has_plugged_headphone_jack, clamp_hw_analog_cfg, is_headphone_playback_card,
+    lasapi_hw_analog_create, lasapi_hw_analog_destroy,
     lasapi_hw_analog_get_cap_makeup_linear, lasapi_hw_analog_get_drive_linear,
     lasapi_hw_analog_get_info, lasapi_hw_analog_is_dac_unity_active, lasapi_hw_analog_poll_hid,
     lasapi_hw_analog_probe, lasapi_hw_analog_score_card, lasapi_hw_analog_softknee_active,
@@ -63,24 +66,13 @@ use crate::hw_analog::{
 use crate::midi_hub::{
     lasapi_midi_close, lasapi_midi_init, lasapi_midi_poll_events, lasapi_midi_push_to_ring,
 };
-use crate::pa_server::{
-    lasapi_pa_server_control_stream, lasapi_pa_server_fill_debug, lasapi_pa_server_fill_sessions,
-    lasapi_pa_server_mix_playback, lasapi_pa_server_notify_change,
-    lasapi_pa_server_notify_volume, lasapi_pa_server_poll_lasapi_ctl,
-    lasapi_pa_server_push_capture, lasapi_pa_server_push_lasapi_period,
-    lasapi_pa_server_register_lasapi_session, lasapi_pa_server_reset_clients,
-    lasapi_pa_server_set_stream_volume, lasapi_pa_server_start, lasapi_pa_server_stop,
-    lasapi_pa_server_unregister_lasapi_session, lasapi_pa_server_update_lasapi_session_vol,
-    lasapi_pa_server_lasapi_doi_mask, PaServerHandle,
-};
-use crate::pw_broker::{
-    lasapi_pw_broker_fill_debug, lasapi_pw_broker_reset_clients, lasapi_pw_broker_self_test,
-    lasapi_pw_broker_set_cast_limits, lasapi_pw_broker_set_preview_ex, lasapi_pw_broker_start,
-    lasapi_pw_broker_stop, lasapi_pw_broker_sync_mode, PwBrokerHandle,
-};
+use crate::pa_server::{start_pa_server, PaEngineHost, PaServerHandle};
+use crate::json::JsonValue;
+use crate::pw_broker::{empty_debug_json, start_pw_broker, PwBrokerHandle};
+use crate::settings::{extract_per_device_eq_for_sink, is_per_device_eq_enabled};
 use crate::state_conf::{
-    clamp_eq_cfg, default_runtime_state, salsa_dsp_clamp_mic_apo_cfg,
-    salsa_dsp_clamp_param_eq_ext, salsa_state_init_defaults, salsa_state_load, salsa_state_save,
+    clamp_eq_cfg, clamp_mic_apo_cfg, clamp_param_eq_ext, default_runtime_state, load_runtime_state,
+    save_runtime_state,
 };
 use crate::unix_sys::{
     bind_unix_listener_0600, claim_systemd_unix_listeners, close_raw_fd, create_memfd, current_pid,
@@ -185,18 +177,6 @@ pub(crate) struct SndXferi {
     pub(crate) buf: *mut c_void,
     pub(crate) frames: c_ulong,
 }
-
-use crate::c_abi::{
-    lasapi_bluez_close, lasapi_bluez_connection_ctl, lasapi_bluez_enumerate_devices,
-    lasapi_bluez_get_codec_config, lasapi_bluez_hw_fingerprint, lasapi_bluez_init_rates,
-    lasapi_bluez_is_optional_mode, lasapi_bluez_known_audio_aliases,
-    lasapi_bluez_open_capture, lasapi_bluez_read_capture_native,
-    lasapi_bluez_reconfigure_rate, lasapi_bluez_set_codec_config, lasapi_bluez_set_mic_gain_ppm,
-    lasapi_bluez_set_mic_volume, lasapi_bluez_set_optional_mode,
-    lasapi_bluez_set_preferred_target, lasapi_bluez_set_sco_enabled,
-    lasapi_bluez_set_tx_enabled, lasapi_bluez_set_volume, lasapi_bluez_write_period,
-    salsa_audiodg_bt_ptr, salsa_bt_get_snapshot, salsa_bt_is_initialized, salsa_bt_rt_master_vol,
-};
 
 #[derive(Clone, Copy)]
 struct KernelWaveRtHw {
@@ -653,9 +633,9 @@ struct AudiodgEngine {
     midi_meta: Mutex<MidiMeta>,
     hotplug_tracker: Mutex<HotplugTracker>,
 
-    bt_ptr: AtomicPtr<c_void>,
-    pa_srv: AtomicPtr<PaServerHandle>,
-    pw_brk: AtomicPtr<PwBrokerHandle>,
+    bt: Arc<dyn BluetoothBackend>,
+    pa_srv: OnceLock<PaServerHandle>,
+    pw_brk: OnceLock<PwBrokerHandle>,
     hw_analog: AtomicPtr<LasapiHwAnalogCtx>,
 
     running: AtomicBool,
@@ -671,7 +651,7 @@ struct AudiodgEngine {
 }
 
 impl AudiodgEngine {
-    fn new(rt: &SalsaRuntimeState, bt: *mut c_void) -> Self {
+    fn new(rt: &SalsaRuntimeState, bt: Arc<dyn BluetoothBackend>) -> Self {
         let midi_box: Box<LasapiMidiHub> = unsafe {
             let mut u = Box::<LasapiMidiHub>::new_uninit();
             ptr::write_bytes(u.as_mut_ptr(), 0, 1);
@@ -686,9 +666,9 @@ impl AudiodgEngine {
             midi_hub: Mutex::new(MidiHubBox(midi_box)),
             midi_meta: Mutex::new(MidiMeta::default()),
             hotplug_tracker: Mutex::new(HotplugTracker::default()),
-            bt_ptr: AtomicPtr::new(bt),
-            pa_srv: AtomicPtr::new(ptr::null_mut()),
-            pw_brk: AtomicPtr::new(ptr::null_mut()),
+            bt,
+            pa_srv: OnceLock::new(),
+            pw_brk: OnceLock::new(),
             hw_analog: AtomicPtr::new(ptr::null_mut()),
             running: AtomicBool::new(true),
             rt_priority: AtomicU32::new(0),
@@ -707,16 +687,16 @@ impl AudiodgEngine {
         self.running.load(Ordering::Relaxed) && !term_signal_requested()
     }
 
-    fn bt(&self) -> *mut c_void {
-        self.bt_ptr.load(Ordering::Acquire)
+    fn bt(&self) -> &dyn BluetoothBackend {
+        &*self.bt
     }
 
-    fn pa(&self) -> *mut PaServerHandle {
-        self.pa_srv.load(Ordering::Acquire)
+    fn pa(&self) -> Option<&PaServerHandle> {
+        self.pa_srv.get()
     }
 
-    fn pw(&self) -> *mut PwBrokerHandle {
-        self.pw_brk.load(Ordering::Acquire)
+    fn pw(&self) -> Option<&PwBrokerHandle> {
+        self.pw_brk.get()
     }
 
     fn hwa(&self) -> *mut LasapiHwAnalogCtx {
@@ -768,18 +748,18 @@ impl AudiodgEngine {
             st.mic_apo = ss.mic_apo;
             st.hw_analog_cfg = ss.hw_analog_cfg;
         }
-        let bt_snap = snapshot_bt(self.bt());
+        let bt_snap = self.bt().snapshot();
         {
             let mut sb = self.saved_bt.lock().unwrap_or_else(|e| e.into_inner());
             if bt_snap.initialized {
-                unsafe { lasapi_bluez_get_codec_config(self.bt(), &mut st.bt_cfg) };
+                st.bt_cfg = self.bt().get_codec_config();
                 sb.saved_bt_cfg = st.bt_cfg;
                 sb.saved_desktop_vol_pct = bt_snap.desktop_volume_pct;
                 sb.saved_desktop_muted = u32::from(bt_snap.desktop_muted);
                 sb.saved_mic_vol_pct = bt_snap.desktop_mic_volume_pct;
                 sb.saved_mic_muted = u32::from(bt_snap.desktop_mic_muted);
                 sb.saved_mic_gain_ppm = bt_snap.desktop_mic_gain_ppm;
-                let opt = unsafe { lasapi_bluez_is_optional_mode(self.bt()) };
+                let opt = self.bt().is_optional_mode();
             if bt_snap.initialized {
                 st.bt_optional_mode = u32::from(opt);
                 sb.bt_optional_mode = st.bt_optional_mode;
@@ -797,7 +777,7 @@ impl AudiodgEngine {
             st.desktop_mic_gain_ppm = sb.saved_mic_gain_ppm;
             st.has_saved_vol_state = sb.has_saved_vol_state;
         }
-        unsafe { salsa_state_save(&st) };
+        let _ = save_runtime_state(&st);
     }
 
     fn hw_analog_probe_and_sync(&self, re_probe: bool) {
@@ -823,7 +803,7 @@ impl AudiodgEngine {
             let ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
             ss.hw_analog_cfg
         };
-        let bt_snap = snapshot_bt(self.bt());
+        let bt_snap = self.bt().snapshot();
         if re_probe {
             unsafe { lasapi_hw_analog_probe(hwa, pb_card, cap_card) };
         }
@@ -839,8 +819,73 @@ impl AudiodgEngine {
         }
     }
 
+    fn maybe_apply_per_device_eq_for_sink(&self, sink_id: &str) {
+        let trimmed = sink_id.trim();
+        if trimmed.is_empty() || trimmed == "virtual" {
+            return;
+        }
+        let doc = crate::state_conf::load_unified_settings_json_in(&crate::state_conf::config_dir_path());
+        if !is_per_device_eq_enabled(&doc) {
+            return;
+        }
+        let Some((eq, ext)) = extract_per_device_eq_for_sink(&doc, trimmed) else {
+            return;
+        };
+        {
+            let mut ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
+            ss.eq_cfg = eq;
+            ss.param_eq = ext;
+        }
+        let pname = c_str_to_string(&eq.preset_name);
+        dbg_emit(
+            LASAPI_DBG_ENGINE,
+            LASAPI_DBG_INFO,
+            0,
+            0,
+            "EQ_PER_DEV",
+            trimmed,
+            if pname.is_empty() { "custom" } else { &pname },
+        );
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn apply_playback_endpoint(
+        &self,
+        requested_id: &str,
+        rate: u32,
+        period: u32,
+        req_bits: u32,
+        force_virtual: bool,
+        force_bt: bool,
+        pre_dl: Option<&LasapiDeviceList>,
+    ) -> i32 {
+        let prev_pb = {
+            let hws = self.hw_lock.lock().unwrap();
+            c_str_to_string(&hws.active_playback_id)
+        };
+        let rc = self.apply_playback_endpoint_inner(
+            requested_id,
+            rate,
+            period,
+            req_bits,
+            force_virtual,
+            force_bt,
+            pre_dl,
+        );
+        if !force_virtual {
+            let new_pb = {
+                let hws = self.hw_lock.lock().unwrap();
+                c_str_to_string(&hws.active_playback_id)
+            };
+            if !new_pb.is_empty() && new_pb != prev_pb {
+                self.maybe_apply_per_device_eq_for_sink(&new_pb);
+            }
+        }
+        rc
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_playback_endpoint_inner(
         &self,
         requested_id: &str,
         rate: u32,
@@ -905,14 +950,7 @@ impl AudiodgEngine {
             Some(match pre_dl {
                 Some(d) => d,
                 None => {
-                    unsafe {
-                        lasapi_bluez_enumerate_devices(
-                            self.bt(),
-                            ptr::null(),
-                            ptr::null(),
-                            &mut local_dl,
-                        );
-                    }
+                    self.bt().enumerate_devices(None, None, &mut local_dl);
                     &local_dl
                 }
             })
@@ -920,8 +958,8 @@ impl AudiodgEngine {
             None
         };
 
-        let mut bt_snap = snapshot_bt(self.bt());
-        let known_bt_aliases = unsafe { lasapi_bluez_known_audio_aliases(self.bt()) };
+        let mut bt_snap = self.bt().snapshot();
+        let known_bt_aliases = self.bt().known_audio_aliases();
         let matching_usb_idx = dlp.and_then(|d| {
             let alias = c_str_to_string(&bt_snap.device_alias);
             find_matching_usb_pb_idx_for_list(d, &alias, &known_bt_aliases)
@@ -949,7 +987,7 @@ impl AudiodgEngine {
         let any_bt_in_list = dlp.is_some_and(|d| device_list_has_type(d, "bluetooth", 0));
         let mut auto_want_bt = false;
         if !force_virtual && !skip_bt_for_matching_usb && (want_bt || auto_mode) {
-            let bt_opt = unsafe { lasapi_bluez_is_optional_mode(self.bt()) };
+            let bt_opt = self.bt().is_optional_mode();
             let mut bt_ready =
                 bt_snap.has_bluez_transport && bt_snap.direct_socket_mode && bt_snap.bt_fd >= 0;
             let mut bt_mac = c_str_to_string(&bt_snap.mac_address);
@@ -976,15 +1014,15 @@ impl AudiodgEngine {
             );
 
             if bt_ready && !req_mac_ok(&bt_mac) {
-                unsafe { lasapi_bluez_set_tx_enabled(self.bt(), false) };
+                self.bt().set_tx_enabled(false);
                 bt_ready = false;
             }
 
             if !bt_ready && (want_bt || auto_want_bt) {
-                unsafe { lasapi_bluez_set_tx_enabled(self.bt(), true) };
+                self.bt().set_tx_enabled(true);
                 for _ in 0..140 {
                     std::thread::sleep(Duration::from_millis(25));
-                    bt_snap = snapshot_bt(self.bt());
+                    bt_snap = self.bt().snapshot();
                     let mac_now = c_str_to_string(&bt_snap.mac_address);
                     if bt_snap.has_bluez_transport
                         && bt_snap.direct_socket_mode
@@ -1022,10 +1060,8 @@ impl AudiodgEngine {
                 }
                 copy_str_to_c(&mut next_hw.device_path, &label);
                 next_id = pb_label;
-                unsafe {
-                    lasapi_bluez_reconfigure_rate(self.bt(), rate);
-                    lasapi_bluez_set_tx_enabled(self.bt(), true);
-                }
+                self.bt().reconfigure_rate(rate);
+                self.bt().set_tx_enabled(true);
                 {
                     let mut hws = self.hw_lock.lock().unwrap();
                     hws.hw = next_hw;
@@ -1058,7 +1094,7 @@ impl AudiodgEngine {
         // Preserve tx_paused=false when falling back transiently on explicit BT / connected-BT Auto so
         // an in-flight Acquire/ConnectProfile completes and sync_hotplug_topology restores BT automatically.
         if should_disable_bt_tx_on_fallback(want_bt, auto_want_bt) {
-            unsafe { lasapi_bluez_set_tx_enabled(self.bt(), false) };
+            self.bt().set_tx_enabled(false);
         }
 
         if !force_virtual && !auto_mode && !want_bt && req != "virtual" {
@@ -1240,8 +1276,6 @@ impl AudiodgEngine {
 
         if !force_virtual {
             let cap_rate = resolve_cap_sample_rate(rate, pref_cap);
-            let c_cap = to_cstring_lossy(&target_cap);
-            let c_pb = to_cstring_lossy(&target_pb);
             let (bt_cfg_saved, has_vol, d_vol, d_muted, m_vol, m_muted, m_gain, bt_optional) = {
                 let sb = self.saved_bt.lock().unwrap();
                 (
@@ -1255,43 +1289,32 @@ impl AudiodgEngine {
                     sb.bt_optional_mode,
                 )
             };
-            unsafe {
-                lasapi_bluez_set_optional_mode(self.bt(), bt_optional != 0);
-                lasapi_bluez_init_rates(self.bt(), rate, cap_rate, c_cap.as_ptr(), c_pb.as_ptr());
-                lasapi_bluez_set_sco_enabled(self.bt(), bt_cfg_saved.hfp_sco_enabled != 0);
-                lasapi_bluez_set_codec_config(self.bt(), &bt_cfg_saved);
-                if has_vol {
-                    lasapi_bluez_set_volume(
-                        self.bt(),
-                        d_vol as c_int,
-                        if d_muted != 0 { 1 } else { 0 },
-                    );
-                    dbg_emit_vals(
-                        LASAPI_DBG_ENGINE,
-                        LASAPI_DBG_INFO,
-                        0,
-                        0,
-                        d_vol as i32,
-                        i32::from(d_muted != 0),
-                        0,
-                        "INIT_HW_VOL",
-                        "master_out",
-                        &format!("restored vol={d_vol}% muted={}", i32::from(d_muted != 0)),
-                    );
-                    lasapi_bluez_set_mic_volume(
-                        self.bt(),
-                        m_vol as c_int,
-                        if m_muted != 0 { 1 } else { 0 },
-                    );
-                    lasapi_bluez_set_mic_gain_ppm(
-                        self.bt(),
-                        m_gain,
-                        m_vol as c_int,
-                        if m_muted != 0 { 1 } else { 0 },
-                    );
-                }
+            self.bt().set_optional_mode(bt_optional != 0);
+            self.bt().init_rates(rate, cap_rate, &target_cap, &target_pb);
+            self.bt().set_sco_enabled(bt_cfg_saved.hfp_sco_enabled != 0);
+            self.bt().set_codec_config(&bt_cfg_saved);
+            if has_vol {
+                self.bt().set_volume(d_vol as c_int, i32::from(d_muted != 0));
+                dbg_emit_vals(
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
+                    0,
+                    0,
+                    d_vol as i32,
+                    i32::from(d_muted != 0),
+                    0,
+                    "INIT_HW_VOL",
+                    "master_out",
+                    &format!("restored vol={d_vol}% muted={}", i32::from(d_muted != 0)),
+                );
+                self.bt().set_mic_volume(m_vol as c_int, i32::from(m_muted != 0));
+                self.bt().set_mic_gain_ppm(
+                    m_gain,
+                    m_vol as c_int,
+                    i32::from(m_muted != 0),
+                );
             }
-            let bt_snap = snapshot_bt(self.bt());
+            let bt_snap = self.bt().snapshot();
             let cap_id = c_str_to_string(&bt_snap.cap_device_id);
             if !cap_id.is_empty() {
                 let mut hws = self.hw_lock.lock().unwrap();
@@ -1313,7 +1336,7 @@ impl AudiodgEngine {
 
     fn fill_engine_status_impl(&self, st: &mut LasapiEngineStatus, include_pa_sessions: bool) {
         *st = unsafe { mem::zeroed() };
-        let bt_snap = snapshot_bt(self.bt());
+        let bt_snap = self.bt().snapshot();
         let bt_has_tr = bt_snap.has_bluez_transport;
         let bt_has_cap = bt_snap.has_capture_hw;
         let bt_cap_rate = bt_snap.cap_hw_rate;
@@ -1347,7 +1370,7 @@ impl AudiodgEngine {
         st.bt_delay_ms = bt_delay_tenths / 10;
         copy_str_to_c(&mut st.bt_alias, &bt_alias);
         copy_str_to_c(&mut st.bt_codec, &bt_codec);
-        st.pa_server_running = u32::from(!self.pa().is_null());
+        st.pa_server_running = u32::from(self.pa().is_some());
 
         copy_str_to_c(
             &mut st.hw_capture_device,
@@ -1455,15 +1478,16 @@ impl AudiodgEngine {
         };
 
         if bt_snap.initialized {
-            unsafe { lasapi_bluez_get_codec_config(self.bt(), &mut st.bt_codec_cfg) };
+            st.bt_codec_cfg = self.bt().get_codec_config();
         } else {
             let sb = self.saved_bt.lock().unwrap_or_else(|e| e.into_inner());
             st.bt_codec_cfg = sb.saved_bt_cfg;
         }
 
-        let pa = self.pa();
-        if include_pa_sessions && !pa.is_null() {
-            unsafe { lasapi_pa_server_fill_sessions(pa, st, &mut st.pa_clients) };
+        if include_pa_sessions {
+            if let Some(pa) = self.pa() {
+                pa.fill_sessions(st);
+            }
         }
     }
 
@@ -1475,11 +1499,8 @@ impl AudiodgEngine {
                 c_str_to_string(&hws.active_capture_id),
             )
         };
-        let c_pb = to_cstring_lossy(&pb_id);
-        let c_cap = to_cstring_lossy(&cap_id);
-        unsafe {
-            lasapi_bluez_enumerate_devices(self.bt(), c_pb.as_ptr(), c_cap.as_ptr(), out_list);
-        }
+        self.bt()
+            .enumerate_devices(Some(&pb_id), Some(&cap_id), out_list);
     }
 
     fn switch_engine_devices_impl(
@@ -1535,10 +1556,9 @@ impl AudiodgEngine {
         };
 
         if !target_pb.is_empty() {
-            let bt_snap = snapshot_bt(self.bt());
+            let bt_snap = self.bt().snapshot();
             if bt_snap.initialized {
-                let c_pb = to_cstring_lossy(&target_pb);
-                unsafe { lasapi_bluez_set_preferred_target(self.bt(), c_pb.as_ptr()) };
+                self.bt().set_preferred_target(&target_pb);
             }
             self.apply_playback_endpoint(&target_pb, rate, period, bits, false, false, None);
             let hws = self.hw_lock.lock().unwrap();
@@ -1548,10 +1568,9 @@ impl AudiodgEngine {
         }
 
         if !target_cap.is_empty() {
-            let c_cap = to_cstring_lossy(&target_cap);
             let eff_cap = resolve_cap_sample_rate(hw_rate, pref_cap);
-            unsafe { lasapi_bluez_open_capture(self.bt(), c_cap.as_ptr(), eff_cap) };
-            let bt_snap = snapshot_bt(self.bt());
+            self.bt().open_capture(&target_cap, eff_cap);
+            let bt_snap = self.bt().snapshot();
             let cap_id_now = c_str_to_string(&bt_snap.cap_device_id);
             let mut hws = self.hw_lock.lock().unwrap();
             copy_str_to_c(
@@ -1571,9 +1590,10 @@ impl AudiodgEngine {
         self.save_state();
         drop(_reconf);
 
-        let pa = self.pa();
-        if notify_pa && !pa.is_null() {
-            unsafe { lasapi_pa_server_notify_change(pa) };
+        if notify_pa {
+            if let Some(pa) = self.pa() {
+                pa.notify_change();
+            }
         }
         0
     }
@@ -1644,21 +1664,17 @@ impl AudiodgEngine {
         };
         resp.hr = 0;
 
-        let mut bt_snap = snapshot_bt(self.bt());
+        let mut bt_snap = self.bt().snapshot();
         if rate_changed && bt_snap.initialized {
-            unsafe { lasapi_bluez_reconfigure_rate(self.bt(), resp.actual_sample_rate) };
-            bt_snap = snapshot_bt(self.bt());
+            self.bt().reconfigure_rate(resp.actual_sample_rate);
+            bt_snap = self.bt().snapshot();
             let cap_already_open = bt_snap.has_capture_hw && bt_snap.cap_pcm_fd >= 0;
             if !cap_already_open {
-                let c_cap = to_cstring_lossy(&target_cap);
-                unsafe {
-                    lasapi_bluez_open_capture(
-                        self.bt(),
-                        c_cap.as_ptr(),
-                        resolve_cap_sample_rate(resp.actual_sample_rate, pref_cap),
-                    );
-                }
-                bt_snap = snapshot_bt(self.bt());
+                self.bt().open_capture(
+                    &target_cap,
+                    resolve_cap_sample_rate(resp.actual_sample_rate, pref_cap),
+                );
+                bt_snap = self.bt().snapshot();
             }
             let cap_id_now = c_str_to_string(&bt_snap.cap_device_id);
             if !cap_id_now.is_empty() {
@@ -1683,9 +1699,8 @@ impl AudiodgEngine {
         self.save_state();
         drop(_reconf);
 
-        let pa = self.pa();
-        if !pa.is_null() {
-            unsafe { lasapi_pa_server_notify_change(pa) };
+        if let Some(pa) = self.pa() {
+            pa.notify_change();
         }
         Ok((resp, actual_bits))
     }
@@ -1715,15 +1730,15 @@ impl AudiodgEngine {
         let mut cap_rate_now = eff_cap;
         let mut cap_ch_now = 2u32;
 
-        let bt_init = snapshot_bt(self.bt()).initialized;
+        let bt_init = self.bt().snapshot().initialized;
         if bt_init {
-            let c_cap = to_cstring_lossy(if target_cap.is_empty() {
+            let req_cap = if target_cap.is_empty() {
                 "auto"
             } else {
                 &target_cap
-            });
-            unsafe { lasapi_bluez_open_capture(self.bt(), c_cap.as_ptr(), eff_cap) };
-            let bt_snap = snapshot_bt(self.bt());
+            };
+            self.bt().open_capture(req_cap, eff_cap);
+            let bt_snap = self.bt().snapshot();
             has_cap_now = bt_snap.has_capture_hw;
             cap_rate_now = bt_snap.cap_hw_rate;
             cap_ch_now = if bt_snap.cap_hw_channels != 0 {
@@ -1747,9 +1762,8 @@ impl AudiodgEngine {
         self.save_state();
         drop(_reconf);
 
-        let pa = self.pa();
-        if !pa.is_null() {
-            unsafe { lasapi_pa_server_notify_change(pa) };
+        if let Some(pa) = self.pa() {
+            pa.notify_change();
         }
 
         Some(LasapiIpcResp {
@@ -1796,7 +1810,7 @@ impl AudiodgEngine {
         let mut dlist: LasapiDeviceList = unsafe { mem::zeroed() };
         self.enumerate_devices_safe(&mut dlist);
         let hp_jacks = Self::probe_card_hp_jacks();
-        let bt_has_cap = snapshot_bt(self.bt()).has_capture_hw;
+        let bt_has_cap = self.bt().snapshot().has_capture_hw;
 
         let (pref_r, pref_p, pref_b, mut eng_rate, pref_cap, hw_is_virtual, hw_is_bt, target_pb, active_pb, target_cap, active_cap) = {
             let hws = self.hw_lock.lock().unwrap();
@@ -1815,7 +1829,7 @@ impl AudiodgEngine {
             )
         };
 
-        let usb_bt_active = unsafe { any_usb_matches_bt(&dlist, self.bt()) };
+        let usb_bt_active = any_usb_matches_bt(&dlist, self.bt());
         let pb_action = {
             let mut ht = self.hotplug_tracker.lock().unwrap_or_else(|e| e.into_inner());
             evaluate_playback_hotplug_with(
@@ -1845,9 +1859,8 @@ impl AudiodgEngine {
                     let mut hws = self.hw_lock.lock().unwrap();
                     copy_str_to_c(&mut hws.target_playback_id, updated_tgt);
                 }
-                if snapshot_bt(self.bt()).initialized {
-                    let c_pb = to_cstring_lossy(updated_tgt);
-                    unsafe { lasapi_bluez_set_preferred_target(self.bt(), c_pb.as_ptr()) };
+                if self.bt().snapshot().initialized {
+                    self.bt().set_preferred_target(updated_tgt);
                 }
             }
             eprintln!(
@@ -1926,15 +1939,11 @@ impl AudiodgEngine {
                 } else {
                     &target_cap
                 };
-                let c_req_cap = to_cstring_lossy(req_cap);
-                let cap_rc = unsafe {
-                    lasapi_bluez_open_capture(
-                        self.bt(),
-                        c_req_cap.as_ptr(),
-                        resolve_cap_sample_rate(eng_rate, pref_cap),
-                    )
-                };
-                let bt_snap = snapshot_bt(self.bt());
+                let cap_rc = self.bt().open_capture(
+                    req_cap,
+                    resolve_cap_sample_rate(eng_rate, pref_cap),
+                );
+                let bt_snap = self.bt().snapshot();
                 let cap_id_now = c_str_to_string(&bt_snap.cap_device_id);
                 let new_cap_id = if cap_rc == 0 && bt_snap.has_capture_hw && !cap_id_now.is_empty() {
                     cap_id_now
@@ -2132,20 +2141,15 @@ impl AudiodgEngine {
         }
 
         if is_cap_u32 == 0 && !is_loopback {
-            let pa = self.pa();
-            if !pa.is_null() {
-                let c_nm = to_cstring_lossy(s_name_str);
-                unsafe {
-                    lasapi_pa_server_register_lasapi_session(
-                        pa,
-                        slot_idx as u32,
-                        sid,
-                        auth_pid,
-                        c_nm.as_ptr(),
-                        eff_rate,
-                        eff_ch,
-                    );
-                }
+            if let Some(pa) = self.pa() {
+                pa.register_lasapi_session(
+                    slot_idx as u32,
+                    sid,
+                    auth_pid,
+                    s_name_str,
+                    eff_rate,
+                    eff_ch,
+                );
             }
         }
 
@@ -2194,299 +2198,291 @@ impl AudiodgEngine {
         );
     }
 
-    fn handle_client_cmd(&self, mut stream: UnixStream, req: &LasapiIpcReq) {
-        match req.cmd {
-            LASAPI_CMD_CREATE_SESSION => self.handle_create_session(stream, req),
-            LASAPI_CMD_GET_STATUS => {
+    fn dispatch_control_req(&self, peer_pid: u32, req: ControlRequest) -> ControlResponse {
+        match req {
+            ControlRequest::GetStatus => {
                 let mut st: LasapiEngineStatus = unsafe { mem::zeroed() };
                 self.fill_engine_status_impl(&mut st, true);
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&st));
+                let active_capture_rate_hz = st.effective_capture_rate_hz();
+                ControlResponse {
+                    hr: S_OK,
+                    payload: ControlPayload::Status {
+                        status: Box::new(st),
+                        active_capture_rate_hz,
+                    },
+                }
             }
-            LASAPI_CMD_LIST_DEVICES => {
+            ControlRequest::ListDevices => {
                 let mut dlist: LasapiDeviceList = unsafe { mem::zeroed() };
                 self.enumerate_devices_safe(&mut dlist);
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&dlist));
-            }
-            LASAPI_CMD_SET_DEVICES => {
-                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-                let pb_s = c_str_to_string(&req.target_device);
-                let cap_s = c_str_to_string(&req.target_capture_device);
-                let pb = (!pb_s.is_empty()).then_some(pb_s.as_str());
-                let cap = (!cap_s.is_empty()).then_some(cap_s.as_str());
-                if pb.is_none() && cap.is_none() {
-                    resp.hr = E_INVALIDARG;
-                } else {
-                    self.switch_engine_devices_impl(pb, cap, true);
-                    let hws = self.hw_lock.lock().unwrap();
-                    resp.hr = S_OK;
-                    resp.actual_sample_rate = hws.hw.sample_rate;
-                    resp.actual_channels = hws.hw.channels;
-                    resp.actual_period_frames = hws.hw.period_frames;
-                    resp.actual_buffer_frames = hws.hw.buffer_frames;
+                ControlResponse {
+                    hr: S_OK,
+                    payload: ControlPayload::Devices(Box::new(dlist)),
                 }
+            }
+            ControlRequest::SetDevices {
+                playback_id,
+                capture_id,
+            } => {
+                let pb = playback_id.as_deref().filter(|s| !s.is_empty());
+                let cap = capture_id.as_deref().filter(|s| !s.is_empty());
+                if pb.is_none() && cap.is_none() {
+                    return ControlResponse::invalid();
+                }
+                self.switch_engine_devices_impl(pb, cap, true);
+                let (sr, ch, pf, bf) = {
+                    let hws = self.hw_lock.lock().unwrap();
+                    (
+                        hws.hw.sample_rate,
+                        hws.hw.channels,
+                        hws.hw.period_frames,
+                        hws.hw.buffer_frames,
+                    )
+                };
                 let tgt = pb.or(cap).unwrap_or("none");
                 dbg_emit_vals(
                     LASAPI_DBG_ENGINE,
-                    if resp.hr == S_OK { LASAPI_DBG_INFO } else { LASAPI_DBG_WARN },
-                    req.client_pid,
+                    LASAPI_DBG_INFO,
+                    peer_pid,
                     0,
-                    resp.actual_sample_rate as i32,
-                    resp.actual_period_frames as i32,
-                    resp.hr,
+                    sr as i32,
+                    pf as i32,
+                    S_OK,
                     "DEV_SWITCH",
                     tgt,
                     &format!(
                         "pb={} cap={} -> {}Hz/{}",
                         pb.unwrap_or("-"),
                         cap.unwrap_or("-"),
-                        resp.actual_sample_rate,
-                        resp.actual_period_frames
+                        sr,
+                        pf
                     ),
                 );
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
-            }
-            LASAPI_CMD_SET_VOLUME => {
-                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-                resp.hr = E_INVALIDARG;
-                if req.target_session_id == 0xFFFF_FFFF {
-                    let vol_pct = if req.volume_milli <= 1500 {
-                        (req.volume_milli / 10) as c_int
-                    } else {
-                        -1
-                    };
-                    let mute_flag = (req.share_mode as c_int).wrapping_sub(1);
-                    unsafe { lasapi_bluez_set_volume(self.bt(), vol_pct, mute_flag) };
-                    self.hw_analog_probe_and_sync(false);
-                    let pa = self.pa();
-                    if !pa.is_null() {
-                        unsafe { lasapi_pa_server_notify_volume(pa, false) };
-                    }
-                    self.mark_state_dirty();
-                    resp.hr = S_OK;
-                    let cname = c_str_to_string(&req.client_name);
-                    let src = if cname.is_empty() { "master_out" } else { &cname };
-                    dbg_emit_vals(
-                        LASAPI_DBG_ENGINE,
-                        LASAPI_DBG_INFO,
-                        req.client_pid,
-                        0,
-                        vol_pct,
-                        mute_flag,
-                        resp.hr,
-                        "VOL_CHG",
-                        src,
-                        &format!("master_out vol={vol_pct}% mute={mute_flag}"),
-                    );
-                } else if req.target_session_id == 0xFFFF_FFFE {
-                    let vol_pct = if req.volume_milli <= 1500 {
-                        (req.volume_milli / 10) as c_int
-                    } else {
-                        -1
-                    };
-                    let mute_flag = (req.share_mode as c_int).wrapping_sub(1);
-                    unsafe { lasapi_bluez_set_mic_volume(self.bt(), vol_pct, mute_flag) };
-                    self.hw_analog_probe_and_sync(false);
-                    let pa = self.pa();
-                    if !pa.is_null() {
-                        unsafe { lasapi_pa_server_notify_volume(pa, true) };
-                    }
-                    self.mark_state_dirty();
-                    resp.hr = S_OK;
-                    dbg_emit_vals(
-                        LASAPI_DBG_ENGINE,
-                        LASAPI_DBG_INFO,
-                        req.client_pid,
-                        0,
-                        vol_pct,
-                        mute_flag,
-                        resp.hr,
-                        "VOL_CHG",
-                        "master_mic",
-                        &format!("vol={vol_pct}% mute={mute_flag}"),
-                    );
-                } else {
-                    let mut found = false;
-                    let mut upd_pa: Option<(u32, u32, u32, bool)> = None;
-                    {
-                        let ss = self.sessions_lock.lock().unwrap();
-                        for (slot_idx, slot) in ss.sessions.iter().enumerate() {
-                            let r = slot.ring_ptr();
-                            if slot.in_use && slot.session_id == req.target_session_id && !r.is_null() {
-                                let muted_now = unsafe {
-                                    (*ptr::addr_of!((*r).volume_milli))
-                                        .store(req.volume_milli, Ordering::SeqCst);
-                                    (*ptr::addr_of!((*r).muted)).load(Ordering::SeqCst) != 0
-                                };
-                                if !slot.is_capture && !slot.is_loopback {
-                                    upd_pa = Some((slot_idx as u32, slot.session_id, req.volume_milli, muted_now));
-                                }
-                                resp.hr = S_OK;
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                    let pa = self.pa();
-                    if let Some((w_slot, w_sid, vm, mu)) = upd_pa {
-                        if !pa.is_null() {
-                            unsafe {
-                                lasapi_pa_server_update_lasapi_session_vol(pa, w_slot, w_sid, vm, mu);
-                            }
-                        }
-                    }
-                    if !found
-                        && !pa.is_null()
-                        && unsafe {
-                            lasapi_pa_server_set_stream_volume(
-                                pa,
-                                req.target_session_id,
-                                req.volume_milli / 10,
-                            ) == 0
-                        }
-                    {
-                        resp.hr = S_OK;
-                    }
-                    dbg_emit_vals(
-                        LASAPI_DBG_LASAPI,
-                        if resp.hr == S_OK { LASAPI_DBG_INFO } else { LASAPI_DBG_WARN },
-                        req.client_pid,
-                        req.target_session_id,
-                        req.volume_milli as i32,
-                        i32::from(found),
-                        resp.hr,
-                        "VOL_CHG",
-                        "stream",
-                        &format!("milli={} lasapi={}", req.volume_milli, i32::from(found)),
-                    );
+                ControlResponse {
+                    hr: S_OK,
+                    payload: ControlPayload::ClockAck {
+                        sample_rate: sr,
+                        channels: ch,
+                        period_frames: pf,
+                        buffer_frames: bf,
+                    },
                 }
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LASAPI_CMD_SET_SESSION_CONTROL => {
-                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-                resp.hr = E_INVALIDARG;
-                let tgt_dev = c_str_to_string(&req.target_device);
-                if req.target_session_id < 10_000 {
-                    let mut upd_pa: Option<(u32, u32, u32, bool)> = None;
-                    {
-                        let ss = self.sessions_lock.lock().unwrap();
-                        for (slot_idx, slot) in ss.sessions.iter().enumerate() {
-                            let r = slot.ring_ptr();
-                            if slot.in_use && slot.session_id == req.target_session_id && !r.is_null() {
-                                unsafe {
-                                    if req.volume_milli <= 1500 {
-                                        (*ptr::addr_of!((*r).volume_milli))
-                                            .store(req.volume_milli, Ordering::SeqCst);
-                                    }
-                                    let muted_at = &*ptr::addr_of!((*r).muted);
-                                    match req.share_mode {
-                                        1 => muted_at.store(0, Ordering::SeqCst),
-                                        2 => muted_at.store(1, Ordering::SeqCst),
-                                        3 => {
-                                            let cur = muted_at.load(Ordering::SeqCst);
-                                            muted_at.store(u32::from(cur == 0), Ordering::SeqCst);
+            ControlRequest::SetMasterVolume {
+                dir,
+                volume_pct,
+                mute,
+                client_tag,
+            } => {
+                let vol_pct = volume_pct.map_or(-1, |v| v.min(150) as c_int);
+                let mute_flag = mute.to_legacy_flag();
+                let is_cap = matches!(dir, AudioDir::Capture);
+                if is_cap {
+                    self.bt().set_mic_volume(vol_pct, mute_flag);
+                } else {
+                    self.bt().set_volume(vol_pct, mute_flag);
+                }
+                self.hw_analog_probe_and_sync(false);
+                if let Some(pa) = self.pa() {
+                    pa.notify_volume(is_cap);
+                }
+                self.mark_state_dirty();
+                let src = if is_cap {
+                    "master_mic"
+                } else if client_tag.is_empty() {
+                    "master_out"
+                } else {
+                    client_tag.as_str()
+                };
+                dbg_emit_vals(
+                    LASAPI_DBG_ENGINE,
+                    LASAPI_DBG_INFO,
+                    peer_pid,
+                    0,
+                    vol_pct,
+                    mute_flag,
+                    S_OK,
+                    "VOL_CHG",
+                    src,
+                    &format!(
+                        "{} vol={vol_pct}% mute={mute_flag}",
+                        if is_cap { "master_mic" } else { "master_out" }
+                    ),
+                );
+                ControlResponse::ok()
+            }
+            ControlRequest::SetSessionVolume {
+                session_id,
+                volume_milli,
+            } => {
+                let mut hr = E_INVALIDARG;
+                let mut found = false;
+                let mut upd_pa: Option<(u32, u32, u32, bool)> = None;
+                {
+                    let ss = self.sessions_lock.lock().unwrap();
+                    for (slot_idx, slot) in ss.sessions.iter().enumerate() {
+                        let r = slot.ring_ptr();
+                        if slot.in_use && slot.session_id == session_id && !r.is_null() {
+                            let muted_now = unsafe {
+                                (*ptr::addr_of!((*r).volume_milli))
+                                    .store(volume_milli, Ordering::SeqCst);
+                                (*ptr::addr_of!((*r).muted)).load(Ordering::SeqCst) != 0
+                            };
+                            if !slot.is_capture && !slot.is_loopback {
+                                upd_pa =
+                                    Some((slot_idx as u32, slot.session_id, volume_milli, muted_now));
+                            }
+                            hr = S_OK;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if let Some(pa) = self.pa() {
+                    if let Some((w_slot, w_sid, vm, mu)) = upd_pa {
+                        pa.update_lasapi_session_vol(w_slot, w_sid, vm, mu);
+                    }
+                    if !found && pa.set_stream_volume(session_id, volume_milli / 10) == 0 {
+                        hr = S_OK;
+                    }
+                }
+                dbg_emit_vals(
+                    LASAPI_DBG_LASAPI,
+                    if hr == S_OK { LASAPI_DBG_INFO } else { LASAPI_DBG_WARN },
+                    peer_pid,
+                    session_id,
+                    volume_milli as i32,
+                    i32::from(found),
+                    hr,
+                    "VOL_CHG",
+                    "stream",
+                    &format!("milli={volume_milli} lasapi={}", i32::from(found)),
+                );
+                ControlResponse::err(hr)
+            }
+            ControlRequest::SetSessionControl {
+                target,
+                volume_milli,
+                mute,
+                route_device,
+            } => {
+                let mut hr = E_INVALIDARG;
+                let tgt_dev = route_device.unwrap_or_default();
+                let vm_raw = volume_milli.map_or(u32::MAX, |v| v.min(1500));
+                match target {
+                    SessionTarget::NativeShm(sid) => {
+                        let mut upd_pa: Option<(u32, u32, u32, bool)> = None;
+                        {
+                            let ss = self.sessions_lock.lock().unwrap();
+                            for (slot_idx, slot) in ss.sessions.iter().enumerate() {
+                                let r = slot.ring_ptr();
+                                if slot.in_use && slot.session_id == sid && !r.is_null() {
+                                    unsafe {
+                                        if let Some(vm) = volume_milli {
+                                            (*ptr::addr_of!((*r).volume_milli))
+                                                .store(vm.min(1500), Ordering::SeqCst);
                                         }
-                                        _ => {}
+                                        let muted_at = &*ptr::addr_of!((*r).muted);
+                                        match mute {
+                                            MuteOp::Unmute => muted_at.store(0, Ordering::SeqCst),
+                                            MuteOp::Mute => muted_at.store(1, Ordering::SeqCst),
+                                            MuteOp::Toggle => {
+                                                let cur = muted_at.load(Ordering::SeqCst);
+                                                muted_at.store(u32::from(cur == 0), Ordering::SeqCst);
+                                            }
+                                            MuteOp::Keep => {}
+                                        }
+                                        if !slot.is_capture && !slot.is_loopback {
+                                            let vm = (*ptr::addr_of!((*r).volume_milli))
+                                                .load(Ordering::SeqCst);
+                                            let mu = muted_at.load(Ordering::SeqCst) != 0;
+                                            upd_pa =
+                                                Some((slot_idx as u32, slot.session_id, vm, mu));
+                                        }
                                     }
-                                    if !slot.is_capture && !slot.is_loopback {
-                                        let vm = (*ptr::addr_of!((*r).volume_milli)).load(Ordering::SeqCst);
-                                        let mu = muted_at.load(Ordering::SeqCst) != 0;
-                                        upd_pa = Some((slot_idx as u32, slot.session_id, vm, mu));
-                                    }
+                                    hr = S_OK;
+                                    break;
                                 }
-                                resp.hr = S_OK;
-                                break;
+                            }
+                        }
+                        if let Some((w_slot, w_sid, vm, mu)) = upd_pa {
+                            if let Some(pa) = self.pa() {
+                                pa.update_lasapi_session_vol(w_slot, w_sid, vm, mu);
                             }
                         }
                     }
-                    if let Some((w_slot, w_sid, vm, mu)) = upd_pa {
-                        let pa = self.pa();
-                        if !pa.is_null() {
-                            unsafe {
-                                lasapi_pa_server_update_lasapi_session_vol(pa, w_slot, w_sid, vm, mu);
+                    SessionTarget::PulseStream(sid) => {
+                        if let Some(pa) = self.pa() {
+                            let vol_pct = volume_milli.map_or(-1, |v| (v.min(1500) / 10) as i32);
+                            let mute_mode = mute.to_legacy_flag();
+                            let dev_opt = (!tgt_dev.is_empty()).then_some(tgt_dev.as_str());
+                            if pa.control_stream(sid, vol_pct, mute_mode, dev_opt) == 0 {
+                                hr = S_OK;
                             }
-                        }
-                    }
-                } else {
-                    let pa = self.pa();
-                    if !pa.is_null() {
-                        let vol_pct = if req.volume_milli <= 1500 {
-                            (req.volume_milli / 10) as i32
-                        } else {
-                            -1
-                        };
-                        let mute_mode = if (1..=3).contains(&req.share_mode) {
-                            (req.share_mode - 1) as i32
-                        } else {
-                            -1
-                        };
-                        let c_dev = to_cstring_lossy(&tgt_dev);
-                        let dev_ptr = if tgt_dev.is_empty() {
-                            ptr::null()
-                        } else {
-                            c_dev.as_ptr()
-                        };
-                        if unsafe {
-                            lasapi_pa_server_control_stream(
-                                pa,
-                                req.target_session_id,
-                                vol_pct,
-                                mute_mode,
-                                dev_ptr,
-                            ) == 0
-                        } {
-                            resp.hr = S_OK;
                         }
                     }
                 }
+                let sid = target.raw_id();
                 let tshow = if tgt_dev.is_empty() { "-" } else { &tgt_dev };
                 dbg_emit_vals(
                     LASAPI_DBG_LASAPI,
-                    if resp.hr == S_OK { LASAPI_DBG_INFO } else { LASAPI_DBG_WARN },
-                    req.client_pid,
-                    req.target_session_id,
-                    req.volume_milli as i32,
-                    req.share_mode as i32,
-                    resp.hr,
+                    if hr == S_OK { LASAPI_DBG_INFO } else { LASAPI_DBG_WARN },
+                    peer_pid,
+                    sid,
+                    vm_raw as i32,
+                    mute.to_legacy_flag(),
+                    hr,
                     "SESS_CTL",
                     tshow,
                     &format!(
-                        "sid={} vol_m={} mute_op={} dev={}",
-                        req.target_session_id, req.volume_milli, req.share_mode, tshow
+                        "sid={sid} vol_m={vm_raw} mute_op={} dev={tshow}",
+                        mute.to_legacy_flag()
                     ),
                 );
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
+                ControlResponse::err(hr)
             }
-            LASAPI_CMD_INJECT_MIDI => {
-                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-                let mut ev = req.midi_ev;
+            ControlRequest::InjectMidi(mut ev) => {
                 if ev.size == 0 || ev.size > 3 {
-                    resp.hr = E_INVALIDARG;
-                } else {
-                    if ev.timestamp_ns == 0 {
-                        ev.timestamp_ns = mono_ns();
-                    }
-                    {
-                        let ss = self.sessions_lock.lock().unwrap();
-                        for slot in &ss.sessions {
-                            let r = slot.ring_ptr();
-                            if slot.in_use && !r.is_null() {
-                                unsafe { lasapi_midi_push_to_ring(r, &ev) };
-                            }
+                    dbg_emit_vals(
+                        LASAPI_DBG_MIDI,
+                        LASAPI_DBG_WARN,
+                        peer_pid,
+                        0,
+                        ev.data[0] as i32,
+                        ev.data[1] as i32,
+                        E_INVALIDARG,
+                        "MIDI_INJECT",
+                        "ipc",
+                        &format!(
+                            "status=0x{:02X} d1={} d2={} size={}",
+                            ev.data[0], ev.data[1], ev.data[2], ev.size
+                        ),
+                    );
+                    return ControlResponse::invalid();
+                }
+                if ev.timestamp_ns == 0 {
+                    ev.timestamp_ns = mono_ns();
+                }
+                {
+                    let ss = self.sessions_lock.lock().unwrap();
+                    for slot in &ss.sessions {
+                        let r = slot.ring_ptr();
+                        if slot.in_use && !r.is_null() {
+                            unsafe { lasapi_midi_push_to_ring(r, &ev) };
                         }
                     }
-                    if midi_is_key_press(&ev) {
-                        self.midi_injected_events.fetch_add(1, Ordering::Relaxed);
-                    }
-                    resp.hr = S_OK;
+                }
+                if midi_is_key_press(&ev) {
+                    self.midi_injected_events.fetch_add(1, Ordering::Relaxed);
                 }
                 dbg_emit_vals(
                     LASAPI_DBG_MIDI,
-                    if resp.hr == S_OK { LASAPI_DBG_INFO } else { LASAPI_DBG_WARN },
-                    req.client_pid,
+                    LASAPI_DBG_INFO,
+                    peer_pid,
                     0,
                     ev.data[0] as i32,
                     ev.data[1] as i32,
-                    resp.hr,
+                    S_OK,
                     "MIDI_INJECT",
                     "ipc",
                     &format!(
@@ -2494,10 +2490,53 @@ impl AudiodgEngine {
                         ev.data[0], ev.data[1], ev.data[2], ev.size
                     ),
                 );
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
+                ControlResponse::ok()
             }
-            LASAPI_CMD_SET_ENGINE_CONFIG => {
-                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
+            ControlRequest::SetCaptureClock { sample_rate } => {
+                let active_pb_copy = {
+                    let hws = self.hw_lock.lock().unwrap();
+                    c_str_to_string(&hws.active_playback_id)
+                };
+                if let Some(r) = self.reconfigure_capture_rate_impl(sample_rate) {
+                    eprintln!(
+                        "[LASAPI-Salsa] Capture/Mic Clock reconfigured -> {} Hz ({})",
+                        r.actual_sample_rate,
+                        if sample_rate == 0 {
+                            "Auto/Follow Master"
+                        } else {
+                            "Fixed Independent Mic Clock"
+                        }
+                    );
+                    dbg_emit_vals(
+                        LASAPI_DBG_ENGINE,
+                        LASAPI_DBG_INFO,
+                        peer_pid,
+                        0,
+                        r.actual_sample_rate as i32,
+                        r.actual_period_frames as i32,
+                        r.hr,
+                        "CFG_CAP_RATE",
+                        &active_pb_copy,
+                        &format!("CAP {}Hz (pref={sample_rate})", r.actual_sample_rate),
+                    );
+                    ControlResponse {
+                        hr: r.hr,
+                        payload: ControlPayload::ClockAck {
+                            sample_rate: r.actual_sample_rate,
+                            channels: r.actual_channels,
+                            period_frames: r.actual_period_frames,
+                            buffer_frames: r.actual_buffer_frames,
+                        },
+                    }
+                } else {
+                    ControlResponse::invalid()
+                }
+            }
+            ControlRequest::SetPlaybackClock {
+                sample_rate,
+                period_frames,
+                format_bits,
+            } => {
                 let (cur_rate, cur_period, cur_bits, active_pb_copy) = {
                     let hws = self.hw_lock.lock().unwrap();
                     (
@@ -2507,100 +2546,79 @@ impl AudiodgEngine {
                         c_str_to_string(&hws.active_playback_id),
                     )
                 };
-                if req.stream_flags == LASAPI_CFG_FLAG_CAPTURE_RATE {
-                    if let Some(r) = self.reconfigure_capture_rate_impl(req.sample_rate) {
-                        resp = r;
-                        eprintln!(
-                            "[LASAPI-Salsa] Capture/Mic Clock reconfigured -> {} Hz ({})",
-                            resp.actual_sample_rate,
-                            if req.sample_rate == 0 {
-                                "Auto/Follow Master"
-                            } else {
-                                "Fixed Independent Mic Clock"
-                            }
-                        );
-                        dbg_emit_vals(
-                            LASAPI_DBG_ENGINE,
-                            LASAPI_DBG_INFO,
-                            req.client_pid,
-                            0,
-                            resp.actual_sample_rate as i32,
-                            resp.actual_period_frames as i32,
-                            resp.hr,
-                            "CFG_CAP_RATE",
-                            &active_pb_copy,
-                            &format!("CAP {}Hz (pref={})", resp.actual_sample_rate, req.sample_rate),
-                        );
-                    } else {
-                        resp.hr = E_INVALIDARG;
-                    }
-                    let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
-                    return;
+                let req_rate = if sample_rate != 0 {
+                    sample_rate
+                } else {
+                    cur_rate
+                };
+                if sample_rate != 0 && !(44_100..=192_000).contains(&sample_rate) {
+                    return ControlResponse::invalid();
                 }
-
-                let req_rate = if req.sample_rate != 0 { req.sample_rate } else { cur_rate };
-                if req.sample_rate != 0 && !(44_100..=192_000).contains(&req.sample_rate) {
-                    resp.hr = E_INVALIDARG;
-                    let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
-                    return;
-                }
-                let new_period = if req.requested_period_frames != 0 {
-                    req.requested_period_frames
+                let new_period = if period_frames != 0 {
+                    period_frames
                 } else {
                     cur_period
                 };
-                let new_bits = if req.format != 0 { req.format } else { cur_bits };
-
+                let new_bits = if format_bits != 0 {
+                    format_bits
+                } else {
+                    cur_bits
+                };
                 match self.reconfigure_engine_rate_impl(req_rate, new_period, new_bits, true) {
-                    Ok((mut r, actual_bits)) => {
-                        r.hr = S_OK;
-                        resp = r;
-                        let ms = (1000.0 * (resp.actual_period_frames as f64))
-                            / (resp.actual_sample_rate as f64);
+                    Ok((r, actual_bits)) => {
+                        let ms = (1000.0 * (r.actual_period_frames as f64))
+                            / (r.actual_sample_rate as f64);
                         eprintln!(
                             "[LASAPI-Salsa] Engine reconfigured -> {} Hz | {}-bit | Quantum {} frames ({:.2} ms)",
-                            resp.actual_sample_rate, actual_bits, resp.actual_period_frames, ms
+                            r.actual_sample_rate, actual_bits, r.actual_period_frames, ms
                         );
                         dbg_emit_vals(
                             LASAPI_DBG_ENGINE,
                             LASAPI_DBG_INFO,
-                            req.client_pid,
+                            peer_pid,
                             0,
-                            resp.actual_sample_rate as i32,
-                            resp.actual_period_frames as i32,
-                            resp.hr,
+                            r.actual_sample_rate as i32,
+                            r.actual_period_frames as i32,
+                            S_OK,
                             "CFG_RECONF",
                             &active_pb_copy,
                             &format!(
                                 "FIXED {}Hz {}bit quantum={}",
-                                resp.actual_sample_rate, actual_bits, resp.actual_period_frames
+                                r.actual_sample_rate, actual_bits, r.actual_period_frames
                             ),
                         );
+                        ControlResponse {
+                            hr: S_OK,
+                            payload: ControlPayload::ClockAck {
+                                sample_rate: r.actual_sample_rate,
+                                channels: r.actual_channels,
+                                period_frames: r.actual_period_frames,
+                                buffer_frames: r.actual_buffer_frames,
+                            },
+                        }
                     }
                     Err(_) => {
-                        resp.hr = E_INVALIDARG;
                         dbg_emit_vals(
                             LASAPI_DBG_ENGINE,
                             LASAPI_DBG_WARN,
-                            req.client_pid,
+                            peer_pid,
                             0,
                             req_rate as i32,
                             new_period as i32,
-                            resp.hr,
+                            E_INVALIDARG,
                             "CFG_RECONF",
                             "invalid",
                             &format!("req={req_rate}Hz period={new_period}"),
                         );
+                        ControlResponse::invalid()
                     }
                 }
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
             }
-            LASAPI_CMD_SET_EQ => {
-                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
+            ControlRequest::SetDynamicEq(mut eq) => {
+                clamp_eq_cfg(&mut eq);
                 let eq_copy = {
                     let mut ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
-                    ss.eq_cfg = req.eq_cfg;
-                    clamp_eq_cfg(&mut ss.eq_cfg);
+                    ss.eq_cfg = *eq;
                     ss.eq_cfg
                 };
                 {
@@ -2611,7 +2629,7 @@ impl AudiodgEngine {
                 dbg_emit_vals(
                     LASAPI_DBG_ENGINE,
                     LASAPI_DBG_INFO,
-                    req.client_pid,
+                    peer_pid,
                     0,
                     eq_copy.enabled as i32,
                     eq_copy.dynamic_mode as i32,
@@ -2620,24 +2638,17 @@ impl AudiodgEngine {
                     if pname.is_empty() { "custom" } else { &pname },
                     &format!(
                         "en={} dyn={} preamp={:.1}dB lim={}",
-                        eq_copy.enabled, eq_copy.dynamic_mode, eq_copy.preamp_db, eq_copy.limiter_enabled
+                        eq_copy.enabled,
+                        eq_copy.dynamic_mode,
+                        eq_copy.preamp_db,
+                        eq_copy.limiter_enabled
                     ),
                 );
-                resp.hr = S_OK;
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
+                ControlResponse::ok()
             }
-            LASAPI_CMD_SET_PARAM_EQ => {
-                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-                let mut pay: LasapiParamEqPayload = unsafe { mem::zeroed() };
-                if req.requested_buffer_frames as usize != mem::size_of::<LasapiParamEqPayload>()
-                    || stream.read_exact(as_bytes_mut(&mut pay)).is_err()
-                {
-                    resp.hr = E_INVALIDARG;
-                    let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
-                    return;
-                }
+            ControlRequest::SetParametricEq(mut pay) => {
                 clamp_eq_cfg(&mut pay.eq);
-                unsafe { salsa_dsp_clamp_param_eq_ext(&mut pay.ext) };
+                clamp_param_eq_ext(&mut pay.ext);
                 {
                     let mut ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
                     ss.eq_cfg = pay.eq;
@@ -2666,20 +2677,10 @@ impl AudiodgEngine {
                         pay.ext.crossfeed_level
                     ),
                 );
-                resp.hr = S_OK;
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
+                ControlResponse::ok()
             }
-            LASAPI_CMD_SET_MIC_APO => {
-                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-                let mut cfg: LasapiMicApoCfg = unsafe { mem::zeroed() };
-                if req.requested_buffer_frames as usize != mem::size_of::<LasapiMicApoCfg>()
-                    || stream.read_exact(as_bytes_mut(&mut cfg)).is_err()
-                {
-                    resp.hr = E_INVALIDARG;
-                    let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
-                    return;
-                }
-                unsafe { salsa_dsp_clamp_mic_apo_cfg(&mut cfg) };
+            ControlRequest::SetMicApo(mut cfg) => {
+                clamp_mic_apo_cfg(&mut cfg);
                 {
                     let mut ss = self.sessions_lock.lock().unwrap();
                     ss.mic_apo = cfg;
@@ -2704,30 +2705,21 @@ impl AudiodgEngine {
                         cfg.gate_thresh_db,
                         cfg.rnnoise_enabled,
                         cfg.comp_thresh_db,
-                        if cfg.sidetone_enabled != 0 { cfg.sidetone_pct } else { 0 }
+                        if cfg.sidetone_enabled != 0 {
+                            cfg.sidetone_pct
+                        } else {
+                            0
+                        }
                     ),
                 );
-                resp.hr = S_OK;
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
+                ControlResponse::ok()
             }
-            LASAPI_CMD_SET_BT_CODEC => {
-                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-                let mut cfg: LasapiBtCodecCfg = unsafe { mem::zeroed() };
-                if req.requested_buffer_frames as usize != mem::size_of::<LasapiBtCodecCfg>()
-                    || stream.read_exact(as_bytes_mut(&mut cfg)).is_err()
-                {
-                    resp.hr = E_INVALIDARG;
-                    let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
-                    return;
-                }
-                let bt_init = unsafe { salsa_bt_is_initialized(self.bt()) };
+            ControlRequest::SetBtCodec(cfg) => {
+                let bt_init = self.bt().is_initialized();
                 let bt_show = if bt_init {
-                    unsafe {
-                        lasapi_bluez_set_sco_enabled(self.bt(), cfg.hfp_sco_enabled != 0);
-                        lasapi_bluez_set_codec_config(self.bt(), &cfg);
-                    }
-                    let mut out_cfg = cfg;
-                    unsafe { lasapi_bluez_get_codec_config(self.bt(), &mut out_cfg) };
+                    self.bt().set_sco_enabled(cfg.hfp_sco_enabled != 0);
+                    self.bt().set_codec_config(&cfg);
+                    let out_cfg = self.bt().get_codec_config();
                     {
                         let mut sb = self.saved_bt.lock().unwrap();
                         sb.saved_bt_cfg = out_cfg;
@@ -2762,9 +2754,8 @@ impl AudiodgEngine {
                     let _reconf = self.reconf_lock.lock().unwrap();
                     self.save_state();
                 }
-                let pa = self.pa();
-                if !pa.is_null() {
-                    unsafe { lasapi_pa_server_notify_change(pa) };
+                if let Some(pa) = self.pa() {
+                    pa.notify_change();
                 }
                 dbg_emit_vals(
                     LASAPI_DBG_BLUEZ,
@@ -2785,33 +2776,18 @@ impl AudiodgEngine {
                         bt_show.effective_kbps
                     ),
                 );
-                resp.hr = S_OK;
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
+                ControlResponse::ok()
             }
-            LASAPI_CMD_BT_CONNECTION => {
-                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-                let action = req.requested_period_frames;
-                let mac = c_str_to_string(&req.target_device);
-                let c_mac = to_cstring_lossy(&mac);
-                let mut flags: u32 = 0;
-                let mut msg_buf = [0u8; 256];
-                let rc = unsafe {
-                    lasapi_bluez_connection_ctl(
-                        self.bt(),
-                        action,
-                        c_mac.as_ptr(),
-                        msg_buf.as_mut_ptr().cast(),
-                        msg_buf.len(),
-                        &mut flags,
-                    )
-                };
+            ControlRequest::BtConnection { op, mac } => {
+                let action = op.to_u32();
+                let (rc, msg_str, mut flags) = self.bt().connection_ctl(action, &mac);
                 let mut dlist: LasapiDeviceList = unsafe { mem::zeroed() };
                 self.enumerate_devices_safe(&mut dlist);
-                let usb_matches_bt = unsafe { any_usb_matches_bt(&dlist, self.bt()) };
+                let usb_matches_bt = any_usb_matches_bt(&dlist, self.bt());
                 if usb_matches_bt {
                     flags |= LASAPI_BT_STAT_USB_MATCHES_BT;
                 }
-                if action != LASAPI_BT_CONN_QUERY {
+                if op != BtConnOp::Query {
                     {
                         let mut sb = self.saved_bt.lock().unwrap();
                         sb.bt_optional_mode = u32::from((flags & LASAPI_BT_STAT_OPTIONAL) != 0);
@@ -2820,23 +2796,34 @@ impl AudiodgEngine {
                         let hws = self.hw_lock.lock().unwrap();
                         (
                             c_str_to_string(&hws.target_playback_id),
-                            if hws.pref_sample_rate != 0 { hws.pref_sample_rate } else { hws.hw.sample_rate },
-                            if hws.pref_period_frames != 0 { hws.pref_period_frames } else { hws.hw.period_frames },
-                            if hws.pref_format_bits != 0 { hws.pref_format_bits } else { hws.hw.format_bits },
+                            if hws.pref_sample_rate != 0 {
+                                hws.pref_sample_rate
+                            } else {
+                                hws.hw.sample_rate
+                            },
+                            if hws.pref_period_frames != 0 {
+                                hws.pref_period_frames
+                            } else {
+                                hws.hw.period_frames
+                            },
+                            if hws.pref_format_bits != 0 {
+                                hws.pref_format_bits
+                            } else {
+                                hws.hw.format_bits
+                            },
                             hws.hw.is_bluetooth,
                         )
                     };
                     let want_bt_target =
                         target_pb == "bluetooth" || target_pb.starts_with("bluez");
-                    let reeval_connect = rc >= 0
-                        && ((target_pb == "auto" && !usb_matches_bt) || want_bt_target);
-                    let reeval_disconnect = hw_is_bt;
-                    let should_reapply = match action {
-                        LASAPI_BT_CONN_CONNECT => reeval_connect,
-                        LASAPI_BT_CONN_SET_AUTOCONN => {
+                    let reeval_connect =
+                        rc >= 0 && ((target_pb == "auto" && !usb_matches_bt) || want_bt_target);
+                    let should_reapply = match op {
+                        BtConnOp::Connect => reeval_connect,
+                        BtConnOp::SetAutoConn => {
                             reeval_connect && (flags & LASAPI_BT_STAT_CONNECTED) != 0
                         }
-                        LASAPI_BT_CONN_DISCONNECT => reeval_disconnect,
+                        BtConnOp::Disconnect => hw_is_bt,
                         _ => false,
                     };
                     {
@@ -2851,22 +2838,22 @@ impl AudiodgEngine {
                                 false,
                                 Some(&dlist),
                             );
-                        } else if action == LASAPI_BT_CONN_CONNECT && !hw_is_bt {
-                            // Keep A2DP linked in standby without acquiring L2CAP when pinned to TV/wired/USB.
-                            unsafe { lasapi_bluez_set_tx_enabled(self.bt(), false) };
+                        } else if op == BtConnOp::Connect && !hw_is_bt {
+                            self.bt().set_tx_enabled(false);
                         }
                         self.save_state();
                     }
-                    let pa = self.pa();
-                    if !pa.is_null() {
-                        unsafe { lasapi_pa_server_notify_change(pa) };
+                    if let Some(pa) = self.pa() {
+                        pa.notify_change();
                     }
-                    let snap_after = snapshot_bt(self.bt());
+                    let snap_after = self.bt().snapshot();
                     flags = 0;
-                    if unsafe { lasapi_bluez_is_optional_mode(self.bt()) } {
+                    if self.bt().is_optional_mode() {
                         flags |= LASAPI_BT_STAT_OPTIONAL;
                     }
-                    if snap_after.has_bluez_transport || !c_str_to_string(&snap_after.device_path).is_empty() {
+                    if snap_after.has_bluez_transport
+                        || !c_str_to_string(&snap_after.device_path).is_empty()
+                    {
                         flags |= LASAPI_BT_STAT_CONNECTED;
                     }
                     if snap_after.has_bluez_transport
@@ -2879,7 +2866,7 @@ impl AudiodgEngine {
                         flags |= LASAPI_BT_STAT_USB_MATCHES_BT;
                     }
                 }
-                if action != LASAPI_BT_CONN_QUERY || rc < 0 {
+                if op != BtConnOp::Query || rc < 0 {
                     dbg_emit_vals(
                         LASAPI_DBG_BLUEZ,
                         if rc >= 0 { LASAPI_DBG_INFO } else { LASAPI_DBG_WARN },
@@ -2890,24 +2877,16 @@ impl AudiodgEngine {
                         rc,
                         "BT_CONN_CTL",
                         if mac.is_empty() { "bluetooth" } else { &mac },
-                        &c_str_to_string(&msg_buf),
+                        &msg_str,
                     );
                 }
-                resp.hr = if rc >= 0 { S_OK } else { E_FAIL };
-                resp.session_id = flags;
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
-            }
-            LASAPI_CMD_SET_HW_ANALOG => {
-                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-                let mut cfg: LasapiHwAnalogCfg = unsafe { mem::zeroed() };
-                if req.requested_buffer_frames as usize != mem::size_of::<LasapiHwAnalogCfg>()
-                    || stream.read_exact(as_bytes_mut(&mut cfg)).is_err()
-                {
-                    resp.hr = E_INVALIDARG;
-                    let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
-                    return;
+                ControlResponse {
+                    hr: if rc >= 0 { S_OK } else { E_FAIL },
+                    payload: ControlPayload::BtFlags(flags),
                 }
-                unsafe { lasapi_hw_analog_clamp_cfg(&mut cfg) };
+            }
+            ControlRequest::SetHwAnalog(mut cfg) => {
+                clamp_hw_analog_cfg(&mut cfg);
                 {
                     let mut ss = self.sessions_lock.lock().unwrap();
                     ss.hw_analog_cfg = cfg;
@@ -2917,9 +2896,8 @@ impl AudiodgEngine {
                     let _reconf = self.reconf_lock.lock().unwrap();
                     self.save_state();
                 }
-                let pa = self.pa();
-                if !pa.is_null() {
-                    unsafe { lasapi_pa_server_notify_change(pa) };
+                if let Some(pa) = self.pa() {
+                    pa.notify_change();
                 }
                 dbg_emit_vals(
                     LASAPI_DBG_ENGINE,
@@ -2941,11 +2919,9 @@ impl AudiodgEngine {
                         cfg.mic_hw_boost_db
                     ),
                 );
-                resp.hr = S_OK;
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
+                ControlResponse::ok()
             }
-            LASAPI_CMD_SAVE_CONFIG => {
-                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
+            ControlRequest::SaveConfig => {
                 {
                     let _reconf = self.reconf_lock.lock().unwrap_or_else(|e| e.into_inner());
                     self.save_state();
@@ -2953,28 +2929,21 @@ impl AudiodgEngine {
                 dbg_emit(
                     LASAPI_DBG_ENGINE,
                     LASAPI_DBG_INFO,
-                    req.client_pid,
+                    peer_pid,
                     0,
                     "CFG_SAVE",
                     "salsa_settings.json",
                     "overwrote unified settings config",
                 );
-                resp.hr = S_OK;
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
+                ControlResponse::ok()
             }
-            LASAPI_CMD_RELOAD_CONFIG => {
-                let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
+            ControlRequest::ReloadConfig => {
                 let mut rt = default_runtime_state();
-                unsafe {
-                    salsa_state_init_defaults(&mut rt);
-                    salsa_state_load(&mut rt);
-                }
+                load_runtime_state(&mut rt);
                 clamp_eq_cfg(&mut rt.eq_cfg);
-                unsafe {
-                    salsa_dsp_clamp_param_eq_ext(&mut rt.param_eq);
-                    salsa_dsp_clamp_mic_apo_cfg(&mut rt.mic_apo);
-                    lasapi_hw_analog_clamp_cfg(&mut rt.hw_analog_cfg);
-                }
+                clamp_param_eq_ext(&mut rt.param_eq);
+                clamp_mic_apo_cfg(&mut rt.mic_apo);
+                clamp_hw_analog_cfg(&mut rt.hw_analog_cfg);
 
                 {
                     let mut ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -2984,7 +2953,7 @@ impl AudiodgEngine {
                     ss.hw_analog_cfg = rt.hw_analog_cfg;
                 }
 
-                let bt_init = unsafe { salsa_bt_is_initialized(self.bt()) };
+                let bt_init = self.bt().is_initialized();
                 {
                     let mut sb = self.saved_bt.lock().unwrap_or_else(|e| e.into_inner());
                     sb.saved_bt_cfg = rt.bt_cfg;
@@ -2999,32 +2968,40 @@ impl AudiodgEngine {
                     }
                 }
                 if bt_init {
-                    unsafe {
-                        lasapi_bluez_set_optional_mode(self.bt(), rt.bt_optional_mode != 0);
-                        lasapi_bluez_set_sco_enabled(self.bt(), rt.bt_cfg.hfp_sco_enabled != 0);
-                        lasapi_bluez_set_codec_config(self.bt(), &rt.bt_cfg);
-                        if rt.has_saved_vol_state {
-                            lasapi_bluez_set_volume(
-                                self.bt(),
-                                rt.desktop_volume_pct as c_int,
-                                if rt.desktop_muted != 0 { 1 } else { 0 },
-                            );
-                            lasapi_bluez_set_mic_gain_ppm(
-                                self.bt(),
-                                rt.desktop_mic_gain_ppm,
-                                rt.desktop_mic_volume_pct as c_int,
-                                if rt.desktop_mic_muted != 0 { 1 } else { 0 },
-                            );
-                        }
+                    self.bt().set_optional_mode(rt.bt_optional_mode != 0);
+                    self.bt().set_sco_enabled(rt.bt_cfg.hfp_sco_enabled != 0);
+                    self.bt().set_codec_config(&rt.bt_cfg);
+                    if rt.has_saved_vol_state {
+                        self.bt().set_volume(
+                            rt.desktop_volume_pct as c_int,
+                            i32::from(rt.desktop_muted != 0),
+                        );
+                        self.bt().set_mic_gain_ppm(
+                            rt.desktop_mic_gain_ppm,
+                            rt.desktop_mic_volume_pct as c_int,
+                            i32::from(rt.desktop_mic_muted != 0),
+                        );
                     }
                 }
 
                 let (cur_r, cur_p, cur_b, cur_cap_r, cur_pb, cur_cap) = {
                     let hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
                     (
-                        if hws.pref_sample_rate != 0 { hws.pref_sample_rate } else { hws.hw.sample_rate },
-                        if hws.pref_period_frames != 0 { hws.pref_period_frames } else { hws.hw.period_frames },
-                        if hws.pref_format_bits != 0 { hws.pref_format_bits } else { hws.hw.format_bits },
+                        if hws.pref_sample_rate != 0 {
+                            hws.pref_sample_rate
+                        } else {
+                            hws.hw.sample_rate
+                        },
+                        if hws.pref_period_frames != 0 {
+                            hws.pref_period_frames
+                        } else {
+                            hws.hw.period_frames
+                        },
+                        if hws.pref_format_bits != 0 {
+                            hws.pref_format_bits
+                        } else {
+                            hws.hw.format_bits
+                        },
                         hws.pref_cap_sample_rate,
                         c_str_to_string(&hws.target_playback_id),
                         c_str_to_string(&hws.target_capture_id),
@@ -3039,7 +3016,10 @@ impl AudiodgEngine {
                         false,
                     );
                 }
-                if rt.sample_rate != cur_r || rt.period_frames != cur_p || rt.format_bits != cur_b {
+                if rt.sample_rate != cur_r
+                    || rt.period_frames != cur_p
+                    || rt.format_bits != cur_b
+                {
                     let _ = self.reconfigure_engine_rate_impl(
                         rt.sample_rate,
                         rt.period_frames,
@@ -3051,26 +3031,87 @@ impl AudiodgEngine {
                     let _ = self.reconfigure_capture_rate_impl(rt.cap_sample_rate);
                 }
                 self.hw_analog_probe_and_sync(true);
-                let pa = self.pa();
-                if !pa.is_null() {
-                    unsafe {
-                        lasapi_pa_server_notify_change(pa);
-                        lasapi_pa_server_notify_volume(pa, false);
-                    }
+                if let Some(pa) = self.pa() {
+                    pa.notify_change();
+                    pa.notify_volume(false);
                 }
                 dbg_emit(
                     LASAPI_DBG_ENGINE,
                     LASAPI_DBG_INFO,
-                    req.client_pid,
+                    peer_pid,
                     0,
                     "CFG_RELOAD",
                     "salsa_settings.json",
                     "reloaded unified settings config",
                 );
-                resp.hr = S_OK;
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&resp));
+                ControlResponse::ok()
             }
-            _ => {}
+        }
+    }
+
+    fn handle_client_cmd(&self, mut stream: UnixStream, req: &LasapiIpcReq) {
+        if req.cmd == LASAPI_CMD_CREATE_SESSION {
+            self.handle_create_session(stream, req);
+            return;
+        }
+        if req.cmd == LASAPI_CMD_CONTROL_V2 {
+            let len = req.requested_buffer_frames as usize;
+            if len == 0 || len > MAX_CONTROL_V2_FRAME {
+                let _ = write_response_frame(&mut stream, &ControlResponse::invalid());
+                return;
+            }
+            let mut buf = vec![0u8; len];
+            if stream.read_exact(&mut buf).is_err() {
+                return;
+            }
+            let Some(ctrl_req) = decode_request(&buf) else {
+                let _ = write_response_frame(&mut stream, &ControlResponse::invalid());
+                return;
+            };
+            let resp = self.dispatch_control_req(req.client_pid, ctrl_req);
+            let _ = write_response_frame(&mut stream, &resp);
+            return;
+        }
+
+        let mut legacy_payload = Vec::new();
+        let expected_payload = match req.cmd {
+            LASAPI_CMD_SET_PARAM_EQ => Some(mem::size_of::<LasapiParamEqPayload>()),
+            LASAPI_CMD_SET_MIC_APO => Some(mem::size_of::<LasapiMicApoCfg>()),
+            LASAPI_CMD_SET_BT_CODEC => Some(mem::size_of::<LasapiBtCodecCfg>()),
+            LASAPI_CMD_SET_HW_ANALOG => Some(mem::size_of::<LasapiHwAnalogCfg>()),
+            _ => None,
+        };
+        if let Some(exp) = expected_payload {
+            if req.requested_buffer_frames as usize != exp {
+                let mut err_resp: LasapiIpcResp = unsafe { mem::zeroed() };
+                err_resp.hr = E_INVALIDARG;
+                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&err_resp));
+                return;
+            }
+            legacy_payload.resize(exp, 0);
+            if stream.read_exact(&mut legacy_payload).is_err() {
+                let mut err_resp: LasapiIpcResp = unsafe { mem::zeroed() };
+                err_resp.hr = E_INVALIDARG;
+                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&err_resp));
+                return;
+            }
+        }
+
+        let Some(ctrl_req) = legacy_ipc_req_to_control(req, &legacy_payload) else {
+            return;
+        };
+        let resp = self.dispatch_control_req(req.client_pid, ctrl_req);
+        match resp.payload {
+            ControlPayload::Status { status, .. } => {
+                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&*status));
+            }
+            ControlPayload::Devices(dlist) => {
+                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&*dlist));
+            }
+            _ => {
+                let leg = control_resp_to_legacy(&resp);
+                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&leg));
+            }
         }
     }
 
@@ -3145,18 +3186,15 @@ impl AudiodgEngine {
             // 1. Native hardware capture read + Mic APO
             let mut mic_frames = period;
             let mut mic_rate = rate;
-            unsafe {
-                lasapi_bluez_read_capture_native(
-                    self.bt(),
-                    native_mic_buf.as_mut_ptr(),
-                    LASAPI_MAX_PERIOD as u32,
-                    &mut mic_frames,
-                    &mut mic_rate,
-                    period,
-                    rate,
-                    &mut mic_read_cursor,
-                );
-            }
+            self.bt().read_capture_native(
+                &mut native_mic_buf,
+                LASAPI_MAX_PERIOD as u32,
+                &mut mic_frames,
+                &mut mic_rate,
+                period,
+                rate,
+                &mut mic_read_cursor,
+            );
             if (mic_frames as usize) > LASAPI_MAX_PERIOD {
                 mic_frames = LASAPI_MAX_PERIOD as u32;
             }
@@ -3225,11 +3263,7 @@ impl AudiodgEngine {
 
                 let exclusive_id = ss.exclusive_session_id;
                 let pa = self.pa();
-                let doi_mask = if !pa.is_null() {
-                    unsafe { lasapi_pa_server_lasapi_doi_mask(pa) }
-                } else {
-                    0
-                };
+                let doi_mask = pa.map_or(0, PaServerHandle::lasapi_doi_mask);
                 if exclusive_id >= 0 {
                     for (slot_idx, slot) in ss.sessions.iter_mut().enumerate() {
                         let r = slot.ring_ptr();
@@ -3273,17 +3307,13 @@ impl AudiodgEngine {
                             }
                         }
                     }
-                    if !pa.is_null() {
+                    if let Some(pa) = pa {
                         let t_pa0 = mono_ns();
                         if ch == 2 {
-                            unsafe {
-                                lasapi_pa_server_mix_playback(pa, mix_buf.as_mut_ptr(), period, rate);
-                            }
+                            pa.mix_playback(&mut mix_buf[..p_us * 2], period, rate);
                         } else {
                             pa_stereo[..p_us * 2].fill(0.0);
-                            unsafe {
-                                lasapi_pa_server_mix_playback(pa, pa_stereo.as_mut_ptr(), period, rate);
-                            }
+                            pa.mix_playback(&mut pa_stereo[..p_us * 2], period, rate);
                             for f in 0..p_us {
                                 if ch_us == 1 {
                                     mix_buf[f] += 0.5 * (pa_stereo[f * 2] + pa_stereo[f * 2 + 1]);
@@ -3381,25 +3411,16 @@ impl AudiodgEngine {
                 }
             }
 
-            let pa = self.pa();
-            if !pa.is_null() {
+            if let Some(pa) = self.pa() {
                 let t_pa1 = mono_ns();
-                let mon_ptr = if monitor_is_pa_stereo {
-                    pa_stereo.as_ptr()
+                let mon_slice = if monitor_is_pa_stereo {
+                    &pa_stereo[..p_us * 2]
                 } else {
-                    mix_buf.as_ptr()
+                    &mix_buf[..p_us * 2]
                 };
-                unsafe {
-                    lasapi_pa_server_push_capture(
-                        pa,
-                        native_mic_buf.as_ptr(),
-                        mic_frames,
-                        mic_rate,
-                        mon_ptr,
-                        period,
-                        rate,
-                    );
-                }
+                let mic_slice = (mic_frames > 0)
+                    .then_some(&native_mic_buf[..(mic_frames as usize) * 2]);
+                pa.push_capture(mic_slice, mic_rate, Some(mon_slice), rate);
                 pa_mix_ns += mono_ns().saturating_sub(t_pa1);
             }
 
@@ -3431,7 +3452,7 @@ impl AudiodgEngine {
                     && hw_snap.channels == ch
                     && hw_snap.sample_rate == rate
                 {
-                    if hw_snap.is_bluetooth && unsafe { salsa_bt_is_initialized(self.bt()) } {
+                    if hw_snap.is_bluetooth && self.bt().is_initialized() {
                         let hwa = self.hwa();
                         let (drive_gain, softknee) = if !hwa.is_null() {
                             unsafe {
@@ -3444,13 +3465,9 @@ impl AudiodgEngine {
                             (1.0, false)
                         };
                         apply_bt_hw_analog_drive(&mut mix_buf[..p_us * ch_us], drive_gain, softknee);
-                        unsafe {
-                            lasapi_bluez_write_period(self.bt(), mix_buf.as_ptr(), period, ch);
-                        }
+                        self.bt().write_period(&mix_buf[..p_us * ch_us], period, ch);
                     } else if !hw_snap.is_virtual && hw_snap.fd >= 0 {
-                        let mut d_vol = 100u32;
-                        let mut d_muted = false;
-                        unsafe { salsa_bt_rt_master_vol(self.bt(), &mut d_vol, &mut d_muted) };
+                        let (d_vol, d_muted) = self.bt().rt_master_vol();
                         let mut master_gain = if d_muted {
                             0.0f32
                         } else {
@@ -3592,7 +3609,7 @@ impl AudiodgEngine {
             } else {
                 t_hw0.saturating_sub(now_ns)
             };
-            lasapi_debug_record_rt_period(
+            record_rt_period(
                 cycle_ns,
                 wake_jitter_ns,
                 period_ns,
@@ -3666,7 +3683,7 @@ fn consume_lasapi_playback_slot(
     slot_idx: usize,
     slot: &mut EngineSession,
     r: *mut LasapiShmRing,
-    pa: *mut PaServerHandle,
+    pa: Option<&PaServerHandle>,
     doi_mask: u32,
     lasapi_doi_buf: &mut [f32],
     mix_buf: &mut [f32],
@@ -3674,25 +3691,17 @@ fn consume_lasapi_playback_slot(
     exclusive: bool,
 ) {
     let (period, ch, rate, now_ns) = spec;
-    if !pa.is_null() {
-        let mut new_vol = 0u32;
-        let mut new_mut = 0u32;
-        if unsafe {
-            lasapi_pa_server_poll_lasapi_ctl(
-                pa,
-                slot_idx as u32,
-                &mut slot.last_pa_ctl_seq,
-                &mut new_vol,
-                &mut new_mut,
-            )
-        } {
+    if let Some(pa_srv) = pa {
+        if let Some((new_vol, new_mut)) =
+            pa_srv.poll_lasapi_ctl(slot_idx as u32, &mut slot.last_pa_ctl_seq)
+        {
             unsafe {
                 (*ptr::addr_of!((*r).volume_milli)).store(new_vol, Ordering::SeqCst);
                 (*ptr::addr_of!((*r).muted)).store(new_mut, Ordering::SeqCst);
             }
         }
     }
-    let watch_doi = !pa.is_null() && slot_idx < 32 && ((doi_mask >> slot_idx) & 1) != 0;
+    let watch_doi = pa.is_some() && slot_idx < 32 && ((doi_mask >> slot_idx) & 1) != 0;
     let total_samples = (period as usize) * (ch as usize);
     let (pre_active, pre_w, pre_rd, pre_buf, pre_xruns) = unsafe {
         (
@@ -3724,7 +3733,9 @@ fn consume_lasapi_playback_slot(
                 true,
                 now_ns,
             );
-            lasapi_pa_server_push_lasapi_period(pa, slot_idx as u32, doi_slice.as_ptr(), period, ch);
+        }
+        if let Some(pa_srv) = pa {
+            pa_srv.push_lasapi_period(slot_idx as u32, doi_slice, period, ch);
         }
         if exclusive {
             mix_buf[..total_samples].copy_from_slice(doi_slice);
@@ -3791,384 +3802,430 @@ fn consume_lasapi_playback_slot(
     }
 }
 
-unsafe extern "C" fn pa_cb_get_status(ctx: *mut c_void, out_st: *mut LasapiEngineStatus) {
-    if ctx.is_null() || out_st.is_null() {
-        return;
+impl PaEngineHost for AudiodgEngine {
+    fn fill_status(&self, out: &mut LasapiEngineStatus) {
+        self.fill_engine_status_impl(out, false);
     }
-    let eng = unsafe { &*(ctx as *const AudiodgEngine) };
-    eng.fill_engine_status_impl(unsafe { &mut *out_st }, false);
-}
 
-unsafe extern "C" fn pa_cb_get_devices(ctx: *mut c_void, out_list: *mut LasapiDeviceList) {
-    if ctx.is_null() || out_list.is_null() {
-        return;
+    fn enumerate_devices(&self, out: &mut LasapiDeviceList) {
+        self.enumerate_devices_safe(out);
     }
-    let eng = unsafe { &*(ctx as *const AudiodgEngine) };
-    eng.enumerate_devices_safe(unsafe { &mut *out_list });
-}
 
-unsafe extern "C" fn pa_cb_set_devices(
-    ctx: *mut c_void,
-    pb_id: *const c_char,
-    cap_id: *const c_char,
-) -> c_int {
-    if ctx.is_null() {
-        return -1;
+    fn switch_devices(&self, pb_id: Option<&str>, cap_id: Option<&str>) -> i32 {
+        self.switch_engine_devices_impl(pb_id, cap_id, false)
     }
-    let eng = unsafe { &*(ctx as *const AudiodgEngine) };
-    let pb = unsafe { ptr_to_opt_str(pb_id) };
-    let cap = unsafe { ptr_to_opt_str(cap_id) };
-    eng.switch_engine_devices_impl(pb.as_deref(), cap.as_deref(), false)
-}
 
-unsafe extern "C" fn pa_cb_set_master_volume(
-    ctx: *mut c_void,
-    is_capture: c_int,
-    vol_pct: c_int,
-    mute_flag: c_int,
-) -> c_int {
-    if ctx.is_null() {
-        return -1;
-    }
-    let eng = unsafe { &*(ctx as *const AudiodgEngine) };
-    let rc = unsafe {
-        if is_capture != 0 {
-            lasapi_bluez_set_mic_volume(eng.bt(), vol_pct, mute_flag)
+    fn set_master_volume(&self, is_capture: bool, vol_pct: i32, mute_flag: i32) -> i32 {
+        let rc = if is_capture {
+            self.bt().set_mic_volume(vol_pct, mute_flag)
         } else {
-            lasapi_bluez_set_volume(eng.bt(), vol_pct, mute_flag)
+            self.bt().set_volume(vol_pct, mute_flag)
+        };
+        dbg_emit_vals(
+            LASAPI_DBG_PA,
+            LASAPI_DBG_INFO,
+            0,
+            u32::from(is_capture),
+            vol_pct,
+            mute_flag,
+            rc,
+            "PA_MASTER_VOL",
+            if is_capture { "master_mic" } else { "master_out" },
+            &format!("vol={vol_pct}% mute={mute_flag}"),
+        );
+        self.hw_analog_probe_and_sync(false);
+        if rc == 0 {
+            self.mark_state_dirty();
         }
-    };
-    dbg_emit_vals(
-        LASAPI_DBG_PA,
-        LASAPI_DBG_INFO,
-        0,
-        is_capture as u32,
-        vol_pct,
-        mute_flag,
-        rc,
-        "PA_MASTER_VOL",
-        if is_capture != 0 { "master_mic" } else { "master_out" },
-        &format!("vol={vol_pct}% mute={mute_flag}"),
-    );
-    eng.hw_analog_probe_and_sync(false);
-    if rc == 0 {
-        eng.mark_state_dirty();
+        rc
     }
-    rc
+
+    fn set_mic_gain_ppm(&self, gain_ppm: u32, vol_pct: i32, mute_flag: i32) -> i32 {
+        let rc = self.bt().set_mic_gain_ppm(gain_ppm, vol_pct, mute_flag);
+        self.hw_analog_probe_and_sync(false);
+        if rc == 0 {
+            self.mark_state_dirty();
+        }
+        rc
+    }
 }
 
-unsafe extern "C" fn pa_cb_set_mic_gain_ppm(
-    ctx: *mut c_void,
-    gain_ppm: u32,
-    vol_pct: c_int,
-    mute_flag: c_int,
-) -> c_int {
-    if ctx.is_null() {
-        return -1;
-    }
-    let eng = unsafe { &*(ctx as *const AudiodgEngine) };
-    let rc = unsafe { lasapi_bluez_set_mic_gain_ppm(eng.bt(), gain_ppm, vol_pct, mute_flag) };
-    eng.hw_analog_probe_and_sync(false);
-    if rc == 0 {
-        eng.mark_state_dirty();
-    }
-    rc
-}
+impl DebugEngineHost for AudiodgEngine {
+    fn build_snapshot_json(&self, rt: &LasapiDbgRtStats) -> JsonValue {
+        let mut st: LasapiEngineStatus = unsafe { mem::zeroed() };
+        self.fill_engine_status_impl(&mut st, true);
 
-unsafe extern "C" fn dbg_fill_snapshot_cb(ctx: *mut c_void, snap: *mut LasapiDbgSnapshot) {
-    if ctx.is_null() || snap.is_null() {
-        return;
-    }
-    let eng = unsafe { &*(ctx as *const AudiodgEngine) };
-    let snap_ref = unsafe { &mut *snap };
-    let saved_rt: LasapiDbgRtStats = snap_ref.rt;
-    unsafe { ptr::write_bytes(snap_ref, 0, 1) };
-    snap_ref.rt = saved_rt;
+        let (tgt_pb_id, tgt_cap_id, pref_cap, pref_pb_rate, pb_is_hw, active_pb_copy) = {
+            let hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                c_str_to_string(&hws.target_playback_id),
+                c_str_to_string(&hws.target_capture_id),
+                hws.pref_cap_sample_rate,
+                hws.pref_sample_rate,
+                !hws.hw.is_virtual && !hws.hw.is_bluetooth,
+                c_str_to_string(&hws.active_playback_id),
+            )
+        };
 
-    eng.fill_engine_status_impl(&mut snap_ref.engine_st, true);
+        let bt_snap = self.bt().snapshot();
+        let cap_rd = self.cap_read_cursor.load(Ordering::Relaxed);
+        let cap_ring_fill = bt_snap.cap_hw_write_frame.saturating_sub(cap_rd);
+        let cap_id_s = c_str_to_string(&bt_snap.cap_device_id);
+        let duplex_match = matches!(
+            (parse_hw_card_idx(&active_pb_copy), parse_hw_card_idx(&cap_id_s)),
+            (Some(pbc), Some(capc)) if pbc == capc
+        );
+        let cap_duplex_locked = u8::from(
+            bt_snap.has_capture_hw
+                && pb_is_hw
+                && pref_pb_rate != 0
+                && duplex_match
+                && st.hw_sample_rate != pref_pb_rate,
+        );
 
-    let (pref_cap, pref_pb_rate, pb_is_hw, active_pb_copy) = {
-        let hws = eng.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
-        snap_ref.target_playback_id.copy_from_slice(&hws.target_playback_id);
-        snap_ref.target_capture_id.copy_from_slice(&hws.target_capture_id);
-        (
-            hws.pref_cap_sample_rate,
-            hws.pref_sample_rate,
-            !hws.hw.is_virtual && !hws.hw.is_bluetooth,
-            c_str_to_string(&hws.active_playback_id),
-        )
-    };
+        let (midi_init, midi_raw, midi_ctrl, midi_dev, midi_seq_cli, midi_seq_port) = {
+            let mm = self.midi_meta.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                u8::from(mm.initialized),
+                u8::from(mm.rawmidi_open),
+                c_str_to_string(&mm.controller_name),
+                c_str_to_string(&mm.dev_path),
+                mm.seq_client_id,
+                mm.seq_in_port,
+            )
+        };
+        let midi_events_routed = self
+            .midi_hw_events
+            .load(Ordering::Relaxed)
+            .saturating_add(self.midi_injected_events.load(Ordering::Relaxed));
 
-    let bt_snap = snapshot_bt(eng.bt());
-    snap_ref.bt_initialized = u8::from(bt_snap.initialized);
-    snap_ref.bt_endpoints_registered = u8::from(bt_snap.endpoints_registered);
-    snap_ref.bt_direct_socket = u8::from(bt_snap.direct_socket_mode);
-    snap_ref.bt_has_transport = u8::from(bt_snap.has_bluez_transport);
-    snap_ref.bt_tx_paused = u8::from(bt_snap.tx_paused);
-    snap_ref.bt_device_path.copy_from_slice(&bt_snap.device_path);
-    snap_ref.bt_transport_path.copy_from_slice(&bt_snap.transport_path);
-    snap_ref.bt_endpoint_path.copy_from_slice(&bt_snap.endpoint_path);
-    snap_ref.bt_sample_rate = bt_snap.bt_sample_rate;
-    snap_ref.bt_channels = bt_snap.bt_channels;
-    snap_ref.bt_mtu_r = bt_snap.read_mtu;
-    snap_ref.bt_mtu_w = bt_snap.write_mtu;
-    snap_ref.bt_avrcp_vol = bt_snap.avrcp_volume;
-    snap_ref.bt_tx_ring_fill = bt_snap.tx_ring_fill;
-    snap_ref.bt_tx_ring_cap = LASAPI_BT_RING_FRAMES;
-    snap_ref.bt_tx_packets = bt_snap.tx_packets_sent;
-    snap_ref.bt_tx_underruns = bt_snap.tx_underruns;
-    snap_ref.bt_tx_errors = bt_snap.tx_errors;
-
-    snap_ref.cap_active = u8::from(bt_snap.has_capture_hw);
-    snap_ref.cap_device_id.copy_from_slice(&bt_snap.cap_device_id);
-    snap_ref.cap_pcm_path.copy_from_slice(&bt_snap.cap_pcm_path);
-    snap_ref.cap_alias.copy_from_slice(&bt_snap.capture_device_alias);
-    snap_ref.cap_hw_rate = bt_snap.cap_hw_rate;
-    snap_ref.cap_hw_channels = bt_snap.cap_hw_channels;
-    snap_ref.cap_hw_format = bt_snap.cap_hw_format;
-    let cap_rd = eng.cap_read_cursor.load(Ordering::Relaxed);
-    snap_ref.cap_ring_fill = bt_snap.cap_hw_write_frame.saturating_sub(cap_rd);
-    snap_ref.cap_pref_rate = pref_cap;
-    snap_ref.cap_measured_rate = bt_snap.cap_measured_rate;
-    snap_ref.cap_kick_count = bt_snap.cap_kick_count;
-    snap_ref.cap_is_usb = u8::from(bt_snap.cap_is_usb);
-
-    let cap_id_s = c_str_to_string(&bt_snap.cap_device_id);
-    let duplex_match = matches!(
-        (parse_hw_card_idx(&active_pb_copy), parse_hw_card_idx(&cap_id_s)),
-        (Some(pbc), Some(capc)) if pbc == capc
-    );
-    snap_ref.cap_duplex_locked = u8::from(
-        bt_snap.has_capture_hw
-            && pb_is_hw
-            && pref_pb_rate != 0
-            && duplex_match
-            && snap_ref.engine_st.hw_sample_rate != pref_pb_rate,
-    );
-
-    {
-        let mm = eng.midi_meta.lock().unwrap_or_else(|e| e.into_inner());
-        snap_ref.midi_initialized = u8::from(mm.initialized);
-        snap_ref.midi_rawmidi_open = u8::from(mm.rawmidi_open);
-        snap_ref.midi_controller.copy_from_slice(&mm.controller_name);
-        snap_ref.midi_dev_path.copy_from_slice(&mm.dev_path);
-        snap_ref.midi_seq_client = mm.seq_client_id;
-        snap_ref.midi_seq_in_port = mm.seq_in_port;
-    }
-    snap_ref.midi_events_routed = eng
-        .midi_hw_events
-        .load(Ordering::Relaxed)
-        .saturating_add(eng.midi_injected_events.load(Ordering::Relaxed));
-
-    {
-        let ss = eng.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut wcnt = 0usize;
-        for slot in &ss.sessions {
-            let r = slot.ring_ptr();
-            if slot.in_use && !r.is_null() && wcnt < LASAPI_MAX_SESSIONS {
-                let ws = &mut snap_ref.lasapi[wcnt];
-                wcnt += 1;
-                unsafe {
-                    ws.session_id = slot.session_id;
-                    ws.client_pid = slot.client_pid;
-                    ws.client_name.copy_from_slice(&slot.client_name);
-                    ws.share_mode = slot.share_mode;
-                    ws.stream_flags = (*r).stream_flags;
-                    ws.is_capture = u32::from(slot.is_capture);
-                    ws.sample_rate = slot.sample_rate;
-                    ws.channels = slot.channels;
-                    ws.active = (*ptr::addr_of!((*r).active)).load(Ordering::Relaxed);
-                    ws.muted = (*ptr::addr_of!((*r).muted)).load(Ordering::Relaxed);
-                    ws.volume_milli = (*ptr::addr_of!((*r).volume_milli)).load(Ordering::Relaxed);
-                    ws.buffer_frames = (*r).buffer_frames;
-                    ws.period_frames = (*r).period_frames;
-                    let (w, rd) = if ws.is_capture != 0 {
-                        (
-                            (*ptr::addr_of!((*r).cap_write_frame)).load(Ordering::Relaxed),
-                            (*ptr::addr_of!((*r).cap_read_frame)).load(Ordering::Relaxed),
-                        )
-                    } else {
-                        (
-                            (*ptr::addr_of!((*r).write_frame)).load(Ordering::Relaxed),
-                            (*ptr::addr_of!((*r).read_frame)).load(Ordering::Relaxed),
-                        )
-                    };
-                    ws.buffered_frames = w.saturating_sub(rd);
-                    ws.xruns = (*ptr::addr_of!((*r).xruns)).load(Ordering::Relaxed);
+        let mut lasapi_sessions = Vec::new();
+        {
+            let ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
+            for slot in &ss.sessions {
+                let r = slot.ring_ptr();
+                if slot.in_use && !r.is_null() {
+                    unsafe {
+                        let active = (*ptr::addr_of!((*r).active)).load(Ordering::Relaxed);
+                        let muted = (*ptr::addr_of!((*r).muted)).load(Ordering::Relaxed);
+                        let volume_milli = (*ptr::addr_of!((*r).volume_milli)).load(Ordering::Relaxed);
+                        let is_cap = u32::from(slot.is_capture);
+                        let (w, rd) = if is_cap != 0 {
+                            (
+                                (*ptr::addr_of!((*r).cap_write_frame)).load(Ordering::Relaxed),
+                                (*ptr::addr_of!((*r).cap_read_frame)).load(Ordering::Relaxed),
+                            )
+                        } else {
+                            (
+                                (*ptr::addr_of!((*r).write_frame)).load(Ordering::Relaxed),
+                                (*ptr::addr_of!((*r).read_frame)).load(Ordering::Relaxed),
+                            )
+                        };
+                        lasapi_sessions.push(JsonValue::obj(vec![
+                            ("session_id", JsonValue::Int(i64::from(slot.session_id))),
+                            ("pid", JsonValue::Int(i64::from(slot.client_pid))),
+                            ("name", JsonValue::Str(c_str_to_string(&slot.client_name))),
+                            ("share_mode", JsonValue::Int(i64::from(slot.share_mode))),
+                            ("stream_flags", JsonValue::Int(i64::from((*r).stream_flags))),
+                            ("is_capture", JsonValue::Int(i64::from(is_cap))),
+                            ("rate", JsonValue::Int(i64::from(slot.sample_rate))),
+                            ("channels", JsonValue::Int(i64::from(slot.channels))),
+                            ("active", JsonValue::Int(i64::from(active))),
+                            ("muted", JsonValue::Int(i64::from(muted))),
+                            ("volume_milli", JsonValue::Int(i64::from(volume_milli))),
+                            ("buffer_frames", JsonValue::Int(i64::from((*r).buffer_frames))),
+                            ("period_frames", JsonValue::Int(i64::from((*r).period_frames))),
+                            ("buffered_frames", JsonValue::from_u64(w.saturating_sub(rd))),
+                            (
+                                "xruns",
+                                JsonValue::from_u64((*ptr::addr_of!((*r).xruns)).load(Ordering::Relaxed)),
+                            ),
+                        ]));
+                    }
                 }
             }
         }
-        snap_ref.num_lasapi = wcnt as u32;
-    }
 
-    let pa = eng.pa();
-    if !pa.is_null() {
-        unsafe { lasapi_pa_server_fill_debug(pa, &mut snap_ref.pa) };
-    }
-    let pw = eng.pw();
-    if !pw.is_null() {
-        unsafe { lasapi_pw_broker_fill_debug(pw, &mut snap_ref.pw) };
-    }
-}
+        let (pa_clients, pa_streams) = self.pa().map_or_else(
+            || (JsonValue::Array(Vec::new()), JsonValue::Array(Vec::new())),
+            PaServerHandle::debug_snapshot_json,
+        );
+        let pw_json = self
+            .pw()
+            .map_or_else(empty_debug_json, PwBrokerHandle::debug_snapshot_json);
 
-unsafe extern "C" fn dbg_handle_cmd_cb(
-    ctx: *mut c_void,
-    cmd_ptr: *const c_char,
-    reply: *mut c_char,
-    reply_len: usize,
-) -> c_int {
-    if ctx.is_null() || cmd_ptr.is_null() {
-        return -ERRNO_EINVAL;
-    }
-    let eng = unsafe { &*(ctx as *const AudiodgEngine) };
-    let Some(cmd) = (unsafe { ptr_to_opt_str(cmd_ptr) }) else {
-        return -ERRNO_EINVAL;
-    };
-    let reply_slice = if reply.is_null() || reply_len == 0 {
-        None
-    } else {
-        Some(unsafe { slice::from_raw_parts_mut(reply.cast::<u8>(), reply_len) })
-    };
+        let st_pb_id = c_str_to_string(&st.active_playback_id);
+        let eff_pb_id = if st_pb_id.is_empty() { tgt_pb_id } else { st_pb_id };
+        let st_cap_id = c_str_to_string(&st.active_capture_id);
+        let eff_cap_id = if st_cap_id.is_empty() { tgt_cap_id } else { st_cap_id };
 
-    if cmd == "RESET_NET_CLIENTS" {
-        let pa = eng.pa();
-        let pw = eng.pw();
-        let pa_n = if !pa.is_null() {
-            unsafe { lasapi_pa_server_reset_clients(pa) }
-        } else {
-            0
-        };
-        let pw_n = if !pw.is_null() {
-            unsafe { lasapi_pw_broker_reset_clients(pw) }
-        } else {
-            0
-        };
-        record_trip(FS_MANUAL_RESET, b"Manual PA/PW network client flush via Debugger");
-        let msg = format!(
-            "Flushed {pa_n} PA + {pw_n} PW network clients (audio engine uninterrupted)"
-        );
-        dbg_emit(
-            LASAPI_DBG_ENGINE,
-            LASAPI_DBG_INFO,
-            current_pid(),
-            0,
-            "NET_FAILSAFE_RESET",
-            "PA/PW",
-            &msg,
-        );
-        if let Some(out) = reply_slice {
-            copy_str_to_c(out, &msg);
-        }
-        return 0;
-    }
-    if cmd == "RESET_PA_CLIENTS" {
-        let pa = eng.pa();
-        let pa_n = if !pa.is_null() {
-            unsafe { lasapi_pa_server_reset_clients(pa) }
-        } else {
-            0
-        };
-        record_trip(
-            FS_MANUAL_RESET,
-            b"Manual PA audio client flush via Debugger (PW preserved)",
-        );
-        let msg = format!(
-            "Flushed {pa_n} PA audio clients (ScreenCast & audio engine preserved)"
-        );
-        dbg_emit(
-            LASAPI_DBG_ENGINE,
-            LASAPI_DBG_INFO,
-            current_pid(),
-            0,
-            "NET_FAILSAFE_RESET",
-            "PA",
-            &msg,
-        );
-        if let Some(out) = reply_slice {
-            copy_str_to_c(out, &msg);
-        }
-        return 0;
-    }
-
-    let pw = eng.pw();
-    if pw.is_null() {
-        if let Some(out) = reply_slice {
-            copy_str_to_c(out, "PW video broker not initialized");
-        }
-        return -19; // -ENODEV
-    }
-
-    if let Some(rest) = cmd.strip_prefix("PW_PREVIEW ") {
-        let vals: Vec<u32> = rest
-            .split_whitespace()
-            .filter_map(|t| t.parse::<u32>().ok())
-            .collect();
-        if !vals.is_empty() {
-            let en = vals[0] != 0;
-            let ttl = vals.get(1).copied().filter(|&v| v > 0).unwrap_or(15_000);
-            let mw = if vals.len() >= 4 { vals[2] } else { 0 };
-            let mh = if vals.len() >= 4 { vals[3] } else { 0 };
-            let fps = if vals.len() >= 5 { vals[4] } else { 0 };
-            unsafe { lasapi_pw_broker_set_preview_ex(pw, en, ttl, mw, mh, fps) };
-            if let Some(out) = reply_slice {
-                copy_str_to_c(
-                    out,
-                    &format!(
-                        "preview={} ttl={}ms target={}x{}@{}fps",
-                        if en { "on" } else { "off" },
-                        ttl,
-                        mw,
-                        mh,
-                        fps
+        JsonValue::obj(vec![
+            (
+                "engine",
+                JsonValue::obj(vec![
+                    ("hw_device", JsonValue::Str(c_str_to_string(&st.hw_device))),
+                    (
+                        "hw_capture_device",
+                        JsonValue::Str(c_str_to_string(&st.hw_capture_device)),
                     ),
-                );
+                    ("midi_device", JsonValue::Str(c_str_to_string(&st.midi_device))),
+                    ("active_playback_id", JsonValue::Str(eff_pb_id)),
+                    ("active_capture_id", JsonValue::Str(eff_cap_id)),
+                    ("sample_rate", JsonValue::Int(i64::from(st.hw_sample_rate))),
+                    ("channels", JsonValue::Int(i64::from(st.hw_channels))),
+                    ("period_frames", JsonValue::Int(i64::from(st.hw_period_frames))),
+                    ("buffer_frames", JsonValue::Int(i64::from(st.hw_buffer_frames))),
+                    ("format_bits", JsonValue::Int(i64::from(st.hw_format_bits))),
+                    (
+                        "desktop_volume_pct",
+                        JsonValue::Int(i64::from(st.desktop_volume_pct)),
+                    ),
+                    ("desktop_muted", JsonValue::Int(i64::from(st.desktop_muted))),
+                    (
+                        "desktop_mic_volume_pct",
+                        JsonValue::Int(i64::from(st.desktop_mic_volume_pct)),
+                    ),
+                    (
+                        "desktop_mic_muted",
+                        JsonValue::Int(i64::from(st.desktop_mic_muted)),
+                    ),
+                    (
+                        "realtime_priority",
+                        JsonValue::Int(i64::from(st.realtime_priority)),
+                    ),
+                    (
+                        "exclusive_owner_id",
+                        JsonValue::Int(i64::from(st.exclusive_owner_id)),
+                    ),
+                    ("total_cycles", JsonValue::from_u64(st.total_cycles)),
+                    ("hw_xruns", JsonValue::from_u64(st.hw_xruns)),
+                    (
+                        "midi_events_routed",
+                        JsonValue::from_u64(st.midi_events_routed),
+                    ),
+                    ("eq_enabled", JsonValue::Int(i64::from(st.eq_cfg.enabled))),
+                    (
+                        "eq_dynamic_mode",
+                        JsonValue::Int(i64::from(st.eq_cfg.dynamic_mode)),
+                    ),
+                    (
+                        "eq_preamp_db",
+                        JsonValue::rounded_float(f64::from(st.eq_cfg.preamp_db), 100.0),
+                    ),
+                    (
+                        "eq_dyn_threshold_db",
+                        JsonValue::rounded_float(f64::from(st.eq_cfg.dyn_threshold_db), 100.0),
+                    ),
+                    (
+                        "eq_dyn_ratio",
+                        JsonValue::rounded_float(f64::from(st.eq_cfg.dyn_ratio), 100.0),
+                    ),
+                    (
+                        "eq_limiter_enabled",
+                        JsonValue::Int(i64::from(st.eq_cfg.limiter_enabled)),
+                    ),
+                    (
+                        "output_peak_l",
+                        JsonValue::rounded_float(f64::from(st.output_peak_l), 10_000.0),
+                    ),
+                    (
+                        "output_peak_r",
+                        JsonValue::rounded_float(f64::from(st.output_peak_r), 10_000.0),
+                    ),
+                    (
+                        "pa_server_running",
+                        JsonValue::Int(i64::from(st.pa_server_running)),
+                    ),
+                    ("pa_clients", JsonValue::Int(i64::from(st.pa_clients))),
+                    (
+                        "eq_preset",
+                        JsonValue::Str(c_str_to_string(&st.eq_cfg.preset_name)),
+                    ),
+                ]),
+            ),
+            ("rt", rt_stats_to_json(rt)),
+            (
+                "bluez",
+                JsonValue::obj(vec![
+                    ("active", JsonValue::Int(i64::from(st.bt_active))),
+                    ("initialized", JsonValue::Int(i64::from(bt_snap.initialized))),
+                    (
+                        "endpoints_registered",
+                        JsonValue::Int(i64::from(bt_snap.endpoints_registered)),
+                    ),
+                    (
+                        "direct_socket",
+                        JsonValue::Int(i64::from(bt_snap.direct_socket_mode)),
+                    ),
+                    (
+                        "has_transport",
+                        JsonValue::Int(i64::from(bt_snap.has_bluez_transport)),
+                    ),
+                    ("tx_paused", JsonValue::Int(i64::from(bt_snap.tx_paused))),
+                    ("sample_rate", JsonValue::Int(i64::from(bt_snap.bt_sample_rate))),
+                    ("channels", JsonValue::Int(i64::from(bt_snap.bt_channels))),
+                    ("delay_ms", JsonValue::Int(i64::from(st.bt_delay_ms))),
+                    ("mtu_r", JsonValue::Int(i64::from(bt_snap.read_mtu))),
+                    ("mtu_w", JsonValue::Int(i64::from(bt_snap.write_mtu))),
+                    ("avrcp_vol", JsonValue::Int(i64::from(bt_snap.avrcp_volume))),
+                    ("tx_ring_fill", JsonValue::from_u64(bt_snap.tx_ring_fill)),
+                    ("tx_ring_cap", JsonValue::Int(i64::from(LASAPI_BT_RING_FRAMES))),
+                    ("tx_packets", JsonValue::from_u64(bt_snap.tx_packets_sent)),
+                    ("tx_underruns", JsonValue::from_u64(bt_snap.tx_underruns)),
+                    ("tx_errors", JsonValue::from_u64(bt_snap.tx_errors)),
+                    ("alias", JsonValue::Str(c_str_to_string(&st.bt_alias))),
+                    ("codec", JsonValue::Str(c_str_to_string(&st.bt_codec))),
+                    (
+                        "device_path",
+                        JsonValue::Str(c_str_to_string(&bt_snap.device_path)),
+                    ),
+                    (
+                        "transport_path",
+                        JsonValue::Str(c_str_to_string(&bt_snap.transport_path)),
+                    ),
+                    (
+                        "endpoint_path",
+                        JsonValue::Str(c_str_to_string(&bt_snap.endpoint_path)),
+                    ),
+                ]),
+            ),
+            (
+                "capture",
+                JsonValue::obj(vec![
+                    ("active", JsonValue::Int(i64::from(bt_snap.has_capture_hw))),
+                    ("hw_rate", JsonValue::Int(i64::from(bt_snap.cap_hw_rate))),
+                    ("hw_channels", JsonValue::Int(i64::from(bt_snap.cap_hw_channels))),
+                    ("hw_format", JsonValue::Int(i64::from(bt_snap.cap_hw_format))),
+                    ("ring_fill", JsonValue::from_u64(cap_ring_fill)),
+                    ("pref_rate", JsonValue::Int(i64::from(pref_cap))),
+                    ("measured_rate", JsonValue::Int(i64::from(bt_snap.cap_measured_rate))),
+                    ("kick_count", JsonValue::Int(i64::from(bt_snap.cap_kick_count))),
+                    ("is_usb", JsonValue::Int(i64::from(bt_snap.cap_is_usb))),
+                    ("duplex_locked", JsonValue::Int(i64::from(cap_duplex_locked))),
+                    ("device_id", JsonValue::Str(cap_id_s)),
+                    (
+                        "pcm_path",
+                        JsonValue::Str(c_str_to_string(&bt_snap.cap_pcm_path)),
+                    ),
+                    (
+                        "alias",
+                        JsonValue::Str(c_str_to_string(&bt_snap.capture_device_alias)),
+                    ),
+                ]),
+            ),
+            (
+                "midi",
+                JsonValue::obj(vec![
+                    ("initialized", JsonValue::Int(i64::from(midi_init))),
+                    ("rawmidi_open", JsonValue::Int(i64::from(midi_raw))),
+                    ("seq_client", JsonValue::Int(i64::from(midi_seq_cli))),
+                    ("seq_in_port", JsonValue::Int(i64::from(midi_seq_port))),
+                    ("events_routed", JsonValue::from_u64(midi_events_routed)),
+                    ("controller", JsonValue::Str(midi_ctrl)),
+                    ("dev_path", JsonValue::Str(midi_dev)),
+                ]),
+            ),
+            ("lasapi_sessions", JsonValue::Array(lasapi_sessions)),
+            ("pa_clients", pa_clients),
+            ("pa_streams", pa_streams),
+            ("pw", pw_json),
+            ("wire", wire_stats_to_json()),
+        ])
+    }
+
+    fn handle_debug_cmd(&self, cmd: &str) -> Result<String, (i32, String)> {
+        if cmd == "RESET_NET_CLIENTS" {
+            let pa_n = self.pa().map_or(0, PaServerHandle::reset_clients);
+            let pw_n = self.pw().map_or(0, PwBrokerHandle::reset_clients);
+            record_trip(FS_MANUAL_RESET, b"Manual PA/PW network client flush via Debugger");
+            let msg = format!(
+                "Flushed {pa_n} PA + {pw_n} PW network clients (audio engine uninterrupted)"
+            );
+            dbg_emit(
+                LASAPI_DBG_ENGINE,
+                LASAPI_DBG_INFO,
+                current_pid(),
+                0,
+                "NET_FAILSAFE_RESET",
+                "PA/PW",
+                &msg,
+            );
+            return Ok(msg);
+        }
+        if cmd == "RESET_PA_CLIENTS" {
+            let pa_n = self.pa().map_or(0, PaServerHandle::reset_clients);
+            record_trip(
+                FS_MANUAL_RESET,
+                b"Manual PA audio client flush via Debugger (PW preserved)",
+            );
+            let msg = format!(
+                "Flushed {pa_n} PA audio clients (ScreenCast & audio engine preserved)"
+            );
+            dbg_emit(
+                LASAPI_DBG_ENGINE,
+                LASAPI_DBG_INFO,
+                current_pid(),
+                0,
+                "NET_FAILSAFE_RESET",
+                "PA",
+                &msg,
+            );
+            return Ok(msg);
+        }
+
+        let Some(pw) = self.pw() else {
+            return Err((-19, "PW video broker not initialized".into()));
+        };
+
+        if let Some(rest) = cmd.strip_prefix("PW_PREVIEW ") {
+            let vals: Vec<u32> = rest
+                .split_whitespace()
+                .filter_map(|t| t.parse::<u32>().ok())
+                .collect();
+            if !vals.is_empty() {
+                let en = vals[0] != 0;
+                let ttl = vals.get(1).copied().filter(|&v| v > 0).unwrap_or(15_000);
+                let mw = if vals.len() >= 4 { vals[2] } else { 0 };
+                let mh = if vals.len() >= 4 { vals[3] } else { 0 };
+                let fps = if vals.len() >= 5 { vals[4] } else { 0 };
+                pw.set_preview_ex(en, ttl, mw, mh, fps);
+                return Ok(format!(
+                    "preview={} ttl={}ms target={}x{}@{}fps",
+                    if en { "on" } else { "off" },
+                    ttl,
+                    mw,
+                    mh,
+                    fps
+                ));
             }
-            return 0;
+            return Err((-ERRNO_EINVAL, "invalid PW_PREVIEW syntax".into()));
         }
-        if let Some(out) = reply_slice {
-            copy_str_to_c(out, "invalid PW_PREVIEW syntax");
-        }
-        return -ERRNO_EINVAL;
-    }
 
-    if let Some(rest) = cmd.strip_prefix("PW_CAST_LIMITS ") {
-        let vals: Vec<u32> = rest
-            .split_whitespace()
-            .filter_map(|t| t.parse::<u32>().ok())
-            .collect();
-        if vals.len() >= 3 {
-            let (mw, mh, fps) = (vals[0], vals[1], vals[2]);
-            unsafe { lasapi_pw_broker_set_cast_limits(pw, mw, mh, fps) };
-            if let Some(out) = reply_slice {
-                copy_str_to_c(out, &format!("cast_limits={mw}x{mh}@{fps}fps"));
+        if let Some(rest) = cmd.strip_prefix("PW_CAST_LIMITS ") {
+            let vals: Vec<u32> = rest
+                .split_whitespace()
+                .filter_map(|t| t.parse::<u32>().ok())
+                .collect();
+            if vals.len() >= 3 {
+                let (mw, mh, fps) = (vals[0], vals[1], vals[2]);
+                pw.set_cast_limits(mw, mh, fps);
+                return Ok(format!("cast_limits={mw}x{mh}@{fps}fps"));
             }
-            return 0;
+            return Err((-ERRNO_EINVAL, "invalid PW_CAST_LIMITS syntax".into()));
         }
-        if let Some(out) = reply_slice {
-            copy_str_to_c(out, "invalid PW_CAST_LIMITS syntax");
+
+        if cmd == "PW_SELF_TEST" {
+            return pw.self_test().map_err(|m| (-1, m));
         }
-        return -ERRNO_EINVAL;
-    }
 
-    if cmd == "PW_SELF_TEST" {
-        let (ptr, cap) = reply_slice
-            .map(|s| (s.as_mut_ptr().cast::<c_char>(), s.len()))
-            .unwrap_or((ptr::null_mut(), 0));
-        return unsafe { lasapi_pw_broker_self_test(pw, ptr, cap) };
-    }
-
-    if cmd == "PW_SYNC_MODE" {
-        let rc = unsafe { lasapi_pw_broker_sync_mode(pw) };
-        if let Some(out) = reply_slice {
-            copy_str_to_c(out, &format!("sync_mode rc={rc}"));
+        if cmd == "PW_SYNC_MODE" {
+            let rc = pw.sync_mode();
+            let msg = format!("sync_mode rc={rc}");
+            return if rc == 0 { Ok(msg) } else { Err((rc, msg)) };
         }
-        return rc;
-    }
 
-    if let Some(out) = reply_slice {
-        copy_str_to_c(out, &format!("Unknown debug command: {cmd}"));
+        Err((-ERRNO_ENOSYS, format!("Unknown debug command: {cmd}")))
     }
-    -ERRNO_ENOSYS
 }
 
 #[no_mangle]
@@ -4199,10 +4256,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     let mut sock_path = resolve_sock_path_common("LASAPI_SOCKET", "audiodg.sock", LASAPI_SOCKET_DEFAULT);
 
     let mut rt = default_runtime_state();
-    unsafe {
-        salsa_state_init_defaults(&mut rt);
-        salsa_state_load(&mut rt);
-    }
+    load_runtime_state(&mut rt);
     let mut rate_arg = rt.sample_rate;
     let mut period_arg = rt.period_frames;
     let bits_arg = rt.format_bits;
@@ -4273,8 +4327,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     rt.period_frames = period_arg;
     rt.format_bits = bits_arg;
 
-    let bt_ptr = unsafe { salsa_audiodg_bt_ptr() };
-    let engine = Arc::new(AudiodgEngine::new(&rt, bt_ptr));
+    let engine = Arc::new(AudiodgEngine::new(&rt, RealBluezBackend::global()));
     let hwa_ptr = lasapi_hw_analog_create();
     engine.hw_analog.store(hwa_ptr, Ordering::Release);
 
@@ -4290,11 +4343,8 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     // KDE `KPipeWire`/`MediaMonitor` and `xdg-desktop-portal` clients reconnecting
     // across daemon restarts complete their PipeWire handshake immediately without
     // waiting on ALSA/BlueZ RFCOMM/L2CAP negotiation.
-    let mut pw_ptr: *mut PwBrokerHandle = ptr::null_mut();
-    if unsafe { lasapi_pw_broker_start(&mut pw_ptr, ptr::null::<LasapiPwBrokerOpts>()) == 0 }
-        && !pw_ptr.is_null()
-    {
-        engine.pw_brk.store(pw_ptr, Ordering::Release);
+    if let Some(pw) = start_pw_broker(None) {
+        let _ = engine.pw_brk.set(pw);
         eprintln!("[LASAPI-audiodg] Built-in Video-Only PipeWire ScreenCast broker initialized.");
     }
 
@@ -4320,27 +4370,12 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         mm.seq_in_port = mh.0.seq_in_port;
     }
 
-    let ctx_ptr = Arc::as_ptr(&engine) as *mut c_void;
-    let pa_cbs = LasapiPaCallbacks {
-        user_ctx: ctx_ptr,
-        get_status: Some(pa_cb_get_status),
-        get_devices: Some(pa_cb_get_devices),
-        set_devices: Some(pa_cb_set_devices),
-        set_master_volume: Some(pa_cb_set_master_volume),
-        set_mic_gain_ppm: Some(pa_cb_set_mic_gain_ppm),
-    };
-    let mut pa_ptr: *mut PaServerHandle = ptr::null_mut();
-    if unsafe { lasapi_pa_server_start(&mut pa_ptr, pa_cbs) == 0 } && !pa_ptr.is_null() {
-        engine.pa_srv.store(pa_ptr, Ordering::Release);
+    if let Some(pa) = start_pa_server(Arc::clone(&engine) as Arc<dyn PaEngineHost>) {
+        let _ = engine.pa_srv.set(pa);
         eprintln!("[LASAPI-audiodg] Built-in PulseAudio native protocol v35 server active.");
     }
 
-    let dbg_cbs = LasapiDbgCallbacks {
-        user_ctx: ctx_ptr,
-        fill_snapshot: Some(dbg_fill_snapshot_cb),
-        handle_cmd: Some(dbg_handle_cmd_cb),
-    };
-    lasapi_debug_start(dbg_cbs);
+    debug_start(Arc::clone(&engine) as Arc<dyn DebugEngineHost>);
     {
         let hws = engine.hw_lock.lock().unwrap();
         let pb_id = c_str_to_string(&hws.active_playback_id);
@@ -4376,7 +4411,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         sock_path
     );
 
-    let init_bt = snapshot_bt(engine.bt());
+    let init_bt = engine.bt().snapshot();
     let mut prev_bt_has = init_bt.has_bluez_transport
         && init_bt.direct_socket_mode
         && init_bt.bt_fd >= 0
@@ -4463,15 +4498,8 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                             }
                         }
                         if unreg_sid != 0 {
-                            let pa = engine.pa();
-                            if !pa.is_null() {
-                                unsafe {
-                                    lasapi_pa_server_unregister_lasapi_session(
-                                        pa,
-                                        slot_idx as u32,
-                                        unreg_sid,
-                                    );
-                                }
+                            if let Some(pa) = engine.pa() {
+                                pa.unregister_lasapi_session(slot_idx as u32, unreg_sid);
                             }
                         }
                     }
@@ -4505,7 +4533,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         }
         next_watcher_ns = now_w_ns.saturating_add(250_000_000);
 
-        let bt_snap = snapshot_bt(engine.bt());
+        let bt_snap = engine.bt().snapshot();
         let bt_now = bt_snap.has_bluez_transport
             && bt_snap.direct_socket_mode
             && bt_snap.bt_fd >= 0
@@ -4516,7 +4544,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         let bt_codec = c_str_to_string(&bt_snap.codec_name);
         let bt_rate = bt_snap.bt_sample_rate;
 
-        let hw_fp = unsafe { lasapi_bluez_hw_fingerprint(engine.bt()) };
+        let hw_fp = engine.bt().hw_fingerprint();
         let hw_changed = hw_fp_init && hw_fp != prev_hw_fp;
         if !hw_fp_init {
             prev_hw_fp = hw_fp;
@@ -4560,16 +4588,17 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                 );
             }
             pending_usb_cap_settle = engine.sync_hotplug_topology(force_virtual, bt_now);
-            prev_hw_fp = unsafe { lasapi_bluez_hw_fingerprint(engine.bt()) };
+            prev_hw_fp = engine.bt().hw_fingerprint();
             if stranded_virtual {
                 last_virtual_failover_fp = Some(prev_hw_fp);
             }
             prev_bt_has = bt_now;
             prev_bt_avrcp = avrcp_now;
             prev_muted = muted_now;
-            let pa = engine.pa();
-            if !pa.is_null() && !pending_usb_cap_settle {
-                unsafe { lasapi_pa_server_notify_change(pa) };
+            if !pending_usb_cap_settle {
+                if let Some(pa) = engine.pa() {
+                    pa.notify_change();
+                }
             }
         } else if avrcp_now != prev_bt_avrcp || muted_now != prev_muted {
             dbg_emit(
@@ -4583,9 +4612,8 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
             );
             prev_bt_avrcp = avrcp_now;
             prev_muted = muted_now;
-            let pa = engine.pa();
-            if !pa.is_null() {
-                unsafe { lasapi_pa_server_notify_volume(pa, false) };
+            if let Some(pa) = engine.pa() {
+                pa.notify_volume(false);
             }
             engine.mark_state_dirty();
         }
@@ -4597,20 +4625,17 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
             if unsafe { lasapi_hw_analog_poll_hid(hwa, &mut hid_delta, &mut hid_mute) > 0 }
                 && (hid_delta != 0 || hid_mute != 0)
             {
-                let bt_cur = snapshot_bt(engine.bt());
+                let bt_cur = engine.bt().snapshot();
                 let new_v = ((bt_cur.desktop_volume_pct as i32) + hid_delta * 2).clamp(0, 150);
                 let mute_op = if hid_mute != 0 {
                     i32::from(!bt_cur.desktop_muted)
                 } else {
                     -1
                 };
-                unsafe {
-                    lasapi_bluez_set_volume(
-                        engine.bt(),
-                        if hid_delta != 0 { new_v } else { -1 },
-                        mute_op,
-                    );
-                }
+                engine.bt().set_volume(
+                    if hid_delta != 0 { new_v } else { -1 },
+                    mute_op,
+                );
                 dbg_emit_vals(
                     LASAPI_DBG_ENGINE,
                     LASAPI_DBG_INFO,
@@ -4624,9 +4649,8 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                     &format!("hid_delta={hid_delta} vol={new_v}% mute={mute_op}"),
                 );
                 engine.hw_analog_probe_and_sync(false);
-                let pa = engine.pa();
-                if !pa.is_null() {
-                    unsafe { lasapi_pa_server_notify_volume(pa, false) };
+                if let Some(pa) = engine.pa() {
+                    pa.notify_volume(false);
                 }
                 engine.mark_state_dirty();
             }
@@ -4650,15 +4674,13 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
         let _reconf = engine.reconf_lock.lock().unwrap();
         engine.save_state();
     }
-    lasapi_debug_stop();
+    debug_stop();
 
-    let pw = engine.pw_brk.swap(ptr::null_mut(), Ordering::AcqRel);
-    if !pw.is_null() {
-        unsafe { lasapi_pw_broker_stop(pw) };
+    if let Some(pw) = engine.pw() {
+        pw.stop();
     }
-    let pa = engine.pa_srv.swap(ptr::null_mut(), Ordering::AcqRel);
-    if !pa.is_null() {
-        unsafe { lasapi_pa_server_stop(pa) };
+    if let Some(pa) = engine.pa() {
+        pa.stop();
     }
 
     {
@@ -4675,8 +4697,8 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     if !hwa_old.is_null() {
         unsafe { lasapi_hw_analog_destroy(hwa_old) };
     }
-    if snapshot_bt(engine.bt()).initialized {
-        unsafe { lasapi_bluez_close(engine.bt()) };
+    if engine.bt().snapshot().initialized {
+        engine.bt().close();
     }
     {
         let mut hws = engine.hw_lock.lock().unwrap();
@@ -4696,17 +4718,6 @@ fn as_bytes<T>(v: &T) -> &[u8] {
 
 fn as_bytes_mut<T>(v: &mut T) -> &mut [u8] {
     unsafe { slice::from_raw_parts_mut((v as *mut T).cast::<u8>(), mem::size_of::<T>()) }
-}
-
-fn to_cstring_lossy(s: &str) -> std::ffi::CString {
-    let clean: Vec<u8> = s.bytes().take_while(|&b| b != 0).collect();
-    std::ffi::CString::new(clean).unwrap_or_else(|_| std::ffi::CString::new("").unwrap())
-}
-
-fn snapshot_bt(bt: *const c_void) -> SalsaBtSnapshot {
-    let mut out: SalsaBtSnapshot = unsafe { mem::zeroed() };
-    unsafe { salsa_bt_get_snapshot(bt, &mut out) };
-    out
 }
 
 #[inline]
@@ -5229,16 +5240,10 @@ fn find_matching_usb_pb_idx_for_list(
     None
 }
 
-unsafe fn any_usb_matches_bt(dlist: &LasapiDeviceList, bt: *const c_void) -> bool {
-    let snap = if bt.is_null() {
-        String::new()
-    } else {
-        let mut s: crate::c_abi::SalsaBtSnapshot = unsafe { mem::zeroed() };
-        unsafe { salsa_bt_get_snapshot(bt, &mut s) };
-        c_str_to_string(&s.device_alias)
-    };
-    let extra = unsafe { lasapi_bluez_known_audio_aliases(bt) };
-    find_matching_usb_pb_idx_for_list(dlist, &snap, &extra).is_some()
+fn any_usb_matches_bt(dlist: &LasapiDeviceList, bt: &dyn BluetoothBackend) -> bool {
+    let alias = c_str_to_string(&bt.snapshot().device_alias);
+    let extra = bt.known_audio_aliases();
+    find_matching_usb_pb_idx_for_list(dlist, &alias, &extra).is_some()
 }
 
 /// Applies the active HW Analog amp drive and SoftKnee shaping to Bluetooth A2DP frames
@@ -5619,5 +5624,61 @@ mod tests {
                 reason: "recover_from_virtual",
             }
         );
+    }
+
+    #[test]
+    fn control_ipc_unix_pair_dispatches_into_engine() {
+        use std::os::unix::net::UnixStream;
+
+        let rt = default_runtime_state();
+        let eng = Arc::new(AudiodgEngine::new(
+            &rt,
+            Arc::new(crate::bluez_runtime::NullBluetoothBackend),
+        ));
+        let (mut cli, mut srv) = UnixStream::pair().unwrap();
+
+        let eng_t = Arc::clone(&eng);
+        let h = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let mut hdr_buf = [0u8; mem::size_of::<LasapiIpcReq>()];
+                srv.read_exact(&mut hdr_buf).unwrap();
+                let req = crate::c_abi::PodBytes::from_bytes(&hdr_buf).unwrap();
+                let s = srv.try_clone().unwrap();
+                eng_t.handle_client_cmd(s, &req);
+            }
+        });
+
+        let st_resp = crate::control_ipc::ControlClient::send_over_stream(
+            &mut cli,
+            &ControlRequest::GetStatus,
+        )
+        .unwrap();
+        assert_eq!(st_resp.hr, S_OK);
+        assert!(matches!(
+            st_resp.payload,
+            ControlPayload::Status { .. }
+        ));
+
+        let eq = crate::settings::default_eq_cfg();
+        let eq_resp = crate::control_ipc::ControlClient::send_over_stream(
+            &mut cli,
+            &ControlRequest::SetDynamicEq(Box::new(eq)),
+        )
+        .unwrap();
+        assert_eq!(eq_resp.hr, S_OK);
+
+        let vol_resp = crate::control_ipc::ControlClient::send_over_stream(
+            &mut cli,
+            &ControlRequest::SetMasterVolume {
+                dir: AudioDir::Playback,
+                volume_pct: Some(77),
+                mute: MuteOp::Unmute,
+                client_tag: "test".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(vol_resp.hr, S_OK);
+
+        h.join().unwrap();
     }
 }

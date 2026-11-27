@@ -19,6 +19,18 @@ pub enum JsonValue {
 }
 
 impl JsonValue {
+    pub fn from_u64(v: u64) -> Self {
+        Self::Int(i64::try_from(v).unwrap_or(i64::MAX))
+    }
+
+    pub fn rounded_float(v: f64, scale: f64) -> Self {
+        if !v.is_finite() || !scale.is_finite() || scale <= 0.0 {
+            return Self::Float(0.0);
+        }
+        let r = (v * scale).round() / scale;
+        Self::Float(if r == 0.0 { 0.0 } else { r })
+    }
+
     pub fn obj(pairs: Vec<(&str, JsonValue)>) -> Self {
         Self::Object(
             pairs

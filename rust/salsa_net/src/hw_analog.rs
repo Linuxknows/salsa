@@ -1076,6 +1076,14 @@ pub fn score_card_with_meta_hp(
     sc
 }
 
+pub fn default_hw_analog_cfg() -> LasapiHwAnalogCfg {
+    default_cfg_value()
+}
+
+pub fn clamp_hw_analog_cfg(cfg: &mut LasapiHwAnalogCfg) {
+    clamp_cfg(cfg);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn lasapi_hw_analog_default_cfg(cfg: *mut LasapiHwAnalogCfg) {
     if !cfg.is_null() {

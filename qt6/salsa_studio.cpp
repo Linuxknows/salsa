@@ -917,8 +917,8 @@ void StudioController::buildMainWindow() {
     lblPreamp_ = new QLabel(QStringLiteral("Preamp: +0.0 dB"), eqCard);
     dynRow->addWidget(lblPreamp_);
     sldPreamp_ = new QSlider(Qt::Horizontal, eqCard);
-    sldPreamp_->setRange(-180, 120);
-    sldPreamp_->setToolTip(QStringLiteral("EQ Preamp Gain — Attenuates or boosts overall signal (-18 to +12 dB) before filtering to keep boosted EQ curves below 0 dBFS clipping."));
+    sldPreamp_->setRange(-240, 240);
+    sldPreamp_->setToolTip(QStringLiteral("EQ Preamp Gain — Attenuates or boosts overall signal (-24 to +24 dB) before filtering to keep boosted EQ curves below 0 dBFS clipping."));
     connect(sldPreamp_, &QSlider::valueChanged, this, [this]() { onDynamicsSliderChanged(); });
     dynRow->addWidget(sldPreamp_);
 
@@ -936,9 +936,9 @@ void StudioController::buildMainWindow() {
     lblRatio_ = new QLabel(QStringLiteral("Dyn Ratio: 2.5:1"), eqCard);
     dynRow->addWidget(lblRatio_);
     sldRatio_ = new QSlider(Qt::Horizontal, eqCard);
-    sldRatio_->setRange(10, 80);
-    sldRatio_->setValue(25);
-    sldRatio_->setToolTip(QStringLiteral("Dynamic EQ Ratio — Intensity (1.0:1 to 8.0:1) controlling how aggressively dynamic band gain scales past Threshold."));
+    sldRatio_->setRange(10, 200);
+    sldRatio_->setValue(22);
+    sldRatio_->setToolTip(QStringLiteral("Dynamic EQ Ratio — Intensity (1.0:1 to 20.0:1) controlling how aggressively dynamic band gain scales past Threshold."));
     connect(sldRatio_, &QSlider::valueChanged, this, [this]() { onDynamicsSliderChanged(); });
     dynRow->addWidget(sldRatio_);
 
@@ -961,12 +961,12 @@ void StudioController::buildMainWindow() {
         colBox->addWidget(lv);
 
         auto* sld = new QSlider(Qt::Vertical, eqCard);
-        sld->setRange(-180, 180);
+        sld->setRange(-240, 240);
         sld->setSingleStep(5);
         sld->setPageStep(10);
         sld->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
         sld->setMinimumHeight(scaledPx(112, fontPct_));
-        sld->setToolTip(QStringLiteral("EQ Band %1 (%2) Gain — Cuts or boosts this band (-18 to +18 dB) via real-time biquad filtering; drag here or on the canvas handle above.")
+        sld->setToolTip(QStringLiteral("EQ Band %1 (%2) Gain — Cuts or boosts this band (-24 to +24 dB) via real-time biquad filtering; drag here or on the canvas handle above.")
                             .arg(i + 1)
                             .arg(QString::fromLatin1(BAND_FREQS[i])));
         connect(sld, &QSlider::valueChanged, this, [this, i](int v) { onBandSliderChanged(i, v); });
@@ -2378,6 +2378,9 @@ void StudioController::applyGuiSettingsJsonToUi(bool isReload) {
     if (lblCrossfeed_) lblCrossfeed_->setText(formatPctText(sldCrossfeed_->value()));
     if (int ci = cmbCrossfeedCut_->findData(static_cast<int>(paramExt_.crossfeed_cutoff_hz)); ci >= 0) {
         cmbCrossfeedCut_->setCurrentIndex(ci);
+    } else if (paramExt_.crossfeed_cutoff_hz >= 300 && paramExt_.crossfeed_cutoff_hz <= 1500) {
+        cmbCrossfeedCut_->addItem(QStringLiteral("%1 Hz").arg(paramExt_.crossfeed_cutoff_hz), static_cast<int>(paramExt_.crossfeed_cutoff_hz));
+        cmbCrossfeedCut_->setCurrentIndex(cmbCrossfeedCut_->count() - 1);
     }
     for (int i = 0; i < SALSA_EQ_BANDS; ++i) {
         bandSliders_[i]->setValue(static_cast<int>(std::lround(eqCfg_.band_gains_db[i] * 10.0)));
@@ -2500,23 +2503,24 @@ void StudioController::onSaveOverwriteConfigClicked() {
     const QByteArray pbBytes = targetPbId_.toUtf8();
     const QByteArray capBytes = targetCapId_.toUtf8();
     const QByteArray guiBytes = jsonCompact(guiPayload).toUtf8();
-    const int rc = salsa_overwrite_settings_from_ui(
-        rate,
-        period,
-        bits,
-        capRate,
-        pbBytes.constData(),
-        capBytes.constData(),
-        masterPct,
-        masterMuted,
-        micPct,
-        micMuted,
-        btOpt,
-        &btCfg_,
-        &hwAnalog_,
-        &eqCfg_,
-        &paramExt_,
-        guiBytes.constData());
+    SalsaUiOverwriteReq req{};
+    req.sample_rate = rate;
+    req.period_frames = period;
+    req.format_bits = bits;
+    req.cap_sample_rate = capRate;
+    req.master_pct = masterPct;
+    req.master_muted = masterMuted;
+    req.mic_pct = micPct;
+    req.mic_muted = micMuted;
+    req.bt_optional_mode = btOpt;
+    req.playback_id = pbBytes.constData();
+    req.capture_id = capBytes.constData();
+    req.bt_cfg = &btCfg_;
+    req.hw_analog = &hwAnalog_;
+    req.eq_cfg = &eqCfg_;
+    req.param_ext = &paramExt_;
+    req.gui_json = guiBytes.constData();
+    const int rc = salsa_overwrite_settings_from_ui(&req);
 
     if (rc == 0) {
         guiSettings_ = loadGuiSettings();
@@ -3237,9 +3241,13 @@ void StudioController::pollEngine(bool initial) {
         cFixedStr(st.hw_capture_device, sizeof(st.hw_capture_device)),
         true);
 
+    bool sinkChanged = false;
     if (!actPbId.isEmpty() && actPbId != lastSinkId_) {
+        sinkChanged = !initial && !lastSinkId_.isEmpty();
         lastSinkId_ = actPbId;
-        if (!initial && chkEqPerDev_->isChecked()) loadPerDeviceEqForSink(actPbId);
+        if (sinkChanged && chkEqPerDev_->isChecked() && st.hw_sample_rate == 0) {
+            loadPerDeviceEqForSink(actPbId);
+        }
     }
 
     updatingUi_ = true;
@@ -3273,7 +3281,7 @@ void StudioController::pollEngine(bool initial) {
     }
 
     if (tNow >= eqHoldUntilMs_) {
-        if (initial) {
+        if (initial || sinkChanged) {
             eqCfg_ = st.eq_cfg;
             paramExt_ = st.param_eq;
             chkEqEnable_->setChecked(eqCfg_.enabled != 0);
@@ -3283,7 +3291,12 @@ void StudioController::pollEngine(bool initial) {
             chkCrossfeed_->setChecked(paramExt_.crossfeed_enabled != 0);
             sldCrossfeed_->setValue(static_cast<int>(std::lround(paramExt_.crossfeed_level * 100.0)));
             lblCrossfeed_->setText(formatPctText(sldCrossfeed_->value()));
-            if (int ci = cmbCrossfeedCut_->findData(static_cast<int>(paramExt_.crossfeed_cutoff_hz)); ci >= 0) cmbCrossfeedCut_->setCurrentIndex(ci);
+            if (int ci = cmbCrossfeedCut_->findData(static_cast<int>(paramExt_.crossfeed_cutoff_hz)); ci >= 0) {
+                cmbCrossfeedCut_->setCurrentIndex(ci);
+            } else if (paramExt_.crossfeed_cutoff_hz >= 300 && paramExt_.crossfeed_cutoff_hz <= 1500) {
+                cmbCrossfeedCut_->addItem(QStringLiteral("%1 Hz").arg(paramExt_.crossfeed_cutoff_hz), static_cast<int>(paramExt_.crossfeed_cutoff_hz));
+                cmbCrossfeedCut_->setCurrentIndex(cmbCrossfeedCut_->count() - 1);
+            }
             sldPreamp_->setValue(static_cast<int>(std::lround(eqCfg_.preamp_db * 10.0)));
             sldThresh_->setValue(static_cast<int>(std::lround(eqCfg_.dyn_threshold_db * 10.0)));
             sldRatio_->setValue(static_cast<int>(std::lround(eqCfg_.dyn_ratio * 10.0)));

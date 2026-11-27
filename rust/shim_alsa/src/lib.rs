@@ -21,11 +21,13 @@ use salsa_wire::c_abi::{
     AUDCLNT_STREAMFLAGS_EVENTCALLBACK, LASAPI_DBG_ERR, LASAPI_DBG_INFO, LASAPI_DBG_SHIM,
     LASAPI_FMT_FLOAT32, LASAPI_FMT_S16_LE, LASAPI_FMT_S32_LE, WaveFormatEx, S_OK,
 };
+use salsa_host_dl::{open_real_host_libasound, resolve_sym_cached};
+use salsa_wire::client_seam::{bytes_per_sample_for_fmt, ClientHandle};
 use salsa_wire::unix_sys::POLLIN;
 
+salsa_wire::define_lasapi_ffi_backend!();
+
 const POLLOUT: c_short = 4;
-const RTLD_LAZY: c_int = 1;
-const RTLD_LOCAL: c_int = 0;
 
 const SND_PCM_FORMAT_S16_LE: c_int = 2;
 const SND_PCM_FORMAT_S32_LE: c_int = 10;
@@ -44,7 +46,7 @@ pub struct PollFd {
 
 #[repr(C)]
 pub struct snd_pcm_t {
-    client: *mut c_void,
+    client: ClientHandle,
     event_fd: c_int,
     sample_rate: u32,
     channels: u32,
@@ -81,58 +83,6 @@ extern "C" {
     fn free(ptr: *mut c_void);
     fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
     fn strerror(errnum: c_int) -> *const c_char;
-    fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
-    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-
-    fn LASAPI_DebugTraceClient(
-        sub: u8,
-        lvl: u8,
-        sid: u32,
-        op: *const c_char,
-        target: *const c_char,
-        detail: *const c_char,
-    );
-    fn LASAPI_ActivateAudioClient(
-        client_name: *const c_char,
-        pp_audio_client: *mut *mut c_void,
-    ) -> i32;
-    fn IAudioClient_Initialize(
-        client: *mut c_void,
-        share_mode: u32,
-        stream_flags: u32,
-        buffer_frame_count: u32,
-        periodicity_frames: u32,
-        p_format: *const WaveFormatEx,
-    ) -> i32;
-    fn IAudioClient_GetBufferSize(client: *mut c_void, p_num_buffer_frames: *mut u32) -> i32;
-    fn IAudioClient_GetDevicePeriod(
-        client: *mut c_void,
-        p_default_period_frames: *mut u32,
-        p_minimum_period_frames: *mut u32,
-    ) -> i32;
-    fn IAudioClient_GetCurrentPadding(client: *mut c_void, p_num_padding_frames: *mut u32) -> i32;
-    fn IAudioClient_SetEventHandle(client: *mut c_void, p_event_fd_out: *mut c_int) -> i32;
-    fn IAudioClient_Start(client: *mut c_void) -> i32;
-    fn IAudioClient_Stop(client: *mut c_void) -> i32;
-    fn IAudioClient_Reset(client: *mut c_void) -> i32;
-    fn IAudioClient_Release(client: *mut c_void) -> i32;
-    fn IAudioClient_WaitForPeriod(client: *mut c_void, timeout_ms: c_int) -> i32;
-    fn IAudioRenderClient_WriteFrames(
-        client: *mut c_void,
-        src: *const c_void,
-        frames: u32,
-        src_fmt: u32,
-    ) -> i32;
-    fn IAudioCaptureClient_GetNextPacketSize(
-        client: *mut c_void,
-        p_num_frames_in_next_packet: *mut u32,
-    ) -> i32;
-    fn IAudioCaptureClient_ReadFrames(
-        client: *mut c_void,
-        dst: *mut c_void,
-        frames: u32,
-        dst_fmt: u32,
-    ) -> i32;
 }
 
 static REAL_ASOUND_DL: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
@@ -142,49 +92,26 @@ fn get_real_asound() -> *mut c_void {
     if !cur.is_null() {
         return cur;
     }
-    const CANDS: [&CStr; 12] = [
-        c"/usr/lib/libasound.so.2.0.0",
-        c"/usr/lib/libasound.so.2",
-        c"/usr/lib64/libasound.so.2.0.0",
-        c"/usr/lib64/libasound.so.2",
-        c"/usr/lib/x86_64-linux-gnu/libasound.so.2.0.0",
-        c"/usr/lib/x86_64-linux-gnu/libasound.so.2",
-        c"/usr/lib/aarch64-linux-gnu/libasound.so.2.0.0",
-        c"/usr/lib/aarch64-linux-gnu/libasound.so.2",
-        c"/lib/x86_64-linux-gnu/libasound.so.2",
-        c"/lib/aarch64-linux-gnu/libasound.so.2",
-        c"/lib64/libasound.so.2",
-        c"/lib/libasound.so.2",
-    ];
-    for cand in CANDS {
-        let h = unsafe { dlopen(cand.as_ptr(), RTLD_LAZY | RTLD_LOCAL) };
-        if !h.is_null() {
-            let _ = REAL_ASOUND_DL.compare_exchange(
-                ptr::null_mut(),
-                h,
-                Ordering::Release,
-                Ordering::Acquire,
-            );
-            return REAL_ASOUND_DL.load(Ordering::Acquire);
-        }
+    let h = unsafe {
+        open_real_host_libasound(
+            get_real_asound as *const c_void,
+            snd_pcm_open as *const c_void,
+        )
+    };
+    if !h.is_null() {
+        let _ = REAL_ASOUND_DL.compare_exchange(
+            ptr::null_mut(),
+            h,
+            Ordering::Release,
+            Ordering::Acquire,
+        );
+        return REAL_ASOUND_DL.load(Ordering::Acquire);
     }
     ptr::null_mut()
 }
 
 fn resolve_sym(slot: &AtomicPtr<c_void>, name: &CStr) -> *mut c_void {
-    let cur = slot.load(Ordering::Acquire);
-    if !cur.is_null() {
-        return cur;
-    }
-    let dl = get_real_asound();
-    if dl.is_null() {
-        return ptr::null_mut();
-    }
-    let sym = unsafe { dlsym(dl, name.as_ptr()) };
-    if !sym.is_null() {
-        slot.store(sym, Ordering::Release);
-    }
-    sym
+    unsafe { resolve_sym_cached(slot, get_real_asound, name) }
 }
 
 macro_rules! resolve_asound {
@@ -474,11 +401,12 @@ unsafe fn ensure_lasapi_initialized(pcm: *mut snd_pcm_t) -> c_int {
                 || p.init_buffer_frames != p.buffer_frames
                 || p.init_period_frames != p.period_frames);
         if changed && !p.client.is_null() {
-            unsafe {
-                IAudioClient_Stop(p.client);
-                IAudioClient_Release(p.client);
-            }
-            p.client = ptr::null_mut();
+            let old = p.client;
+            with_lasapi_backend(|b| {
+                b.stop(old);
+                b.release(old);
+            });
+            p.client = ClientHandle::NULL;
             p.event_fd = -1;
             p.started = false;
         }
@@ -495,19 +423,18 @@ unsafe fn ensure_lasapi_initialized(pcm: *mut snd_pcm_t) -> c_int {
     if !need_reinit {
         return 0;
     }
-    let client_ptr = unsafe { (*pcm).client };
-    if client_ptr.is_null() {
+    let p = unsafe { &mut *pcm };
+    if p.client.is_null() {
         let cname = if is_capture {
-            c"ALSA-Cap(default)".as_ptr()
+            "ALSA-Cap(default)"
         } else {
-            c"ALSA-Play(default)".as_ptr()
+            "ALSA-Play(default)"
         };
-        if unsafe { LASAPI_ActivateAudioClient(cname, ptr::addr_of_mut!((*pcm).client)) } != S_OK
-        {
-            return -19;
+        match with_lasapi_backend(|b| b.activate_client(Some(cname))) {
+            Ok(h) => p.client = h,
+            Err(_) => return -19,
         }
     }
-    let p = unsafe { &mut *pcm };
     let bits: u16 = if fmt == LASAPI_FMT_S16_LE { 16 } else { 32 };
     let block_align = (channels as u16) * (bits / 8);
     let wfx = WaveFormatEx {
@@ -523,8 +450,8 @@ unsafe fn ensure_lasapi_initialized(pcm: *mut snd_pcm_t) -> c_int {
     if is_capture {
         flags |= AUDCLNT_STREAMFLAGS_CAPTURE;
     }
-    let hr = unsafe {
-        IAudioClient_Initialize(
+    let hr = with_lasapi_backend(|b| {
+        b.initialize(
             p.client,
             AUDCLNT_SHAREMODE_SHARED,
             flags,
@@ -532,16 +459,22 @@ unsafe fn ensure_lasapi_initialized(pcm: *mut snd_pcm_t) -> c_int {
             period_frames,
             &wfx,
         )
-    };
+    });
     if hr != S_OK && hr != AUDCLNT_E_ALREADY_INITIALIZED {
         return -5;
     }
-    unsafe {
-        IAudioClient_SetEventHandle(p.client, &mut p.event_fd);
-        IAudioClient_GetBufferSize(p.client, &mut p.buffer_frames);
-        IAudioClient_GetDevicePeriod(p.client, &mut p.period_frames, ptr::null_mut());
-        IAudioClient_Start(p.client);
-    }
+    with_lasapi_backend(|b| {
+        if let Ok(fd) = b.set_event_handle(p.client) {
+            p.event_fd = fd;
+        }
+        if let Ok(bs) = b.get_buffer_size(p.client) {
+            p.buffer_frames = bs;
+        }
+        if let Ok((dp, _)) = b.get_device_period(p.client) {
+            p.period_frames = dp;
+        }
+        b.start(p.client);
+    });
     p.init_rate = sample_rate;
     p.init_channels = channels;
     p.init_fmt = fmt;
@@ -574,38 +507,41 @@ pub unsafe extern "C" fn snd_pcm_open(
         unsafe { CStr::from_ptr(name) }.to_str().unwrap_or("default")
     };
     let cname = format!(
-        "ALSA-{}({name_str})\0",
+        "ALSA-{}({name_str})",
         if p.is_capture { "Cap" } else { "Play" }
     );
-    if unsafe { LASAPI_ActivateAudioClient(cname.as_ptr().cast(), &mut p.client) } != S_OK {
-        unsafe {
-            LASAPI_DebugTraceClient(
-                LASAPI_DBG_SHIM,
-                LASAPI_DBG_ERR,
-                0,
-                c"SHIM_ALSA_ERR".as_ptr(),
-                cname.as_ptr().cast(),
-                c"LASAPI_ActivateAudioClient failed".as_ptr(),
-            );
-            free(pcm.cast());
+    match with_lasapi_backend(|b| b.activate_client(Some(&cname))) {
+        Ok(h) => p.client = h,
+        Err(_) => {
+            with_lasapi_backend(|b| {
+                b.debug_trace(
+                    LASAPI_DBG_SHIM,
+                    LASAPI_DBG_ERR,
+                    0,
+                    "SHIM_ALSA_ERR",
+                    &cname,
+                    "LASAPI_ActivateAudioClient failed",
+                );
+            });
+            unsafe { free(pcm.cast()) };
+            return -19;
         }
-        return -19;
     }
 
-    unsafe {
-        LASAPI_DebugTraceClient(
+    with_lasapi_backend(|b| {
+        b.debug_trace(
             LASAPI_DBG_SHIM,
             LASAPI_DBG_INFO,
             0,
-            c"SHIM_ALSA_OPEN".as_ptr(),
-            cname.as_ptr().cast(),
+            "SHIM_ALSA_OPEN",
+            &cname,
             if p.is_capture {
-                c"stream=CAPTURE".as_ptr()
+                "stream=CAPTURE"
             } else {
-                c"stream=PLAYBACK".as_ptr()
+                "stream=PLAYBACK"
             },
         );
-    }
+    });
 
     p.event_fd = -1;
     p.sample_rate = 48000;
@@ -634,22 +570,22 @@ pub unsafe extern "C" fn snd_pcm_close(pcm: *mut snd_pcm_t) -> c_int {
         return -22;
     }
     let p = unsafe { &mut *pcm };
-    unsafe {
-        LASAPI_DebugTraceClient(
+    let client = p.client;
+    let tgt = if p.is_capture { "ALSA-Cap" } else { "ALSA-Play" };
+    with_lasapi_backend(|b| {
+        b.debug_trace(
             LASAPI_DBG_SHIM,
             LASAPI_DBG_INFO,
             0,
-            c"SHIM_ALSA_CLOSE".as_ptr(),
-            if p.is_capture {
-                c"ALSA-Cap".as_ptr()
-            } else {
-                c"ALSA-Play".as_ptr()
-            },
-            c"snd_pcm_close".as_ptr(),
+            "SHIM_ALSA_CLOSE",
+            tgt,
+            "snd_pcm_close",
         );
-        if !p.client.is_null() {
-            IAudioClient_Release(p.client);
+        if !client.is_null() {
+            b.release(client);
         }
+    });
+    unsafe {
         free(pcm.cast());
     }
     0
@@ -933,24 +869,20 @@ pub unsafe extern "C" fn snd_pcm_hw_params(
         (p.is_capture, p.sample_rate, p.channels, p.buffer_frames, p.period_frames)
     };
     let detail = format!(
-        "{} rate={sr} ch={ch} buf={bf} per={pf}\0",
+        "{} rate={sr} ch={ch} buf={bf} per={pf}",
         if is_cap { "CAPTURE" } else { "PLAYBACK" },
     );
-    unsafe {
-        LASAPI_DebugTraceClient(
+    with_lasapi_backend(|b| {
+        b.debug_trace(
             LASAPI_DBG_SHIM,
             LASAPI_DBG_INFO,
             0,
-            c"SHIM_ALSA_HW".as_ptr(),
-            if is_cap {
-                c"ALSA-Cap".as_ptr()
-            } else {
-                c"ALSA-Play".as_ptr()
-            },
-            detail.as_ptr().cast(),
+            "SHIM_ALSA_HW",
+            if is_cap { "ALSA-Cap" } else { "ALSA-Play" },
+            &detail,
         );
-        ensure_lasapi_initialized(pcm)
-    }
+    });
+    unsafe { ensure_lasapi_initialized(pcm) }
 }
 
 #[no_mangle]
@@ -1010,7 +942,7 @@ pub unsafe extern "C" fn snd_pcm_start(pcm: *mut snd_pcm_t) -> c_int {
         return -5;
     }
     let p = unsafe { &mut *pcm };
-    unsafe { IAudioClient_Start(p.client) };
+    with_lasapi_backend(|b| b.start(p.client));
     p.paused = false;
     0
 }
@@ -1025,10 +957,10 @@ pub unsafe extern "C" fn snd_pcm_pause(pcm: *mut snd_pcm_t, enable: c_int) -> c_
         return -22;
     }
     if enable != 0 {
-        unsafe { IAudioClient_Stop(p.client) };
+        with_lasapi_backend(|b| b.stop(p.client));
         p.paused = true;
     } else {
-        unsafe { IAudioClient_Start(p.client) };
+        with_lasapi_backend(|b| b.start(p.client));
         p.paused = false;
     }
     0
@@ -1050,8 +982,8 @@ pub unsafe extern "C" fn snd_pcm_delay(pcm: *mut snd_pcm_t, delayp: *mut c_long)
     if pcm.is_null() || unsafe { !(*pcm).started } {
         return -22;
     }
-    let mut pad = 0u32;
-    unsafe { IAudioClient_GetCurrentPadding((*pcm).client, &mut pad) };
+    let client = unsafe { (*pcm).client };
+    let pad = with_lasapi_backend(|b| b.get_current_padding(client)).unwrap_or(0);
     if !delayp.is_null() {
         unsafe { *delayp = c_long::from(pad as i32) };
     }
@@ -1136,8 +1068,13 @@ pub unsafe extern "C" fn snd_pcm_writei(
     if unsafe { !(*pcm).started } && unsafe { ensure_lasapi_initialized(pcm) } < 0 {
         return -5;
     }
+    if size == 0 {
+        return 0;
+    }
     let p = unsafe { &*pcm };
-    if unsafe { IAudioRenderClient_WriteFrames(p.client, buffer, size as u32, p.fmt) } != S_OK {
+    let nbytes = (size as usize) * (p.channels as usize) * bytes_per_sample_for_fmt(p.fmt);
+    let src = unsafe { core::slice::from_raw_parts(buffer.cast::<u8>(), nbytes) };
+    if with_lasapi_backend(|b| b.write_frames(p.client, src, size as u32, p.fmt)) != S_OK {
         return -5;
     }
     size as c_long
@@ -1155,13 +1092,20 @@ pub unsafe extern "C" fn snd_pcm_readi(
     if unsafe { !(*pcm).started } && unsafe { ensure_lasapi_initialized(pcm) } < 0 {
         return -5;
     }
-    let p = unsafe { &*pcm };
-    let mut pkt = 0u32;
-    unsafe { IAudioCaptureClient_GetNextPacketSize(p.client, &mut pkt) };
-    if c_ulong::from(pkt) < size {
-        unsafe { IAudioClient_WaitForPeriod(p.client, 15) };
+    if size == 0 {
+        return 0;
     }
-    if unsafe { IAudioCaptureClient_ReadFrames(p.client, buffer, size as u32, p.fmt) } != S_OK {
+    let p = unsafe { &*pcm };
+    let nbytes = (size as usize) * (p.channels as usize) * bytes_per_sample_for_fmt(p.fmt);
+    let dst = unsafe { core::slice::from_raw_parts_mut(buffer.cast::<u8>(), nbytes) };
+    let hr = with_lasapi_backend(|b| {
+        let pkt = b.get_next_packet_size(p.client).unwrap_or(0);
+        if c_ulong::from(pkt) < size {
+            b.wait_for_period(p.client, 15);
+        }
+        b.read_frames(p.client, dst, size as u32, p.fmt)
+    });
+    if hr != S_OK {
         return -5;
     }
     size as c_long
@@ -1174,16 +1118,14 @@ pub unsafe extern "C" fn snd_pcm_avail_update(pcm: *mut snd_pcm_t) -> c_long {
     }
     let p = unsafe { &*pcm };
     if p.is_capture {
-        let mut pkt = 0u32;
-        unsafe { IAudioCaptureClient_GetNextPacketSize(p.client, &mut pkt) };
-        return pkt as c_long;
+        return with_lasapi_backend(|b| b.get_next_packet_size(p.client)).unwrap_or(0) as c_long;
     }
-    let mut buf = 0u32;
-    let mut pad = 0u32;
-    unsafe {
-        IAudioClient_GetBufferSize(p.client, &mut buf);
-        IAudioClient_GetCurrentPadding(p.client, &mut pad);
-    }
+    let (buf, pad) = with_lasapi_backend(|b| {
+        (
+            b.get_buffer_size(p.client).unwrap_or(0),
+            b.get_current_padding(p.client).unwrap_or(0),
+        )
+    });
     buf.saturating_sub(pad) as c_long
 }
 
@@ -1202,7 +1144,8 @@ pub unsafe extern "C" fn snd_pcm_wait(pcm: *mut snd_pcm_t, timeout: c_int) -> c_
     if pcm.is_null() || unsafe { !(*pcm).started } {
         return -22;
     }
-    unsafe { IAudioClient_WaitForPeriod((*pcm).client, timeout) };
+    let client = unsafe { (*pcm).client };
+    with_lasapi_backend(|b| b.wait_for_period(client, timeout));
     1
 }
 
@@ -1213,18 +1156,17 @@ pub unsafe extern "C" fn snd_pcm_drain(pcm: *mut snd_pcm_t) -> c_int {
     }
     let p = unsafe { &*pcm };
     if p.is_capture {
-        unsafe { IAudioClient_Stop(p.client) };
+        with_lasapi_backend(|b| b.stop(p.client));
         return 0;
     }
     for _ in 0..50 {
-        let mut pad = 0u32;
-        unsafe { IAudioClient_GetCurrentPadding(p.client, &mut pad) };
+        let pad = with_lasapi_backend(|b| b.get_current_padding(p.client)).unwrap_or(0);
         if pad == 0 {
             break;
         }
-        unsafe { IAudioClient_WaitForPeriod(p.client, 10) };
+        with_lasapi_backend(|b| b.wait_for_period(p.client, 10));
     }
-    unsafe { IAudioClient_Stop(p.client) };
+    with_lasapi_backend(|b| b.stop(p.client));
     0
 }
 
@@ -1234,10 +1176,10 @@ pub unsafe extern "C" fn snd_pcm_drop(pcm: *mut snd_pcm_t) -> c_int {
         return 0;
     }
     let p = unsafe { &*pcm };
-    unsafe {
-        IAudioClient_Stop(p.client);
-        IAudioClient_Reset(p.client);
-    }
+    with_lasapi_backend(|b| {
+        b.stop(p.client);
+        b.reset(p.client);
+    });
     0
 }
 
@@ -1253,4 +1195,61 @@ pub unsafe extern "C" fn snd_pcm_recover(
 #[no_mangle]
 pub unsafe extern "C" fn snd_strerror(errnum: c_int) -> *const c_char {
     unsafe { strerror(if errnum < 0 { -errnum } else { errnum }) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use salsa_wire::client_seam::InMemoryLasapiBackend;
+    use std::sync::Arc;
+
+    #[test]
+    fn alsa_playback_and_capture_pcm_lifecycle_against_in_memory_backend() {
+        let mem = Arc::new(InMemoryLasapiBackend::new(48_000, 2, 256));
+        with_test_lasapi_backend(Arc::clone(&mem) as _, || unsafe {
+            let mut pb: *mut snd_pcm_t = ptr::null_mut();
+            assert_eq!(snd_pcm_open(&raw mut pb, c"default".as_ptr(), 0, 0), 0);
+            assert!(!pb.is_null());
+            let pb_client = (*pb).client;
+            assert!(!pb_client.is_null());
+
+            assert_eq!(
+                snd_pcm_set_params(pb, SND_PCM_FORMAT_FLOAT_LE, 0, 2, 48_000, 1, 20_000),
+                0
+            );
+            assert_eq!(snd_pcm_prepare(pb), 0);
+            assert_eq!(snd_pcm_state(pb), SND_PCM_STATE_RUNNING);
+
+            let buf = [0.5f32; 256 * 2];
+            assert_eq!(snd_pcm_writei(pb, buf.as_ptr().cast(), 256), 256);
+
+            let mut delay: c_long = -1;
+            assert_eq!(snd_pcm_delay(pb, &raw mut delay), 0);
+            assert_eq!(delay, 256);
+            assert!(snd_pcm_avail_update(pb) > 0);
+
+            assert_eq!(snd_pcm_drain(pb), 0);
+            assert_eq!(snd_pcm_close(pb), 0);
+
+            let pb_snap = mem.snapshot_client(pb_client).unwrap();
+            assert_eq!(pb_snap.written_frames, 256);
+            assert_eq!(pb_snap.release_count, 1);
+
+            let mut cap: *mut snd_pcm_t = ptr::null_mut();
+            assert_eq!(snd_pcm_open(&raw mut cap, c"default".as_ptr(), 1, 0), 0);
+            let cap_client = (*cap).client;
+            assert_eq!(
+                snd_pcm_set_params(cap, SND_PCM_FORMAT_FLOAT_LE, 0, 2, 48_000, 1, 20_000),
+                0
+            );
+            mem.push_capture_bytes(cap_client, &[0x3Cu8; 64 * 8]);
+            assert_eq!(snd_pcm_avail_update(cap), 64);
+
+            let mut rx = vec![0u8; 64 * 8];
+            assert_eq!(snd_pcm_readi(cap, rx.as_mut_ptr().cast(), 64), 64);
+            assert!(rx.iter().all(|&b| b == 0x3C));
+            assert_eq!(snd_pcm_drop(cap), 0);
+            assert_eq!(snd_pcm_close(cap), 0);
+        });
+    }
 }

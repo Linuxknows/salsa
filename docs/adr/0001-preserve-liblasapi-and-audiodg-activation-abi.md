@@ -1,0 +1,3 @@
+# Preserve `liblasapi.so` and `audiodg.sock` Activation ABI
+
+Sibling project `punt` vendors prebuilt copies of `liblasapi.so` into user installations and `zest` dynamically loads `liblasapi.so` via `dlopen` expecting fixed `IAudio*`/`LASAPI_*` exports, the 7,136-byte `LasapiEngineStatus` layout, and existing `LASAPI_CMD_CREATE_SESSION` and `LASAPI_CMD_GET_STATUS` framing on `audiodg.sock`. We decided to keep those activation, status, and exported C ABI layouts immutable while moving internal control-plane operations to a new typed `LASAPI_CMD_CONTROL_V2` packet, because breaking compatibility across independently installed sibling applications would break audio output until every consumer is rebuilt.

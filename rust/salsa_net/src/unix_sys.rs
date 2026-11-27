@@ -957,7 +957,10 @@ struct SockAddrUn {
     sun_path: [u8; 108],
 }
 
-pub fn connect_unix_stream_blocking(path: &str) -> Option<OwnedFd> {
+pub fn connect_unix_stream_verified_with_timeout(
+    path: &str,
+    timeout: std::time::Duration,
+) -> Option<std::os::unix::net::UnixStream> {
     if path.is_empty() || path.len() >= 108 {
         return None;
     }
@@ -965,16 +968,19 @@ pub fn connect_unix_stream_blocking(path: &str) -> Option<OwnedFd> {
         return None;
     }
     let stream = std::os::unix::net::UnixStream::connect(path).ok()?;
-    let timeout = std::time::Duration::from_secs(5);
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
-    let owned: OwnedFd = stream.into();
-    let uc = socket_peercred(owned.as_raw_fd())?;
+    let uc = socket_peercred(stream.as_raw_fd())?;
     let my_uid = current_uid();
     if uc.uid != my_uid && uc.uid != 0 {
         return None;
     }
-    Some(owned)
+    Some(stream)
+}
+
+pub fn connect_unix_stream_blocking(path: &str) -> Option<OwnedFd> {
+    connect_unix_stream_verified_with_timeout(path, std::time::Duration::from_secs(5))
+        .map(Into::into)
 }
 
 pub fn sendto_unix_dgram_nonblock(fd: RawFd, path: &str, buf: &[u8]) -> isize {
@@ -1604,23 +1610,7 @@ pub fn dbg_emit_vals(
         if !crate::debug_server::is_dbg_running() {
             return;
         }
-        let Ok(c_op) = CString::new(op) else { return };
-        let Ok(c_tgt) = CString::new(target) else { return };
-        let Ok(c_det) = CString::new(detail) else { return };
-        unsafe {
-            crate::debug_server::salsa_dbg_emit_raw(
-                sub,
-                lvl,
-                pid,
-                sid,
-                v1,
-                v2,
-                hr,
-                c_op.as_ptr(),
-                c_tgt.as_ptr(),
-                c_det.as_ptr(),
-            );
-        }
+        crate::debug_server::emit_str(sub, lvl, pid, sid, v1, v2, hr, op, target, detail);
     }
     #[cfg(test)]
     {

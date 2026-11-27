@@ -31,9 +31,8 @@ use salsa_tools::ipc::{
     bt_connection_ctl, get_engine_status, gui_settings_path, list_devices, load_gui_settings,
     load_screencast_prefs, reload_config_now, save_config_now, save_screencast_prefs,
     save_studio_gui_settings, set_bt_codec_config, set_capture_sample_rate, set_devices,
-    set_dynamic_eq, set_engine_config, set_hw_analog, set_master_volume, set_mic_apo,
-    set_mic_volume, set_parametric_eq, set_session_control, update_gui_settings, ScreenCastPrefs,
-    EQ_PRESETS, MIC_APO_PRESETS,
+    set_dynamic_eq, set_engine_config, set_hw_analog, set_master_volume, set_mic_volume,
+    set_parametric_eq, set_session_control, update_gui_settings, ScreenCastPrefs, EQ_PRESETS,
 };
 use salsa_tools::json::JsonValue;
 use salsa_tools::zlib_png::{decode_png_rgba, encode_png_rgba, RgbaImage};
@@ -49,7 +48,9 @@ use salsa_wire::legal::{
     full_license_bundle, handle_common_cli_flag, salsa_version, short_legal_notice, COPY_TEXT,
     LESSER_COPY_TEXT, THIRD_PARTY_TEXT,
 };
-use salsa_wire::unix_sys::{reset_sigpipe_default, O_CLOEXEC, O_NOFOLLOW};
+use salsa_wire::unix_sys::{
+    current_uid, ensure_dir_0700_safe, reset_sigpipe_default, O_CLOEXEC, O_NOFOLLOW,
+};
 
 use crate::gio_dbus::{cstr as dbus_cstr, gio};
 use crate::screencast_preview::{has_saved_restore_token, PortalScreenCastPreview};
@@ -70,9 +71,12 @@ use crate::theme::{
     load_tray_theme, load_ui_font_scale_pct, normalize_font_scale_pct, preset_theme_names,
     save_ui_font_scale_pct, theme_by_name, SalsaTheme, THEME_TOKEN_GROUPS,
 };
+use crate::tray_placement::{
+    compute_osd_pos, compute_tray_popup_plan, compute_tray_resize_plan, resolve_tray_target,
+    GioCompositorQuery, Rect, ScreenInfo, TrayPopupReq, TrayResizeReq, TrayResolveReq,
+};
 use crate::x11_util::{
-    apply_osd_hints, apply_popup_hints, display_is_x11, map_sni_point_to_screen,
-    monitor_geometry_near, move_window_x11, plasma_tray_panel_info, x11_ui_scale,
+    apply_osd_hints, apply_popup_hints, monitor_geometry_near, plasma_tray_panel_info,
 };
 
 extern "C" {
@@ -366,6 +370,14 @@ pub extern "C" fn salsa_get_engine_status(out: *mut LasapiEngineStatus) -> c_int
 }
 
 #[no_mangle]
+pub extern "C" fn salsa_status_effective_capture_rate(st: *const LasapiEngineStatus) -> u32 {
+    if st.is_null() {
+        return 0;
+    }
+    unsafe { (*st).effective_capture_rate_hz() }
+}
+
+#[no_mangle]
 pub extern "C" fn salsa_list_devices(out: *mut LasapiDeviceList) -> c_int {
     if out.is_null() {
         return -1;
@@ -434,14 +446,6 @@ pub extern "C" fn salsa_set_dynamic_eq(eq: *const LasapiEqConfig) -> c_int {
         return -1;
     }
     unsafe { set_dynamic_eq(&*eq) }
-}
-
-#[no_mangle]
-pub extern "C" fn salsa_set_mic_apo(mic: *const LasapiMicApoCfg) -> c_int {
-    if mic.is_null() {
-        return -1;
-    }
-    unsafe { set_mic_apo(&*mic) }
 }
 
 #[no_mangle]
@@ -598,26 +602,36 @@ fn sanitize_ui_dev_id(s: &str) -> String {
     cleaned.trim().to_string()
 }
 
+#[repr(C)]
+pub struct SalsaUiOverwriteReq {
+    pub sample_rate: u32,
+    pub period_frames: u32,
+    pub format_bits: u32,
+    pub cap_sample_rate: u32,
+    pub master_pct: u32,
+    pub master_muted: u32,
+    pub mic_pct: u32,
+    pub mic_muted: u32,
+    pub bt_optional_mode: u32,
+    pub _reserved0: u32,
+    pub playback_id: *const c_char,
+    pub capture_id: *const c_char,
+    pub bt_cfg: *const LasapiBtCodecCfg,
+    pub hw_analog: *const LasapiHwAnalogCfg,
+    pub eq_cfg: *const LasapiEqConfig,
+    pub param_ext: *const LasapiParamEqExt,
+    pub gui_json: *const c_char,
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn salsa_overwrite_settings_from_ui(
-    sample_rate: u32,
-    period_frames: u32,
-    format_bits: u32,
-    cap_sample_rate: u32,
-    playback_id: *const c_char,
-    capture_id: *const c_char,
-    master_pct: u32,
-    master_muted: u32,
-    mic_pct: u32,
-    mic_muted: u32,
-    bt_optional_mode: u32,
-    bt_cfg: *const LasapiBtCodecCfg,
-    hw_analog: *const LasapiHwAnalogCfg,
-    eq_cfg: *const LasapiEqConfig,
-    param_ext: *const LasapiParamEqExt,
-    gui_json: *const c_char,
+    req_ptr: *const SalsaUiOverwriteReq,
 ) -> c_int {
-    if let Some(s) = cstr_to_string(gui_json) {
+    if req_ptr.is_null() {
+        return -1;
+    }
+    let req = &*req_ptr;
+    if let Some(s) = cstr_to_string(req.gui_json) {
         if let Ok(val @ JsonValue::Object(_)) = JsonValue::parse(&s) {
             if save_studio_gui_settings(&val).is_err() {
                 return -1;
@@ -629,49 +643,90 @@ pub unsafe extern "C" fn salsa_overwrite_settings_from_ui(
 
     let dir = config_dir_path();
     let mut st = load_runtime_state_in_dir(&dir, false);
-    if (44_100..=192_000).contains(&sample_rate) {
-        st.sample_rate = sample_rate;
+    if (44_100..=192_000).contains(&req.sample_rate) {
+        st.sample_rate = req.sample_rate;
     }
-    if (64..=2048).contains(&period_frames) {
-        st.period_frames = period_frames;
+    if (64..=2048).contains(&req.period_frames) {
+        st.period_frames = req.period_frames;
     }
-    if matches!(format_bits, 16 | 24 | 32) {
-        st.format_bits = format_bits;
+    if matches!(req.format_bits, 16 | 24 | 32) {
+        st.format_bits = req.format_bits;
     }
-    if cap_sample_rate == 0 || (44_100..=192_000).contains(&cap_sample_rate) {
-        st.cap_sample_rate = cap_sample_rate;
+    if req.cap_sample_rate == 0 || (44_100..=192_000).contains(&req.cap_sample_rate) {
+        st.cap_sample_rate = req.cap_sample_rate;
     }
-    if let Some(pb) = cstr_to_string(playback_id) {
+    if let Some(pb) = cstr_to_string(req.playback_id) {
         let clean = sanitize_ui_dev_id(&pb);
         set_c_bytes(&mut st.target_playback_id, &clean);
     }
-    if let Some(cap) = cstr_to_string(capture_id) {
+    if let Some(cap) = cstr_to_string(req.capture_id) {
         let clean = sanitize_ui_dev_id(&cap);
         set_c_bytes(&mut st.target_capture_id, &clean);
     }
-    st.desktop_volume_pct = master_pct.min(150);
-    st.desktop_muted = u32::from(master_muted != 0);
-    st.desktop_mic_volume_pct = mic_pct.min(150);
-    st.desktop_mic_muted = u32::from(mic_muted != 0);
+    st.desktop_volume_pct = req.master_pct.min(150);
+    st.desktop_muted = u32::from(req.master_muted != 0);
+    st.desktop_mic_volume_pct = req.mic_pct.min(150);
+    st.desktop_mic_muted = u32::from(req.mic_muted != 0);
     st.has_saved_vol_state = true;
-    st.bt_optional_mode = u32::from(bt_optional_mode != 0);
-    if !bt_cfg.is_null() {
-        st.bt_cfg = *bt_cfg;
+    st.bt_optional_mode = u32::from(req.bt_optional_mode != 0);
+    if !req.bt_cfg.is_null() {
+        st.bt_cfg = *req.bt_cfg;
     }
-    if !hw_analog.is_null() {
-        st.hw_analog_cfg = *hw_analog;
+    if !req.hw_analog.is_null() {
+        st.hw_analog_cfg = *req.hw_analog;
     }
-    if !eq_cfg.is_null() {
-        st.eq_cfg = *eq_cfg;
+    if !req.eq_cfg.is_null() {
+        st.eq_cfg = *req.eq_cfg;
     }
-    if !param_ext.is_null() {
-        st.param_eq = *param_ext;
+    if !req.param_ext.is_null() {
+        st.param_eq = *req.param_ext;
     }
     if save_runtime_state_in_dir(&dir, &st) {
         0
     } else {
         -1
     }
+}
+
+fn compute_single_instance_sock_path(sock_file_name: &str) -> Option<PathBuf> {
+    let clean = sock_file_name.trim();
+    if clean.is_empty()
+        || clean == "."
+        || clean == ".."
+        || clean.contains('/')
+        || clean.contains('\\')
+        || clean.contains("..")
+        || clean.chars().any(char::is_control)
+    {
+        return None;
+    }
+    let uid = current_uid();
+    let mut candidates: Vec<PathBuf> = Vec::with_capacity(3);
+    if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
+        let xt = xdg.trim();
+        if !xt.is_empty() {
+            candidates.push(PathBuf::from(xt).join("lasapi"));
+        }
+    }
+    candidates.push(PathBuf::from(format!("/run/user/{uid}/lasapi")));
+    candidates.push(PathBuf::from(format!("/tmp/lasapi-{uid}")));
+    for dir in candidates {
+        if ensure_dir_0700_safe(&dir).is_ok() {
+            return Some(dir.join(clean));
+        }
+    }
+    None
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_single_instance_sock_path(sock_file_name: *const c_char) -> *mut c_char {
+    let Some(name) = cstr_to_string(sock_file_name) else {
+        return core::ptr::null_mut();
+    };
+    let Some(path) = compute_single_instance_sock_path(&name) else {
+        return core::ptr::null_mut();
+    };
+    to_c_string(path.to_string_lossy().into_owned())
 }
 
 #[no_mangle]
@@ -783,29 +838,6 @@ pub extern "C" fn salsa_builtin_eq_presets_json() -> *mut c_char {
                     "gains",
                     JsonValue::Array(p.gains.iter().map(|&g| JsonValue::Float(f64::from(g))).collect()),
                 ),
-            ])
-        })
-        .collect();
-    to_c_string(JsonValue::Array(items).to_json_compact())
-}
-
-#[no_mangle]
-pub extern "C" fn salsa_mic_apo_presets_json() -> *mut c_char {
-    let items: Vec<JsonValue> = MIC_APO_PRESETS
-        .iter()
-        .map(|p| {
-            JsonValue::obj(vec![
-                ("name", JsonValue::Str(p.name.into())),
-                ("enabled", JsonValue::Int(i64::from(p.enabled))),
-                ("hpf_enabled", JsonValue::Int(i64::from(p.hpf_enabled))),
-                ("hpf_hz", JsonValue::Float(f64::from(p.hpf_hz))),
-                ("gate_enabled", JsonValue::Int(i64::from(p.gate_enabled))),
-                ("gate_thresh_db", JsonValue::Float(f64::from(p.gate_thresh_db))),
-                ("rnnoise_enabled", JsonValue::Int(i64::from(p.rnnoise_enabled))),
-                ("comp_enabled", JsonValue::Int(i64::from(p.comp_enabled))),
-                ("comp_thresh_db", JsonValue::Float(f64::from(p.comp_thresh_db))),
-                ("comp_ratio", JsonValue::Float(f64::from(p.comp_ratio))),
-                ("clarity_db", JsonValue::Float(f64::from(p.clarity_db))),
             ])
         })
         .collect();
@@ -1265,18 +1297,7 @@ pub extern "C" fn salsa_bt_reset_sync() -> *mut c_char {
             hint = pb;
         }
     }
-    let Ok(c_hint) = std::ffi::CString::new(hint.as_str()) else {
-        return to_c_string("BT Reset: Invalid Bluetooth address.".into());
-    };
-    let mut msg_buf = [0u8; 256];
-    let rc = unsafe {
-        salsa_wire::bluez_runtime::bluez_reset_device_impl(
-            c_hint.as_ptr(),
-            msg_buf.as_mut_ptr().cast::<c_char>(),
-            msg_buf.len(),
-        )
-    };
-    let msg = c_str_to_string(&msg_buf);
+    let (rc, msg) = salsa_wire::bluez_runtime::reset_device(&hint);
     let _ = bt_connection_ctl(0, None);
     to_c_string(if !msg.is_empty() {
         msg
@@ -1381,15 +1402,6 @@ pub extern "C" fn salsa_dbg_recent_events_json(handle: *mut c_void, max_items: u
     let client = unsafe { &*handle.cast::<SalsaDebugClient>() };
     let evs = client.recent_events(max_items);
     to_c_string(JsonValue::Array(evs).to_json_compact())
-}
-
-#[no_mangle]
-pub extern "C" fn salsa_dbg_drain_events(handle: *mut c_void, max_items: usize) -> usize {
-    if handle.is_null() {
-        return 0;
-    }
-    let client = unsafe { &*handle.cast::<SalsaDebugClient>() };
-    client.drain_events(max_items).len()
 }
 
 #[no_mangle]
@@ -2091,43 +2103,6 @@ pub extern "C" fn salsa_release_tray_lock(h: *mut c_void) {
 }
 
 #[no_mangle]
-pub extern "C" fn salsa_pid_in_tray_unit() -> bool {
-    read_text_lossy(Path::new("/proc/self/cgroup"), 4096).contains("lasapi-tray.service")
-}
-
-#[no_mangle]
-pub extern "C" fn salsa_tray_unit_active_or_enabled() -> bool {
-    for sub in ["is-active", "is-enabled"] {
-        if run_cmd_bounded(
-            "systemctl",
-            &["--user", sub, "--quiet", "lasapi-tray.service"],
-            Duration::from_secs(2),
-        )
-        .is_some_and(|o| o.status.success())
-        {
-            return true;
-        }
-    }
-    false
-}
-
-#[no_mangle]
-pub extern "C" fn salsa_display_is_x11() -> bool {
-    display_is_x11()
-}
-
-#[no_mangle]
-pub extern "C" fn salsa_map_sni_point(rx: i32, ry: i32, sx: *mut i32, sy: *mut i32) {
-    let (mx, my) = map_sni_point_to_screen(rx, ry);
-    if !sx.is_null() {
-        unsafe { *sx = mx };
-    }
-    if !sy.is_null() {
-        unsafe { *sy = my };
-    }
-}
-
-#[no_mangle]
 pub extern "C" fn salsa_plasma_panel_info(
     loc: *mut i32,
     clearance: *mut i32,
@@ -2142,30 +2117,6 @@ pub extern "C" fn salsa_plasma_panel_info(
     }
     if !right_pad.is_null() {
         unsafe { *right_pad = r };
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn salsa_monitor_geo_near(
-    x: i32,
-    y: i32,
-    mx: *mut i32,
-    my: *mut i32,
-    mw: *mut i32,
-    mh: *mut i32,
-) {
-    let (x0, y0, w0, h0) = monitor_geometry_near(x, y);
-    if !mx.is_null() {
-        unsafe { *mx = x0 };
-    }
-    if !my.is_null() {
-        unsafe { *my = y0 };
-    }
-    if !mw.is_null() {
-        unsafe { *mw = w0 };
-    }
-    if !mh.is_null() {
-        unsafe { *mh = h0 };
     }
 }
 
@@ -2186,14 +2137,310 @@ pub extern "C" fn salsa_apply_x11_osd_hints(xid: u64, w: i32, h: i32) {
     apply_osd_hints(xid, w, h);
 }
 
-#[no_mangle]
-pub extern "C" fn salsa_move_x11_window(xid: u64, x: i32, y: i32) {
-    move_window_x11(xid, x, y);
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SalsaRectI32 {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl From<Rect> for SalsaRectI32 {
+    fn from(r: Rect) -> Self {
+        Self {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+        }
+    }
+}
+
+impl From<SalsaRectI32> for Rect {
+    fn from(r: SalsaRectI32) -> Self {
+        Self {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SalsaMonitorInfo {
+    pub name: [u8; 64],
+    pub geo: SalsaRectI32,
+    pub avail: SalsaRectI32,
+    pub dpr: f64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SalsaTrayResolveReq {
+    pub raw_x: i32,
+    pub raw_y: i32,
+    pub cursor_x: i32,
+    pub cursor_y: i32,
+    pub has_raw: u8,
+    pub is_xcb: u8,
+    pub is_kde_env: u8,
+    pub _pad0: u8,
+}
+
+impl From<&SalsaTrayResolveReq> for TrayResolveReq {
+    fn from(r: &SalsaTrayResolveReq) -> Self {
+        Self {
+            raw_x: r.raw_x,
+            raw_y: r.raw_y,
+            has_raw: r.has_raw != 0,
+            cursor_x: r.cursor_x,
+            cursor_y: r.cursor_y,
+            is_xcb: r.is_xcb != 0,
+            is_kde_env: r.is_kde_env != 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SalsaTrayTargetPos {
+    pub screen_idx: i32,
+    pub qt_x: i32,
+    pub qt_y: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SalsaTrayPopupPlan {
+    pub screen_idx: i32,
+    pub qt_x: i32,
+    pub qt_y: i32,
+    pub panel_loc: i32,
+    pub panel_clearance: i32,
+    pub logical_pad: i32,
+    pub anchor_raw_local_offset: i32,
+    pub anchor_bottom: i32,
+    pub popup_x: i32,
+    pub popup_y: i32,
+    pub avail: SalsaRectI32,
+    pub screen_geo: SalsaRectI32,
+    pub margin_left: i32,
+    pub margin_top: i32,
+    pub margin_right: i32,
+    pub margin_bottom: i32,
+    pub layer_anchor_top: u8,
+    pub layer_anchor_bottom: u8,
+    pub layer_anchor_left: u8,
+    pub layer_anchor_right: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SalsaTrayResizeReq {
+    pub screen_geo: SalsaRectI32,
+    pub avail: SalsaRectI32,
+    pub panel_loc: i32,
+    pub anchor_raw_local_offset: i32,
+    pub anchor_bottom: i32,
+    pub cur_x: i32,
+    pub cur_y: i32,
+    pub pop_w: i32,
+    pub pop_h: i32,
+    pub edge_pad: i32,
+    pub is_layer_shell: u8,
+    pub _pad: [u8; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SalsaTrayResizePlan {
+    pub margin_left: i32,
+    pub margin_top: i32,
+    pub margin_right: i32,
+    pub margin_bottom: i32,
+    pub new_x: i32,
+    pub new_y: i32,
+    pub update_margins: u8,
+    pub move_floating: u8,
+    pub _pad: [u8; 2],
+}
+
+unsafe fn collect_screens(screens: *const SalsaMonitorInfo, count: usize) -> Vec<ScreenInfo> {
+    if screens.is_null() || count == 0 {
+        return Vec::new();
+    }
+    let slice = unsafe { core::slice::from_raw_parts(screens, count.min(64)) };
+    slice
+        .iter()
+        .map(|s| ScreenInfo {
+            name: c_str_to_string(&s.name),
+            geo: s.geo.into(),
+            avail: s.avail.into(),
+            dpr: s.dpr,
+        })
+        .collect()
 }
 
 #[no_mangle]
-pub extern "C" fn salsa_ui_scale() -> f64 {
-    x11_ui_scale()
+pub extern "C" fn salsa_resolve_tray_target(
+    screens: *const SalsaMonitorInfo,
+    screen_count: usize,
+    req_ptr: *const SalsaTrayResolveReq,
+) -> SalsaTrayTargetPos {
+    let scr_vec = unsafe { collect_screens(screens, screen_count) };
+    let req = if req_ptr.is_null() {
+        TrayResolveReq {
+            raw_x: 0,
+            raw_y: 0,
+            has_raw: false,
+            cursor_x: 0,
+            cursor_y: 0,
+            is_xcb: false,
+            is_kde_env: false,
+        }
+    } else {
+        unsafe { (&*req_ptr).into() }
+    };
+    let tgt = resolve_tray_target(&scr_vec, &req, &GioCompositorQuery);
+    SalsaTrayTargetPos {
+        screen_idx: tgt.screen_idx as i32,
+        qt_x: tgt.qt_x,
+        qt_y: tgt.qt_y,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_compute_tray_popup_plan(
+    screens: *const SalsaMonitorInfo,
+    screen_count: usize,
+    req_ptr: *const SalsaTrayResolveReq,
+    pop_w: i32,
+    pop_h: i32,
+    edge_pad: i32,
+    is_layer_shell: bool,
+) -> SalsaTrayPopupPlan {
+    let scr_vec = unsafe { collect_screens(screens, screen_count) };
+    let resolve = if req_ptr.is_null() {
+        TrayResolveReq {
+            raw_x: 0,
+            raw_y: 0,
+            has_raw: false,
+            cursor_x: 0,
+            cursor_y: 0,
+            is_xcb: false,
+            is_kde_env: false,
+        }
+    } else {
+        unsafe { (&*req_ptr).into() }
+    };
+    let plan = compute_tray_popup_plan(
+        &scr_vec,
+        &TrayPopupReq {
+            resolve,
+            pop_w,
+            pop_h,
+            edge_pad,
+            is_layer_shell,
+        },
+        &GioCompositorQuery,
+    );
+    SalsaTrayPopupPlan {
+        screen_idx: plan.screen_idx as i32,
+        qt_x: plan.qt_x,
+        qt_y: plan.qt_y,
+        panel_loc: plan.panel_loc,
+        panel_clearance: plan.panel_clearance,
+        logical_pad: plan.logical_pad,
+        anchor_raw_local_offset: plan.anchor_raw_local_offset,
+        anchor_bottom: plan.anchor_bottom,
+        popup_x: plan.popup_x,
+        popup_y: plan.popup_y,
+        avail: plan.avail.into(),
+        screen_geo: plan.screen_geo.into(),
+        margin_left: plan.margin_left,
+        margin_top: plan.margin_top,
+        margin_right: plan.margin_right,
+        margin_bottom: plan.margin_bottom,
+        layer_anchor_top: u8::from(plan.layer_anchor_top),
+        layer_anchor_bottom: u8::from(plan.layer_anchor_bottom),
+        layer_anchor_left: u8::from(plan.layer_anchor_left),
+        layer_anchor_right: u8::from(plan.layer_anchor_right),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_compute_tray_resize_plan(
+    req_ptr: *const SalsaTrayResizeReq,
+) -> SalsaTrayResizePlan {
+    if req_ptr.is_null() {
+        return SalsaTrayResizePlan {
+            margin_left: 0,
+            margin_top: 0,
+            margin_right: 0,
+            margin_bottom: 0,
+            new_x: 0,
+            new_y: 0,
+            update_margins: 0,
+            move_floating: 0,
+            _pad: [0; 2],
+        };
+    }
+    let r = unsafe { &*req_ptr };
+    let res = compute_tray_resize_plan(&TrayResizeReq {
+        screen_geo: r.screen_geo.into(),
+        avail: r.avail.into(),
+        panel_loc: r.panel_loc,
+        anchor_raw_local_offset: r.anchor_raw_local_offset,
+        anchor_bottom: r.anchor_bottom,
+        cur_x: r.cur_x,
+        cur_y: r.cur_y,
+        pop_w: r.pop_w,
+        pop_h: r.pop_h,
+        edge_pad: r.edge_pad,
+        is_layer_shell: r.is_layer_shell != 0,
+    });
+    SalsaTrayResizePlan {
+        margin_left: res.margin_left,
+        margin_top: res.margin_top,
+        margin_right: res.margin_right,
+        margin_bottom: res.margin_bottom,
+        new_x: res.new_x,
+        new_y: res.new_y,
+        update_margins: u8::from(res.update_margins),
+        move_floating: u8::from(res.move_floating),
+        _pad: [0; 2],
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn salsa_compute_osd_pos(
+    avail: *const SalsaRectI32,
+    w: i32,
+    h: i32,
+    bottom_margin: i32,
+    out_x: *mut i32,
+    out_y: *mut i32,
+) {
+    let rect: Rect = if avail.is_null() {
+        Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        }
+    } else {
+        unsafe { (*avail).into() }
+    };
+    let (ox, oy) = compute_osd_pos(rect, w, h, bottom_margin);
+    if !out_x.is_null() {
+        unsafe { *out_x = ox };
+    }
+    if !out_y.is_null() {
+        unsafe { *out_y = oy };
+    }
 }
 
 // =========================================================================
@@ -2341,5 +2588,77 @@ pub extern "C" fn salsa_handle_legal_cli_flag(
         handle_common_cli_flag(&app, &arg).unwrap_or(-1)
     } else {
         -1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_instance_sock_path_validates_names() {
+        assert!(compute_single_instance_sock_path("").is_none());
+        assert!(compute_single_instance_sock_path("../evil.sock").is_none());
+        assert!(compute_single_instance_sock_path("a/b.sock").is_none());
+        assert!(compute_single_instance_sock_path("bad\nsock").is_none());
+        let p = compute_single_instance_sock_path("salsa-unit-test.sock")
+            .expect("valid single-instance sock path");
+        assert!(p.ends_with("salsa-unit-test.sock"));
+    }
+
+    #[test]
+    fn tray_c_abi_placement_bridges_work_cleanly() {
+        let mut mon = SalsaMonitorInfo {
+            name: [0; 64],
+            geo: SalsaRectI32 {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            avail: SalsaRectI32 {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1032,
+            },
+            dpr: 1.0,
+        };
+        set_c_bytes(&mut mon.name, "DP-1");
+        let req = SalsaTrayResolveReq {
+            raw_x: 1850,
+            raw_y: 1050,
+            cursor_x: 1850,
+            cursor_y: 1050,
+            has_raw: 1,
+            is_xcb: 1,
+            is_kde_env: 0,
+            _pad0: 0,
+        };
+        let plan = salsa_compute_tray_popup_plan(&mon, 1, &req, 380, 500, 8, false);
+        assert_eq!(plan.screen_idx, 0);
+        assert_eq!(plan.popup_x, 1920 - 380 - 8);
+        assert_eq!(plan.anchor_bottom, 1032 - 8);
+        let resize = salsa_compute_tray_resize_plan(&SalsaTrayResizeReq {
+            screen_geo: plan.screen_geo,
+            avail: plan.avail,
+            panel_loc: 4,
+            anchor_raw_local_offset: plan.anchor_raw_local_offset,
+            anchor_bottom: plan.anchor_bottom,
+            cur_x: plan.popup_x,
+            cur_y: plan.popup_y,
+            pop_w: 380,
+            pop_h: 600,
+            edge_pad: 8,
+            is_layer_shell: 0,
+            _pad: [0; 3],
+        });
+        assert_eq!(resize.move_floating, 1);
+        assert_eq!(resize.new_y, 1032 - 8 - 600);
+        let mut ox = 0;
+        let mut oy = 0;
+        salsa_compute_osd_pos(&mon.avail, 340, 76, 62, &mut ox, &mut oy);
+        assert_eq!(ox, (1920 - 340) / 2);
+        assert_eq!(oy, 1032 - 76 - 62);
     }
 }

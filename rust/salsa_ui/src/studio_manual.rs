@@ -99,15 +99,10 @@ pub struct AlsaPlaybackCaps {
     pub bits: Vec<u32>,
 }
 
-pub fn probe_alsa_playback_caps(playback_id: &str) -> Option<AlsaPlaybackCaps> {
-    let rest = playback_id.trim().strip_prefix("hw:")?;
-    let (card_s, _dev_s) = rest.split_once(',')?;
-    let card_num: u32 = card_s.trim().parse().ok()?;
-    let stream_path = format!("/proc/asound/card{card_num}/stream0");
-    let raw = fs::read_to_string(stream_path).ok()?;
-
+pub fn parse_alsa_stream0_playback_caps(raw: &str) -> Option<AlsaPlaybackCaps> {
     let mut in_playback = false;
     let mut rates = Vec::new();
+    let mut continuous_rates = false;
     let mut bits = Vec::new();
 
     for line in raw.lines() {
@@ -124,10 +119,16 @@ pub fn probe_alsa_playback_caps(playback_id: &str) -> Option<AlsaPlaybackCaps> {
             continue;
         }
         if let Some(r_str) = trimmed.strip_prefix("Rates:") {
-            for tok in r_str.split(|c: char| c == ',' || c.is_whitespace()) {
-                if let Ok(r) = tok.trim().parse::<u32>() {
-                    if !rates.contains(&r) {
-                        rates.push(r);
+            let lower = r_str.to_ascii_lowercase();
+            if lower.contains("continuous") || r_str.contains('-') {
+                rates.clear();
+                continuous_rates = true;
+            } else if !continuous_rates {
+                for tok in r_str.split(|c: char| c == ',' || c.is_whitespace()) {
+                    if let Ok(r) = tok.trim().parse::<u32>() {
+                        if (8_000..=768_000).contains(&r) && !rates.contains(&r) {
+                            rates.push(r);
+                        }
                     }
                 }
             }
@@ -158,6 +159,15 @@ pub fn probe_alsa_playback_caps(playback_id: &str) -> Option<AlsaPlaybackCaps> {
     } else {
         Some(AlsaPlaybackCaps { rates, bits })
     }
+}
+
+pub fn probe_alsa_playback_caps(playback_id: &str) -> Option<AlsaPlaybackCaps> {
+    let rest = playback_id.trim().strip_prefix("hw:")?;
+    let (card_s, _dev_s) = rest.split_once(',')?;
+    let card_num: u32 = card_s.trim().parse().ok()?;
+    let stream_path = format!("/proc/asound/card{card_num}/stream0");
+    let raw = fs::read_to_string(stream_path).ok()?;
+    parse_alsa_stream0_playback_caps(&raw)
 }
 
 #[derive(Debug, Clone)]
@@ -794,5 +804,33 @@ Filter 4: ON HSC Fc 10000 Hz Gain 2.0 dB
                 assert!(!seg.text.contains("<tt") && !seg.text.contains("</tt>"), "stray tt tag in {key}: {:?}", seg.text);
             }
         }
+    }
+
+    #[test]
+    fn alsa_stream0_caps_parser_handles_discrete_and_continuous_rates() {
+        let discrete = "\
+Playback:
+  Status: Stop
+  Interface 1
+    Altset 1
+    Format: S32_LE
+    Channels: 2
+    Bits: 24 32
+    Rates: 44100, 48000, 96000, 192000
+Capture:
+  Rates: 8000
+";
+        let caps = parse_alsa_stream0_playback_caps(discrete).expect("discrete caps");
+        assert_eq!(caps.rates, vec![44_100, 48_000, 96_000, 192_000]);
+        assert_eq!(caps.bits, vec![32, 24]);
+
+        let continuous = "\
+Playback:
+  Format: S24_3LE
+  Rates: 44100 - 384000 (continuous)
+";
+        let cont_caps = parse_alsa_stream0_playback_caps(continuous).expect("bits still present");
+        assert!(cont_caps.rates.is_empty());
+        assert_eq!(cont_caps.bits, vec![24]);
     }
 }

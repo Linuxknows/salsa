@@ -9,18 +9,14 @@ use core::ffi::{c_char, c_int};
 use core::mem;
 use std::ffi::CString;
 use std::fs;
-use std::io::{Read, Write};
-use std::os::unix::io::AsRawFd;
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::Duration;
 
+use salsa_wire::control_ipc::{AudioDir, ControlClient, ControlRequest, MuteOp};
 use salsa_wire::state_conf::{
     load_unified_settings_json_in, save_unified_settings_json_in,
     update_unified_settings_json_in, SALSA_SETTINGS_FILENAME,
 };
-use salsa_wire::unix_sys::{audiodg_sock_path, current_uid, socket_peercred};
 
 use crate::host::state_dir;
 use crate::json::JsonValue;
@@ -59,149 +55,14 @@ pub const LASAPI_HW_CAP_HID_BOX: u32 = 1 << 5;
 pub const LASAPI_HW_CAP_STRIX_ARCH: u32 = 1 << 6;
 pub const LASAPI_HW_CAP_HIGH_RES: u32 = 1 << 7;
 
-pub const DEFAULT_BAND_FREQS_HZ: [f32; 10] = [
-    31.25, 62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
-];
 pub const SUPPORTED_SAMPLE_RATES: [u32; 6] = [44100, 48000, 88200, 96000, 176400, 192000];
 pub const DEFAULT_VOL_STEP_PCT: u32 = 5;
 pub const SUPPORTED_VOL_STEPS: [u32; 4] = [1, 2, 5, 10];
 
-pub struct EqPreset {
-    pub name: &'static str,
-    pub mode: u32,
-    pub preamp: f32,
-    pub thresh: f32,
-    pub ratio: f32,
-    pub gains: [f32; 10],
-}
-
-pub const EQ_PRESETS: &[EqPreset] = &[
-    EqPreset {
-        name: "Flat / Studio Reference",
-        mode: 0,
-        preamp: 0.0,
-        thresh: -18.0,
-        ratio: 2.0,
-        gains: [0.0; 10],
-    },
-    EqPreset {
-        name: "Bose QC Ultra 2 Audiophile",
-        mode: 0,
-        preamp: -1.5,
-        thresh: -16.0,
-        ratio: 2.0,
-        gains: [1.0, 0.5, -1.5, -0.5, 0.5, 0.5, 0.5, 0.0, -1.5, 0.5],
-    },
-    EqPreset {
-        name: "Dynamic Bass & Sub Control",
-        mode: 1,
-        preamp: -3.0,
-        thresh: -16.0,
-        ratio: 3.5,
-        gains: [6.5, 5.5, 2.5, 0.0, -1.0, 0.0, 1.0, 2.0, 2.5, 2.0],
-    },
-    EqPreset {
-        name: "192kHz Hi-Res Mastering",
-        mode: 2,
-        preamp: -1.0,
-        thresh: -20.0,
-        ratio: 2.2,
-        gains: [1.5, 1.0, 0.0, -0.5, 0.0, 0.5, 1.5, 2.5, 3.5, 4.5],
-    },
-    EqPreset {
-        name: "FPS Gaming Footstep Radar",
-        mode: 1,
-        preamp: -2.0,
-        thresh: -22.0,
-        ratio: 4.0,
-        gains: [-4.0, -2.0, 1.0, 2.5, 3.0, 4.5, 6.0, 5.5, 3.0, 1.0],
-    },
-    EqPreset {
-        name: "Vocal & Podcast Clarity",
-        mode: 1,
-        preamp: -1.5,
-        thresh: -18.0,
-        ratio: 3.0,
-        gains: [-5.0, -3.0, -1.0, 1.5, 3.5, 4.5, 4.0, 2.5, 1.5, 0.5],
-    },
-    EqPreset {
-        name: "Late-Night Dynamic Loudness",
-        mode: 1,
-        preamp: -2.5,
-        thresh: -24.0,
-        ratio: 4.5,
-        gains: [4.5, 3.5, 1.0, 0.0, 0.5, 1.5, 2.5, 3.0, 3.5, 3.0],
-    },
-];
-
-pub struct MicApoPreset {
-    pub name: &'static str,
-    pub enabled: u32,
-    pub hpf_enabled: u32,
-    pub hpf_hz: f32,
-    pub gate_enabled: u32,
-    pub gate_thresh_db: f32,
-    pub rnnoise_enabled: u32,
-    pub comp_enabled: u32,
-    pub comp_thresh_db: f32,
-    pub comp_ratio: f32,
-    pub clarity_db: f32,
-}
-
-pub const MIC_APO_PRESETS: &[MicApoPreset] = &[
-    MicApoPreset {
-        name: "Discord Voice (48k + RNNoise)",
-        enabled: 1,
-        hpf_enabled: 1,
-        hpf_hz: 65.0,
-        gate_enabled: 1,
-        gate_thresh_db: -50.0,
-        rnnoise_enabled: 1,
-        comp_enabled: 1,
-        comp_thresh_db: -14.0,
-        comp_ratio: 2.0,
-        clarity_db: 1.5,
-    },
-    MicApoPreset {
-        name: "Studio Broadcast (Warm AI)",
-        enabled: 1,
-        hpf_enabled: 1,
-        hpf_hz: 75.0,
-        gate_enabled: 1,
-        gate_thresh_db: -45.0,
-        rnnoise_enabled: 1,
-        comp_enabled: 1,
-        comp_thresh_db: -15.0,
-        comp_ratio: 2.2,
-        clarity_db: 2.0,
-    },
-    MicApoPreset {
-        name: "Clean Vocal (No RNNoise)",
-        enabled: 1,
-        hpf_enabled: 1,
-        hpf_hz: 65.0,
-        gate_enabled: 1,
-        gate_thresh_db: -52.0,
-        rnnoise_enabled: 0,
-        comp_enabled: 1,
-        comp_thresh_db: -16.0,
-        comp_ratio: 1.8,
-        clarity_db: 1.0,
-    },
-    MicApoPreset {
-        name: "Bypass (Raw Mic)",
-        enabled: 0,
-        hpf_enabled: 0,
-        hpf_hz: 65.0,
-        gate_enabled: 0,
-        gate_thresh_db: -50.0,
-        rnnoise_enabled: 0,
-        comp_enabled: 0,
-        comp_thresh_db: -14.0,
-        comp_ratio: 2.0,
-        clarity_db: 0.0,
-    },
-];
+pub use salsa_wire::settings::{
+    sanitize_device_eq_profiles_map, EqPreset, MicApoPreset, DEFAULT_BAND_FREQS_HZ, EQ_PRESETS,
+    MIC_APO_PRESETS,
+};
 
 pub fn normalize_vol_step_pct(val: &str) -> u32 {
     let cleaned = val.trim().trim_end_matches('%');
@@ -300,65 +161,22 @@ fn cached_proc_comm() -> &'static str {
         .as_str()
 }
 
-fn send_volume_cmd(target_id: u32, pct: i32, mute_mode: i32) -> bool {
-    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LASAPI_CMD_SET_VOLUME;
-    req.client_pid = std::process::id();
-    let comm = cached_proc_comm();
-    if !comm.is_empty() {
-        let bytes = comm.as_bytes();
-        let n = bytes.len().min(req.client_name.len().saturating_sub(1));
-        req.client_name[..n].copy_from_slice(&bytes[..n]);
-    }
-    req.share_mode = (mute_mode + 1).clamp(0, 3) as u32;
-    req.target_session_id = target_id;
-    req.volume_milli = if pct >= 0 {
-        (pct.clamp(0, 150) * 10) as u32
-    } else {
-        u32::MAX
+fn send_volume_cmd(dir: AudioDir, pct: i32, mute_mode: i32) -> bool {
+    let req = ControlRequest::SetMasterVolume {
+        dir,
+        volume_pct: (pct >= 0).then(|| pct.clamp(0, 150) as u32),
+        mute: MuteOp::from_ui_mode(mute_mode),
+        client_tag: cached_proc_comm().to_string(),
     };
-
-    let sock_path = audiodg_sock_path();
-    let Ok(mut stream) = UnixStream::connect(&sock_path) else {
-        return false;
-    };
-    let Some(uc) = socket_peercred(stream.as_raw_fd()) else {
-        return false;
-    };
-    let my_uid = current_uid();
-    if uc.uid != my_uid && uc.uid != 0 {
-        return false;
-    }
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(250)));
-    let req_bytes = unsafe {
-        core::slice::from_raw_parts(
-            (&req as *const LasapiIpcReq).cast::<u8>(),
-            mem::size_of::<LasapiIpcReq>(),
-        )
-    };
-    if stream.write_all(req_bytes).is_err() {
-        return false;
-    }
-    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-    let resp_bytes = unsafe {
-        core::slice::from_raw_parts_mut(
-            (&mut resp as *mut LasapiIpcResp).cast::<u8>(),
-            mem::size_of::<LasapiIpcResp>(),
-        )
-    };
-    match stream.read_exact(resp_bytes) {
-        Ok(()) => resp.hr == 0,
-        Err(_) => false,
-    }
+    ControlClient::send_fast(&req).is_ok_and(|resp| resp.hr == 0)
 }
 
 pub fn set_master_volume(pct: i32, mute_mode: i32) -> bool {
-    send_volume_cmd(0xFFFF_FFFF, pct, mute_mode)
+    send_volume_cmd(AudioDir::Playback, pct, mute_mode)
 }
 
 pub fn set_mic_volume(pct: i32, mute_mode: i32) -> bool {
-    send_volume_cmd(0xFFFF_FFFE, pct, mute_mode)
+    send_volume_cmd(AudioDir::Capture, pct, mute_mode)
 }
 
 pub fn config_dir() -> PathBuf {
@@ -374,21 +192,18 @@ pub fn gui_settings_path() -> PathBuf {
 }
 
 fn sanitize_eq_device_profiles(val: &JsonValue) -> JsonValue {
-    let Some(entries) = val.as_object() else {
-        return JsonValue::Object(Vec::new());
-    };
-    let mut clean = Vec::new();
-    for (k, v) in entries {
-        let trimmed = k.trim();
-        if !trimmed.is_empty() && trimmed.len() <= 64 && matches!(v, JsonValue::Object(_)) {
-            clean.push((trimmed.to_string(), v.clone()));
-        }
-    }
-    JsonValue::Object(clean)
+    sanitize_device_eq_profiles_map(val)
 }
 
 pub fn load_gui_settings() -> JsonValue {
     let mut obj = load_unified_settings_json_in(&config_dir());
+    if let Some(prof) = obj.get("per_device_eq").cloned() {
+        obj.set("per_device_eq", sanitize_eq_device_profiles(&prof));
+    } else if let Some(prof) = obj.get("eq_device_profiles").cloned() {
+        let clean = sanitize_eq_device_profiles(&prof);
+        obj.set("per_device_eq", clean.clone());
+        obj.set("eq_device_profiles", clean);
+    }
     if let Some(prof) = obj.get("eq_device_profiles").cloned() {
         obj.set("eq_device_profiles", sanitize_eq_device_profiles(&prof));
     }
@@ -407,6 +222,13 @@ pub fn save_studio_gui_settings(data: &JsonValue) -> Result<(), String> {
     {
         patched.set("eq_per_device", JsonValue::Bool(epd));
         patched.set("eq_per_device_enabled", JsonValue::Bool(epd));
+    }
+    if let Some(prof) = patched.get("per_device_eq").cloned() {
+        patched.set("per_device_eq", sanitize_eq_device_profiles(&prof));
+    } else if let Some(prof) = patched.get("eq_device_profiles").cloned() {
+        let clean = sanitize_eq_device_profiles(&prof);
+        patched.set("per_device_eq", clean.clone());
+        patched.set("eq_device_profiles", clean);
     }
     if let Some(prof) = patched.get("eq_device_profiles").cloned() {
         patched.set("eq_device_profiles", sanitize_eq_device_profiles(&prof));

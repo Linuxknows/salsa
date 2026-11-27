@@ -19,6 +19,7 @@ const SKIP_DIRS: &[&str] = &[
     ".git",
     ".github",
     ".pytest_cache",
+    ".scratch",
     "qt6_obj",
     "target",
     "rust_target",

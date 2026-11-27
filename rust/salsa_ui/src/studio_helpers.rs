@@ -11,11 +11,11 @@ use std::path::{Path, PathBuf};
 
 use salsa_tools::host::{home_dir, read_text_lossy};
 use salsa_tools::ipc::{
-    gui_settings_path, salsa_state_path, update_gui_settings, LasapiEqConfig, LasapiParamEqExt,
-    DEFAULT_BAND_FREQS_HZ, EQ_PRESETS, LASAPI_EQ_BANDS, LASAPI_FILTER_HIGH_SHELF,
-    LASAPI_FILTER_LOW_SHELF, LASAPI_FILTER_PEAK,
+    update_gui_settings, LasapiEqConfig, LasapiParamEqExt, DEFAULT_BAND_FREQS_HZ, EQ_PRESETS,
+    LASAPI_EQ_BANDS, LASAPI_FILTER_HIGH_SHELF, LASAPI_FILTER_LOW_SHELF, LASAPI_FILTER_PEAK,
 };
 use salsa_tools::json::JsonValue;
+use salsa_wire::settings::{apply_builtin_eq_preset, apply_json_to_eq_pair, eq_pair_to_json};
 
 use crate::studio_manual::{parse_autoeq_txt, AutoEqProfile};
 
@@ -97,82 +97,7 @@ pub fn dyn_mode_full(mode: u32) -> &'static str {
 }
 
 pub fn eq_cfg_to_json(cfg: &LasapiEqConfig, ext: &LasapiParamEqExt) -> JsonValue {
-    let pname = {
-        let s = c_bytes_to_str(&cfg.preset_name);
-        if s.is_empty() {
-            CUSTOM_PRESET_NAME.to_string()
-        } else {
-            s
-        }
-    };
-    let gains: Vec<JsonValue> = cfg
-        .band_gains_db
-        .iter()
-        .map(|&g| JsonValue::Float((f64::from(g) * 10.0).round() / 10.0))
-        .collect();
-    let qs: Vec<JsonValue> = cfg
-        .band_q
-        .iter()
-        .map(|&q| {
-            let v = if q > 0.05 { f64::from(q) } else { 1.414 };
-            JsonValue::Float((v * 1000.0).round() / 1000.0)
-        })
-        .collect();
-    let freqs: Vec<JsonValue> = ext
-        .band_freq_hz
-        .iter()
-        .enumerate()
-        .map(|(i, &f)| {
-            let v = if f > 1.0 {
-                f64::from(f)
-            } else {
-                f64::from(DEFAULT_BAND_FREQS_HZ[i])
-            };
-            JsonValue::Float((v * 10.0).round() / 10.0)
-        })
-        .collect();
-    let types: Vec<JsonValue> = ext
-        .band_type
-        .iter()
-        .map(|&t| JsonValue::Int(i64::from(if t <= 2 { t } else { 0 })))
-        .collect();
-    let xf_cut = if ext.crossfeed_cutoff_hz > 0 {
-        ext.crossfeed_cutoff_hz
-    } else {
-        700
-    };
-
-    JsonValue::obj(vec![
-        ("enabled", JsonValue::Bool(cfg.enabled != 0)),
-        ("dynamic_mode", JsonValue::Int(i64::from(cfg.dynamic_mode))),
-        (
-            "preamp_db",
-            JsonValue::Float((f64::from(cfg.preamp_db) * 10.0).round() / 10.0),
-        ),
-        (
-            "dyn_threshold_db",
-            JsonValue::Float((f64::from(cfg.dyn_threshold_db) * 10.0).round() / 10.0),
-        ),
-        (
-            "dyn_ratio",
-            JsonValue::Float((f64::from(cfg.dyn_ratio) * 10.0).round() / 10.0),
-        ),
-        ("limiter_enabled", JsonValue::Bool(cfg.limiter_enabled != 0)),
-        ("preset_name", JsonValue::Str(pname)),
-        ("band_gains_db", JsonValue::Array(gains)),
-        ("band_q", JsonValue::Array(qs)),
-        ("band_freq_hz", JsonValue::Array(freqs)),
-        ("band_type", JsonValue::Array(types)),
-        (
-            "crossfeed_enabled",
-            JsonValue::Bool(ext.crossfeed_enabled != 0),
-        ),
-        (
-            "crossfeed_level",
-            JsonValue::Float((f64::from(ext.crossfeed_level) * 100.0).round() / 100.0),
-        ),
-        ("crossfeed_cutoff_hz", JsonValue::Int(i64::from(xf_cut))),
-    ])
+    eq_pair_to_json(cfg, ext)
 }
 
 pub fn apply_json_to_eq_cfg(
@@ -180,115 +105,7 @@ pub fn apply_json_to_eq_cfg(
     cfg: &mut LasapiEqConfig,
     ext: &mut LasapiParamEqExt,
 ) {
-    let pname = eq_obj
-        .get("preset_name")
-        .and_then(JsonValue::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(CUSTOM_PRESET_NAME);
-    set_c_bytes(&mut cfg.preset_name, pname);
-
-    cfg.enabled = u32::from(
-        eq_obj
-            .get("enabled")
-            .and_then(JsonValue::as_bool)
-            .unwrap_or(true),
-    );
-    let mode = eq_obj
-        .get("dynamic_mode")
-        .and_then(JsonValue::as_u64)
-        .unwrap_or(1) as u32;
-    cfg.dynamic_mode = if mode <= 2 { mode } else { 1 };
-    cfg.preamp_db = (eq_obj
-        .get("preamp_db")
-        .and_then(JsonValue::as_f64)
-        .unwrap_or(0.0) as f32)
-        .clamp(-18.0, 12.0);
-    cfg.dyn_threshold_db = (eq_obj
-        .get("dyn_threshold_db")
-        .and_then(JsonValue::as_f64)
-        .unwrap_or(-18.0) as f32)
-        .clamp(-60.0, 0.0);
-    cfg.dyn_ratio = (eq_obj
-        .get("dyn_ratio")
-        .and_then(JsonValue::as_f64)
-        .unwrap_or(2.5) as f32)
-        .clamp(1.0, 8.0);
-    cfg.limiter_enabled = u32::from(
-        eq_obj
-            .get("limiter_enabled")
-            .and_then(JsonValue::as_bool)
-            .unwrap_or(true),
-    );
-
-    if let Some(arr) = eq_obj.get("band_gains_db").and_then(JsonValue::as_array) {
-        if arr.len() == LASAPI_EQ_BANDS {
-            for (i, v) in arr.iter().enumerate() {
-                cfg.band_gains_db[i] = (v.as_f64().unwrap_or(0.0) as f32).clamp(-18.0, 18.0);
-            }
-        }
-    }
-    if let Some(arr) = eq_obj.get("band_q").and_then(JsonValue::as_array) {
-        if arr.len() == LASAPI_EQ_BANDS {
-            for (i, v) in arr.iter().enumerate() {
-                let q = v.as_f64().unwrap_or(1.414) as f32;
-                cfg.band_q[i] = if q >= 0.2 { q.clamp(0.2, 10.0) } else { 1.414 };
-            }
-        }
-    } else {
-        for q in &mut cfg.band_q {
-            if *q < 0.2 {
-                *q = 1.414;
-            }
-        }
-    }
-
-    if let Some(arr) = eq_obj.get("band_freq_hz").and_then(JsonValue::as_array) {
-        if arr.len() == LASAPI_EQ_BANDS {
-            for (i, v) in arr.iter().enumerate() {
-                let f = v.as_f64().unwrap_or(f64::from(DEFAULT_BAND_FREQS_HZ[i])) as f32;
-                ext.band_freq_hz[i] = if f > 1.0 {
-                    f.clamp(15.0, 22_000.0)
-                } else {
-                    DEFAULT_BAND_FREQS_HZ[i]
-                };
-            }
-        }
-    } else {
-        ext.band_freq_hz = DEFAULT_BAND_FREQS_HZ;
-    }
-
-    if let Some(arr) = eq_obj.get("band_type").and_then(JsonValue::as_array) {
-        if arr.len() == LASAPI_EQ_BANDS {
-            for (i, v) in arr.iter().enumerate() {
-                let t = v.as_u64().unwrap_or(0) as u32;
-                ext.band_type[i] = if t <= 2 { t } else { LASAPI_FILTER_PEAK };
-            }
-        }
-    } else {
-        ext.band_type = [LASAPI_FILTER_PEAK; LASAPI_EQ_BANDS];
-    }
-
-    ext.crossfeed_enabled = u32::from(
-        eq_obj
-            .get("crossfeed_enabled")
-            .and_then(JsonValue::as_bool)
-            .unwrap_or(false),
-    );
-    ext.crossfeed_level = (eq_obj
-        .get("crossfeed_level")
-        .and_then(JsonValue::as_f64)
-        .unwrap_or(0.30) as f32)
-        .clamp(0.0, 1.0);
-    let cut = eq_obj
-        .get("crossfeed_cutoff_hz")
-        .and_then(JsonValue::as_u64)
-        .unwrap_or(700) as u32;
-    ext.crossfeed_cutoff_hz = if [650, 700, 850].contains(&cut) {
-        cut
-    } else {
-        700
-    };
+    let _ = apply_json_to_eq_pair(eq_obj, cfg, ext);
 }
 
 // ============================================================================
@@ -585,25 +402,7 @@ pub fn apply_builtin_preset_to_cfg(
     cfg: &mut LasapiEqConfig,
     ext: &mut LasapiParamEqExt,
 ) -> bool {
-    let trimmed = preset_name.trim();
-    let Some(preset) = EQ_PRESETS
-        .iter()
-        .find(|p| p.name == trimmed)
-        .or_else(|| EQ_PRESETS.iter().find(|p| p.name.eq_ignore_ascii_case(trimmed)))
-    else {
-        return false;
-    };
-    cfg.enabled = 1;
-    cfg.dynamic_mode = preset.mode;
-    cfg.preamp_db = preset.preamp;
-    cfg.dyn_threshold_db = preset.thresh;
-    cfg.dyn_ratio = preset.ratio;
-    set_c_bytes(&mut cfg.preset_name, preset.name);
-    cfg.band_gains_db = preset.gains;
-    cfg.band_q = [1.414; LASAPI_EQ_BANDS];
-    ext.band_freq_hz = DEFAULT_BAND_FREQS_HZ;
-    ext.band_type = [LASAPI_FILTER_PEAK; LASAPI_EQ_BANDS];
-    true
+    apply_builtin_eq_preset(preset_name, cfg, ext)
 }
 
 pub fn build_combined_eq_preset_names(saved: &[SavedAutoEqPreset]) -> Vec<String> {
@@ -631,26 +430,6 @@ pub fn reload_autoeq_from_path(existing: &SavedAutoEqPreset) -> Result<SavedAuto
     let mut updated = saved_autoeq_from_parsed(&parsed, path_str);
     updated.name = existing.name.clone();
     Ok(updated)
-}
-
-pub fn should_push_saved_eq_on_startup(settings: &JsonValue) -> bool {
-    let has_saved = settings.get("eq_config").is_some()
-        || settings.get("eq_preset").is_some()
-        || settings.get("eq_dynamic_mode").is_some();
-    if !has_saved {
-        return false;
-    }
-    let state_bin = salsa_state_path();
-    let Ok(bin_meta) = fs::metadata(&state_bin) else {
-        return true;
-    };
-    let Ok(json_meta) = fs::metadata(gui_settings_path()) else {
-        return false;
-    };
-    match (json_meta.modified(), bin_meta.modified()) {
-        (Ok(jm), Ok(bm)) => jm > bm,
-        _ => false,
-    }
 }
 
 pub fn load_shortcuts_map(settings: &JsonValue) -> BTreeMap<String, String> {

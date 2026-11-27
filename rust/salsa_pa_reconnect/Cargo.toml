@@ -7,3 +7,6 @@ license = "LGPL-3.0-only"
 [lib]
 name = "salsa_pa_reconnect"
 crate-type = ["staticlib"]
+
+[dependencies]
+salsa_host_dl = { path = "../salsa_host_dl" }

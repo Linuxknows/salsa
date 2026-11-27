@@ -32,3 +32,6 @@ __pycache__/
 *.swp
 *~
 .DS_Store
+
+# Local agent scratch specs and tickets
+.scratch/

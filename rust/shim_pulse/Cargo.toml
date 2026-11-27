@@ -11,4 +11,5 @@ crate-type = ["staticlib"]
 path = "src/lib.rs"
 
 [dependencies]
+salsa_host_dl = { path = "../salsa_host_dl" }
 salsa_net = { path = "../salsa_net" }

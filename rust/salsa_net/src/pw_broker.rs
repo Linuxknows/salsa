@@ -10,12 +10,11 @@
 #![allow(clippy::missing_safety_doc)]
 
 use crate::c_abi::{
-    copy_str_to_c, ptr_to_opt_str, LasapiDbgPwClient, LasapiDbgPwLink, LasapiDbgPwNode,
-    LasapiDbgPwSnapshot, LasapiPwBrokerOpts, LasapiPwPreviewShm, LASAPI_DBG_INFO,
-    LASAPI_DBG_PW_VIDEO, LASAPI_DBG_WARN, LASAPI_DEBUG_MAX_PW_CLIENTS,
-    LASAPI_DEBUG_MAX_PW_LINKS, LASAPI_DEBUG_MAX_PW_NODES, LASAPI_PW_PREVIEW_MAGIC,
-    LASAPI_PW_PREVIEW_MAX_H, LASAPI_PW_PREVIEW_MAX_W, LASAPI_PW_PREVIEW_VERSION,
+    copy_str_to_c, LasapiPwPreviewShm, LASAPI_DBG_INFO, LASAPI_DBG_PW_VIDEO, LASAPI_DBG_WARN,
+    LASAPI_PW_PREVIEW_MAGIC, LASAPI_PW_PREVIEW_MAX_H, LASAPI_PW_PREVIEW_MAX_W,
+    LASAPI_PW_PREVIEW_VERSION,
 };
+use crate::json::JsonValue;
 use crate::dmabuf_gl::{DmabufFrameDesc, DmabufGlBlitter};
 use crate::failsafe::{record_trip, FS_FD_QUOTA, FS_PW_BAD_PKT};
 use crate::pw_wire::{
@@ -35,8 +34,7 @@ use crate::unix_sys::{
     MappedMem, PollFd, RecvFdsResult, POLLERR, POLLHUP, POLLIN,
 };
 
-use core::ffi::{c_char, c_int};
-use core::mem::{self, offset_of, size_of};
+use core::mem::{offset_of, size_of};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::fs;
@@ -3986,10 +3984,17 @@ fn build_metadata_dict(gid: u32) -> Dict {
     d
 }
 
+#[derive(Default)]
+pub struct PwBrokerStartOpts {
+    pub runtime_dir: Option<String>,
+    pub socket_name: Option<String>,
+    pub ignore_zero_flag: bool,
+}
+
 pub struct PwBrokerHandle {
     state: Arc<Mutex<PwState>>,
     shared: Arc<SharedAtomics>,
-    thread: Option<JoinHandle<()>>,
+    thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl PwBrokerHandle {
@@ -4113,41 +4118,47 @@ fn preview_shm_name_string() -> String {
     format!("/lasapi_pw_preview_{}", current_uid())
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pw_preview_shm_name(out_buf: *mut c_char, out_len: usize) {
-    if out_buf.is_null() || out_len == 0 {
-        return;
-    }
-    let sl = unsafe { core::slice::from_raw_parts_mut(out_buf.cast::<u8>(), out_len) };
-    copy_str_to_c(sl, &preview_shm_name_string());
+pub fn empty_debug_json() -> JsonValue {
+    JsonValue::obj(vec![
+        ("broker_running", JsonValue::Int(0)),
+        ("zero_pw_mode", JsonValue::Int(0)),
+        ("preview_requested", JsonValue::Int(0)),
+        ("active_casting", JsonValue::Int(0)),
+        ("frames_relayed_total", JsonValue::Int(0)),
+        ("frames_dropped", JsonValue::Int(0)),
+        ("dmabuf_streams", JsonValue::Int(0)),
+        ("memfd_streams", JsonValue::Int(0)),
+        ("audio_rejects", JsonValue::Int(0)),
+        ("preview_target_w", JsonValue::Int(0)),
+        ("preview_target_h", JsonValue::Int(0)),
+        ("preview_target_fps", JsonValue::Int(0)),
+        ("cast_limit_w", JsonValue::Int(0)),
+        ("cast_limit_h", JsonValue::Int(0)),
+        ("cast_limit_fps", JsonValue::Int(0)),
+        ("actual_fps_x100", JsonValue::Int(0)),
+        ("socket_path", JsonValue::Str(String::new())),
+        ("manager_socket_path", JsonValue::Str(String::new())),
+        ("preview_shm_name", JsonValue::Str(String::new())),
+        ("clients", JsonValue::Array(Vec::new())),
+        ("nodes", JsonValue::Array(Vec::new())),
+        ("links", JsonValue::Array(Vec::new())),
+    ])
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pw_broker_start(
-    out_brk: *mut *mut PwBrokerHandle,
-    opts: *const LasapiPwBrokerOpts,
-) -> c_int {
-    if out_brk.is_null() {
-        return -22; // -EINVAL
-    }
+pub fn start_pw_broker(opts: Option<PwBrokerStartOpts>) -> Option<PwBrokerHandle> {
+    let opts = opts.unwrap_or_default();
     let shared = Arc::new(SharedAtomics::default());
     let mut st = PwState::new(Arc::clone(&shared));
     st.wake_efd = new_eventfd();
 
-    let opt_rdir = (!opts.is_null())
-        .then(|| unsafe { ptr_to_opt_str((*opts).runtime_dir) })
-        .flatten();
-    let opt_sname = (!opts.is_null())
-        .then(|| unsafe { ptr_to_opt_str((*opts).socket_name) })
-        .flatten();
-    let opt_ign = (!opts.is_null()) && unsafe { (*opts).ignore_zero_flag };
-
-    let rdir = opt_rdir
+    let rdir = opts
+        .runtime_dir
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("LASAPI_PW_TEST_DIR").ok().filter(|s| !s.is_empty()))
         .or_else(|| std::env::var("XDG_RUNTIME_DIR").ok().filter(|s| !s.is_empty()))
         .unwrap_or_else(|| format!("/run/user/{}", current_uid()));
-    let sname = opt_sname
+    let sname = opts
+        .socket_name
         .filter(|s| !s.is_empty() && !s.contains('/') && *s != "." && *s != "..")
         .or_else(|| {
             std::env::var("LASAPI_PW_SOCKET_NAME")
@@ -4159,7 +4170,7 @@ pub unsafe extern "C" fn lasapi_pw_broker_start(
     st.runtime_dir = rdir;
     st.socket_path = format!("{}/{}", st.runtime_dir, sname);
     st.manager_socket_path = format!("{}/{}-manager", st.runtime_dir, sname);
-    st.ignore_zero_flag = opt_ign || std::env::var_os("LASAPI_PW_SOCKET_NAME").is_some();
+    st.ignore_zero_flag = opts.ignore_zero_flag || std::env::var_os("LASAPI_PW_SOCKET_NAME").is_some();
 
     let isolated = st.ignore_zero_flag || std::env::var_os("LASAPI_PW_TEST_DIR").is_some();
     let shm_name = if isolated {
@@ -4192,246 +4203,173 @@ pub unsafe extern "C" fn lasapi_pw_broker_start(
     let state = Arc::new(Mutex::new(st));
     let thread_state = Arc::clone(&state);
     let thread_shared = Arc::clone(&shared);
-    let handle = match thread::Builder::new()
+    let Ok(handle) = thread::Builder::new()
         .name("salsa-pw-broker".into())
         .spawn(move || broker_thread_main(thread_state, thread_shared))
-    {
-        Ok(t) => t,
-        Err(_) => {
-            shared.running.store(false, Ordering::Release);
-            return -12;
-        }
+    else {
+        shared.running.store(false, Ordering::Release);
+        return None;
     };
 
-    let boxed = Box::new(PwBrokerHandle {
+    Some(PwBrokerHandle {
         state,
         shared,
-        thread: Some(handle),
-    });
-    unsafe {
-        *out_brk = Box::into_raw(boxed);
-    }
-    0
+        thread: Mutex::new(Some(handle)),
+    })
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pw_broker_stop(brk: *mut PwBrokerHandle) {
-    if brk.is_null() {
-        return;
+impl PwBrokerHandle {
+    pub fn stop(&self) {
+        self.shared.running.store(false, Ordering::Release);
+        self.signal_wake();
+        if let Some(t) = self.thread.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            let _ = t.join();
+        }
+        if let Ok(mut st) = self.state.lock() {
+            for ci in 0..PWB_MAX_CLIENTS {
+                if st.clients[ci].in_use {
+                    st.handle_client_disconnect(ci);
+                }
+            }
+            if st.listen.take().is_some() && st.systemd_listen_fd.is_none() {
+                let _ = fs::remove_file(&st.socket_path);
+            }
+            if st.mgr.take().is_some() && st.systemd_mgr_fd.is_none() {
+                let _ = fs::remove_file(&st.manager_socket_path);
+            }
+            st.systemd_listen_fd = None;
+            st.systemd_mgr_fd = None;
+            st.preview_shm_map = None;
+            st.preview_shm_fd = None;
+            unlink_shm_path(&st.preview_shm_name, st.preview_shm_posix);
+        }
     }
-    let mut handle = unsafe { Box::from_raw(brk) };
-    handle.shared.running.store(false, Ordering::Release);
-    handle.signal_wake();
-    if let Some(t) = handle.thread.take() {
-        let _ = t.join();
+
+    pub fn sync_mode(&self) -> i32 {
+        let rc = {
+            let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            st.apply_bind_mode()
+        };
+        self.signal_wake();
+        rc
     }
-    if let Ok(mut st) = handle.state.lock() {
-        for ci in 0..PWB_MAX_CLIENTS {
-            if st.clients[ci].in_use {
-                st.handle_client_disconnect(ci);
+
+    pub fn set_preview_ex(
+        &self,
+        enabled: bool,
+        ttl_ms: u32,
+        max_w: u32,
+        max_h: u32,
+        target_fps: u32,
+    ) {
+        let cw = max_w.min(LASAPI_PW_PREVIEW_MAX_W);
+        let ch = max_h.min(LASAPI_PW_PREVIEW_MAX_H);
+        let cfps = target_fps.min(240);
+        self.shared.preview_target_w.store(cw, Ordering::Relaxed);
+        self.shared.preview_target_h.store(ch, Ordering::Relaxed);
+        self.shared.preview_target_fps.store(cfps, Ordering::Relaxed);
+
+        let st = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(map) = st.preview_shm_map.as_ref() else {
+            return;
+        };
+        let shm_ptr = map.as_ptr().cast::<LasapiPwPreviewShm>().cast_mut();
+        let now = mono_ns();
+        if enabled {
+            let ttl_ns = (if ttl_ms != 0 { ttl_ms } else { 15000 }) as u64 * 1_000_000;
+            self.shared
+                .preview_expiry_ns
+                .store(now.saturating_add(ttl_ns), Ordering::Relaxed);
+            unsafe {
+                atomic_u32_store(ptr::addr_of_mut!((*shm_ptr).target_max_w), cw, Ordering::Relaxed);
+                atomic_u32_store(ptr::addr_of_mut!((*shm_ptr).target_max_h), ch, Ordering::Relaxed);
+                atomic_u32_store(ptr::addr_of_mut!((*shm_ptr).target_fps), cfps, Ordering::Relaxed);
+                atomic_u64_store(
+                    ptr::addr_of_mut!((*shm_ptr).last_gui_ping_ns),
+                    now,
+                    Ordering::Relaxed,
+                );
+                atomic_u32_store(
+                    ptr::addr_of_mut!((*shm_ptr).preview_requested),
+                    1,
+                    Ordering::Release,
+                );
+            }
+        } else {
+            self.shared.preview_expiry_ns.store(0, Ordering::Relaxed);
+            unsafe {
+                atomic_u32_store(
+                    ptr::addr_of_mut!((*shm_ptr).preview_requested),
+                    0,
+                    Ordering::Release,
+                );
             }
         }
-        if st.listen.take().is_some() && st.systemd_listen_fd.is_none() {
-            let _ = fs::remove_file(&st.socket_path);
-        }
-        if st.mgr.take().is_some() && st.systemd_mgr_fd.is_none() {
-            let _ = fs::remove_file(&st.manager_socket_path);
-        }
-        st.systemd_listen_fd = None;
-        st.systemd_mgr_fd = None;
-        st.preview_shm_map = None;
-        st.preview_shm_fd = None;
-        unlink_shm_path(&st.preview_shm_name, st.preview_shm_posix);
-    };
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pw_broker_sync_mode(brk: *mut PwBrokerHandle) -> c_int {
-    if brk.is_null() {
-        return -22;
     }
-    let h = unsafe { &*brk };
-    let rc = {
-        let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
-        st.apply_bind_mode()
-    };
-    h.signal_wake();
-    rc
-}
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pw_broker_set_preview_ex(
-    brk: *mut PwBrokerHandle,
-    enabled: bool,
-    ttl_ms: u32,
-    max_w: u32,
-    max_h: u32,
-    target_fps: u32,
-) {
-    if brk.is_null() {
-        return;
+    pub fn set_preview(&self, enabled: bool, ttl_ms: u32) {
+        self.set_preview_ex(enabled, ttl_ms, 0, 0, 0);
     }
-    let h = unsafe { &*brk };
-    let cw = max_w.min(LASAPI_PW_PREVIEW_MAX_W);
-    let ch = max_h.min(LASAPI_PW_PREVIEW_MAX_H);
-    let cfps = target_fps.min(240);
-    h.shared.preview_target_w.store(cw, Ordering::Relaxed);
-    h.shared.preview_target_h.store(ch, Ordering::Relaxed);
-    h.shared.preview_target_fps.store(cfps, Ordering::Relaxed);
 
-    let st = h.state.lock().unwrap_or_else(|p| p.into_inner());
-    let Some(map) = st.preview_shm_map.as_ref() else {
-        return;
-    };
-    let shm_ptr = map.as_ptr().cast::<LasapiPwPreviewShm>().cast_mut();
-    let now = mono_ns();
-    if enabled {
-        let ttl_ns = (if ttl_ms != 0 { ttl_ms } else { 15000 }) as u64 * 1_000_000;
-        h.shared
-            .preview_expiry_ns
-            .store(now.saturating_add(ttl_ns), Ordering::Relaxed);
-        unsafe {
-            atomic_u32_store(ptr::addr_of_mut!((*shm_ptr).target_max_w), cw, Ordering::Relaxed);
-            atomic_u32_store(ptr::addr_of_mut!((*shm_ptr).target_max_h), ch, Ordering::Relaxed);
-            atomic_u32_store(ptr::addr_of_mut!((*shm_ptr).target_fps), cfps, Ordering::Relaxed);
-            atomic_u64_store(
-                ptr::addr_of_mut!((*shm_ptr).last_gui_ping_ns),
-                now,
-                Ordering::Relaxed,
-            );
-            atomic_u32_store(
-                ptr::addr_of_mut!((*shm_ptr).preview_requested),
-                1,
-                Ordering::Release,
-            );
-        }
-    } else {
-        h.shared.preview_expiry_ns.store(0, Ordering::Relaxed);
-        unsafe {
-            atomic_u32_store(
-                ptr::addr_of_mut!((*shm_ptr).preview_requested),
-                0,
-                Ordering::Release,
-            );
-        }
+    pub fn set_cast_limits(&self, max_w: u32, max_h: u32, max_fps: u32) {
+        self.shared.cast_limit_w.store(max_w, Ordering::Relaxed);
+        self.shared.cast_limit_h.store(max_h, Ordering::Relaxed);
+        self.shared
+            .cast_limit_fps
+            .store(max_fps.min(240), Ordering::Relaxed);
     }
-}
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pw_broker_set_preview(
-    brk: *mut PwBrokerHandle,
-    enabled: bool,
-    ttl_ms: u32,
-) {
-    unsafe { lasapi_pw_broker_set_preview_ex(brk, enabled, ttl_ms, 0, 0, 0) }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pw_broker_set_cast_limits(
-    brk: *mut PwBrokerHandle,
-    max_w: u32,
-    max_h: u32,
-    max_fps: u32,
-) {
-    if brk.is_null() {
-        return;
-    }
-    let h = unsafe { &*brk };
-    h.shared.cast_limit_w.store(max_w, Ordering::Relaxed);
-    h.shared.cast_limit_h.store(max_h, Ordering::Relaxed);
-    h.shared
-        .cast_limit_fps
-        .store(max_fps.min(240), Ordering::Relaxed);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pw_broker_fill_debug(
-    brk: *mut PwBrokerHandle,
-    out_ptr: *mut LasapiDbgPwSnapshot,
-) {
-    if out_ptr.is_null() {
-        return;
-    }
-    let out = unsafe { &mut *out_ptr };
-    *out = unsafe { mem::zeroed() };
-    if brk.is_null() {
-        return;
-    }
-    let h = unsafe { &*brk };
-    let st = h.state.lock().unwrap_or_else(|p| p.into_inner());
-    out.broker_running = u8::from(h.shared.broker_listening.load(Ordering::Relaxed));
-    out.zero_pw_mode = u8::from(h.shared.zero_pw_mode.load(Ordering::Relaxed));
-    out.preview_requested = st
-        .preview_shm_map
-        .as_ref()
-        .map_or(0, |m| {
+    pub fn debug_snapshot_json(&self) -> JsonValue {
+        let st = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let broker_running = i64::from(self.shared.broker_listening.load(Ordering::Relaxed));
+        let zero_pw_mode = i64::from(self.shared.zero_pw_mode.load(Ordering::Relaxed));
+        let preview_requested = st.preview_shm_map.as_ref().map_or(0i64, |m| {
             let shm = m.as_ptr().cast::<LasapiPwPreviewShm>();
-            u8::from(unsafe {
+            i64::from(unsafe {
                 atomic_u32_load(ptr::addr_of!((*shm).preview_requested), Ordering::Relaxed) != 0
             })
         });
-    copy_str_to_c(&mut out.socket_path, &st.socket_path);
-    copy_str_to_c(&mut out.manager_socket_path, &st.manager_socket_path);
-    copy_str_to_c(&mut out.preview_shm_name, &st.preview_shm_name);
-    out.frames_relayed_total = h.shared.frames_relayed_total.load(Ordering::Relaxed);
-    out.frames_dropped = h.shared.frames_dropped.load(Ordering::Relaxed);
-    out.audio_rejects = h.shared.audio_rejects.load(Ordering::Relaxed);
-    out.preview_target_w = h.shared.preview_target_w.load(Ordering::Relaxed);
-    out.preview_target_h = h.shared.preview_target_h.load(Ordering::Relaxed);
-    out.preview_target_fps = h.shared.preview_target_fps.load(Ordering::Relaxed);
-    out.cast_limit_w = h.shared.cast_limit_w.load(Ordering::Relaxed);
-    out.cast_limit_h = h.shared.cast_limit_h.load(Ordering::Relaxed);
-    out.cast_limit_fps = h.shared.cast_limit_fps.load(Ordering::Relaxed);
-    out.actual_fps_x100 = h.shared.preview_actual_fps_x100_pub.load(Ordering::Relaxed);
 
-    for (ci, c) in st.clients.iter().enumerate() {
-        if (out.num_clients as usize) >= LASAPI_DEBUG_MAX_PW_CLIENTS {
-            break;
+        let mut clients_json = Vec::new();
+        for (ci, c) in st.clients.iter().enumerate() {
+            if !c.in_use {
+                continue;
+            }
+            let num_nodes = st
+                .nodes
+                .iter()
+                .filter(|n| n.in_use && n.client_idx as usize == ci)
+                .count();
+            clients_json.push(JsonValue::obj(vec![
+                ("id", JsonValue::Int(i64::from(c.global_id))),
+                ("pid", JsonValue::Int(i64::from(c.pid))),
+                ("is_portal", JsonValue::Int(i64::from(c.is_portal))),
+                (
+                    "num_nodes",
+                    JsonValue::Int(i64::try_from(num_nodes).unwrap_or(i64::MAX)),
+                ),
+                ("app_name", JsonValue::Str(c.app_name.clone())),
+                ("binary", JsonValue::Str(c.binary.clone())),
+                ("portal_app_id", JsonValue::Str(c.portal_app_id.clone())),
+            ]));
         }
-        if !c.in_use {
-            continue;
-        }
-        let dc: &mut LasapiDbgPwClient = &mut out.clients[out.num_clients as usize];
-        out.num_clients += 1;
-        dc.id = c.global_id;
-        dc.pid = c.pid;
-        copy_str_to_c(&mut dc.app_name, &c.app_name);
-        copy_str_to_c(&mut dc.binary, &c.binary);
-        copy_str_to_c(&mut dc.portal_app_id, &c.portal_app_id);
-        dc.is_portal = u8::from(c.is_portal);
-        dc.num_nodes = st
-            .nodes
-            .iter()
-            .filter(|n| n.in_use && n.client_idx as usize == ci)
-            .count() as u32;
-    }
 
-    for nd in &st.nodes {
-        if (out.num_nodes as usize) >= LASAPI_DEBUG_MAX_PW_NODES {
-            break;
-        }
-        if !nd.in_use {
-            continue;
-        }
-        let dn: &mut LasapiDbgPwNode = &mut out.nodes[out.num_nodes as usize];
-        out.num_nodes += 1;
-        dn.id = nd.global_id;
-        let ow = &st.clients[nd.client_idx as usize];
-        dn.client_id = if ow.in_use { ow.global_id } else { 0 };
-        dn.client_pid = if ow.in_use { ow.pid } else { 0 };
-        copy_str_to_c(&mut dn.name, &nd.name);
-        copy_str_to_c(&mut dn.media_class, &nd.media_class);
-        copy_str_to_c(
-            &mut dn.format_name,
-            if nd.neg_format != 0 {
+        let mut dmabuf_streams = 0u32;
+        let mut memfd_streams = 0u32;
+        let mut nodes_json = Vec::new();
+        for nd in &st.nodes {
+            if !nd.in_use {
+                continue;
+            }
+            let ow = &st.clients[nd.client_idx as usize];
+            let client_id = if ow.in_use { ow.global_id } else { 0 };
+            let client_pid = if ow.in_use { ow.pid } else { 0 };
+            let format_name = if nd.neg_format != 0 {
                 vfmt_name(nd.neg_format)
             } else {
                 "negotiating"
-            },
-        );
-        copy_str_to_c(
-            &mut dn.mem_type,
-            if nd.neg_w != 0 {
+            };
+            let mem_type = if nd.neg_w != 0 {
                 if nd.neg_is_dmabuf {
                     "DmaBuf"
                 } else {
@@ -4439,218 +4377,266 @@ pub unsafe extern "C" fn lasapi_pw_broker_fill_debug(
                 }
             } else {
                 "idle"
-            },
-        );
-        dn.direction = nd.direction;
-        dn.state = nd.state;
-        dn.is_driver = u8::from(nd.is_driver);
-        dn.alloc_buffers = u8::from(nd.alloc_buffers);
-        dn.width = nd.neg_w;
-        dn.height = nd.neg_h;
-        dn.fps_num = nd.neg_fps_num;
-        dn.fps_denom = nd.neg_fps_denom;
-        dn.n_buffers = nd.n_bufs;
-        dn.drm_modifier = nd.neg_modifier;
-        dn.frames = nd.frames_count;
-        dn.target_node_id = nd.target_id_req;
-        if nd.neg_w != 0 && nd.direction == PWB_DIR_OUT {
-            if nd.neg_is_dmabuf {
-                out.dmabuf_streams += 1;
-            } else {
-                out.memfd_streams += 1;
-            }
-        }
-    }
-
-    for lk in &st.links {
-        if (out.num_links as usize) >= LASAPI_DEBUG_MAX_PW_LINKS {
-            break;
-        }
-        if !lk.in_use {
-            continue;
-        }
-        let dl: &mut LasapiDbgPwLink = &mut out.links[out.num_links as usize];
-        out.num_links += 1;
-        let on = &st.nodes[lk.out_node_idx as usize];
-        let ind = &st.nodes[lk.in_node_idx as usize];
-        dl.id = lk.global_id;
-        dl.out_node_id = on.global_id;
-        dl.in_node_id = ind.global_id;
-        dl.state = lk.state;
-        dl.is_dmabuf = u8::from(on.neg_is_dmabuf);
-        dl.frames_relayed = lk.frames_relayed;
-        if lk.state == 4 {
-            out.active_casting = 1;
-        }
-        let fps = on.neg_fps_num.checked_div(on.neg_fps_denom).unwrap_or(60);
-        let sum = format!(
-            "{}x{}@{} {} ({})",
-            on.neg_w,
-            on.neg_h,
-            fps,
-            vfmt_name(on.neg_format),
-            if on.neg_is_dmabuf { "DmaBuf" } else { "MemFd" }
-        );
-        copy_str_to_c(&mut dl.format_summary, &sum);
-    }
-
-    if out.active_casting != 0
-        && st.relay_actual_fps_x100 > 0
-        && mono_ns().saturating_sub(st.relay_last_frame_ns) <= 2_000_000_000
-    {
-        out.actual_fps_x100 = st.relay_actual_fps_x100;
-    } else if out.preview_requested == 0 {
-        out.actual_fps_x100 = 0;
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pw_broker_self_test(
-    brk: *mut PwBrokerHandle,
-    out_msg: *mut c_char,
-    out_len: usize,
-) -> c_int {
-    let write_msg = |msg: &str| {
-        if !out_msg.is_null() && out_len > 0 {
-            let sl = unsafe { core::slice::from_raw_parts_mut(out_msg.cast::<u8>(), out_len) };
-            copy_str_to_c(sl, msg);
-        }
-    };
-    if brk.is_null() {
-        write_msg("Video broker is null.");
-        return -1;
-    }
-    let h = unsafe { &*brk };
-    if !h.shared.broker_listening.load(Ordering::Relaxed) {
-        write_msg("Video broker socket is not listening (Zero-PipeWire mode inactive).");
-        return -1;
-    }
-    let sock_path = h.state.lock().unwrap_or_else(|p| p.into_inner()).socket_path.clone();
-    let Ok(stream) = UnixStream::connect(&sock_path) else {
-        write_msg(&format!("connect({}) failed", sock_path));
-        return -1;
-    };
-    let _ = stream.set_nonblocking(true);
-
-    let send_pkt = |id: u32, op: u8, seq: u32, build_fn: fn(&mut PodBuilder)| -> bool {
-        let mut b = PodBuilder::new(64);
-        build_fn(&mut b);
-        let pkt = frame_pw_msg(id, op, seq, 0, &b.into_vec());
-        sendmsg_all_with_fds(stream.as_raw_fd(), &pkt, &[]).is_ok()
-    };
-    if !send_pkt(0, PW_CORE_M_HELLO, 0, |b| {
-        b.push_struct();
-        b.int(4);
-        b.pop();
-    }) || !send_pkt(0, PW_CORE_M_GET_REGISTRY, 1, |b| {
-        b.push_struct();
-        b.int(3);
-        b.int(2);
-        b.pop();
-    }) || !send_pkt(0, PW_CORE_M_SYNC, 2, |b| {
-        b.push_struct();
-        b.int(0);
-        b.int(77);
-        b.pop();
-    }) {
-        write_msg(&format!("send failed on {}", sock_path));
-        return -1;
-    }
-
-    let mut rx = Vec::with_capacity(4096);
-    let mut got_info = false;
-    let mut got_cn_factory = false;
-    let mut got_done = false;
-    let t0 = mono_ns();
-    while !got_done && mono_ns().saturating_sub(t0) < 1_000_000_000 {
-        let mut pfd = [PollFd {
-            fd: stream.as_raw_fd(),
-            events: POLLIN,
-            revents: 0,
-        }];
-        if do_poll(&mut pfd, 100) <= 0 {
-            continue;
-        }
-        let mut tmp = [0u8; 4096];
-        match recvmsg_with_fds(stream.as_raw_fd(), &mut tmp) {
-            Ok(RecvFdsResult::Data { bytes, .. }) => rx.extend_from_slice(&tmp[..bytes]),
-            Ok(RecvFdsResult::WouldBlock) => continue,
-            _ => break,
-        }
-        let mut off = 0usize;
-        while rx.len() - off >= 16 {
-            let Some(hdr) = parse_pkt_hdr(&rx[off..]) else {
-                break;
             };
-            if rx.len() - off < hdr.pkt_len {
-                break;
-            }
-            if hdr.oid == 0 && hdr.op == PW_CORE_E_INFO {
-                got_info = true;
-            }
-            if hdr.oid == 2 && hdr.op == PW_REG_E_GLOBAL {
-                let pay = &rx[off + 16..off + 16 + hdr.psz as usize];
-                if pay
-                    .windows(b"PipeWire:Interface:ClientNode".len())
-                    .any(|w| w == b"PipeWire:Interface:ClientNode")
-                {
-                    got_cn_factory = true;
+            if nd.neg_w != 0 && nd.direction == PWB_DIR_OUT {
+                if nd.neg_is_dmabuf {
+                    dmabuf_streams += 1;
+                } else {
+                    memfd_streams += 1;
                 }
             }
-            if hdr.oid == 0 && hdr.op == PW_CORE_E_DONE {
-                got_done = true;
-            }
-            off += hdr.pkt_len;
+            nodes_json.push(JsonValue::obj(vec![
+                ("id", JsonValue::Int(i64::from(nd.global_id))),
+                ("client_id", JsonValue::Int(i64::from(client_id))),
+                ("client_pid", JsonValue::Int(i64::from(client_pid))),
+                ("target_node_id", JsonValue::Int(i64::from(nd.target_id_req))),
+                ("linked_node_id", JsonValue::Int(0)),
+                ("direction", JsonValue::Int(i64::from(nd.direction))),
+                ("state", JsonValue::Int(i64::from(nd.state))),
+                ("is_driver", JsonValue::Int(i64::from(nd.is_driver))),
+                ("alloc_buffers", JsonValue::Int(i64::from(nd.alloc_buffers))),
+                ("width", JsonValue::Int(i64::from(nd.neg_w))),
+                ("height", JsonValue::Int(i64::from(nd.neg_h))),
+                ("fps_num", JsonValue::Int(i64::from(nd.neg_fps_num))),
+                ("fps_denom", JsonValue::Int(i64::from(nd.neg_fps_denom))),
+                ("n_buffers", JsonValue::Int(i64::from(nd.n_bufs))),
+                (
+                    "drm_modifier",
+                    JsonValue::Str(format!("0x{:x}", nd.neg_modifier)),
+                ),
+                ("frames", JsonValue::from_u64(nd.frames_count)),
+                ("name", JsonValue::Str(nd.name.clone())),
+                ("media_class", JsonValue::Str(nd.media_class.clone())),
+                ("format_name", JsonValue::Str(format_name.to_string())),
+                ("mem_type", JsonValue::Str(mem_type.to_string())),
+            ]));
         }
-        if off > 0 {
-            rx.drain(..off);
+
+        let mut active_casting = 0u8;
+        let mut links_json = Vec::new();
+        for lk in &st.links {
+            if !lk.in_use {
+                continue;
+            }
+            let on = &st.nodes[lk.out_node_idx as usize];
+            let ind = &st.nodes[lk.in_node_idx as usize];
+            if lk.state == 4 {
+                active_casting = 1;
+            }
+            let fps = on.neg_fps_num.checked_div(on.neg_fps_denom).unwrap_or(60);
+            let sum = format!(
+                "{}x{}@{} {} ({})",
+                on.neg_w,
+                on.neg_h,
+                fps,
+                vfmt_name(on.neg_format),
+                if on.neg_is_dmabuf { "DmaBuf" } else { "MemFd" }
+            );
+            links_json.push(JsonValue::obj(vec![
+                ("id", JsonValue::Int(i64::from(lk.global_id))),
+                ("out_node_id", JsonValue::Int(i64::from(on.global_id))),
+                ("in_node_id", JsonValue::Int(i64::from(ind.global_id))),
+                ("state", JsonValue::Int(i64::from(lk.state))),
+                ("is_dmabuf", JsonValue::Int(i64::from(on.neg_is_dmabuf))),
+                ("frames_relayed", JsonValue::from_u64(lk.frames_relayed)),
+                ("format_summary", JsonValue::Str(sum)),
+            ]));
+        }
+
+        let actual_fps_x100 = if active_casting != 0
+            && st.relay_actual_fps_x100 > 0
+            && mono_ns().saturating_sub(st.relay_last_frame_ns) <= 2_000_000_000
+        {
+            st.relay_actual_fps_x100
+        } else if preview_requested == 0 {
+            0
+        } else {
+            self.shared.preview_actual_fps_x100_pub.load(Ordering::Relaxed)
+        };
+
+        JsonValue::obj(vec![
+            ("broker_running", JsonValue::Int(broker_running)),
+            ("zero_pw_mode", JsonValue::Int(zero_pw_mode)),
+            ("preview_requested", JsonValue::Int(preview_requested)),
+            ("active_casting", JsonValue::Int(i64::from(active_casting))),
+            (
+                "frames_relayed_total",
+                JsonValue::from_u64(self.shared.frames_relayed_total.load(Ordering::Relaxed)),
+            ),
+            (
+                "frames_dropped",
+                JsonValue::from_u64(self.shared.frames_dropped.load(Ordering::Relaxed)),
+            ),
+            ("dmabuf_streams", JsonValue::Int(i64::from(dmabuf_streams))),
+            ("memfd_streams", JsonValue::Int(i64::from(memfd_streams))),
+            (
+                "audio_rejects",
+                JsonValue::Int(i64::from(self.shared.audio_rejects.load(Ordering::Relaxed))),
+            ),
+            (
+                "preview_target_w",
+                JsonValue::Int(i64::from(self.shared.preview_target_w.load(Ordering::Relaxed))),
+            ),
+            (
+                "preview_target_h",
+                JsonValue::Int(i64::from(self.shared.preview_target_h.load(Ordering::Relaxed))),
+            ),
+            (
+                "preview_target_fps",
+                JsonValue::Int(i64::from(
+                    self.shared.preview_target_fps.load(Ordering::Relaxed),
+                )),
+            ),
+            (
+                "cast_limit_w",
+                JsonValue::Int(i64::from(self.shared.cast_limit_w.load(Ordering::Relaxed))),
+            ),
+            (
+                "cast_limit_h",
+                JsonValue::Int(i64::from(self.shared.cast_limit_h.load(Ordering::Relaxed))),
+            ),
+            (
+                "cast_limit_fps",
+                JsonValue::Int(i64::from(self.shared.cast_limit_fps.load(Ordering::Relaxed))),
+            ),
+            ("actual_fps_x100", JsonValue::Int(i64::from(actual_fps_x100))),
+            ("socket_path", JsonValue::Str(st.socket_path.clone())),
+            (
+                "manager_socket_path",
+                JsonValue::Str(st.manager_socket_path.clone()),
+            ),
+            ("preview_shm_name", JsonValue::Str(st.preview_shm_name.clone())),
+            ("clients", JsonValue::Array(clients_json)),
+            ("nodes", JsonValue::Array(nodes_json)),
+            ("links", JsonValue::Array(links_json)),
+        ])
+    }
+
+    pub fn self_test(&self) -> Result<String, String> {
+        if !self.shared.broker_listening.load(Ordering::Relaxed) {
+            return Err(
+                "Video broker socket is not listening (Zero-PipeWire mode inactive).".into(),
+            );
+        }
+        let sock_path = self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .socket_path
+            .clone();
+        let stream = UnixStream::connect(&sock_path)
+            .map_err(|_| format!("connect({sock_path}) failed"))?;
+        let _ = stream.set_nonblocking(true);
+
+        let send_pkt = |id: u32, op: u8, seq: u32, build_fn: fn(&mut PodBuilder)| -> bool {
+            let mut b = PodBuilder::new(64);
+            build_fn(&mut b);
+            let pkt = frame_pw_msg(id, op, seq, 0, &b.into_vec());
+            sendmsg_all_with_fds(stream.as_raw_fd(), &pkt, &[]).is_ok()
+        };
+        if !send_pkt(0, PW_CORE_M_HELLO, 0, |b| {
+            b.push_struct();
+            b.int(4);
+            b.pop();
+        }) || !send_pkt(0, PW_CORE_M_GET_REGISTRY, 1, |b| {
+            b.push_struct();
+            b.int(3);
+            b.int(2);
+            b.pop();
+        }) || !send_pkt(0, PW_CORE_M_SYNC, 2, |b| {
+            b.push_struct();
+            b.int(0);
+            b.int(77);
+            b.pop();
+        }) {
+            return Err(format!("send failed on {sock_path}"));
+        }
+
+        let mut rx = Vec::with_capacity(4096);
+        let mut got_info = false;
+        let mut got_cn_factory = false;
+        let mut got_done = false;
+        let t0 = mono_ns();
+        while !got_done && mono_ns().saturating_sub(t0) < 1_000_000_000 {
+            let mut pfd = [PollFd {
+                fd: stream.as_raw_fd(),
+                events: POLLIN,
+                revents: 0,
+            }];
+            if do_poll(&mut pfd, 100) <= 0 {
+                continue;
+            }
+            let mut tmp = [0u8; 4096];
+            match recvmsg_with_fds(stream.as_raw_fd(), &mut tmp) {
+                Ok(RecvFdsResult::Data { bytes, .. }) => rx.extend_from_slice(&tmp[..bytes]),
+                Ok(RecvFdsResult::WouldBlock) => continue,
+                _ => break,
+            }
+            let mut off = 0usize;
+            while rx.len() - off >= 16 {
+                let Some(hdr) = parse_pkt_hdr(&rx[off..]) else {
+                    break;
+                };
+                if rx.len() - off < hdr.pkt_len {
+                    break;
+                }
+                if hdr.oid == 0 && hdr.op == PW_CORE_E_INFO {
+                    got_info = true;
+                }
+                if hdr.oid == 2 && hdr.op == PW_REG_E_GLOBAL {
+                    let pay = &rx[off + 16..off + 16 + hdr.psz as usize];
+                    if pay
+                        .windows(b"PipeWire:Interface:ClientNode".len())
+                        .any(|w| w == b"PipeWire:Interface:ClientNode")
+                    {
+                        got_cn_factory = true;
+                    }
+                }
+                if hdr.oid == 0 && hdr.op == PW_CORE_E_DONE {
+                    got_done = true;
+                }
+                off += hdr.pkt_len;
+            }
+            if off > 0 {
+                rx.drain(..off);
+            }
+        }
+
+        if got_info && got_cn_factory && got_done {
+            Ok(format!(
+                "PASS: pipewire-0 native handshake + ClientNode factory + Sync OK ({sock_path})"
+            ))
+        } else {
+            Err(format!(
+                "FAIL: info={} factory={} done={} on {}",
+                u8::from(got_info),
+                u8::from(got_cn_factory),
+                u8::from(got_done),
+                sock_path
+            ))
         }
     }
 
-    if got_info && got_cn_factory && got_done {
-        write_msg(&format!(
-            "PASS: pipewire-0 native handshake + ClientNode factory + Sync OK ({})",
-            sock_path
-        ));
-        0
-    } else {
-        write_msg(&format!(
-            "FAIL: info={} factory={} done={} on {}",
-            u8::from(got_info),
-            u8::from(got_cn_factory),
-            u8::from(got_done),
-            sock_path
-        ));
-        -1
+    pub fn reset_clients(&self) -> i32 {
+        let mut flushed = 0i32;
+        {
+            let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            for ci in 0..PWB_MAX_CLIENTS {
+                if st.clients[ci].in_use {
+                    st.handle_client_disconnect(ci);
+                    flushed += 1;
+                }
+            }
+        }
+        self.signal_wake();
+        flushed
     }
 }
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_pw_broker_reset_clients(brk: *mut PwBrokerHandle) -> c_int {
-    if brk.is_null() {
-        return 0;
-    }
-    let h = unsafe { &*brk };
-    let mut flushed = 0i32;
-    {
-        let mut st = h.state.lock().unwrap_or_else(|p| p.into_inner());
-        for ci in 0..PWB_MAX_CLIENTS {
-            if st.clients[ci].in_use {
-                st.handle_client_disconnect(ci);
-                flushed += 1;
-            }
-        }
-    }
-    h.signal_wake();
-    flushed
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::failsafe::{get_stats, reset_stats};
     use crate::pw_wire::{OBJ_FORMAT, VF_BGRX};
-    use std::ffi::CString;
     use std::io::{Read, Seek, SeekFrom, Write};
 
     #[test]
@@ -4658,21 +4644,14 @@ mod tests {
         reset_stats();
         let tmp_dir = format!("/tmp/salsa_pw_test_{}", mono_ns());
         fs::create_dir_all(&tmp_dir).unwrap();
-        let c_rdir = CString::new(tmp_dir.clone()).unwrap();
-        let c_sname = CString::new("pipewire-rust-test").unwrap();
-        let opts = LasapiPwBrokerOpts {
-            runtime_dir: c_rdir.as_ptr(),
-            socket_name: c_sname.as_ptr(),
+        let brk = start_pw_broker(Some(PwBrokerStartOpts {
+            runtime_dir: Some(tmp_dir.clone()),
+            socket_name: Some("pipewire-rust-test".into()),
             ignore_zero_flag: true,
-        };
-        let mut brk: *mut PwBrokerHandle = ptr::null_mut();
-        assert_eq!(unsafe { lasapi_pw_broker_start(&mut brk, &opts) }, 0);
-        assert!(!brk.is_null());
+        }))
+        .expect("start pw broker");
 
-        let mut msg = [0u8; 256];
-        let rc = unsafe { lasapi_pw_broker_self_test(brk, msg.as_mut_ptr().cast(), msg.len()) };
-        let txt = String::from_utf8_lossy(&msg);
-        assert_eq!(rc, 0, "self_test msg={}", txt);
+        brk.self_test().expect("self_test");
 
         // Connect an audio ClientNode (should be rejected by Video-Only broker)
         let sock_path = format!("{}/pipewire-rust-test", tmp_dir);
@@ -4743,15 +4722,14 @@ mod tests {
         assert!(get_stats().pw_quarantined >= 1);
 
         // Reset remaining healthy client cleanly
-        let flushed = unsafe { lasapi_pw_broker_reset_clients(brk) };
+        let flushed = brk.reset_clients();
         assert!(flushed >= 1);
 
-        let mut snap: LasapiDbgPwSnapshot = unsafe { mem::zeroed() };
-        unsafe { lasapi_pw_broker_fill_debug(brk, &mut snap) };
-        assert_eq!(snap.broker_running, 1);
-        assert!(snap.audio_rejects >= 1);
+        let snap = brk.debug_snapshot_json();
+        assert_eq!(snap.get("broker_running").and_then(JsonValue::as_i64), Some(1));
+        assert!(snap.get("audio_rejects").and_then(JsonValue::as_i64).unwrap_or(0) >= 1);
 
-        unsafe { lasapi_pw_broker_stop(brk) };
+        brk.stop();
         let _ = fs::remove_dir_all(&tmp_dir);
     }
 
@@ -4759,16 +4737,13 @@ mod tests {
     fn pw_broker_video_relay_and_preview_shm() {
         let tmp_dir = format!("/tmp/salsa_pw_relay_{}", mono_ns());
         fs::create_dir_all(&tmp_dir).unwrap();
-        let c_rdir = CString::new(tmp_dir.clone()).unwrap();
-        let c_sname = CString::new("pipewire-relay-test").unwrap();
-        let opts = LasapiPwBrokerOpts {
-            runtime_dir: c_rdir.as_ptr(),
-            socket_name: c_sname.as_ptr(),
+        let brk = start_pw_broker(Some(PwBrokerStartOpts {
+            runtime_dir: Some(tmp_dir.clone()),
+            socket_name: Some("pipewire-relay-test".into()),
             ignore_zero_flag: true,
-        };
-        let mut brk: *mut PwBrokerHandle = ptr::null_mut();
-        assert_eq!(unsafe { lasapi_pw_broker_start(&mut brk, &opts) }, 0);
-        unsafe { lasapi_pw_broker_set_preview_ex(brk, true, 5000, 64, 64, 0) };
+        }))
+        .expect("start pw relay broker");
+        brk.set_preview_ex(true, 5000, 64, 64, 0);
 
         let sock_path = format!("{}/pipewire-relay-test", tmp_dir);
         let prod = UnixStream::connect(&sock_path).unwrap();
@@ -4837,9 +4812,8 @@ mod tests {
         let t0 = mono_ns();
         let mut active = false;
         while !active && mono_ns().saturating_sub(t0) < 1_500_000_000 {
-            let mut snap: LasapiDbgPwSnapshot = unsafe { mem::zeroed() };
-            unsafe { lasapi_pw_broker_fill_debug(brk, &mut snap) };
-            if snap.active_casting == 1 {
+            let snap = brk.debug_snapshot_json();
+            if snap.get("active_casting").and_then(JsonValue::as_i64) == Some(1) {
                 active = true;
                 break;
             }
@@ -4849,8 +4823,7 @@ mod tests {
 
         // Pump a BGRx test pattern into producer's first allocated buffer & trigger done_efd!
         {
-            let h = unsafe { &*brk };
-            let mut st = h.state.lock().unwrap();
+            let mut st = brk.state.lock().unwrap();
             let pidx = st
                 .nodes
                 .iter()
@@ -4906,15 +4879,13 @@ mod tests {
             assert_eq!(&buf_px[..3], &[0x11, 0x55, 0xaa]);
         }
 
-        let mut snap: LasapiDbgPwSnapshot = unsafe { mem::zeroed() };
-        unsafe { lasapi_pw_broker_fill_debug(brk, &mut snap) };
-        assert!(snap.frames_relayed_total >= 1);
+        let snap = brk.debug_snapshot_json();
+        assert!(snap.get("frames_relayed_total").and_then(JsonValue::as_i64).unwrap_or(0) >= 1);
 
         // Verify relay FPS meter updates actual_fps_x100 even when live preview is disabled
-        unsafe { lasapi_pw_broker_set_preview(brk, false, 0) };
+        brk.set_preview(false, 0);
         {
-            let h = unsafe { &*brk };
-            let mut st = h.state.lock().unwrap();
+            let mut st = brk.state.lock().unwrap();
             let pidx = st
                 .nodes
                 .iter()
@@ -4931,19 +4902,18 @@ mod tests {
             st.nodes[pidx].io_write_status_and_buf(PWB_STATUS_HAVE_DATA, 0);
             st.on_prod_done_event(pidx);
         }
-        let mut snap_noprev: LasapiDbgPwSnapshot = unsafe { mem::zeroed() };
-        unsafe { lasapi_pw_broker_fill_debug(brk, &mut snap_noprev) };
-        assert_eq!(snap_noprev.preview_requested, 0);
+        let snap_noprev = brk.debug_snapshot_json();
+        assert_eq!(snap_noprev.get("preview_requested").and_then(JsonValue::as_i64), Some(0));
+        let fps_x100 = snap_noprev.get("actual_fps_x100").and_then(JsonValue::as_i64).unwrap_or(0);
         assert!(
-            snap_noprev.actual_fps_x100 >= 5000,
+            fps_x100 >= 5000,
             "expected zero-preview relay FPS >= 50.00, got {}",
-            snap_noprev.actual_fps_x100
+            fps_x100
         );
 
         // Verify SPA_IO_AsyncBuffers dual-slot relay (`slot1` -> `slot0`) & non-clobbering recycle
         {
-            let h = unsafe { &*brk };
-            let mut st = h.state.lock().unwrap();
+            let mut st = brk.state.lock().unwrap();
             let pidx = st
                 .nodes
                 .iter()
@@ -4992,7 +4962,7 @@ mod tests {
             );
         }
 
-        unsafe { lasapi_pw_broker_stop(brk) };
+        brk.stop();
         let _ = fs::remove_dir_all(&tmp_dir);
     }
 

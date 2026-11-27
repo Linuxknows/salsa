@@ -1,0 +1,11 @@
+[package]
+name = "salsa_host_dl"
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-3.0-only"
+publish = false
+
+[lib]
+name = "salsa_host_dl"
+crate-type = ["rlib"]
+path = "src/lib.rs"

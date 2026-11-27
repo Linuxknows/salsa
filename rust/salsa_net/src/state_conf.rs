@@ -5,10 +5,6 @@
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
-#![allow(unsafe_code)]
-#![allow(clippy::missing_safety_doc)]
-
-use core::mem;
 use std::fs::{self, OpenOptions, Permissions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -16,13 +12,18 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, LasapiBtCodecCfg, LasapiEqConfig, LasapiHwAnalogCfg,
+    c_str_to_string, copy_str_to_c, LasapiBtCodecCfg, LasapiEqConfig,
     LasapiMicApoCfg, LasapiParamEqExt, SalsaRuntimeState, LASAPI_BT_PREF_AUTO,
-    LASAPI_BT_PREF_SBC, LASAPI_EQ_BANDS, LASAPI_FILTER_HIGH_SHELF, LASAPI_FILTER_PEAK,
-    LASAPI_LDAC_MODE_330, LASAPI_LDAC_MODE_ADAPTIVE,
+    LASAPI_BT_PREF_SBC, LASAPI_EQ_BANDS, LASAPI_FILTER_PEAK, LASAPI_LDAC_MODE_330,
+    LASAPI_LDAC_MODE_ADAPTIVE,
 };
-use crate::hw_analog::{lasapi_hw_analog_clamp_cfg, lasapi_hw_analog_default_cfg};
+use crate::hw_analog::{clamp_hw_analog_cfg, default_hw_analog_cfg};
 use crate::json::JsonValue;
+pub use crate::settings::{
+    apply_json_to_eq_pair, clamp_eq_cfg, clamp_mic_apo_cfg, clamp_param_eq_ext,
+    eq_pair_to_json as eq_cfg_to_json_value, json_bool, round_decimals, sanitize_declarative_str,
+    DEFAULT_BAND_FREQS_HZ as K_EQ_FREQS,
+};
 use crate::unix_sys::{
     current_pid, current_uid, ensure_dir_0700_safe, flock_fd, funlock_fd, is_safe_owner_dir,
     read_verified_regular_file_utf8, user_home_dir, write_atomic_secure_file, O_CLOEXEC,
@@ -32,10 +33,6 @@ use crate::unix_sys::{
 pub const SALSA_SETTINGS_FILENAME: &str = "salsa_settings.json";
 pub const SALSA_SETTINGS_SCHEMA_VERSION: i64 = 1;
 const MAX_SETTINGS_JSON_BYTES: usize = 524_288;
-
-pub const K_EQ_FREQS: [f32; LASAPI_EQ_BANDS] = [
-    31.25, 62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
-];
 
 const MAGIC_V1: u32 = 0x5341_4C53; // 'SALS'
 const MAGIC_V2: u32 = 0x5341_4C54; // 'SALT'
@@ -103,8 +100,7 @@ pub fn default_runtime_state() -> SalsaRuntimeState {
         neg_reason: [0u8; 64],
     };
 
-    let mut hw_analog_cfg: LasapiHwAnalogCfg = unsafe { mem::zeroed() };
-    unsafe { lasapi_hw_analog_default_cfg(&mut hw_analog_cfg) };
+    let hw_analog_cfg = default_hw_analog_cfg();
 
     let mut target_playback_id = [0u8; 64];
     let mut target_capture_id = [0u8; 64];
@@ -130,91 +126,6 @@ pub fn default_runtime_state() -> SalsaRuntimeState {
         desktop_mic_gain_ppm: 1_000_000,
         has_saved_vol_state: false,
         bt_optional_mode: 1,
-    }
-}
-
-pub fn clamp_eq_cfg(eq: &mut LasapiEqConfig) {
-    eq.enabled = u32::from(eq.enabled != 0);
-    if eq.dynamic_mode > 2 {
-        eq.dynamic_mode = 1;
-    }
-    eq.limiter_enabled = u32::from(eq.limiter_enabled != 0);
-    eq.preamp_db = if eq.preamp_db.is_finite() {
-        eq.preamp_db.clamp(-24.0, 24.0)
-    } else {
-        0.0
-    };
-    eq.dyn_threshold_db = if eq.dyn_threshold_db.is_finite() {
-        eq.dyn_threshold_db.clamp(-60.0, 0.0)
-    } else {
-        -16.0
-    };
-    eq.dyn_ratio = if eq.dyn_ratio.is_finite() {
-        eq.dyn_ratio.clamp(1.0, 20.0)
-    } else {
-        2.2
-    };
-    for g in &mut eq.band_gains_db {
-        *g = if g.is_finite() {
-            g.clamp(-24.0, 24.0)
-        } else {
-            0.0
-        };
-    }
-    for q in &mut eq.band_q {
-        if !(0.2..=10.0).contains(q) {
-            *q = 1.414;
-        }
-    }
-    if let Some(last) = eq.preset_name.last_mut() {
-        *last = 0;
-    }
-}
-
-pub fn clamp_param_eq_ext(ext: &mut LasapiParamEqExt) {
-    for i in 0..LASAPI_EQ_BANDS {
-        let f = ext.band_freq_hz[i];
-        if !(15.0..=22_000.0).contains(&f) {
-            ext.band_freq_hz[i] = K_EQ_FREQS[i];
-        }
-        if ext.band_type[i] > LASAPI_FILTER_HIGH_SHELF {
-            ext.band_type[i] = LASAPI_FILTER_PEAK;
-        }
-    }
-    ext.crossfeed_enabled = u32::from(ext.crossfeed_enabled != 0);
-    if !(0.0..=1.0).contains(&ext.crossfeed_level) {
-        ext.crossfeed_level = 0.45;
-    }
-    if !(300..=1500).contains(&ext.crossfeed_cutoff_hz) {
-        ext.crossfeed_cutoff_hz = 700;
-    }
-}
-
-pub fn clamp_mic_apo_cfg(m: &mut LasapiMicApoCfg) {
-    m.enabled = u32::from(m.enabled != 0);
-    m.hpf_enabled = u32::from(m.hpf_enabled != 0);
-    m.gate_enabled = u32::from(m.gate_enabled != 0);
-    m.rnnoise_enabled = u32::from(m.rnnoise_enabled != 0);
-    m.comp_enabled = u32::from(m.comp_enabled != 0);
-    m.sidetone_enabled = u32::from(m.sidetone_enabled != 0);
-
-    if !(40.0..=250.0).contains(&m.hpf_hz) {
-        m.hpf_hz = 80.0;
-    }
-    if !(-85.0..=-10.0).contains(&m.gate_thresh_db) {
-        m.gate_thresh_db = -50.0;
-    }
-    if !(-45.0..=-1.0).contains(&m.comp_thresh_db) {
-        m.comp_thresh_db = -15.0;
-    }
-    if !(1.0..=12.0).contains(&m.comp_ratio) {
-        m.comp_ratio = 2.2;
-    }
-    if !(-6.0..=12.0).contains(&m.clarity_db) {
-        m.clarity_db = 1.5;
-    }
-    if m.sidetone_pct > 100 {
-        m.sidetone_pct = 100;
     }
 }
 
@@ -353,7 +264,7 @@ pub fn decode_persisted_state_bytes(bytes: &[u8], out: &mut SalsaRuntimeState) -
         st.hw_analog_cfg.unlock_0db_rails = read_u32(bytes, 544);
         st.hw_analog_cfg.analog_boost_db = read_f32(bytes, 548);
         st.hw_analog_cfg.mic_hw_boost_db = read_f32(bytes, 552);
-        unsafe { lasapi_hw_analog_clamp_cfg(&mut st.hw_analog_cfg) };
+        clamp_hw_analog_cfg(&mut st.hw_analog_cfg);
     }
 
     if valid_v6 || valid_v5 {
@@ -542,176 +453,12 @@ fn acquire_settings_lock_in(dir: &Path) -> Result<SettingsLockGuard, String> {
     Ok(SettingsLockGuard(Some(f)))
 }
 
-#[inline]
-fn round_decimals(v: f32, scale: f64) -> f64 {
-    if v.is_finite() {
-        (f64::from(v) * scale).round() / scale
-    } else {
-        0.0
-    }
-}
-
-fn sanitize_declarative_str(raw: &str, max_bytes: usize) -> String {
-    let mut out = String::new();
-    for ch in raw.trim().chars() {
-        if ch.is_control() {
-            continue;
-        }
-        if out.len() + ch.len_utf8() > max_bytes {
-            break;
-        }
-        out.push(ch);
-    }
-    out
-}
-
-fn json_bool(val: Option<&JsonValue>, default: bool) -> bool {
-    match val {
-        Some(JsonValue::Bool(b)) => *b,
-        Some(JsonValue::Int(i)) => *i != 0,
-        _ => default,
-    }
-}
-
-/// Serializes an EQ + parametric extension pair to the canonical JSON object format.
-pub fn eq_cfg_to_json_value(cfg: &LasapiEqConfig, ext: &LasapiParamEqExt) -> JsonValue {
-    let pname_raw = c_str_to_string(&cfg.preset_name);
-    let pname = if pname_raw.trim().is_empty() {
-        "Custom".to_string()
-    } else {
-        sanitize_declarative_str(&pname_raw, 31)
-    };
-    let gains: Vec<JsonValue> = cfg
-        .band_gains_db
-        .iter()
-        .map(|&g| JsonValue::Float(round_decimals(g, 10.0)))
-        .collect();
-    let qs: Vec<JsonValue> = cfg
-        .band_q
-        .iter()
-        .map(|&q| {
-            let v = if (0.2..=10.0).contains(&q) { q } else { 1.414 };
-            JsonValue::Float(round_decimals(v, 1000.0))
-        })
-        .collect();
-    let freqs: Vec<JsonValue> = ext
-        .band_freq_hz
-        .iter()
-        .enumerate()
-        .map(|(i, &f)| {
-            let v = if (15.0..=22_000.0).contains(&f) {
-                f
-            } else {
-                K_EQ_FREQS[i]
-            };
-            JsonValue::Float(round_decimals(v, 10.0))
-        })
-        .collect();
-    let types: Vec<JsonValue> = ext
-        .band_type
-        .iter()
-        .map(|&t| JsonValue::Int(i64::from(if t <= LASAPI_FILTER_HIGH_SHELF { t } else { 0 })))
-        .collect();
-    let xf_cut = if (300..=1500).contains(&ext.crossfeed_cutoff_hz) {
-        ext.crossfeed_cutoff_hz
-    } else {
-        700
-    };
-
-    JsonValue::obj(vec![
-        ("enabled", JsonValue::Bool(cfg.enabled != 0)),
-        ("dynamic_mode", JsonValue::Int(i64::from(cfg.dynamic_mode))),
-        ("preamp_db", JsonValue::Float(round_decimals(cfg.preamp_db, 10.0))),
-        ("dyn_threshold_db", JsonValue::Float(round_decimals(cfg.dyn_threshold_db, 10.0))),
-        ("dyn_ratio", JsonValue::Float(round_decimals(cfg.dyn_ratio, 10.0))),
-        ("limiter_enabled", JsonValue::Bool(cfg.limiter_enabled != 0)),
-        ("preset_name", JsonValue::Str(pname)),
-        ("band_gains_db", JsonValue::Array(gains)),
-        ("band_q", JsonValue::Array(qs)),
-        ("band_freq_hz", JsonValue::Array(freqs)),
-        ("band_type", JsonValue::Array(types)),
-        ("crossfeed_enabled", JsonValue::Bool(ext.crossfeed_enabled != 0)),
-        ("crossfeed_level", JsonValue::Float(round_decimals(ext.crossfeed_level, 100.0))),
-        ("crossfeed_cutoff_hz", JsonValue::Int(i64::from(xf_cut))),
-    ])
-}
-
-/// Parses and strictly clamps an EQ + parametric extension JSON object into C structs.
 pub fn apply_json_to_eq_cfg_pair(
     eq_obj: &JsonValue,
     cfg: &mut LasapiEqConfig,
     ext: &mut LasapiParamEqExt,
 ) {
-    let pname = eq_obj
-        .get("preset_name")
-        .and_then(JsonValue::as_str)
-        .map(|s| sanitize_declarative_str(s, 31))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Custom".to_string());
-    copy_str_to_c(&mut cfg.preset_name, &pname);
-
-    cfg.enabled = u32::from(json_bool(eq_obj.get("enabled"), true));
-    let mode = eq_obj.get("dynamic_mode").and_then(JsonValue::as_u64).unwrap_or(1) as u32;
-    cfg.dynamic_mode = if mode <= 2 { mode } else { 1 };
-    cfg.preamp_db = eq_obj
-        .get("preamp_db")
-        .and_then(JsonValue::as_f64)
-        .map_or(0.0, |v| v as f32);
-    cfg.dyn_threshold_db = eq_obj
-        .get("dyn_threshold_db")
-        .and_then(JsonValue::as_f64)
-        .map_or(-16.0, |v| v as f32);
-    cfg.dyn_ratio = eq_obj
-        .get("dyn_ratio")
-        .and_then(JsonValue::as_f64)
-        .map_or(2.2, |v| v as f32);
-    cfg.limiter_enabled = u32::from(json_bool(eq_obj.get("limiter_enabled"), true));
-
-    if let Some(arr) = eq_obj.get("band_gains_db").and_then(JsonValue::as_array) {
-        if arr.len() == LASAPI_EQ_BANDS {
-            for (i, v) in arr.iter().enumerate() {
-                cfg.band_gains_db[i] = v.as_f64().map_or(0.0, |x| x as f32);
-            }
-        }
-    }
-    if let Some(arr) = eq_obj.get("band_q").and_then(JsonValue::as_array) {
-        if arr.len() == LASAPI_EQ_BANDS {
-            for (i, v) in arr.iter().enumerate() {
-                cfg.band_q[i] = v.as_f64().map_or(1.414, |x| x as f32);
-            }
-        }
-    }
-    if let Some(arr) = eq_obj.get("band_freq_hz").and_then(JsonValue::as_array) {
-        if arr.len() == LASAPI_EQ_BANDS {
-            for (i, v) in arr.iter().enumerate() {
-                ext.band_freq_hz[i] = v.as_f64().map_or(K_EQ_FREQS[i], |x| x as f32);
-            }
-        }
-    } else {
-        ext.band_freq_hz = K_EQ_FREQS;
-    }
-    if let Some(arr) = eq_obj.get("band_type").and_then(JsonValue::as_array) {
-        if arr.len() == LASAPI_EQ_BANDS {
-            for (i, v) in arr.iter().enumerate() {
-                ext.band_type[i] = v.as_u64().unwrap_or(0) as u32;
-            }
-        }
-    } else {
-        ext.band_type = [LASAPI_FILTER_PEAK; LASAPI_EQ_BANDS];
-    }
-
-    ext.crossfeed_enabled = u32::from(json_bool(eq_obj.get("crossfeed_enabled"), false));
-    ext.crossfeed_level = eq_obj
-        .get("crossfeed_level")
-        .and_then(JsonValue::as_f64)
-        .map_or(0.45, |v| v as f32);
-    ext.crossfeed_cutoff_hz = eq_obj
-        .get("crossfeed_cutoff_hz")
-        .and_then(JsonValue::as_u64)
-        .unwrap_or(700) as u32;
-
-    clamp_eq_cfg(cfg);
-    clamp_param_eq_ext(ext);
+    let _ = apply_json_to_eq_pair(eq_obj, cfg, ext);
 }
 
 /// Merges authoritative runtime audio/hardware sections into a unified settings JSON object,
@@ -774,7 +521,7 @@ pub fn merge_runtime_state_into_json(root: &mut JsonValue, st: &SalsaRuntimeStat
     );
 
     let mut hwa = st.hw_analog_cfg;
-    unsafe { lasapi_hw_analog_clamp_cfg(&mut hwa) };
+    clamp_hw_analog_cfg(&mut hwa);
     root.set(
         "hw_analog",
         JsonValue::obj(vec![
@@ -954,7 +701,7 @@ pub fn apply_json_to_runtime_state(root: &JsonValue, out: &mut SalsaRuntimeState
         if let Some(mb) = hwa.get("mic_hw_boost_db").and_then(JsonValue::as_f64) {
             st.hw_analog_cfg.mic_hw_boost_db = mb as f32;
         }
-        unsafe { lasapi_hw_analog_clamp_cfg(&mut st.hw_analog_cfg) };
+        clamp_hw_analog_cfg(&mut st.hw_analog_cfg);
     }
 
     if let Some(bt) = root.get("bluetooth") {
@@ -1261,54 +1008,18 @@ pub fn save_state_to_path(dir: &Path, path: &Path, st: &SalsaRuntimeState) -> bo
     true
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn salsa_dsp_clamp_eq_cfg(eq: *mut LasapiEqConfig) {
-    if !eq.is_null() {
-        clamp_eq_cfg(unsafe { &mut *eq });
-    }
+pub fn load_runtime_state(io_st: &mut SalsaRuntimeState) {
+    *io_st = load_runtime_state_in_dir(&config_dir_path(), true);
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn salsa_dsp_clamp_param_eq_ext(ext: *mut LasapiParamEqExt) {
-    if !ext.is_null() {
-        clamp_param_eq_ext(unsafe { &mut *ext });
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn salsa_dsp_clamp_mic_apo_cfg(m: *mut LasapiMicApoCfg) {
-    if !m.is_null() {
-        clamp_mic_apo_cfg(unsafe { &mut *m });
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn salsa_state_init_defaults(out: *mut SalsaRuntimeState) {
-    if !out.is_null() {
-        unsafe { *out = default_runtime_state() };
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn salsa_state_load(io_st: *mut SalsaRuntimeState) {
-    if io_st.is_null() {
-        return;
-    }
-    let st = load_runtime_state_in_dir(&config_dir_path(), true);
-    unsafe { *io_st = st };
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn salsa_state_save(st: *const SalsaRuntimeState) {
-    if st.is_null() {
-        return;
-    }
-    let _ = save_runtime_state_in_dir(&config_dir_path(), unsafe { &*st });
+pub fn save_runtime_state(st: &SalsaRuntimeState) -> bool {
+    save_runtime_state_in_dir(&config_dir_path(), st)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::c_abi::LasapiHwAnalogCfg;
     use core::mem::size_of;
     use std::os::unix::fs::symlink;
 

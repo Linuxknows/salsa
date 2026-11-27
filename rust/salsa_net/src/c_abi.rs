@@ -18,11 +18,6 @@ pub const LASAPI_MIDI_RING_MASK: usize = LASAPI_MIDI_RING_EVENTS - 1;
 pub const LASAPI_MAX_SESSIONS: usize = 32;
 pub const LASAPI_EQ_BANDS: usize = 10;
 pub const LASAPI_MAX_DEVICES: usize = 32;
-pub const LASAPI_DEBUG_MAX_PA_CLIENTS: usize = 32;
-pub const LASAPI_DEBUG_MAX_PA_STREAMS: usize = 48;
-pub const LASAPI_DEBUG_MAX_PW_CLIENTS: usize = 32;
-pub const LASAPI_DEBUG_MAX_PW_NODES: usize = 32;
-pub const LASAPI_DEBUG_MAX_PW_LINKS: usize = 32;
 
 pub const LASAPI_DBG_ENGINE: u8 = 0;
 pub const LASAPI_DBG_PA: u8 = 2;
@@ -59,6 +54,7 @@ pub const LASAPI_CMD_SET_HW_ANALOG: u32 = 15;
 pub const LASAPI_CMD_BT_CONNECTION: u32 = 16;
 pub const LASAPI_CMD_SAVE_CONFIG: u32 = 17;
 pub const LASAPI_CMD_RELOAD_CONFIG: u32 = 18;
+pub const LASAPI_CMD_CONTROL_V2: u32 = 0x5343_5432;
 
 pub const LASAPI_BT_CONN_QUERY: u32 = 0;
 pub const LASAPI_BT_CONN_SET_OPTIONAL: u32 = 1;
@@ -269,156 +265,14 @@ pub struct LasapiEngineStatus {
     pub hw_analog_info: LasapiHwAnalogInfo,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LasapiPaCallbacks {
-    pub user_ctx: *mut c_void,
-    pub get_status: Option<unsafe extern "C" fn(*mut c_void, *mut LasapiEngineStatus)>,
-    pub get_devices: Option<unsafe extern "C" fn(*mut c_void, *mut LasapiDeviceList)>,
-    pub set_devices: Option<unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> c_int>,
-    pub set_master_volume: Option<unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int) -> c_int>,
-    pub set_mic_gain_ppm: Option<unsafe extern "C" fn(*mut c_void, u32, c_int, c_int) -> c_int>,
-}
-
-unsafe impl Send for LasapiPaCallbacks {}
-unsafe impl Sync for LasapiPaCallbacks {}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LasapiDbgPaClient {
-    pub index: u32,
-    pub pid: u32,
-    pub name: [u8; 64],
-    pub binary: [u8; 64],
-    pub version: u32,
-    pub authed: u8,
-    pub sub_mask: u32,
-    pub out_count: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LasapiDbgPaStream {
-    pub index: u32,
-    pub client_index: u32,
-    pub pid: u32,
-    pub name: [u8; 64],
-    pub device_id: [u8; 64],
-    pub is_playback: u8,
-    pub is_monitor: u8,
-    pub peak_detect: u8,
-    pub direct_on_input: u32,
-    pub target_dev_idx: u32,
-    pub rate: u32,
-    pub channels: u8,
-    pub format: u8,
-    pub active: u8,
-    pub corked: u8,
-    pub in_prebuf: u8,
-    pub draining: u8,
-    pub muted: u8,
-    pub volume_milli: u32,
-    pub frame_size: u32,
-    pub buffered_frames: u64,
-    pub ring_cap_frames: u32,
-    pub tlength_frames: u32,
-    pub prebuf_frames: u32,
-    pub minreq_frames: u32,
-    pub fragsize_frames: u32,
-    pub mix_peak_l: f32,
-    pub mix_peak_r: f32,
-    pub write_index: u64,
-    pub read_index: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LasapiDbgPaSnapshot {
-    pub num_clients: u32,
-    pub clients: [LasapiDbgPaClient; LASAPI_DEBUG_MAX_PA_CLIENTS],
-    pub num_streams: u32,
-    pub streams: [LasapiDbgPaStream; LASAPI_DEBUG_MAX_PA_STREAMS],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LasapiDbgPwClient {
-    pub id: u32,
-    pub pid: u32,
-    pub app_name: [u8; 64],
-    pub binary: [u8; 64],
-    pub portal_app_id: [u8; 64],
-    pub is_portal: u8,
-    pub pad: [u8; 3],
-    pub num_nodes: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LasapiDbgPwNode {
-    pub id: u32,
-    pub client_id: u32,
-    pub client_pid: u32,
-    pub target_node_id: u32,
-    pub linked_node_id: u32,
-    pub name: [u8; 64],
-    pub media_class: [u8; 48],
-    pub format_name: [u8; 24],
-    pub mem_type: [u8; 16],
-    pub direction: u8,
-    pub state: u8,
-    pub is_driver: u8,
-    pub alloc_buffers: u8,
-    pub width: u32,
-    pub height: u32,
-    pub fps_num: u32,
-    pub fps_denom: u32,
-    pub n_buffers: u32,
-    pub drm_modifier: u64,
-    pub frames: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LasapiDbgPwLink {
-    pub id: u32,
-    pub out_node_id: u32,
-    pub in_node_id: u32,
-    pub state: u8,
-    pub is_dmabuf: u8,
-    pub pad: [u8; 2],
-    pub format_summary: [u8; 48],
-    pub frames_relayed: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LasapiDbgPwSnapshot {
-    pub broker_running: u8,
-    pub zero_pw_mode: u8,
-    pub preview_requested: u8,
-    pub active_casting: u8,
-    pub socket_path: [u8; 128],
-    pub manager_socket_path: [u8; 128],
-    pub preview_shm_name: [u8; 64],
-    pub frames_relayed_total: u64,
-    pub frames_dropped: u64,
-    pub dmabuf_streams: u32,
-    pub memfd_streams: u32,
-    pub audio_rejects: u32,
-    pub preview_target_w: u32,
-    pub preview_target_h: u32,
-    pub preview_target_fps: u32,
-    pub cast_limit_w: u32,
-    pub cast_limit_h: u32,
-    pub cast_limit_fps: u32,
-    pub actual_fps_x100: u32,
-    pub num_clients: u32,
-    pub clients: [LasapiDbgPwClient; LASAPI_DEBUG_MAX_PW_CLIENTS],
-    pub num_nodes: u32,
-    pub nodes: [LasapiDbgPwNode; LASAPI_DEBUG_MAX_PW_NODES],
-    pub num_links: u32,
-    pub links: [LasapiDbgPwLink; LASAPI_DEBUG_MAX_PW_LINKS],
+impl LasapiEngineStatus {
+    pub fn effective_capture_rate_hz(&self) -> u32 {
+        if (8_000..=384_000).contains(&self.hw_analog_info.reserved) {
+            self.hw_analog_info.reserved
+        } else {
+            self.hw_sample_rate
+        }
+    }
 }
 
 #[repr(C)]
@@ -457,14 +311,6 @@ pub struct LasapiPwPreviewShm {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct LasapiPwBrokerOpts {
-    pub runtime_dir: *const c_char,
-    pub socket_name: *const c_char,
-    pub ignore_zero_flag: bool,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
 pub struct LasapiDbgDgram {
     pub magic: u32,
     pub pid: u32,
@@ -495,102 +341,6 @@ pub struct LasapiDbgRtStats {
     pub hw_write_ns: u64,
     pub budget_ns: u64,
     pub hw_xruns: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LasapiDbgLasapiSession {
-    pub session_id: u32,
-    pub client_pid: u32,
-    pub client_name: [u8; 64],
-    pub share_mode: u32,
-    pub stream_flags: u32,
-    pub is_capture: u32,
-    pub sample_rate: u32,
-    pub channels: u32,
-    pub active: u32,
-    pub muted: u32,
-    pub volume_milli: u32,
-    pub buffer_frames: u32,
-    pub period_frames: u32,
-    pub buffered_frames: u64,
-    pub xruns: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LasapiDbgSnapshot {
-    pub engine_st: LasapiEngineStatus,
-    pub rt: LasapiDbgRtStats,
-    pub target_playback_id: [u8; 64],
-    pub target_capture_id: [u8; 64],
-
-    pub bt_initialized: u8,
-    pub bt_endpoints_registered: u8,
-    pub bt_direct_socket: u8,
-    pub bt_has_transport: u8,
-    pub bt_tx_paused: u8,
-    pub bt_device_path: [u8; 128],
-    pub bt_transport_path: [u8; 160],
-    pub bt_endpoint_path: [u8; 64],
-    pub bt_sample_rate: u32,
-    pub bt_channels: u32,
-    pub bt_mtu_r: u16,
-    pub bt_mtu_w: u16,
-    pub bt_avrcp_vol: u16,
-    pub bt_tx_ring_fill: u64,
-    pub bt_tx_ring_cap: u32,
-    pub bt_tx_packets: u64,
-    pub bt_tx_underruns: u64,
-    pub bt_tx_errors: u64,
-
-    pub cap_active: u8,
-    pub cap_device_id: [u8; 64],
-    pub cap_pcm_path: [u8; 64],
-    pub cap_alias: [u8; 64],
-    pub cap_hw_rate: u32,
-    pub cap_hw_channels: u32,
-    pub cap_hw_format: i32,
-    pub cap_ring_fill: u64,
-    pub cap_pref_rate: u32,
-    pub cap_measured_rate: u32,
-    pub cap_kick_count: u32,
-    pub cap_is_usb: u8,
-    pub cap_duplex_locked: u8,
-
-    pub midi_initialized: u8,
-    pub midi_rawmidi_open: u8,
-    pub midi_controller: [u8; 64],
-    pub midi_dev_path: [u8; 64],
-    pub midi_seq_client: i32,
-    pub midi_seq_in_port: i32,
-    pub midi_events_routed: u64,
-
-    pub num_lasapi: u32,
-    pub lasapi: [LasapiDbgLasapiSession; LASAPI_MAX_SESSIONS],
-    pub pa: LasapiDbgPaSnapshot,
-    pub pw: LasapiDbgPwSnapshot,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LasapiDbgCallbacks {
-    pub user_ctx: *mut c_void,
-    pub fill_snapshot: Option<unsafe extern "C" fn(*mut c_void, *mut LasapiDbgSnapshot)>,
-    pub handle_cmd: Option<unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_char, usize) -> c_int>,
-}
-
-unsafe impl Send for LasapiDbgCallbacks {}
-unsafe impl Sync for LasapiDbgCallbacks {}
-
-impl Default for LasapiDbgCallbacks {
-    fn default() -> Self {
-        Self {
-            user_ctx: core::ptr::null_mut(),
-            fill_snapshot: None,
-            handle_cmd: None,
-        }
-    }
 }
 
 #[repr(C)]
@@ -692,6 +442,59 @@ pub struct LasapiIpcResp {
     pub actual_buffer_frames: u32,
     pub actual_period_frames: u32,
 }
+
+mod sealed_pod {
+    pub trait Sealed {}
+}
+
+pub trait PodBytes: Copy + sealed_pod::Sealed {
+    fn zeroed() -> Self {
+        unsafe { core::mem::zeroed() }
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        let sz = core::mem::size_of::<Self>();
+        let mut out = vec![0u8; sz];
+        unsafe {
+            core::ptr::copy_nonoverlapping((self as *const Self).cast::<u8>(), out.as_mut_ptr(), sz);
+        }
+        out
+    }
+
+    fn from_bytes(src: &[u8]) -> Option<Self> {
+        let sz = core::mem::size_of::<Self>();
+        if src.len() != sz {
+            return None;
+        }
+        let mut val: Self = unsafe { core::mem::zeroed() };
+        unsafe {
+            core::ptr::copy_nonoverlapping(src.as_ptr(), (&raw mut val).cast::<u8>(), sz);
+        }
+        Some(val)
+    }
+}
+
+macro_rules! impl_pod_bytes {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl sealed_pod::Sealed for $t {}
+            impl PodBytes for $t {}
+        )*
+    };
+}
+
+impl_pod_bytes!(
+    LasapiEqConfig,
+    LasapiParamEqPayload,
+    LasapiMicApoCfg,
+    LasapiBtCodecCfg,
+    LasapiHwAnalogCfg,
+    LasapiMidiEvent,
+    LasapiDeviceList,
+    LasapiEngineStatus,
+    LasapiIpcReq,
+    LasapiIpcResp,
+);
 
 pub const LASAPI_RING_MASK: usize = LASAPI_RING_FRAMES - 1;
 pub const LASAPI_MAX_PERIOD: usize = 4096;
@@ -846,578 +649,6 @@ pub unsafe fn ptr_to_opt_str(p: *const c_char) -> Option<String> {
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SalsaBtOps {
-    pub bt_ptr: Option<unsafe extern "C" fn() -> *mut c_void>,
-    pub get_snapshot: Option<unsafe extern "C" fn(*const c_void, *mut SalsaBtSnapshot)>,
-    pub rt_master_vol: Option<unsafe extern "C" fn(*const c_void, *mut u32, *mut bool)>,
-    pub init_rates: Option<
-        unsafe extern "C" fn(*mut c_void, u32, u32, *const c_char, *const c_char) -> c_int,
-    >,
-    pub set_preferred_target: Option<unsafe extern "C" fn(*mut c_void, *const c_char)>,
-    pub reconfigure_rate: Option<unsafe extern "C" fn(*mut c_void, u32) -> c_int>,
-    pub set_tx_enabled: Option<unsafe extern "C" fn(*mut c_void, bool)>,
-    pub write_period: Option<unsafe extern "C" fn(*mut c_void, *const f32, u32, u32) -> c_int>,
-    pub open_capture: Option<unsafe extern "C" fn(*mut c_void, *const c_char, u32) -> c_int>,
-    pub read_capture_native: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *mut f32,
-            u32,
-            *mut u32,
-            *mut u32,
-            u32,
-            u32,
-            *mut u64,
-        ) -> c_int,
-    >,
-    pub enumerate_devices: Option<
-        unsafe extern "C" fn(
-            *const c_void,
-            *const c_char,
-            *const c_char,
-            *mut LasapiDeviceList,
-        ) -> c_int,
-    >,
-    pub hw_fingerprint: Option<unsafe extern "C" fn(*const c_void) -> u64>,
-    pub set_volume: Option<unsafe extern "C" fn(*mut c_void, c_int, c_int) -> c_int>,
-    pub set_mic_volume: Option<unsafe extern "C" fn(*mut c_void, c_int, c_int) -> c_int>,
-    pub set_mic_gain_ppm: Option<unsafe extern "C" fn(*mut c_void, u32, c_int, c_int) -> c_int>,
-    pub set_codec_config: Option<unsafe extern "C" fn(*mut c_void, *const LasapiBtCodecCfg) -> c_int>,
-    pub get_codec_config: Option<unsafe extern "C" fn(*const c_void, *mut LasapiBtCodecCfg)>,
-    pub set_sco_enabled: Option<unsafe extern "C" fn(*mut c_void, bool) -> c_int>,
-    pub close: Option<unsafe extern "C" fn(*mut c_void)>,
-    pub reset_device: Option<unsafe extern "C" fn(*const c_char, *mut c_char, usize) -> c_int>,
-}
-
-static BT_OPS: std::sync::OnceLock<SalsaBtOps> = std::sync::OnceLock::new();
-
-#[inline]
-fn bt_ops() -> Option<&'static SalsaBtOps> {
-    BT_OPS.get()
-}
-
-/// Register the C BlueZ / ALSA capture callback table before invoking `salsa_audiodg_main`
-/// or `salsa_ctl_main`.
-///
-/// # Safety
-/// `ops` must be null or point to a valid `SalsaBtOps` struct for the duration of this call.
-#[no_mangle]
-pub unsafe extern "C" fn salsa_register_bt_ops(ops: *const SalsaBtOps) {
-    if !ops.is_null() {
-        let _ = BT_OPS.set(unsafe { *ops });
-    }
-}
-
-pub(crate) unsafe fn salsa_audiodg_bt_ptr() -> *mut c_void {
-    if let Some(f) = bt_ops().and_then(|o| o.bt_ptr) {
-        unsafe { f() }
-    } else {
-        #[cfg(not(test))]
-        {
-            crate::bluez_runtime::audiodg_bt_ptr_impl()
-        }
-        #[cfg(test)]
-        {
-            core::ptr::null_mut()
-        }
-    }
-}
-
-pub(crate) unsafe fn salsa_bt_is_initialized(bt: *const c_void) -> bool {
-    if bt_ops().is_none() {
-        #[cfg(not(test))]
-        {
-            return unsafe { crate::bluez_runtime::bt_is_initialized_impl(bt) };
-        }
-    }
-    let mut snap: SalsaBtSnapshot = unsafe { core::mem::zeroed() };
-    unsafe { salsa_bt_get_snapshot(bt, &mut snap) };
-    snap.initialized
-}
-
-pub(crate) unsafe fn salsa_bt_get_snapshot(bt: *const c_void, out: *mut SalsaBtSnapshot) {
-    if let Some(f) = bt_ops().and_then(|o| o.get_snapshot) {
-        unsafe { f(bt, out) };
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bt_get_snapshot_impl(bt, out);
-        }
-        #[cfg(test)]
-        if !out.is_null() {
-            unsafe {
-                *out = core::mem::zeroed();
-                (*out).bt_fd = -1;
-                (*out).cap_pcm_fd = -1;
-                (*out).desktop_volume_pct = 100;
-                (*out).desktop_mic_volume_pct = 100;
-                (*out).desktop_mic_gain_ppm = 1_000_000;
-            }
-        }
-    }
-}
-
-pub(crate) unsafe fn salsa_bt_rt_master_vol(
-    bt: *const c_void,
-    out_vol_pct: *mut u32,
-    out_muted: *mut bool,
-) {
-    if let Some(f) = bt_ops().and_then(|o| o.rt_master_vol) {
-        unsafe { f(bt, out_vol_pct, out_muted) };
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bt_rt_master_vol_impl(bt, out_vol_pct, out_muted);
-        }
-        #[cfg(test)]
-        {
-            if !out_vol_pct.is_null() {
-                unsafe { *out_vol_pct = 100 };
-            }
-            if !out_muted.is_null() {
-                unsafe { *out_muted = false };
-            }
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_init_rates(
-    bt: *mut c_void,
-    engine_sample_rate: u32,
-    capture_sample_rate: u32,
-    preferred_cap_id: *const c_char,
-    preferred_pb_id: *const c_char,
-) -> c_int {
-    if let Some(f) = bt_ops().and_then(|o| o.init_rates) {
-        unsafe { f(bt, engine_sample_rate, capture_sample_rate, preferred_cap_id, preferred_pb_id) }
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_init_rates_impl(
-                bt,
-                engine_sample_rate,
-                capture_sample_rate,
-                preferred_cap_id,
-                preferred_pb_id,
-            )
-        }
-        #[cfg(test)]
-        {
-            let _ = (bt, engine_sample_rate, capture_sample_rate, preferred_cap_id, preferred_pb_id);
-            0
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_set_preferred_target(
-    bt: *mut c_void,
-    preferred_pb_id: *const c_char,
-) {
-    if let Some(f) = bt_ops().and_then(|o| o.set_preferred_target) {
-        unsafe { f(bt, preferred_pb_id) };
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_set_preferred_target_impl(bt, preferred_pb_id);
-        }
-        #[cfg(test)]
-        let _ = (bt, preferred_pb_id);
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_reconfigure_rate(
-    bt: *mut c_void,
-    new_engine_sample_rate: u32,
-) -> c_int {
-    if let Some(f) = bt_ops().and_then(|o| o.reconfigure_rate) {
-        unsafe { f(bt, new_engine_sample_rate) }
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_reconfigure_rate_impl(bt, new_engine_sample_rate)
-        }
-        #[cfg(test)]
-        {
-            let _ = (bt, new_engine_sample_rate);
-            0
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_set_tx_enabled(bt: *mut c_void, enabled: bool) {
-    if let Some(f) = bt_ops().and_then(|o| o.set_tx_enabled) {
-        unsafe { f(bt, enabled) };
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_set_tx_enabled_impl(bt, enabled);
-        }
-        #[cfg(test)]
-        let _ = (bt, enabled);
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_write_period(
-    bt: *mut c_void,
-    interleaved_float: *const f32,
-    frames: u32,
-    channels: u32,
-) -> c_int {
-    if let Some(f) = bt_ops().and_then(|o| o.write_period) {
-        unsafe { f(bt, interleaved_float, frames, channels) }
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_write_period_impl(bt, interleaved_float, frames, channels)
-        }
-        #[cfg(test)]
-        {
-            let _ = (bt, interleaved_float, frames, channels);
-            0
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_open_capture(
-    bt: *mut c_void,
-    preferred_cap_id: *const c_char,
-    capture_sample_rate: u32,
-) -> c_int {
-    if let Some(f) = bt_ops().and_then(|o| o.open_capture) {
-        unsafe { f(bt, preferred_cap_id, capture_sample_rate) }
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_open_capture_impl(
-                bt,
-                preferred_cap_id,
-                capture_sample_rate,
-            )
-        }
-        #[cfg(test)]
-        {
-            let _ = (bt, preferred_cap_id, capture_sample_rate);
-            0
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) unsafe fn lasapi_bluez_read_capture_native(
-    bt: *mut c_void,
-    out_stereo_float: *mut f32,
-    max_frames: u32,
-    out_frames: *mut u32,
-    out_rate: *mut u32,
-    eng_frames: u32,
-    eng_rate: u32,
-    io_read_cursor: *mut u64,
-) -> c_int {
-    if let Some(f) = bt_ops().and_then(|o| o.read_capture_native) {
-        unsafe {
-            f(
-                bt,
-                out_stereo_float,
-                max_frames,
-                out_frames,
-                out_rate,
-                eng_frames,
-                eng_rate,
-                io_read_cursor,
-            )
-        }
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_read_capture_native_impl(
-                bt,
-                out_stereo_float,
-                max_frames,
-                out_frames,
-                out_rate,
-                eng_frames,
-                eng_rate,
-                io_read_cursor,
-            )
-        }
-        #[cfg(test)]
-        {
-            let _ = (bt, max_frames, io_read_cursor);
-            if !out_frames.is_null() {
-                unsafe { *out_frames = eng_frames };
-            }
-            if !out_rate.is_null() {
-                unsafe { *out_rate = eng_rate };
-            }
-            if !out_stereo_float.is_null() {
-                unsafe { core::ptr::write_bytes(out_stereo_float, 0, (eng_frames as usize) * 2) };
-            }
-            0
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_enumerate_devices(
-    bt: *const c_void,
-    active_pb_id: *const c_char,
-    active_cap_id: *const c_char,
-    out_list: *mut LasapiDeviceList,
-) -> c_int {
-    if let Some(f) = bt_ops().and_then(|o| o.enumerate_devices) {
-        unsafe { f(bt, active_pb_id, active_cap_id, out_list) }
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_enumerate_devices_impl(
-                bt,
-                active_pb_id,
-                active_cap_id,
-                out_list,
-            )
-        }
-        #[cfg(test)]
-        {
-            let _ = (bt, active_pb_id, active_cap_id);
-            if !out_list.is_null() {
-                unsafe { core::ptr::write_bytes(out_list, 0, 1) };
-            }
-            0
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_hw_fingerprint(bt: *const c_void) -> u64 {
-    if let Some(f) = bt_ops().and_then(|o| o.hw_fingerprint) {
-        unsafe { f(bt) }
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_hw_fingerprint_impl(bt)
-        }
-        #[cfg(test)]
-        {
-            let _ = bt;
-            0
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_set_volume(
-    bt: *mut c_void,
-    vol_pct: c_int,
-    mute_flag: c_int,
-) -> c_int {
-    if let Some(f) = bt_ops().and_then(|o| o.set_volume) {
-        unsafe { f(bt, vol_pct, mute_flag) }
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_set_volume_impl(bt, vol_pct, mute_flag)
-        }
-        #[cfg(test)]
-        {
-            let _ = (bt, vol_pct, mute_flag);
-            0
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_set_mic_volume(
-    bt: *mut c_void,
-    vol_pct: c_int,
-    mute_flag: c_int,
-) -> c_int {
-    if let Some(f) = bt_ops().and_then(|o| o.set_mic_volume) {
-        unsafe { f(bt, vol_pct, mute_flag) }
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_set_mic_volume_impl(bt, vol_pct, mute_flag)
-        }
-        #[cfg(test)]
-        {
-            let _ = (bt, vol_pct, mute_flag);
-            0
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_set_mic_gain_ppm(
-    bt: *mut c_void,
-    gain_ppm: u32,
-    vol_pct: c_int,
-    mute_flag: c_int,
-) -> c_int {
-    if let Some(f) = bt_ops().and_then(|o| o.set_mic_gain_ppm) {
-        unsafe { f(bt, gain_ppm, vol_pct, mute_flag) }
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_set_mic_gain_ppm_impl(bt, gain_ppm, vol_pct, mute_flag)
-        }
-        #[cfg(test)]
-        {
-            let _ = (bt, gain_ppm, vol_pct, mute_flag);
-            0
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_set_codec_config(
-    bt: *mut c_void,
-    cfg: *const LasapiBtCodecCfg,
-) -> c_int {
-    if let Some(f) = bt_ops().and_then(|o| o.set_codec_config) {
-        unsafe { f(bt, cfg) }
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_set_codec_config_impl(bt, cfg)
-        }
-        #[cfg(test)]
-        {
-            let _ = (bt, cfg);
-            0
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_get_codec_config(
-    bt: *const c_void,
-    out_cfg: *mut LasapiBtCodecCfg,
-) {
-    if let Some(f) = bt_ops().and_then(|o| o.get_codec_config) {
-        unsafe { f(bt, out_cfg) };
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_get_codec_config_impl(bt, out_cfg);
-        }
-        #[cfg(test)]
-        {
-            let _ = bt;
-            if !out_cfg.is_null() {
-                unsafe { core::ptr::write_bytes(out_cfg, 0, 1) };
-            }
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_set_sco_enabled(bt: *mut c_void, enabled: bool) -> c_int {
-    if let Some(f) = bt_ops().and_then(|o| o.set_sco_enabled) {
-        unsafe { f(bt, enabled) }
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_set_sco_enabled_impl(bt, enabled)
-        }
-        #[cfg(test)]
-        {
-            let _ = (bt, enabled);
-            0
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_close(bt: *mut c_void) {
-    if let Some(f) = bt_ops().and_then(|o| o.close) {
-        unsafe { f(bt) };
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_close_impl(bt);
-        }
-        #[cfg(test)]
-        let _ = bt;
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_reset_device(
-    mac_or_empty: *const c_char,
-    out_msg: *mut c_char,
-    out_len: usize,
-) -> c_int {
-    if let Some(f) = bt_ops().and_then(|o| o.reset_device) {
-        unsafe { f(mac_or_empty, out_msg, out_len) }
-    } else {
-        #[cfg(not(test))]
-        unsafe {
-            crate::bluez_runtime::bluez_reset_device_impl(mac_or_empty, out_msg, out_len)
-        }
-        #[cfg(test)]
-        {
-            let _ = (mac_or_empty, out_msg, out_len);
-            -1
-        }
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_set_optional_mode(bt: *mut c_void, optional: bool) {
-    #[cfg(not(test))]
-    unsafe {
-        crate::bluez_runtime::bluez_set_optional_mode_impl(bt, optional);
-    }
-    #[cfg(test)]
-    let _ = (bt, optional);
-}
-
-pub(crate) unsafe fn lasapi_bluez_is_optional_mode(bt: *const c_void) -> bool {
-    #[cfg(not(test))]
-    {
-        unsafe { crate::bluez_runtime::bluez_is_optional_mode_impl(bt) }
-    }
-    #[cfg(test)]
-    {
-        let _ = bt;
-        true
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_known_audio_aliases(bt: *const c_void) -> Vec<String> {
-    #[cfg(not(test))]
-    {
-        unsafe { crate::bluez_runtime::bluez_known_audio_aliases_impl(bt) }
-    }
-    #[cfg(test)]
-    {
-        let _ = bt;
-        Vec::new()
-    }
-}
-
-pub(crate) unsafe fn lasapi_bluez_connection_ctl(
-    bt: *mut c_void,
-    action: u32,
-    mac_or_empty: *const c_char,
-    out_msg: *mut c_char,
-    out_len: usize,
-    out_flags: *mut u32,
-) -> c_int {
-    #[cfg(not(test))]
-    {
-        unsafe {
-            crate::bluez_runtime::bluez_connection_ctl_impl(
-                bt,
-                action,
-                mac_or_empty,
-                out_msg,
-                out_len,
-                out_flags,
-            )
-        }
-    }
-    #[cfg(test)]
-    {
-        let _ = (bt, action, mac_or_empty, out_msg, out_len);
-        if !out_flags.is_null() {
-            unsafe { *out_flags = LASAPI_BT_STAT_OPTIONAL };
-        }
-        0
-    }
-}
-
 /// Runs a `extern "C" fn(argc, argv) -> c_int` entrypoint using process arguments and exits with its status code.
 pub fn run_c_main(entry: unsafe extern "C" fn(c_int, *const *const c_char) -> c_int) -> ! {
     use std::ffi::CString;
@@ -1443,25 +674,8 @@ mod tests {
         assert_eq!(size_of::<LasapiEngineStatus>(), 7136);
         assert_eq!(size_of::<LasapiDeviceList>(), 6020);
         assert_eq!(size_of::<LasapiSessionInfo>(), 184);
-        assert_eq!(size_of::<LasapiDbgPaClient>(), 152);
-        assert_eq!(size_of::<LasapiDbgPaStream>(), 232);
-        assert_eq!(size_of::<LasapiDbgPaSnapshot>(), 16008);
-        assert_eq!(size_of::<LasapiDbgPwClient>(), 208);
-        assert_eq!(size_of::<LasapiDbgPwNode>(), 216);
-        assert_eq!(size_of::<LasapiDbgPwLink>(), 72);
-        assert_eq!(size_of::<LasapiDbgPwSnapshot>(), 16272);
         assert_eq!(size_of::<LasapiDbgDgram>(), 244);
         assert_eq!(size_of::<LasapiDbgRtStats>(), 96);
-        assert_eq!(size_of::<LasapiDbgLasapiSession>(), 128);
-        assert_eq!(size_of::<LasapiDbgCallbacks>(), 24);
-        assert_eq!(size_of::<LasapiDbgSnapshot>(), 44536);
-        assert_eq!(offset_of!(LasapiDbgSnapshot, target_playback_id), 7232);
-        assert_eq!(offset_of!(LasapiDbgSnapshot, bt_initialized), 7360);
-        assert_eq!(offset_of!(LasapiDbgSnapshot, cap_active), 7776);
-        assert_eq!(offset_of!(LasapiDbgSnapshot, midi_initialized), 8006);
-        assert_eq!(offset_of!(LasapiDbgSnapshot, num_lasapi), 8152);
-        assert_eq!(offset_of!(LasapiDbgSnapshot, pa), 12256);
-        assert_eq!(offset_of!(LasapiDbgSnapshot, pw), 28264);
         assert_eq!(offset_of!(LasapiPwPreviewShm, pixels), 520);
         assert_eq!(size_of::<LasapiPwPreviewShm>(), 33_178_120);
         assert_eq!(size_of::<LasapiMidiEvent>(), 24);
@@ -1499,7 +713,6 @@ mod tests {
         assert_eq!(offset_of!(LasapiEngineStatus, bt_codec_cfg), 6_752);
         assert_eq!(offset_of!(LasapiEngineStatus, hw_analog_cfg), 6_864);
         assert_eq!(size_of::<SalsaBtSnapshot>(), 768);
-        assert_eq!(size_of::<SalsaBtOps>(), 160);
         assert_eq!(size_of::<WaveFormatEx>(), 20);
     }
 }

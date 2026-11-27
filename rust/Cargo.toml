@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "salsa_host_dl",
     "salsa_net",
     "lasapi_client",
     "alsa_plugin_lasapi",

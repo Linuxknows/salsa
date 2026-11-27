@@ -660,29 +660,8 @@ void ActivationTokenWaiter::onToken(int sigSerial, const QString& tok) {
 }  // namespace detail
 
 QString singleInstanceSockPath(const QString& sockFileName) {
-    const uid_t myUid = ::getuid();
-    auto ensurePrivateDir = [myUid](const QString& dir) -> bool {
-        const QByteArray db = dir.toLocal8Bit();
-        ::mkdir(db.constData(), 0700);
-        struct stat st{};
-        if (::lstat(db.constData(), &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != myUid) {
-            return false;
-        }
-        if ((st.st_mode & 077) != 0 && ::chmod(db.constData(), 0700) != 0) {
-            return false;
-        }
-        return true;
-    };
-    const QByteArray xdg = qgetenv("XDG_RUNTIME_DIR");
-    if (!xdg.isEmpty()) {
-        const QString dir = QString::fromLocal8Bit(xdg) + QStringLiteral("/lasapi");
-        if (ensurePrivateDir(dir)) return dir + QStringLiteral("/") + sockFileName;
-    }
-    const QString runDir = QStringLiteral("/run/user/%1/lasapi").arg(static_cast<qulonglong>(myUid));
-    if (ensurePrivateDir(runDir)) return runDir + QStringLiteral("/") + sockFileName;
-    const QString tmpDir = QStringLiteral("/tmp/lasapi-%1").arg(static_cast<qulonglong>(myUid));
-    if (ensurePrivateDir(tmpDir)) return tmpDir + QStringLiteral("/") + sockFileName;
-    return QString();
+    const QByteArray nameBytes = sockFileName.toUtf8();
+    return SalsaStr(salsa_single_instance_sock_path(nameBytes.constData())).toQString();
 }
 
 bool tryActivateExistingSingleInstance(

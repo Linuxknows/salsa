@@ -15,4 +15,5 @@ pub mod sni;
 pub mod studio_helpers;
 pub mod studio_manual;
 pub mod theme;
+pub mod tray_placement;
 pub mod x11_util;

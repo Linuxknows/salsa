@@ -12,5 +12,5 @@ pub mod debug_cli;
 pub mod debug_core;
 pub mod host;
 pub mod ipc;
-pub mod json;
+pub use salsa_wire::json;
 pub mod zlib_png;

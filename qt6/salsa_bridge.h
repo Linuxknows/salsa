@@ -247,6 +247,7 @@ bool salsa_abi_sizes_ok(
 void salsa_reset_sigpipe(void);
 
 int salsa_get_engine_status(SalsaEngineStatus* out);
+uint32_t salsa_status_effective_capture_rate(const SalsaEngineStatus* st);
 int salsa_list_devices(SalsaDeviceList* out);
 int salsa_set_devices(const char* pb_id, const char* cap_id);
 int salsa_set_master_volume(int pct, int muted);
@@ -256,7 +257,6 @@ int salsa_set_engine_config(uint32_t rate, uint32_t period, uint32_t bits);
 int salsa_set_capture_sample_rate(uint32_t rate);
 int salsa_set_parametric_eq(const SalsaEqConfig* eq, const SalsaParamEqExt* ext);
 int salsa_set_dynamic_eq(const SalsaEqConfig* eq);
-int salsa_set_mic_apo(const SalsaMicApoCfg* mic);
 int salsa_set_bt_codec_config(const SalsaBtCodecCfg* bt);
 int salsa_set_hw_analog(const SalsaHwAnalogCfg* hwa);
 char* salsa_probe_playback_caps_json(const char* pb_id);
@@ -271,23 +271,28 @@ int salsa_update_gui_settings_json(const char* patch_json);
 char* salsa_settings_path_str(void);
 int salsa_save_config_now(void);
 int salsa_reload_config_now(void);
-int salsa_overwrite_settings_from_ui(
-    uint32_t sample_rate,
-    uint32_t period_frames,
-    uint32_t format_bits,
-    uint32_t cap_sample_rate,
-    const char* playback_id,
-    const char* capture_id,
-    uint32_t master_pct,
-    uint32_t master_muted,
-    uint32_t mic_pct,
-    uint32_t mic_muted,
-    uint32_t bt_optional_mode,
-    const SalsaBtCodecCfg* bt_cfg,
-    const SalsaHwAnalogCfg* hw_analog,
-    const SalsaEqConfig* eq_cfg,
-    const SalsaParamEqExt* param_ext,
-    const char* gui_json);
+typedef struct SalsaUiOverwriteReq {
+    uint32_t sample_rate;
+    uint32_t period_frames;
+    uint32_t format_bits;
+    uint32_t cap_sample_rate;
+    uint32_t master_pct;
+    uint32_t master_muted;
+    uint32_t mic_pct;
+    uint32_t mic_muted;
+    uint32_t bt_optional_mode;
+    uint32_t _reserved0;
+    const char* playback_id;
+    const char* capture_id;
+    const SalsaBtCodecCfg* bt_cfg;
+    const SalsaHwAnalogCfg* hw_analog;
+    const SalsaEqConfig* eq_cfg;
+    const SalsaParamEqExt* param_ext;
+    const char* gui_json;
+} SalsaUiOverwriteReq;
+
+int salsa_overwrite_settings_from_ui(const SalsaUiOverwriteReq* req);
+char* salsa_single_instance_sock_path(const char* sock_file_name);
 int salsa_normalize_font_scale(int pct);
 int salsa_save_font_scale(int pct);
 int salsa_load_font_scale(void);
@@ -300,7 +305,6 @@ char* salsa_all_theme_names_json(bool for_tray);
 char* salsa_theme_token_groups_json(void);
 
 char* salsa_builtin_eq_presets_json(void);
-char* salsa_mic_apo_presets_json(void);
 char* salsa_default_shortcuts_json(void);
 char* salsa_saved_autoeq_list_json(void);
 int salsa_save_autoeq_list_json(const char* list_json);
@@ -344,7 +348,6 @@ void salsa_dbg_destroy(void* handle);
 char* salsa_dbg_stats_json(void* handle);
 char* salsa_dbg_latest_snapshot_json(void* handle);
 char* salsa_dbg_recent_events_json(void* handle, size_t max_items);
-size_t salsa_dbg_drain_events(void* handle, size_t max_items);
 int salsa_dbg_send_command(void* handle, const char* cmd);
 int salsa_dbg_request_snapshot(void* handle);
 char* salsa_dbg_reset_net_clients_json(void* handle);
@@ -392,16 +395,111 @@ uint8_t* salsa_tray_header_icon_png(void* h, size_t* len_out);
 
 void* salsa_acquire_tray_lock(bool replace);
 void salsa_release_tray_lock(void* h);
-bool salsa_pid_in_tray_unit(void);
-bool salsa_tray_unit_active_or_enabled(void);
-bool salsa_display_is_x11(void);
-void salsa_map_sni_point(int32_t rx, int32_t ry, int32_t* sx, int32_t* sy);
 void salsa_plasma_panel_info(int32_t* loc, int32_t* clearance, int32_t* right_pad);
-void salsa_monitor_geo_near(int32_t x, int32_t y, int32_t* mx, int32_t* my, int32_t* mw, int32_t* mh);
 void salsa_apply_x11_popup_hints(uint64_t xid, bool skip_taskbar, bool above, int32_t w, int32_t h);
 void salsa_apply_x11_osd_hints(uint64_t xid, int32_t w, int32_t h);
-void salsa_move_x11_window(uint64_t xid, int32_t x, int32_t y);
-double salsa_ui_scale(void);
+
+typedef struct SalsaRectI32 {
+    int32_t x;
+    int32_t y;
+    int32_t w;
+    int32_t h;
+} SalsaRectI32;
+
+typedef struct SalsaMonitorInfo {
+    char name[64];
+    SalsaRectI32 geo;
+    SalsaRectI32 avail;
+    double dpr;
+} SalsaMonitorInfo;
+
+typedef struct SalsaTrayResolveReq {
+    int32_t raw_x;
+    int32_t raw_y;
+    int32_t cursor_x;
+    int32_t cursor_y;
+    uint8_t has_raw;
+    uint8_t is_xcb;
+    uint8_t is_kde_env;
+    uint8_t _pad0;
+} SalsaTrayResolveReq;
+
+typedef struct SalsaTrayTargetPos {
+    int32_t screen_idx;
+    int32_t qt_x;
+    int32_t qt_y;
+} SalsaTrayTargetPos;
+
+typedef struct SalsaTrayPopupPlan {
+    int32_t screen_idx;
+    int32_t qt_x;
+    int32_t qt_y;
+    int32_t panel_loc;
+    int32_t panel_clearance;
+    int32_t logical_pad;
+    int32_t anchor_raw_local_offset;
+    int32_t anchor_bottom;
+    int32_t popup_x;
+    int32_t popup_y;
+    SalsaRectI32 avail;
+    SalsaRectI32 screen_geo;
+    int32_t margin_left;
+    int32_t margin_top;
+    int32_t margin_right;
+    int32_t margin_bottom;
+    uint8_t layer_anchor_top;
+    uint8_t layer_anchor_bottom;
+    uint8_t layer_anchor_left;
+    uint8_t layer_anchor_right;
+} SalsaTrayPopupPlan;
+
+typedef struct SalsaTrayResizeReq {
+    SalsaRectI32 screen_geo;
+    SalsaRectI32 avail;
+    int32_t panel_loc;
+    int32_t anchor_raw_local_offset;
+    int32_t anchor_bottom;
+    int32_t cur_x;
+    int32_t cur_y;
+    int32_t pop_w;
+    int32_t pop_h;
+    int32_t edge_pad;
+    uint8_t is_layer_shell;
+    uint8_t _pad[3];
+} SalsaTrayResizeReq;
+
+typedef struct SalsaTrayResizePlan {
+    int32_t margin_left;
+    int32_t margin_top;
+    int32_t margin_right;
+    int32_t margin_bottom;
+    int32_t new_x;
+    int32_t new_y;
+    uint8_t update_margins;
+    uint8_t move_floating;
+    uint8_t _pad[2];
+} SalsaTrayResizePlan;
+
+SalsaTrayTargetPos salsa_resolve_tray_target(
+    const SalsaMonitorInfo* screens,
+    size_t screen_count,
+    const SalsaTrayResolveReq* req);
+SalsaTrayPopupPlan salsa_compute_tray_popup_plan(
+    const SalsaMonitorInfo* screens,
+    size_t screen_count,
+    const SalsaTrayResolveReq* req,
+    int32_t pop_w,
+    int32_t pop_h,
+    int32_t edge_pad,
+    bool is_layer_shell);
+SalsaTrayResizePlan salsa_compute_tray_resize_plan(const SalsaTrayResizeReq* req);
+void salsa_compute_osd_pos(
+    const SalsaRectI32* avail,
+    int32_t w,
+    int32_t h,
+    int32_t bottom_margin,
+    int32_t* out_x,
+    int32_t* out_y);
 
 char* salsa_version_str(void);
 char* salsa_license_section_text(const char* app_name, int section);

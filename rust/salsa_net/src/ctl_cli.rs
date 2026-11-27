@@ -5,15 +5,7 @@
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
-#![allow(unsafe_code)]
-#![allow(clippy::missing_safety_doc)]
-
-use core::ffi::{c_char, c_int};
-use core::mem;
-use core::ptr;
-use core::slice;
 use std::env;
-use std::ffi::{CStr, CString};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
@@ -26,7 +18,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, AUDCLNT_SHAREMODE_EXCLUSIVE, E_FAIL, LasapiDeviceList,
+    c_str_to_string, copy_str_to_c, PodBytes, AUDCLNT_SHAREMODE_EXCLUSIVE, E_FAIL, LasapiDeviceList,
     LasapiEngineStatus, LasapiEqConfig, LasapiHwAnalogCfg, LasapiIpcReq, LasapiIpcResp,
     LasapiParamEqPayload, LASAPI_BT_CAP_AAC, LASAPI_BT_CAP_APTX, LASAPI_BT_CAP_APTX_HD,
     LASAPI_BT_CAP_LDAC, LASAPI_BT_CAP_SBC, LASAPI_BT_CONN_CONNECT,
@@ -35,11 +27,11 @@ use crate::c_abi::{
     LASAPI_BT_PREF_APTX_HD, LASAPI_BT_PREF_AUTO, LASAPI_BT_PREF_LDAC, LASAPI_BT_PREF_SBC,
     LASAPI_BT_STAT_CONNECTED, LASAPI_BT_STAT_OPTIONAL, LASAPI_BT_STAT_TRANSPORT,
     LASAPI_BT_STAT_USB_MATCHES_BT, LASAPI_CFG_FLAG_CAPTURE_RATE, LASAPI_CMD_BT_CONNECTION,
-    LASAPI_CMD_GET_STATUS, LASAPI_CMD_INJECT_MIDI, LASAPI_CMD_LIST_DEVICES,
-    LASAPI_CMD_RELOAD_CONFIG, LASAPI_CMD_SAVE_CONFIG, LASAPI_CMD_SET_BT_CODEC,
-    LASAPI_CMD_SET_DEVICES, LASAPI_CMD_SET_ENGINE_CONFIG, LASAPI_CMD_SET_EQ, LASAPI_CMD_SET_HW_ANALOG,
-    LASAPI_CMD_SET_MIC_APO, LASAPI_CMD_SET_PARAM_EQ, LASAPI_CMD_SET_SESSION_CONTROL,
-    LASAPI_CMD_SET_VOLUME, LASAPI_EQ_BANDS, LASAPI_FILTER_HIGH_SHELF, LASAPI_FILTER_LOW_SHELF,
+    LASAPI_CMD_INJECT_MIDI, LASAPI_CMD_RELOAD_CONFIG, LASAPI_CMD_SAVE_CONFIG,
+    LASAPI_CMD_SET_BT_CODEC, LASAPI_CMD_SET_ENGINE_CONFIG, LASAPI_CMD_SET_EQ,
+    LASAPI_CMD_SET_HW_ANALOG, LASAPI_CMD_SET_MIC_APO, LASAPI_CMD_SET_PARAM_EQ,
+    LASAPI_CMD_SET_SESSION_CONTROL, LASAPI_CMD_SET_VOLUME, LASAPI_EQ_BANDS,
+    LASAPI_FILTER_HIGH_SHELF, LASAPI_FILTER_LOW_SHELF,
     LASAPI_FILTER_PEAK, LASAPI_LDAC_MODE_330, LASAPI_LDAC_MODE_660, LASAPI_LDAC_MODE_990,
     LASAPI_LDAC_MODE_ADAPTIVE, S_OK,
 };
@@ -50,8 +42,6 @@ use crate::hw_analog::{
 use crate::legal::{handle_common_cli_flag, one_line_legal_notice, salsa_version};
 use crate::unix_sys::{current_uid, resolve_sock_path_common, O_CLOEXEC, O_NOFOLLOW};
 
-use crate::c_abi::{lasapi_bluez_enumerate_devices, lasapi_bluez_reset_device};
-
 fn get_socket_path() -> String {
     resolve_sock_path_common("LASAPI_SOCKET", "audiodg.sock", "/tmp/lasapi-audiodg.sock")
 }
@@ -60,58 +50,57 @@ fn get_debug_socket_path() -> String {
     resolve_sock_path_common("LASAPI_DEBUG_SOCK", "debug.sock", "/tmp/lasapi-debug.sock")
 }
 
-fn struct_as_bytes<T>(val: &T) -> &[u8] {
-    unsafe { slice::from_raw_parts((val as *const T).cast::<u8>(), mem::size_of::<T>()) }
-}
-
-fn struct_as_bytes_mut<T>(val: &mut T) -> &mut [u8] {
-    unsafe { slice::from_raw_parts_mut((val as *mut T).cast::<u8>(), mem::size_of::<T>()) }
-}
-
-fn zeroed_struct<T>() -> T {
-    unsafe { mem::zeroed() }
-}
-
-fn connect_engine() -> Option<UnixStream> {
-    UnixStream::connect(get_socket_path()).ok()
+fn zeroed_struct<T: PodBytes>() -> T {
+    T::zeroed()
 }
 
 fn get_full_status() -> Option<LasapiEngineStatus> {
-    let mut stream = connect_engine()?;
-    let mut req: LasapiIpcReq = zeroed_struct();
-    req.cmd = LASAPI_CMD_GET_STATUS;
-    stream.write_all(struct_as_bytes(&req)).ok()?;
-    let mut st: LasapiEngineStatus = zeroed_struct();
-    stream.read_exact(struct_as_bytes_mut(&mut st)).ok()?;
-    Some(st)
+    let sock = get_socket_path();
+    let resp = crate::control_ipc::ControlClient::send_with_timeout(
+        &sock,
+        &crate::control_ipc::ControlRequest::GetStatus,
+        crate::control_ipc::DEFAULT_CONTROL_TIMEOUT,
+    )
+    .ok()?;
+    match resp.payload {
+        crate::control_ipc::ControlPayload::Status { status, .. } if resp.hr == S_OK => Some(*status),
+        _ => None,
+    }
 }
 
 fn send_req_only(req: &LasapiIpcReq) -> Option<LasapiIpcResp> {
-    let mut stream = connect_engine()?;
-    stream.write_all(struct_as_bytes(req)).ok()?;
-    let mut resp: LasapiIpcResp = zeroed_struct();
-    resp.hr = E_FAIL;
-    let _ = stream.read_exact(struct_as_bytes_mut(&mut resp));
-    Some(resp)
+    let ctrl_req = crate::control_ipc::legacy_ipc_req_to_control(req, &[])?;
+    let sock = get_socket_path();
+    let resp = crate::control_ipc::ControlClient::send_with_timeout(
+        &sock,
+        &ctrl_req,
+        crate::control_ipc::DEFAULT_CONTROL_TIMEOUT,
+    )
+    .ok()?;
+    Some(crate::control_ipc::control_resp_to_legacy(&resp))
 }
 
 fn send_payload_cmd(cmd: u32, payload: &[u8]) -> (i32, LasapiIpcResp) {
-    let mut resp: LasapiIpcResp = zeroed_struct();
-    resp.hr = E_FAIL;
-    let Some(mut stream) = connect_engine() else {
+    let mut dummy: LasapiIpcReq = zeroed_struct();
+    dummy.cmd = cmd;
+    dummy.requested_buffer_frames = payload.len() as u32;
+    let Some(ctrl_req) = crate::control_ipc::legacy_ipc_req_to_control(&dummy, payload) else {
+        let mut resp: LasapiIpcResp = zeroed_struct();
+        resp.hr = E_FAIL;
         return (1, resp);
     };
-    let mut req: LasapiIpcReq = zeroed_struct();
-    req.cmd = cmd;
-    req.requested_buffer_frames = payload.len() as u32;
-    if stream.write_all(struct_as_bytes(&req)).is_err() {
+    let sock = get_socket_path();
+    let Ok(resp) = crate::control_ipc::ControlClient::send_with_timeout(
+        &sock,
+        &ctrl_req,
+        crate::control_ipc::DEFAULT_CONTROL_TIMEOUT,
+    ) else {
+        let mut resp: LasapiIpcResp = zeroed_struct();
+        resp.hr = E_FAIL;
         return (1, resp);
-    }
-    if !payload.is_empty() && stream.write_all(payload).is_err() {
-        return (1, resp);
-    }
-    let _ = stream.read_exact(struct_as_bytes_mut(&mut resp));
-    (i32::from(resp.hr != S_OK), resp)
+    };
+    let leg = crate::control_ipc::control_resp_to_legacy(&resp);
+    (i32::from(leg.hr != S_OK), leg)
 }
 
 fn c_atoi(s: &str) -> i32 {
@@ -255,12 +244,11 @@ fn cmd_status() -> i32 {
         " Hardware Clock & Depth : {} Hz (Fixed Master) | {} Channels | {}-bit PCM",
         st.hw_sample_rate, st.hw_channels, st.hw_format_bits
     );
-    if (8000..=384_000).contains(&st.hw_analog_info.reserved)
-        && st.hw_analog_info.reserved != st.hw_sample_rate
-    {
+    let cap_hz = st.effective_capture_rate_hz();
+    if cap_hz != st.hw_sample_rate {
         println!(
             " Capture / Mic Clock    : {} Hz (Independent Mic Clock)",
-            st.hw_analog_info.reserved
+            cap_hz
         );
     }
     println!(
@@ -579,24 +567,21 @@ fn cmd_status() -> i32 {
 fn cmd_devices() -> i32 {
     let mut dlist: LasapiDeviceList = zeroed_struct();
     let mut live = false;
-    if let Some(mut stream) = connect_engine() {
-        let mut req: LasapiIpcReq = zeroed_struct();
-        req.cmd = LASAPI_CMD_LIST_DEVICES;
-        if stream.write_all(struct_as_bytes(&req)).is_ok()
-            && stream.read_exact(struct_as_bytes_mut(&mut dlist)).is_ok()
-        {
-            live = true;
+    if let Ok(resp) = crate::control_ipc::ControlClient::send_with_timeout(
+        &get_socket_path(),
+        &crate::control_ipc::ControlRequest::ListDevices,
+        crate::control_ipc::DEFAULT_CONTROL_TIMEOUT,
+    ) {
+        if let crate::control_ipc::ControlPayload::Devices(list) = resp.payload {
+            if resp.hr == S_OK {
+                dlist = *list;
+                live = true;
+            }
         }
     }
     if !live {
-        unsafe {
-            lasapi_bluez_enumerate_devices(
-                ptr::null(),
-                ptr::null(),
-                ptr::null(),
-                &mut dlist,
-            );
-        }
+        use crate::bluez_runtime::BluetoothBackend;
+        crate::bluez_runtime::RealBluezBackend::global().enumerate_devices(None, None, &mut dlist);
     }
 
     let ndev = (dlist.num_devices as usize).min(dlist.devices.len());
@@ -654,27 +639,22 @@ fn cmd_devices() -> i32 {
 }
 
 fn cmd_set_device(is_capture: bool, dev_id: &str) -> i32 {
-    let Some(mut stream) = connect_engine() else {
+    let req = crate::control_ipc::ControlRequest::SetDevices {
+        playback_id: (!is_capture).then(|| dev_id.to_string()),
+        capture_id: is_capture.then(|| dev_id.to_string()),
+    };
+    let Ok(resp) = crate::control_ipc::ControlClient::send_with_timeout(
+        &get_socket_path(),
+        &req,
+        crate::control_ipc::DEFAULT_CONTROL_TIMEOUT,
+    ) else {
         eprintln!(
             "Error: Could not connect to lasapi-audiodg on {}",
             get_socket_path()
         );
         return 1;
     };
-    let mut req: LasapiIpcReq = zeroed_struct();
-    req.cmd = LASAPI_CMD_SET_DEVICES;
-    if is_capture {
-        copy_str_to_c(&mut req.target_capture_device, dev_id);
-    } else {
-        copy_str_to_c(&mut req.target_device, dev_id);
-    }
-    if stream.write_all(struct_as_bytes(&req)).is_err() {
-        return 1;
-    }
-    let mut resp: LasapiIpcResp = zeroed_struct();
-    resp.hr = E_FAIL;
-    let ok = stream.read_exact(struct_as_bytes_mut(&mut resp)).is_ok();
-    if !ok || resp.hr != S_OK {
+    if resp.hr != S_OK {
         eprintln!(
             "Error: Failed to switch {} device to '{dev_id}'",
             if is_capture { "capture" } else { "playback" }
@@ -699,18 +679,7 @@ fn cmd_bt_reset(mac_or_empty: &str) -> i32 {
         }
     }
 
-    let Ok(c_hint) = CString::new(target_hint.as_str()) else {
-        return 1;
-    };
-    let mut msg_buf = [0u8; 256];
-    let rc = unsafe {
-        lasapi_bluez_reset_device(
-            c_hint.as_ptr(),
-            msg_buf.as_mut_ptr().cast::<c_char>(),
-            msg_buf.len(),
-        )
-    };
-    let msg = c_str_to_string(&msg_buf);
+    let (rc, msg) = crate::bluez_runtime::reset_device(&target_hint);
     if rc == 0 {
         println!(
             "{}",
@@ -959,65 +928,16 @@ fn cmd_eq_preset(preset: &str) -> i32 {
         return 1;
     };
     let mut eq = st.eq_cfg;
-    eq.enabled = 1;
-    eq.limiter_enabled = 1;
-    eq.band_q = [1.414; LASAPI_EQ_BANDS];
-
-    if preset.eq_ignore_ascii_case("flat") {
-        copy_str_to_c(&mut eq.preset_name, "Flat / Studio Reference");
-        eq.preamp_db = 0.0;
-        eq.dynamic_mode = 0;
-        eq.band_gains_db = [0.0; 10];
-    } else if preset.eq_ignore_ascii_case("bose") {
-        copy_str_to_c(&mut eq.preset_name, "Bose QC Ultra 2 Audiophile");
-        eq.preamp_db = -1.5;
-        eq.dynamic_mode = 0;
-        eq.dyn_threshold_db = -16.0;
-        eq.dyn_ratio = 2.0;
-        eq.band_gains_db = [1.0, 0.5, -1.5, -0.5, 0.5, 0.5, 0.5, 0.0, -1.5, 0.5];
-    } else if preset.eq_ignore_ascii_case("bass") {
-        copy_str_to_c(&mut eq.preset_name, "Dynamic Bass & Sub Control");
-        eq.preamp_db = -3.0;
-        eq.dynamic_mode = 1;
-        eq.dyn_threshold_db = -15.0;
-        eq.dyn_ratio = 3.2;
-        eq.band_gains_db = [6.5, 5.5, 3.0, 0.5, 0.0, 0.0, 1.0, 1.5, 2.0, 2.0];
-    } else if preset.eq_ignore_ascii_case("hires") {
-        copy_str_to_c(&mut eq.preset_name, "192kHz Hi-Res Mastering");
-        eq.preamp_db = -1.0;
-        eq.dynamic_mode = 2;
-        eq.dyn_threshold_db = -20.0;
-        eq.dyn_ratio = 1.8;
-        eq.band_gains_db = [1.5, 1.0, 0.0, -0.5, 0.0, 0.5, 1.5, 2.5, 3.5, 4.5];
-    } else if preset.eq_ignore_ascii_case("gaming") {
-        copy_str_to_c(&mut eq.preset_name, "FPS Gaming Footstep Radar");
-        eq.preamp_db = -2.0;
-        eq.dynamic_mode = 1;
-        eq.dyn_threshold_db = -22.0;
-        eq.dyn_ratio = 3.5;
-        eq.band_gains_db = [-3.0, -2.0, 0.0, 1.0, 2.0, 4.0, 5.5, 5.0, 2.5, 1.0];
-    } else if preset.eq_ignore_ascii_case("vocal") {
-        copy_str_to_c(&mut eq.preset_name, "Vocal & Podcast Clarity");
-        eq.preamp_db = -1.0;
-        eq.dynamic_mode = 1;
-        eq.dyn_threshold_db = -19.0;
-        eq.dyn_ratio = 2.8;
-        eq.band_gains_db = [-4.0, -2.5, -1.0, 1.5, 3.0, 4.0, 3.5, 2.5, 1.5, 0.5];
-    } else if preset.eq_ignore_ascii_case("loudness") {
-        copy_str_to_c(&mut eq.preset_name, "Late-Night Dynamic Loudness");
-        eq.preamp_db = -2.0;
-        eq.dynamic_mode = 1;
-        eq.dyn_threshold_db = -24.0;
-        eq.dyn_ratio = 4.0;
-        eq.band_gains_db = [4.5, 3.5, 1.5, 0.0, -0.5, 0.5, 2.0, 3.0, 4.0, 4.5];
-    } else {
+    let mut ext = st.param_eq;
+    if !crate::settings::apply_builtin_eq_preset(preset, &mut eq, &mut ext) {
         eprintln!(
             "Unknown preset '{preset}'. Use: flat, bose, bass, hires, gaming, vocal, loudness"
         );
         return 1;
     }
 
-    let rc = send_eq(&eq);
+    let pay = crate::c_abi::LasapiParamEqPayload { eq, ext };
+    let (rc, _) = send_payload_cmd(crate::c_abi::LASAPI_CMD_SET_PARAM_EQ, &pay.to_bytes());
     println!(
         "Applied Salsa Dynamic EQ preset: '{}' (rc={rc})",
         c_str_to_string(&eq.preset_name)
@@ -1179,7 +1099,7 @@ fn cmd_set_codec(codec_str: &str, tier_str: &str) -> i32 {
         }
     }
 
-    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_BT_CODEC, struct_as_bytes(&cfg));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_BT_CODEC, &cfg.to_bytes());
     println!(
         "BlueZ Codec Switcher -> {} (LDAC: {}, ABR: {}, HRESULT=0x{:08x})",
         bt_pref_name(cfg.preferred_codec),
@@ -1200,7 +1120,7 @@ fn cmd_bt_sco(mode_str: &str) -> i32 {
     };
     let mut cfg = st.bt_codec_cfg;
     cfg.hfp_sco_enabled = u32::from(mode_str.eq_ignore_ascii_case("on") || mode_str == "1");
-    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_BT_CODEC, struct_as_bytes(&cfg));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_BT_CODEC, &cfg.to_bytes());
     println!(
         "Bluetooth HFP BTPROTO_SCO Headset Mic -> {} (HRESULT=0x{:08x})",
         if cfg.hfp_sco_enabled != 0 {
@@ -1348,7 +1268,7 @@ fn cmd_hw_analog(args: &[String]) -> i32 {
         }
     }
 
-    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_HW_ANALOG, struct_as_bytes(&cfg));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_HW_ANALOG, &cfg.to_bytes());
     println!(
         "HW Analog Architecture -> DAC={} Amp={} Route={} 0dB-Rails={} SoftKnee={:+.1}dB MicBoost={:+.1}dB (HRESULT=0x{:08x})",
         if cfg.hw_dac_unity_vol != 0 {
@@ -1401,7 +1321,7 @@ fn cmd_param_eq(band: i32, freq: f32, q: f32, shape: &str, gain: f32) -> i32 {
         };
     copy_str_to_c(&mut pl.eq.preset_name, "Custom Parametric");
 
-    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_PARAM_EQ, struct_as_bytes(&pl));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_PARAM_EQ, &pl.to_bytes());
     println!(
         "Parametric Band #{band} -> {:.1} Hz | Q={:.2} | {shape} | {gain:+.1} dB (HRESULT=0x{:08x})",
         pl.ext.band_freq_hz[b],
@@ -1426,7 +1346,7 @@ fn cmd_crossfeed(mode_str: &str, level_pct: f32, cutoff_hz: u32) -> i32 {
     if (200..=2000).contains(&cutoff_hz) {
         pl.ext.crossfeed_cutoff_hz = cutoff_hz;
     }
-    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_PARAM_EQ, struct_as_bytes(&pl));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_PARAM_EQ, &pl.to_bytes());
     println!(
         "Bauer Headphone Crossfeed -> {} (Level: {:.0}%, Cutoff: {} Hz, HRESULT=0x{:08x})",
         if pl.ext.crossfeed_enabled != 0 {
@@ -1458,7 +1378,7 @@ fn cmd_mic_apo(mode_str: &str, rnn_arg: i32, gate_db: f32, side_pct: i32) -> i32
         cfg.sidetone_enabled = u32::from(side_pct > 0);
         cfg.sidetone_pct = side_pct as u32;
     }
-    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_MIC_APO, struct_as_bytes(&cfg));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_MIC_APO, &cfg.to_bytes());
     println!(
         "Capture Mic APO -> {} | RNNoise: {} | Gate: {:.1} dB | Sidetone: {} ({}%) (HRESULT=0x{:08x})",
         if cfg.enabled != 0 { "ACTIVE" } else { "BYPASSED" },
@@ -1476,50 +1396,12 @@ fn cmd_mic_preset(preset: &str) -> i32 {
         return 1;
     };
     let mut cfg = st.mic_apo;
-    if preset.eq_ignore_ascii_case("discord") {
-        cfg.enabled = 1;
-        cfg.hpf_enabled = 1;
-        cfg.hpf_hz = 65.0;
-        cfg.gate_enabled = 1;
-        cfg.gate_thresh_db = -50.0;
-        cfg.rnnoise_enabled = 1;
-        cfg.comp_enabled = 1;
-        cfg.comp_thresh_db = -14.0;
-        cfg.comp_ratio = 2.0;
-        cfg.clarity_db = 1.5;
-    } else if preset.eq_ignore_ascii_case("broadcast") {
-        cfg.enabled = 1;
-        cfg.hpf_enabled = 1;
-        cfg.hpf_hz = 75.0;
-        cfg.gate_enabled = 1;
-        cfg.gate_thresh_db = -45.0;
-        cfg.rnnoise_enabled = 1;
-        cfg.comp_enabled = 1;
-        cfg.comp_thresh_db = -15.0;
-        cfg.comp_ratio = 2.2;
-        cfg.clarity_db = 2.0;
-    } else if preset.eq_ignore_ascii_case("clean") || preset.eq_ignore_ascii_case("natural") {
-        cfg.enabled = 1;
-        cfg.hpf_enabled = 1;
-        cfg.hpf_hz = 65.0;
-        cfg.gate_enabled = 1;
-        cfg.gate_thresh_db = -52.0;
-        cfg.rnnoise_enabled = 0;
-        cfg.comp_enabled = 1;
-        cfg.comp_thresh_db = -16.0;
-        cfg.comp_ratio = 1.8;
-        cfg.clarity_db = 1.0;
-    } else if preset.eq_ignore_ascii_case("bypass")
-        || preset.eq_ignore_ascii_case("raw")
-        || preset.eq_ignore_ascii_case("off")
-    {
-        cfg.enabled = 0;
-    } else {
+    if !crate::settings::apply_mic_apo_preset(preset, &mut cfg) {
         eprintln!("Unknown mic preset '{preset}'. Use: discord, broadcast, clean, bypass");
         return 1;
     }
 
-    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_MIC_APO, struct_as_bytes(&cfg));
+    let (rc, resp) = send_payload_cmd(LASAPI_CMD_SET_MIC_APO, &cfg.to_bytes());
     println!(
         "Mic APO Preset '{preset}' -> {} | HPF {:.0}Hz | Gate {:.0}dB | RNNoise {} | Clarity {:+.1}dB (HRESULT=0x{:08x})",
         if cfg.enabled != 0 { "ACTIVE" } else { "BYPASSED" },
@@ -2584,20 +2466,8 @@ pub fn run_ctl(args: &[String]) -> i32 {
     1
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn salsa_ctl_main(argc: c_int, argv: *const *const c_char) -> c_int {
-    let mut args = Vec::new();
-    if argc > 0 && !argv.is_null() {
-        let raw = unsafe { slice::from_raw_parts(argv, argc as usize) };
-        for &ptr in raw {
-            if ptr.is_null() {
-                args.push(String::new());
-            } else {
-                let s = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
-                args.push(s);
-            }
-        }
-    }
+pub fn run_cli_from_env() -> i32 {
+    let args: Vec<String> = env::args().collect();
     run_ctl(&args)
 }
 

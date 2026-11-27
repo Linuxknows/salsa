@@ -182,6 +182,20 @@ pub struct GioApi {
         *mut c_void,
     ),
     pub g_dbus_method_invocation_return_value: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    pub g_bus_get_sync: unsafe extern "C" fn(c_int, *mut c_void, *mut *mut c_void) -> *mut c_void,
+    pub g_dbus_connection_call_sync: unsafe extern "C" fn(
+        *mut c_void,
+        *const c_char,
+        *const c_char,
+        *const c_char,
+        *const c_char,
+        *mut c_void,
+        *const c_void,
+        c_int,
+        c_int,
+        *mut c_void,
+        *mut *mut c_void,
+    ) -> *mut c_void,
 }
 
 static GLIB: OnceLock<Result<GlibApi, String>> = OnceLock::new();
@@ -271,10 +285,80 @@ pub fn gio() -> Result<&'static GioApi, &'static str> {
                 lib,
                 c"g_dbus_method_invocation_return_value",
             )?,
+            g_bus_get_sync: load_sym(lib, c"g_bus_get_sync")?,
+            g_dbus_connection_call_sync: load_sym(lib, c"g_dbus_connection_call_sync")?,
         })
     })
     .as_ref()
     .map_err(String::as_str)
+}
+
+pub fn dbus_session_call_string(
+    bus_name: &str,
+    obj_path: &str,
+    iface: &str,
+    method: &str,
+    timeout_ms: i32,
+) -> Option<String> {
+    let gl = glib().ok()?;
+    let go = gobj().ok()?;
+    let gi = gio().ok()?;
+    let b_name = cstr(bus_name);
+    let o_path = cstr(obj_path);
+    let i_name = cstr(iface);
+    let m_name = cstr(method);
+    unsafe {
+        let mut err: *mut c_void = core::ptr::null_mut();
+        let conn = (gi.g_bus_get_sync)(G_BUS_TYPE_SESSION, core::ptr::null_mut(), &mut err);
+        if !err.is_null() {
+            (gl.g_error_free)(err);
+            err = core::ptr::null_mut();
+        }
+        if conn.is_null() {
+            return None;
+        }
+        let reply_ty = (gl.g_variant_type_checked_)(c"(s)".as_ptr());
+        let res = (gi.g_dbus_connection_call_sync)(
+            conn,
+            b_name.as_ptr(),
+            o_path.as_ptr(),
+            i_name.as_ptr(),
+            m_name.as_ptr(),
+            core::ptr::null_mut(),
+            reply_ty,
+            0,
+            timeout_ms,
+            core::ptr::null_mut(),
+            &mut err,
+        );
+        if !err.is_null() {
+            (gl.g_error_free)(err);
+        }
+        let out = if !res.is_null() && (gl.g_variant_n_children)(res) >= 1 {
+            let child = (gl.g_variant_get_child_value)(res, 0);
+            if child.is_null() {
+                None
+            } else {
+                let mut len: usize = 0;
+                let s_ptr = (gl.g_variant_get_string)(child, &mut len);
+                let val = if s_ptr.is_null() {
+                    None
+                } else {
+                    let bytes = core::slice::from_raw_parts(s_ptr.cast::<u8>(), len);
+                    Some(String::from_utf8_lossy(bytes).into_owned())
+                };
+                (gl.g_variant_unref)(child);
+                val
+            }
+        } else {
+            None
+        };
+        if !res.is_null() {
+            (gl.g_variant_unref)(res);
+        }
+        (go.g_object_unref)(conn);
+        out
+    }
 }
 
 pub fn cstr(s: &str) -> CString {

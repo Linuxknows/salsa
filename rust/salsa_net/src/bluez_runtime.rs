@@ -55,7 +55,8 @@ use crate::bluez_wire::{
     BT_WIRE_APTX_HD, BT_WIRE_LDAC, BT_WIRE_SBC,
 };
 use crate::c_abi::{
-    copy_str_to_c, LasapiBtCodecCfg, LasapiDeviceEntry, LasapiDeviceList, SalsaBtSnapshot,
+    c_str_to_string, copy_str_to_c, LasapiBtCodecCfg, LasapiDeviceEntry, LasapiDeviceList,
+    SalsaBtSnapshot,
     LASAPI_BT_CAP_AAC, LASAPI_BT_CAP_APTX, LASAPI_BT_CAP_APTX_HD, LASAPI_BT_CAP_LDAC,
     LASAPI_BT_CAP_SBC, LASAPI_BT_CONN_CONNECT, LASAPI_BT_CONN_DISCONNECT,
     LASAPI_BT_CONN_SET_AUTOCONN, LASAPI_BT_CONN_SET_OPTIONAL, LASAPI_BT_PREF_AAC,
@@ -6151,6 +6152,345 @@ fn apply_peer_avrcp_vol(
     }
     let shown_pct = if keep_cur { cur_pct } else { pct };
     (cv, shown_pct)
+}
+
+pub trait BluetoothBackend: Send + Sync {
+    fn is_initialized(&self) -> bool;
+    fn rt_master_vol(&self) -> (u32, bool);
+    fn snapshot(&self) -> SalsaBtSnapshot;
+    fn init_rates(&self, rate: u32, cap_rate: u32, target_cap: &str, target_pb: &str) -> i32;
+    fn set_preferred_target(&self, target_pb: &str);
+    fn reconfigure_rate(&self, rate: u32) -> i32;
+    fn set_tx_enabled(&self, enabled: bool);
+    fn write_period(&self, pcm_interleaved: &[f32], frames: u32, ch: u32) -> i32;
+    fn open_capture(&self, dev_id: &str, rate: u32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn read_capture_native(
+        &self,
+        out: &mut [f32],
+        max_frames: u32,
+        out_frames: &mut u32,
+        out_rate: &mut u32,
+        eng_frames: u32,
+        eng_rate: u32,
+        io_read_cursor: &mut u64,
+    ) -> i32;
+    fn enumerate_devices(
+        &self,
+        pref_pb: Option<&str>,
+        pref_cap: Option<&str>,
+        out_list: &mut LasapiDeviceList,
+    ) -> i32;
+    fn hw_fingerprint(&self) -> u64;
+    fn set_volume(&self, vol_pct: i32, mute_flag: i32) -> i32;
+    fn set_mic_volume(&self, vol_pct: i32, mute_flag: i32) -> i32;
+    fn set_mic_gain_ppm(&self, gain_ppm: u32, vol_pct: i32, mute_flag: i32) -> i32;
+    fn set_codec_config(&self, cfg: &LasapiBtCodecCfg) -> i32;
+    fn get_codec_config(&self) -> LasapiBtCodecCfg;
+    fn set_sco_enabled(&self, enabled: bool) -> i32;
+    fn is_optional_mode(&self) -> bool;
+    fn set_optional_mode(&self, optional: bool);
+    fn known_audio_aliases(&self) -> Vec<String>;
+    fn connection_ctl(&self, action: u32, mac: &str) -> (i32, String, u32);
+    fn close(&self);
+}
+
+pub struct RealBluezBackend {
+    ptr: *mut c_void,
+}
+
+unsafe impl Send for RealBluezBackend {}
+unsafe impl Sync for RealBluezBackend {}
+
+impl RealBluezBackend {
+    pub fn global() -> Arc<Self> {
+        Arc::new(Self {
+            ptr: audiodg_bt_ptr_impl(),
+        })
+    }
+}
+
+fn opt_cstr(opt: Option<&str>) -> Option<CString> {
+    opt.and_then(|s| CString::new(s).ok())
+}
+
+impl BluetoothBackend for RealBluezBackend {
+    fn is_initialized(&self) -> bool {
+        unsafe { bt_is_initialized_impl(self.ptr) }
+    }
+
+    fn rt_master_vol(&self) -> (u32, bool) {
+        let mut vol = 100u32;
+        let mut muted = false;
+        unsafe { bt_rt_master_vol_impl(self.ptr, &raw mut vol, &raw mut muted) };
+        (vol, muted)
+    }
+
+    fn snapshot(&self) -> SalsaBtSnapshot {
+        let mut snap: SalsaBtSnapshot = unsafe { mem::zeroed() };
+        unsafe { bt_get_snapshot_impl(self.ptr, &raw mut snap) };
+        snap
+    }
+
+    fn init_rates(&self, rate: u32, cap_rate: u32, target_cap: &str, target_pb: &str) -> i32 {
+        let c_cap = CString::new(target_cap).unwrap_or_default();
+        let c_pb = CString::new(target_pb).unwrap_or_default();
+        unsafe { bluez_init_rates_impl(self.ptr, rate, cap_rate, c_cap.as_ptr(), c_pb.as_ptr()) }
+    }
+
+    fn set_preferred_target(&self, target_pb: &str) {
+        let c_pb = CString::new(target_pb).unwrap_or_default();
+        unsafe { bluez_set_preferred_target_impl(self.ptr, c_pb.as_ptr()) };
+    }
+
+    fn reconfigure_rate(&self, rate: u32) -> i32 {
+        unsafe { bluez_reconfigure_rate_impl(self.ptr, rate) }
+    }
+
+    fn set_tx_enabled(&self, enabled: bool) {
+        unsafe { bluez_set_tx_enabled_impl(self.ptr, enabled) };
+    }
+
+    fn write_period(&self, pcm_interleaved: &[f32], frames: u32, ch: u32) -> i32 {
+        unsafe { bluez_write_period_impl(self.ptr, pcm_interleaved.as_ptr(), frames, ch) }
+    }
+
+    fn open_capture(&self, dev_id: &str, rate: u32) -> i32 {
+        let c_dev = CString::new(dev_id).unwrap_or_default();
+        unsafe { bluez_open_capture_impl(self.ptr, c_dev.as_ptr(), rate) }
+    }
+
+    fn read_capture_native(
+        &self,
+        out: &mut [f32],
+        max_frames: u32,
+        out_frames: &mut u32,
+        out_rate: &mut u32,
+        eng_frames: u32,
+        eng_rate: u32,
+        io_read_cursor: &mut u64,
+    ) -> i32 {
+        unsafe {
+            bluez_read_capture_native_impl(
+                self.ptr,
+                out.as_mut_ptr(),
+                max_frames,
+                out_frames,
+                out_rate,
+                eng_frames,
+                eng_rate,
+                io_read_cursor,
+            )
+        }
+    }
+
+    fn enumerate_devices(
+        &self,
+        pref_pb: Option<&str>,
+        pref_cap: Option<&str>,
+        out_list: &mut LasapiDeviceList,
+    ) -> i32 {
+        let c_pb = opt_cstr(pref_pb);
+        let c_cap = opt_cstr(pref_cap);
+        unsafe {
+            bluez_enumerate_devices_impl(
+                self.ptr,
+                c_pb.as_ref().map_or(ptr::null(), |s| s.as_ptr()),
+                c_cap.as_ref().map_or(ptr::null(), |s| s.as_ptr()),
+                out_list,
+            )
+        }
+    }
+
+    fn hw_fingerprint(&self) -> u64 {
+        unsafe { bluez_hw_fingerprint_impl(self.ptr) }
+    }
+
+    fn set_volume(&self, vol_pct: i32, mute_flag: i32) -> i32 {
+        unsafe { bluez_set_volume_impl(self.ptr, vol_pct, mute_flag) }
+    }
+
+    fn set_mic_volume(&self, vol_pct: i32, mute_flag: i32) -> i32 {
+        unsafe { bluez_set_mic_volume_impl(self.ptr, vol_pct, mute_flag) }
+    }
+
+    fn set_mic_gain_ppm(&self, gain_ppm: u32, vol_pct: i32, mute_flag: i32) -> i32 {
+        unsafe { bluez_set_mic_gain_ppm_impl(self.ptr, gain_ppm, vol_pct, mute_flag) }
+    }
+
+    fn set_codec_config(&self, cfg: &LasapiBtCodecCfg) -> i32 {
+        unsafe { bluez_set_codec_config_impl(self.ptr, cfg) }
+    }
+
+    fn get_codec_config(&self) -> LasapiBtCodecCfg {
+        let mut cfg: LasapiBtCodecCfg = unsafe { mem::zeroed() };
+        unsafe { bluez_get_codec_config_impl(self.ptr, &raw mut cfg) };
+        cfg
+    }
+
+    fn set_sco_enabled(&self, enabled: bool) -> i32 {
+        unsafe { bluez_set_sco_enabled_impl(self.ptr, enabled) }
+    }
+
+    fn is_optional_mode(&self) -> bool {
+        unsafe { bluez_is_optional_mode_impl(self.ptr) }
+    }
+
+    fn set_optional_mode(&self, optional: bool) {
+        unsafe { bluez_set_optional_mode_impl(self.ptr, optional) };
+    }
+
+    fn known_audio_aliases(&self) -> Vec<String> {
+        unsafe { bluez_known_audio_aliases_impl(self.ptr) }
+    }
+
+    fn connection_ctl(&self, action: u32, mac: &str) -> (i32, String, u32) {
+        let c_mac = CString::new(mac).unwrap_or_default();
+        let mut flags = 0u32;
+        let mut msg_buf = [0u8; 256];
+        let rc = unsafe {
+            bluez_connection_ctl_impl(
+                self.ptr,
+                action,
+                c_mac.as_ptr(),
+                msg_buf.as_mut_ptr().cast(),
+                msg_buf.len(),
+                &raw mut flags,
+            )
+        };
+        (rc, c_str_to_string(&msg_buf), flags)
+    }
+
+    fn close(&self) {
+        unsafe { bluez_close_impl(self.ptr) };
+    }
+}
+
+#[derive(Default)]
+pub struct NullBluetoothBackend;
+
+impl BluetoothBackend for NullBluetoothBackend {
+    fn is_initialized(&self) -> bool {
+        false
+    }
+
+    fn rt_master_vol(&self) -> (u32, bool) {
+        (100, false)
+    }
+
+    fn snapshot(&self) -> SalsaBtSnapshot {
+        let mut s: SalsaBtSnapshot = unsafe { mem::zeroed() };
+        s.bt_fd = -1;
+        s.cap_pcm_fd = -1;
+        s.desktop_volume_pct = 100;
+        s.desktop_mic_volume_pct = 100;
+        s.desktop_mic_gain_ppm = 1_000_000;
+        s
+    }
+
+    fn init_rates(&self, _rate: u32, _cap_rate: u32, _target_cap: &str, _target_pb: &str) -> i32 {
+        0
+    }
+
+    fn set_preferred_target(&self, _target_pb: &str) {}
+
+    fn reconfigure_rate(&self, _rate: u32) -> i32 {
+        0
+    }
+
+    fn set_tx_enabled(&self, _enabled: bool) {}
+
+    fn write_period(&self, _pcm_interleaved: &[f32], _frames: u32, _ch: u32) -> i32 {
+        0
+    }
+
+    fn open_capture(&self, _dev_id: &str, _rate: u32) -> i32 {
+        0
+    }
+
+    fn read_capture_native(
+        &self,
+        out: &mut [f32],
+        _max_frames: u32,
+        out_frames: &mut u32,
+        out_rate: &mut u32,
+        eng_frames: u32,
+        eng_rate: u32,
+        _io_read_cursor: &mut u64,
+    ) -> i32 {
+        *out_frames = eng_frames;
+        *out_rate = eng_rate;
+        let n = (eng_frames as usize).saturating_mul(2).min(out.len());
+        out[..n].fill(0.0);
+        0
+    }
+
+    fn enumerate_devices(
+        &self,
+        _pref_pb: Option<&str>,
+        _pref_cap: Option<&str>,
+        out_list: &mut LasapiDeviceList,
+    ) -> i32 {
+        out_list.num_devices = 0;
+        0
+    }
+
+    fn hw_fingerprint(&self) -> u64 {
+        0
+    }
+
+    fn set_volume(&self, _vol_pct: i32, _mute_flag: i32) -> i32 {
+        0
+    }
+
+    fn set_mic_volume(&self, _vol_pct: i32, _mute_flag: i32) -> i32 {
+        0
+    }
+
+    fn set_mic_gain_ppm(&self, _gain_ppm: u32, _vol_pct: i32, _mute_flag: i32) -> i32 {
+        0
+    }
+
+    fn set_codec_config(&self, _cfg: &LasapiBtCodecCfg) -> i32 {
+        0
+    }
+
+    fn get_codec_config(&self) -> LasapiBtCodecCfg {
+        unsafe { mem::zeroed() }
+    }
+
+    fn set_sco_enabled(&self, _enabled: bool) -> i32 {
+        0
+    }
+
+    fn is_optional_mode(&self) -> bool {
+        true
+    }
+
+    fn set_optional_mode(&self, _optional: bool) {}
+
+    fn known_audio_aliases(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn connection_ctl(&self, _action: u32, _mac: &str) -> (i32, String, u32) {
+        (0, String::new(), crate::c_abi::LASAPI_BT_STAT_OPTIONAL)
+    }
+
+    fn close(&self) {}
+}
+
+pub fn reset_device(hint: &str) -> (i32, String) {
+    let c_hint = CString::new(hint).unwrap_or_default();
+    let mut msg_buf = [0u8; 256];
+    let rc = unsafe {
+        bluez_reset_device_impl(
+            c_hint.as_ptr(),
+            msg_buf.as_mut_ptr().cast::<c_char>(),
+            msg_buf.len(),
+        )
+    };
+    (rc, c_str_to_string(&msg_buf))
 }
 
 #[cfg(test)]

@@ -23,24 +23,22 @@ use std::sync::OnceLock;
 use salsa_wire::c_abi::{
     copy_str_to_c, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_ALREADY_INITIALIZED,
     AUDCLNT_E_BUFFER_TOO_LARGE, AUDCLNT_E_NOT_INITIALIZED, E_FAIL, E_INVALIDARG, E_OUTOFMEMORY,
-    LASAPI_CFG_FLAG_CAPTURE_RATE, LASAPI_CMD_BT_CONNECTION, LASAPI_CMD_CREATE_SESSION,
-    LASAPI_CMD_GET_STATUS, LASAPI_CMD_INJECT_MIDI, LASAPI_CMD_LIST_DEVICES,
-    LASAPI_CMD_RELOAD_CONFIG, LASAPI_CMD_SAVE_CONFIG, LASAPI_CMD_SET_BT_CODEC,
-    LASAPI_CMD_SET_DEVICES, LASAPI_CMD_SET_ENGINE_CONFIG, LASAPI_CMD_SET_EQ,
-    LASAPI_CMD_SET_HW_ANALOG, LASAPI_CMD_SET_MIC_APO, LASAPI_CMD_SET_PARAM_EQ,
-    LASAPI_CMD_SET_SESSION_CONTROL, LASAPI_DBG_INFO, LASAPI_DBG_SHIM, LASAPI_DBG_TRACE,
-    LASAPI_DBG_WARN, LASAPI_DBG_LASAPI, LASAPI_DEBUG_DGRAM_MAGIC, LASAPI_FMT_FLOAT32,
+    LASAPI_CMD_CREATE_SESSION, LASAPI_DBG_INFO, LASAPI_DBG_LASAPI, LASAPI_DBG_SHIM,
+    LASAPI_DBG_TRACE, LASAPI_DBG_WARN, LASAPI_DEBUG_DGRAM_MAGIC, LASAPI_FMT_FLOAT32,
     LASAPI_FMT_S16_LE, LASAPI_FMT_S32_LE, LASAPI_MAX_CHANNELS, LASAPI_MIDI_RING_EVENTS,
     LASAPI_MIDI_RING_MASK, LASAPI_RING_FRAMES, LASAPI_RING_MAGIC, LASAPI_RING_MASK,
     LasapiBtCodecCfg, LasapiDbgDgram, LasapiDeviceList, LasapiEngineStatus, LasapiEqConfig,
     LasapiHwAnalogCfg, LasapiIpcReq, LasapiIpcResp, LasapiMicApoCfg, LasapiMidiEvent,
     LasapiParamEqExt, LasapiParamEqPayload, LasapiShmRing, WaveFormatEx, S_OK,
 };
+use salsa_wire::control_ipc::{
+    BtConnOp, ControlClient, ControlPayload, ControlRequest, MuteOp, SessionTarget,
+};
 use salsa_wire::unix_sys::{
     audiodg_sock_path, close_raw_fd, connect_unix_stream_blocking, current_pid, debug_in_sock_path,
     do_poll, eventfd_drain, last_errno, memfd_size_valid, recv_blocking_exact_with_2fds,
-    recv_waitall, send_all_nosignal, sendto_unix_dgram_nonblock, socket_raw, MappedMem, PollFd,
-    AF_UNIX, POLLIN, SOCK_CLOEXEC, SOCK_DGRAM, SOCK_NONBLOCK,
+    send_all_nosignal, sendto_unix_dgram_nonblock, socket_raw, MappedMem, PollFd, AF_UNIX, POLLIN,
+    SOCK_CLOEXEC, SOCK_DGRAM, SOCK_NONBLOCK,
 };
 
 pub type HRESULT = i32;
@@ -1152,7 +1150,7 @@ pub unsafe extern "C" fn IAudioClient_ReadMidiEvents(
 
 #[no_mangle]
 pub unsafe extern "C" fn IAudioClient_WriteMidiEvent(
-    client: *mut IAudioClient,
+    _client: *mut IAudioClient,
     ev: *const LasapiMidiEvent,
 ) -> HRESULT {
     if ev.is_null() {
@@ -1162,26 +1160,10 @@ pub unsafe extern "C" fn IAudioClient_WriteMidiEvent(
     if ev_val.size == 0 || ev_val.size > 3 {
         return E_INVALIDARG;
     }
-    let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
-        return E_FAIL;
-    };
-    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LASAPI_CMD_INJECT_MIDI;
-    req.midi_ev = ev_val;
-    if !client.is_null() {
-        let c = unsafe { &*client };
-        if c.client_name[0] != 0 {
-            req.client_name = c.client_name;
-        }
+    match ControlClient::send(&ControlRequest::InjectMidi(ev_val)) {
+        Ok(resp) => resp.hr,
+        Err(hr) => hr,
     }
-    if send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) }).is_err() {
-        return E_FAIL;
-    }
-    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-    if !recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
-        return E_FAIL;
-    }
-    resp.hr
 }
 
 #[no_mangle]
@@ -1216,58 +1198,24 @@ pub unsafe extern "C" fn LASAPI_GetEngineStatus(out_status: *mut LasapiEngineSta
     if out_status.is_null() {
         return E_INVALIDARG;
     }
-    let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
-        return E_FAIL;
-    };
-    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LASAPI_CMD_GET_STATUS;
-    if send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) }).is_err() {
-        return E_FAIL;
-    }
-    let out_bytes = unsafe {
-        slice::from_raw_parts_mut(out_status.cast::<u8>(), mem::size_of::<LasapiEngineStatus>())
-    };
-    if recv_waitall(sock.as_raw_fd(), out_bytes) {
-        S_OK
-    } else {
-        E_FAIL
+    match ControlClient::send(&ControlRequest::GetStatus) {
+        Ok(resp) if resp.hr == S_OK => {
+            if let ControlPayload::Status { status, .. } = resp.payload {
+                unsafe { *out_status = *status };
+                S_OK
+            } else {
+                E_FAIL
+            }
+        }
+        Ok(resp) => resp.hr,
+        Err(hr) => hr,
     }
 }
 
-fn send_engine_config_ipc(
-    sample_rate: u32,
-    period_frames: u32,
-    format_bits: u32,
-    stream_flags: u32,
-) -> HRESULT {
-    let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
-        dbg_emit_dgram(
-            LASAPI_DBG_SHIM,
-            salsa_wire::c_abi::LASAPI_DBG_ERR,
-            0,
-            sample_rate as i32,
-            period_frames as i32,
-            E_FAIL,
-            "CTL_SET_CFG_FAIL",
-            "audiodg",
-            "connect failed",
-        );
-        return E_FAIL;
-    };
-
-    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LASAPI_CMD_SET_ENGINE_CONFIG;
-    req.sample_rate = sample_rate;
-    req.requested_period_frames = period_frames;
-    req.format = format_bits;
-    req.stream_flags = stream_flags;
-    let _ = send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) });
-
-    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-    let hr = if recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
-        resp.hr
-    } else {
-        E_FAIL
+fn send_engine_config_ipc(req: ControlRequest, sample_rate: u32, period_frames: u32, format_bits: u32, is_cap: bool) -> HRESULT {
+    let hr = match ControlClient::send(&req) {
+        Ok(resp) => resp.hr,
+        Err(hr) => hr,
     };
     let pname = get_process_comm();
     dbg_emit_dgram(
@@ -1281,14 +1229,15 @@ fn send_engine_config_ipc(
         sample_rate as i32,
         period_frames as i32,
         hr,
-        if stream_flags == LASAPI_CFG_FLAG_CAPTURE_RATE {
+        if is_cap {
             "CTL_SET_CAP_CFG"
         } else {
             "CTL_SET_CFG"
         },
         if pname.is_empty() { "ctl" } else { &pname },
         &format!(
-            "rate={sample_rate} period={period_frames} bits={format_bits} flags=0x{stream_flags:x} hr=0x{:08x}",
+            "rate={sample_rate} period={period_frames} bits={format_bits} cap={} hr=0x{:08x}",
+            u8::from(is_cap),
             hr as u32
         ),
     );
@@ -1301,12 +1250,28 @@ pub extern "C" fn LASAPI_SetEngineConfig(
     period_frames: u32,
     format_bits: u32,
 ) -> HRESULT {
-    send_engine_config_ipc(sample_rate, period_frames, format_bits, 0)
+    send_engine_config_ipc(
+        ControlRequest::SetPlaybackClock {
+            sample_rate,
+            period_frames,
+            format_bits,
+        },
+        sample_rate,
+        period_frames,
+        format_bits,
+        false,
+    )
 }
 
 #[no_mangle]
 pub extern "C" fn LASAPI_SetCaptureSampleRate(sample_rate: u32) -> HRESULT {
-    send_engine_config_ipc(sample_rate, 0, 0, LASAPI_CFG_FLAG_CAPTURE_RATE)
+    send_engine_config_ipc(
+        ControlRequest::SetCaptureClock { sample_rate },
+        sample_rate,
+        0,
+        0,
+        true,
+    )
 }
 
 #[no_mangle]
@@ -1314,20 +1279,10 @@ pub unsafe extern "C" fn LASAPI_SetDynamicEQ(eq_cfg: *const LasapiEqConfig) -> H
     if eq_cfg.is_null() {
         return E_INVALIDARG;
     }
-    let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
-        return E_FAIL;
-    };
     let eq = unsafe { *eq_cfg };
-    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LASAPI_CMD_SET_EQ;
-    req.eq_cfg = eq;
-    let _ = send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) });
-
-    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-    let hr = if recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
-        resp.hr
-    } else {
-        E_FAIL
+    let hr = match ControlClient::send(&ControlRequest::SetDynamicEq(Box::new(eq))) {
+        Ok(resp) => resp.hr,
+        Err(hr) => hr,
     };
     let pname = get_process_comm();
     let preset = cbuf_to_str(&eq.preset_name);
@@ -1358,21 +1313,17 @@ pub unsafe extern "C" fn LASAPI_ListDevices(out_list: *mut LasapiDeviceList) -> 
     if out_list.is_null() {
         return E_INVALIDARG;
     }
-    let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
-        return E_FAIL;
-    };
-    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LASAPI_CMD_LIST_DEVICES;
-    if send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) }).is_err() {
-        return E_FAIL;
-    }
-    let out_bytes = unsafe {
-        slice::from_raw_parts_mut(out_list.cast::<u8>(), mem::size_of::<LasapiDeviceList>())
-    };
-    if recv_waitall(sock.as_raw_fd(), out_bytes) {
-        S_OK
-    } else {
-        E_FAIL
+    match ControlClient::send(&ControlRequest::ListDevices) {
+        Ok(resp) if resp.hr == S_OK => {
+            if let ControlPayload::Devices(list) = resp.payload {
+                unsafe { *out_list = *list };
+                S_OK
+            } else {
+                E_FAIL
+            }
+        }
+        Ok(resp) => resp.hr,
+        Err(hr) => hr,
     }
 }
 
@@ -1381,26 +1332,14 @@ pub unsafe extern "C" fn LASAPI_SetDevices(
     playback_id: *const c_char,
     capture_id: *const c_char,
 ) -> HRESULT {
-    let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
-        return E_FAIL;
-    };
     let pb = unsafe { cstr_to_str(playback_id) };
     let cap = unsafe { cstr_to_str(capture_id) };
-    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LASAPI_CMD_SET_DEVICES;
-    if !pb.is_empty() {
-        copy_str_to_c(&mut req.target_device, pb);
-    }
-    if !cap.is_empty() {
-        copy_str_to_c(&mut req.target_capture_device, cap);
-    }
-    let _ = send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) });
-
-    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-    let hr = if recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
-        resp.hr
-    } else {
-        E_FAIL
+    let hr = match ControlClient::send(&ControlRequest::SetDevices {
+        playback_id: (!pb.is_empty()).then(|| pb.to_string()),
+        capture_id: (!cap.is_empty()).then(|| cap.to_string()),
+    }) {
+        Ok(resp) => resp.hr,
+        Err(hr) => hr,
     };
     dbg_emit_dgram(
         LASAPI_DBG_SHIM,
@@ -1431,59 +1370,16 @@ pub unsafe extern "C" fn LASAPI_SetSessionControl(
     mute_mode: i32,
     target_device: *const c_char,
 ) -> HRESULT {
-    let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
-        return E_FAIL;
-    };
-    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LASAPI_CMD_SET_SESSION_CONTROL;
-    req.target_session_id = session_id;
-    if vol_pct >= 0 {
-        let clamped = vol_pct.min(150) as u32;
-        req.volume_milli = clamped * 10;
-    } else {
-        req.volume_milli = 0xFFFF_FFFF;
-    }
-    if (0..=2).contains(&mute_mode) {
-        req.share_mode = (mute_mode + 1) as u32;
-    } else {
-        req.share_mode = 0;
-    }
     let dev = unsafe { cstr_to_str(target_device) };
-    if !dev.is_empty() {
-        copy_str_to_c(&mut req.target_device, dev);
-    }
-    let _ = send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) });
-
-    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-    if recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
-        resp.hr
-    } else {
-        E_FAIL
-    }
-}
-
-fn send_ext_ipc(cmd: u32, payload: &[u8], target_dev: &str, stream_flags: u32) -> HRESULT {
-    let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
-        return E_FAIL;
+    let req = ControlRequest::SetSessionControl {
+        target: SessionTarget::from_combined_id(session_id),
+        volume_milli: (vol_pct >= 0).then(|| (vol_pct.min(150) as u32) * 10),
+        mute: MuteOp::from_ui_mode(mute_mode),
+        route_device: (!dev.is_empty()).then(|| dev.to_string()),
     };
-    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = cmd;
-    req.requested_buffer_frames = payload.len() as u32;
-    req.stream_flags = stream_flags;
-    if !target_dev.is_empty() {
-        copy_str_to_c(&mut req.target_device, target_dev);
-    }
-    if send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) }).is_err() {
-        return E_FAIL;
-    }
-    if !payload.is_empty() && send_all_nosignal(sock.as_raw_fd(), payload).is_err() {
-        return E_FAIL;
-    }
-    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-    if recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
-        resp.hr
-    } else {
-        E_FAIL
+    match ControlClient::send(&req) {
+        Ok(resp) => resp.hr,
+        Err(hr) => hr,
     }
 }
 
@@ -1499,7 +1395,10 @@ pub unsafe extern "C" fn LASAPI_SetParametricEQ(
         eq: unsafe { *eq_cfg },
         ext: unsafe { *param_ext },
     };
-    send_ext_ipc(LASAPI_CMD_SET_PARAM_EQ, unsafe { as_bytes(&pay) }, "", 0)
+    match ControlClient::send(&ControlRequest::SetParametricEq(Box::new(pay))) {
+        Ok(resp) => resp.hr,
+        Err(hr) => hr,
+    }
 }
 
 #[no_mangle]
@@ -1507,12 +1406,10 @@ pub unsafe extern "C" fn LASAPI_SetMicAPO(mic_cfg: *const LasapiMicApoCfg) -> HR
     if mic_cfg.is_null() {
         return E_INVALIDARG;
     }
-    send_ext_ipc(
-        LASAPI_CMD_SET_MIC_APO,
-        unsafe { as_bytes(&*mic_cfg) },
-        "",
-        0,
-    )
+    match ControlClient::send(&ControlRequest::SetMicApo(unsafe { *mic_cfg })) {
+        Ok(resp) => resp.hr,
+        Err(hr) => hr,
+    }
 }
 
 #[no_mangle]
@@ -1520,12 +1417,10 @@ pub unsafe extern "C" fn LASAPI_SetBtCodecConfig(bt_cfg: *const LasapiBtCodecCfg
     if bt_cfg.is_null() {
         return E_INVALIDARG;
     }
-    send_ext_ipc(
-        LASAPI_CMD_SET_BT_CODEC,
-        unsafe { as_bytes(&*bt_cfg) },
-        "",
-        0,
-    )
+    match ControlClient::send(&ControlRequest::SetBtCodec(unsafe { *bt_cfg })) {
+        Ok(resp) => resp.hr,
+        Err(hr) => hr,
+    }
 }
 
 #[no_mangle]
@@ -1533,12 +1428,10 @@ pub unsafe extern "C" fn LASAPI_SetHwAnalog(hw_cfg: *const LasapiHwAnalogCfg) ->
     if hw_cfg.is_null() {
         return E_INVALIDARG;
     }
-    send_ext_ipc(
-        LASAPI_CMD_SET_HW_ANALOG,
-        unsafe { as_bytes(&*hw_cfg) },
-        "",
-        0,
-    )
+    match ControlClient::send(&ControlRequest::SetHwAnalog(unsafe { *hw_cfg })) {
+        Ok(resp) => resp.hr,
+        Err(hr) => hr,
+    }
 }
 
 #[no_mangle]
@@ -1547,36 +1440,128 @@ pub unsafe extern "C" fn LASAPI_BtConnectionCtl(
     mac_or_empty: *const c_char,
     out_flags: *mut u32,
 ) -> HRESULT {
-    let Some(sock) = connect_unix_stream_blocking(&audiodg_sock_path()) else {
-        return E_FAIL;
+    let Some(op) = BtConnOp::from_u32(action) else {
+        return E_INVALIDARG;
     };
-    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
-    req.cmd = LASAPI_CMD_BT_CONNECTION;
-    req.requested_period_frames = action;
-    let mac = unsafe { cstr_to_str(mac_or_empty) };
-    if !mac.is_empty() {
-        copy_str_to_c(&mut req.target_device, mac);
-    }
-    if send_all_nosignal(sock.as_raw_fd(), unsafe { as_bytes(&req) }).is_err() {
-        return E_FAIL;
-    }
-    let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
-    if recv_waitall(sock.as_raw_fd(), unsafe { as_bytes_mut(&mut resp) }) {
-        if !out_flags.is_null() {
-            unsafe { *out_flags = resp.session_id };
+    let mac = unsafe { cstr_to_str(mac_or_empty) }.to_string();
+    match ControlClient::send(&ControlRequest::BtConnection { op, mac }) {
+        Ok(resp) => {
+            if let ControlPayload::BtFlags(flags) = resp.payload {
+                if !out_flags.is_null() {
+                    unsafe { *out_flags = flags };
+                }
+            }
+            resp.hr
         }
-        resp.hr
-    } else {
-        E_FAIL
+        Err(hr) => hr,
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn LASAPI_SaveConfig() -> HRESULT {
-    send_ext_ipc(LASAPI_CMD_SAVE_CONFIG, &[], "", 0)
+    match ControlClient::send(&ControlRequest::SaveConfig) {
+        Ok(resp) => resp.hr,
+        Err(hr) => hr,
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn LASAPI_ReloadConfig() -> HRESULT {
-    send_ext_ipc(LASAPI_CMD_RELOAD_CONFIG, &[], "", 0)
+    match ControlClient::send(&ControlRequest::ReloadConfig) {
+        Ok(resp) => resp.hr,
+        Err(hr) => hr,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::mem::{align_of, size_of};
+    use salsa_wire::client_seam::{ClientHandle, LasapiFfiVTable};
+
+    #[test]
+    fn client_seam_and_wire_abi_signatures_match_c_exports() {
+        assert_eq!(size_of::<ClientHandle>(), size_of::<*mut c_void>());
+        assert_eq!(align_of::<ClientHandle>(), align_of::<*mut c_void>());
+        assert_eq!(size_of::<WaveFormatEx>(), 20);
+        assert_eq!(size_of::<LasapiIpcReq>(), 400);
+        assert_eq!(size_of::<LasapiIpcResp>(), 24);
+        assert_eq!(size_of::<LasapiFfiVTable>(), 19 * size_of::<usize>());
+
+        let _trace: unsafe extern "C" fn(u8, u8, u32, *const c_char, *const c_char, *const c_char) =
+            LASAPI_DebugTraceClient;
+        let _act: unsafe extern "C" fn(*const c_char, *mut *mut IAudioClient) -> HRESULT =
+            LASAPI_ActivateAudioClient;
+        let _mix: unsafe extern "C" fn(*mut IAudioClient, *mut WaveFormatEx) -> HRESULT =
+            IAudioClient_GetMixFormat;
+        let _init: unsafe extern "C" fn(
+            *mut IAudioClient,
+            AUDCLNT_SHAREMODE,
+            u32,
+            u32,
+            u32,
+            *const WaveFormatEx,
+        ) -> HRESULT = IAudioClient_Initialize;
+        let _bsz: unsafe extern "C" fn(*mut IAudioClient, *mut u32) -> HRESULT =
+            IAudioClient_GetBufferSize;
+        let _per: unsafe extern "C" fn(*mut IAudioClient, *mut u32, *mut u32) -> HRESULT =
+            IAudioClient_GetDevicePeriod;
+        let _pad: unsafe extern "C" fn(*mut IAudioClient, *mut u32) -> HRESULT =
+            IAudioClient_GetCurrentPadding;
+        let _ev: unsafe extern "C" fn(*mut IAudioClient, *mut c_int) -> HRESULT =
+            IAudioClient_SetEventHandle;
+        let _start: unsafe extern "C" fn(*mut IAudioClient) -> HRESULT = IAudioClient_Start;
+        let _stop: unsafe extern "C" fn(*mut IAudioClient) -> HRESULT = IAudioClient_Stop;
+        let _reset: unsafe extern "C" fn(*mut IAudioClient) -> HRESULT = IAudioClient_Reset;
+        let _rel: unsafe extern "C" fn(*mut IAudioClient) -> HRESULT = IAudioClient_Release;
+        let _wait: unsafe extern "C" fn(*mut IAudioClient, c_int) -> HRESULT =
+            IAudioClient_WaitForPeriod;
+        let _wr: unsafe extern "C" fn(
+            *mut IAudioClient,
+            *const c_void,
+            u32,
+            lasapi_sample_format_t,
+        ) -> HRESULT = IAudioRenderClient_WriteFrames;
+        let _nxt: unsafe extern "C" fn(*mut IAudioClient, *mut u32) -> HRESULT =
+            IAudioCaptureClient_GetNextPacketSize;
+        let _rd: unsafe extern "C" fn(
+            *mut IAudioClient,
+            *mut c_void,
+            u32,
+            lasapi_sample_format_t,
+        ) -> HRESULT = IAudioCaptureClient_ReadFrames;
+        let _svol: unsafe extern "C" fn(*mut IAudioClient, f32) -> HRESULT =
+            ISimpleAudioVolume_SetMasterVolume;
+        let _gvol: unsafe extern "C" fn(*mut IAudioClient, *mut f32) -> HRESULT =
+            ISimpleAudioVolume_GetMasterVolume;
+        let _rmidi: unsafe extern "C" fn(*mut IAudioClient, *mut LasapiMidiEvent, u32) -> u32 =
+            IAudioClient_ReadMidiEvents;
+        let _wmidi: unsafe extern "C" fn(*mut IAudioClient, *const LasapiMidiEvent) -> HRESULT =
+            IAudioClient_WriteMidiEvent;
+        let _st: unsafe extern "C" fn(*mut LasapiEngineStatus) -> HRESULT = LASAPI_GetEngineStatus;
+        let _ls: unsafe extern "C" fn(*mut LasapiDeviceList) -> HRESULT = LASAPI_ListDevices;
+    }
+
+    #[test]
+    fn activate_mix_format_and_pre_init_guards_work_without_daemon() {
+        unsafe {
+            assert_eq!(LASAPI_ActivateAudioClient(c"x".as_ptr(), ptr::null_mut()), E_INVALIDARG);
+            let mut client: *mut IAudioClient = ptr::null_mut();
+            assert_eq!(LASAPI_ActivateAudioClient(c"UnitTest".as_ptr(), &raw mut client), S_OK);
+            assert!(!client.is_null());
+
+            let mut wfx = WaveFormatEx::default();
+            assert_eq!(IAudioClient_GetMixFormat(client, &raw mut wfx), S_OK);
+            assert_eq!(wfx.n_channels, 2);
+            assert_eq!(wfx.w_format_tag, LASAPI_FMT_FLOAT32 as u16);
+
+            assert_eq!(IAudioClient_Start(client), AUDCLNT_E_NOT_INITIALIZED);
+            assert_eq!(IAudioClient_Stop(client), AUDCLNT_E_NOT_INITIALIZED);
+            assert_eq!(
+                ISimpleAudioVolume_SetMasterVolume(client, 0.5),
+                AUDCLNT_E_NOT_INITIALIZED
+            );
+            assert_eq!(IAudioClient_Release(client), S_OK);
+        }
+    }
 }

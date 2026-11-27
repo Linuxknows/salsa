@@ -15,27 +15,15 @@ use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+use salsa_host_dl::{
+    dlsym, dlvsym, self_so_path, DlopenFn, RTLD_LAZY, RTLD_NEXT, RTLD_NOLOAD,
+};
+
 mod imp;
 
-const RTLD_LAZY: c_int = 0x00001;
-const RTLD_NOLOAD: c_int = 0x00004;
-const RTLD_NEXT: *mut c_void = (-1isize) as *mut c_void;
 const MAX_SELF_PATH: usize = 4096;
 
-#[repr(C)]
-struct DlInfo {
-    dli_fname: *const c_char,
-    dli_fbase: *mut c_void,
-    dli_sname: *const c_char,
-    dli_saddr: *mut c_void,
-}
-
-type DlopenFn = unsafe extern "C" fn(*const c_char, c_int) -> *mut c_void;
-
 extern "C" {
-    fn dlvsym(handle: *mut c_void, symbol: *const c_char, version: *const c_char) -> *mut c_void;
-    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-    fn dladdr(addr: *const c_void, info: *mut DlInfo) -> c_int;
     fn strstr(haystack: *const c_char, needle: *const c_char) -> *mut c_char;
 }
 
@@ -65,9 +53,8 @@ unsafe fn resolve_real_dlopen() -> Option<DlopenFn> {
 
 pub(crate) unsafe fn resolve_real_syms(real: &mut imp::RealSyms) {
     let _ = resolve_real_dlopen();
-    let mut dli = core::mem::zeroed::<DlInfo>();
-    if dladdr(resolve_real_syms as *const c_void, &raw mut dli) != 0 && !dli.dli_fname.is_null() {
-        let bytes = core::ffi::CStr::from_ptr(dli.dli_fname).to_bytes();
+    if let Some(self_path) = self_so_path(resolve_real_syms as *const c_void) {
+        let bytes = self_path.as_bytes();
         let n = bytes.len().min(MAX_SELF_PATH - 1);
         let buf = (&raw mut SELF_PATH_BUF).cast::<u8>();
         ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n);
