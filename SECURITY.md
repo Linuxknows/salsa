@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-Security fixes are maintained on `main` and shipped in the latest stable release series:
+`V2.27.3` is the **most secure** and **only supported** release of Salsa. All prior releases (`<= V2.27.2`, including `V2.27.0`–`V2.27.2` and `V1.x`) predate the `V2.27.3` CodeQL pointer-ownership and logging-hygiene hardening and are unsupported:
 
-| Version | Supported |
+| Version | Security & Support Status |
 | :--- | :--- |
-| `V2.27.x` (`main` / Latest Release) | :white_check_mark: Supported |
-| `< V2.27.0` | :x: Unsupported — please upgrade to the latest release |
+| `V2.27.3` (`main` / Latest Release) | :white_check_mark: **Supported — Most Secure** (`0` open GitHub CodeQL alerts across Rust & C/C++) |
+| `<= V2.27.2` (`V2.27.0`–`V2.27.2`, `V1.x`) | :x: **Unsupported** — superseded by `V2.27.3`; please upgrade to `V2.27.3` |
 
 ---
 
@@ -38,4 +38,4 @@ Salsa operates purely as an unprivileged per-user audio/video daemon (`uid == ge
 - **Socket & Runtime Directory Permissions**: Runtime directories (`$XDG_RUNTIME_DIR/lasapi`, `$XDG_RUNTIME_DIR/pulse`) are enforced `0700` and UNIX domain sockets (`native`, `pipewire-0`, single-instance UI sockets) are enforced `0600` with kernel `SO_PEERCRED` same-UID verification.
 - **Authentication & Loopback Isolation**: PulseAudio protocol authentication uses constant-time `256`-byte cookie verification (`ct_eq_256`), and container failover binds strictly to `127.0.0.1` loopback.
 - **Filesystem & Symlink Hardening**: Configuration and volume state files (`~/.config/lasapi/`, `0700` dirs / `0600` files) reject symlinks (`O_NOFOLLOW` / `symlink_metadata`), enforce bounded read sizes, and write atomically.
-- **Wire Protocol & Memory Hardening**: Untrusted IPC frames (`pa_wire.rs`, `pw_wire.rs`, `bluez_wire.rs`, JSON depth/surrogate parsers) enforce strict length, descriptor-count (`SCM_RIGHTS` FD quota), and recursion bounds, verified continuously by `fuzz_wire`. Native C/C++ and Rust artifacts compile with `-D_FORTIFY_SOURCE=3`, `-fstack-protector-strong`, full RELRO (`-Wl,-z,relro,-z,now`), and non-executable stacks (`-Wl,-z,noexecstack`).
+- **Wire Protocol & Memory Hardening**: Untrusted IPC frames (`pa_wire.rs`, `pw_wire.rs`, `bluez_wire.rs`, JSON depth/surrogate parsers) enforce strict length, descriptor-count (`SCM_RIGHTS` FD quota), and recursion bounds, verified continuously by `fuzz_wire`. Engine and provisioning paths enforce `#![deny(unsafe_code)]` behind audited trust seams (`wavert_ring.rs`, `alsa_hw.rs`, `preview_shm.rs`, `salsa_host_dl::open_verified_optional_lib`), verified by GitHub CodeQL (`rust` and `c-cpp`) at `0` open alerts in `V2.27.3`. Native C/C++ and Rust artifacts compile with `-D_FORTIFY_SOURCE=3`, `-fstack-protector-strong`, full RELRO (`-Wl,-z,relro,-z,now`), and non-executable stacks (`-Wl,-z,noexecstack`).
