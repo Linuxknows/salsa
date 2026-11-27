@@ -61,6 +61,7 @@ pub const LASAPI_BT_CONN_SET_OPTIONAL: u32 = 1;
 pub const LASAPI_BT_CONN_SET_AUTOCONN: u32 = 2;
 pub const LASAPI_BT_CONN_CONNECT: u32 = 3;
 pub const LASAPI_BT_CONN_DISCONNECT: u32 = 4;
+pub const LASAPI_BT_CONN_RESET: u32 = 5;
 
 pub const LASAPI_BT_STAT_OPTIONAL: u32 = 1 << 0;
 pub const LASAPI_BT_STAT_CONNECTED: u32 = 1 << 1;
@@ -371,6 +372,27 @@ pub struct LasapiMidiHub {
     pub total_events: AtomicU64,
 }
 
+impl Default for LasapiMidiHub {
+    fn default() -> Self {
+        Self {
+            initialized: false,
+            rawmidi_fd: -1,
+            controller_name: [0; 64],
+            dev_path: [0; 64],
+            alsa_dl: core::ptr::null_mut(),
+            seq_handle: core::ptr::null_mut(),
+            seq_client_id: 0,
+            seq_in_port: 0,
+            seq_out_port: 0,
+            running_status: 0,
+            msg_buf: [0; 3],
+            msg_idx: 0,
+            msg_expected: 0,
+            total_events: AtomicU64::new(0),
+        }
+    }
+}
+
 #[repr(C, align(64))]
 pub struct AlignedShmPcm<const N: usize>(pub [f32; N]);
 
@@ -485,15 +507,21 @@ macro_rules! impl_pod_bytes {
 
 impl_pod_bytes!(
     LasapiEqConfig,
+    LasapiParamEqExt,
     LasapiParamEqPayload,
     LasapiMicApoCfg,
     LasapiBtCodecCfg,
     LasapiHwAnalogCfg,
+    LasapiHwAnalogInfo,
+    LasapiSessionInfo,
     LasapiMidiEvent,
+    LasapiDeviceEntry,
     LasapiDeviceList,
     LasapiEngineStatus,
     LasapiIpcReq,
     LasapiIpcResp,
+    SalsaBtSnapshot,
+    SalsaMicCubicState,
 );
 
 pub const LASAPI_RING_MASK: usize = LASAPI_RING_FRAMES - 1;
@@ -647,21 +675,6 @@ pub unsafe fn ptr_to_opt_str(p: *const c_char) -> Option<String> {
         let s = unsafe { core::ffi::CStr::from_ptr(p) };
         Some(s.to_string_lossy().into_owned())
     }
-}
-
-/// Runs a `extern "C" fn(argc, argv) -> c_int` entrypoint using process arguments and exits with its status code.
-pub fn run_c_main(entry: unsafe extern "C" fn(c_int, *const *const c_char) -> c_int) -> ! {
-    use std::ffi::CString;
-    let c_args: Vec<CString> = std::env::args_os()
-        .map(|a| {
-            let bytes = a.into_encoded_bytes();
-            CString::new(bytes).unwrap_or_else(|_| CString::new("").unwrap())
-        })
-        .collect();
-    let ptrs: Vec<*const c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
-    let argc = ptrs.len() as c_int;
-    let code = unsafe { entry(argc, ptrs.as_ptr()) };
-    std::process::exit(code);
 }
 
 #[cfg(test)]

@@ -64,6 +64,20 @@ pub const O_EXCL: c_int = 0x80;
 pub const O_NONBLOCK: c_int = 0x800;
 pub const O_NOFOLLOW: c_int = 0x20000;
 pub const O_CLOEXEC: c_int = 0x80000;
+pub const ERRNO_EINTR: c_int = 4;
+pub const ERRNO_EIO: c_int = 5;
+pub const ERRNO_EBADF: c_int = 9;
+pub const ERRNO_EAGAIN: c_int = 11;
+pub const ERRNO_ENODEV: c_int = 19;
+pub const ERRNO_EINVAL: c_int = 22;
+pub const ERRNO_EPIPE: c_int = 32;
+pub const ERRNO_ENOSYS: c_int = 38;
+pub const ERRNO_ELOOP: c_int = 40;
+pub const ERRNO_EBADFD: c_int = 77;
+pub const ERRNO_ESTRPIPE: c_int = 86;
+pub const ERRNO_ECONNRESET: c_int = 104;
+pub const ERRNO_EINPROGRESS: c_int = 115;
+
 pub const LOCK_EX: c_int = 2;
 pub const LOCK_NB: c_int = 4;
 pub const LOCK_UN: c_int = 8;
@@ -182,7 +196,6 @@ extern "C" {
     fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     fn close(fd: c_int) -> c_int;
-    fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     fn dlclose(handle: *mut c_void) -> c_int;
     fn getuid() -> u32;
@@ -1681,27 +1694,10 @@ pub unsafe fn ioctl_raw(fd: RawFd, req: c_ulong, arg: *mut c_void) -> c_int {
     unsafe { ioctl(fd, req, arg) }
 }
 
-/// Opens the first loadable shared library from `cands` with `RTLD_NOW | RTLD_LOCAL`.
-///
-/// # Safety
-/// Loading shared libraries runs their ELF initializers inside the current process.
-pub unsafe fn dl_open_any(cands: &[&str]) -> *mut c_void {
-    for &cand in cands {
-        let Ok(cstr) = CString::new(cand) else {
-            continue;
-        };
-        let h = unsafe { dlopen(cstr.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
-        if !h.is_null() {
-            return h;
-        }
-    }
-    ptr::null_mut()
-}
-
 /// Resolves a symbol address from an open `dlopen` handle.
 ///
 /// # Safety
-/// `handle` must be a valid handle returned by `dlopen`/`dl_open_any` and not yet closed.
+/// `handle` must be a valid handle returned by `dlopen` and not yet closed.
 pub unsafe fn dl_sym(handle: *mut c_void, symbol: &str) -> *mut c_void {
     if handle.is_null() {
         return ptr::null_mut();

@@ -5,11 +5,8 @@
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
-#![allow(unsafe_code)]
+#![deny(unsafe_code)]
 #![allow(clippy::too_many_arguments)]
-#![allow(clippy::missing_safety_doc)]
-
-use core::mem;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
@@ -23,8 +20,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, LasapiDeviceList, LasapiEngineStatus, LASAPI_DBG_INFO,
-    LASAPI_DBG_PA, LASAPI_DBG_TRACE, LASAPI_DBG_WARN, LASAPI_MAX_DEVICES, LASAPI_MAX_SESSIONS,
+    c_str_to_string, copy_str_to_c, LasapiDeviceList, LasapiEngineStatus, LasapiSessionInfo,
+    PodBytes, LASAPI_DBG_INFO, LASAPI_DBG_PA, LASAPI_DBG_TRACE, LASAPI_DBG_WARN,
+    LASAPI_MAX_DEVICES, LASAPI_MAX_SESSIONS,
 };
 use crate::json::JsonValue;
 
@@ -277,14 +275,8 @@ struct PaRtStream {
     cursor: Mutex<RtCursor>,
 }
 
-const _: () = {
-    assert!(core::mem::size_of::<AtomicU32>() == core::mem::size_of::<u32>());
-    assert!(core::mem::align_of::<AtomicU32>() == core::mem::align_of::<u32>());
-};
-
 fn alloc_zeroed_atomic_ring(len: usize) -> Box<[AtomicU32]> {
-    let raw = Box::into_raw(vec![0u32; len].into_boxed_slice()) as *mut [AtomicU32];
-    unsafe { Box::from_raw(raw) }
+    (0..len).map(|_| AtomicU32::new(0)).collect::<Vec<_>>().into_boxed_slice()
 }
 
 impl PaRtStream {
@@ -782,8 +774,8 @@ impl PaState {
             next_stream_idx: 1,
             stable_ids,
             next_fac_idx: [0; 3],
-            cached_status: unsafe { mem::zeroed() },
-            cached_devices: unsafe { mem::zeroed() },
+            cached_status: LasapiEngineStatus::zeroed(),
+            cached_devices: LasapiDeviceList::zeroed(),
             devices_cache_valid: false,
             sink_pa_vol_valid: false,
             sink_pa_vol: PA_VOLUME_NORM,
@@ -5311,8 +5303,8 @@ impl PaServerHandle {
         if !self.running.load(Ordering::Relaxed) {
             return;
         }
-        let mut new_st: LasapiEngineStatus = unsafe { mem::zeroed() };
-        let mut new_dl: LasapiDeviceList = unsafe { mem::zeroed() };
+        let mut new_st = LasapiEngineStatus::zeroed();
+        let mut new_dl = LasapiDeviceList::zeroed();
         let host = {
             let st = self.state.lock().unwrap_or_else(|p| p.into_inner());
             Arc::clone(&st.host)
@@ -5394,7 +5386,7 @@ impl PaServerHandle {
         if !h.running.load(Ordering::Relaxed) {
             return;
         }
-        let mut new_st: LasapiEngineStatus = unsafe { mem::zeroed() };
+        let mut new_st = LasapiEngineStatus::zeroed();
         let host = {
             let st = h.state.lock().unwrap_or_else(|p| p.into_inner());
             Arc::clone(&st.host)
@@ -5923,7 +5915,7 @@ impl PaServerHandle {
         let rs = &h.rt.streams[si];
         let dst = &mut out.sessions[out.num_sessions as usize];
         out.num_sessions += 1;
-        *dst = unsafe { mem::zeroed() };
+        *dst = LasapiSessionInfo::zeroed();
         dst.session_id = 10000 + s.index;
         dst.client_pid = s.client_pid;
         let nm = if !s.name.is_empty() {
@@ -6505,7 +6497,7 @@ mod tests {
             assert!(!reply.data.is_empty());
 
             // Verify fill_sessions does NOT duplicate the LASAPI proxy in Salsa's PA sessions list.
-            let mut eng_st: LasapiEngineStatus = unsafe { mem::zeroed() };
+            let mut eng_st = LasapiEngineStatus::zeroed();
             drop(st);
             h.fill_sessions(&mut eng_st);
             assert_eq!(eng_st.num_sessions, 0);

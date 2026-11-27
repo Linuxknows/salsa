@@ -4,7 +4,25 @@ Chronological changelog organized by installer revision.
 
 ---
 
-## V1.26.15 — Current (`2026-11-26`)
+## V2.27.1 — Current (`2026-11-27`)
+
+### 1. Safe Engine Loop, Hardware Backend & Wire Trust Seams (`#![deny(unsafe_code)]`)
+- Added [`GLOSSARY.md`](GLOSSARY.md), tightened Cargo workspace dependency boundaries across [`rust/`](rust/), introduced sealed `PodBytes` layouts in [`c_abi.rs`](rust/salsa_net/src/c_abi.rs), isolated unsafe mmap/ALSA UAPI boundaries behind [`wavert_ring.rs`](rust/salsa_net/src/wavert_ring.rs) (`WaveRtRing` / `WaveRtRingWriter` / `WaveRtRingReader`) and [`alsa_hw.rs`](rust/salsa_net/src/alsa_hw.rs) (`AlsaPlaybackBackend` / `KernelAlsaBackend` / `InMemoryAlsaBackend`), and enforced `#![deny(unsafe_code)]` on [`audiodg_engine.rs`](rust/salsa_net/src/audiodg_engine.rs) and [`provisioning.rs`](rust/salsa_net/src/provisioning.rs), while keeping every `liblasapi.so` C ABI export, `LasapiEngineStatus`, `LasapiShmRing`, `LasapiPwPreviewShm`, and `LASAPI_CMD_*` wire format bit-identical.
+
+### 2. Unified Host Provisioning (`salsa_net::provisioning`) & Configuration Drift Fixes
+- Consolidated systemd unit lists, pacman hooks, `.asoundrc`, `alsoft.conf`, `environment.d/99-salsa-direct.conf`, and `HostEnvOps` / `FakeHostEnvOps` tests in [`provisioning.rs`](rust/salsa_net/src/provisioning.rs), migrating [`ctl_cli.rs`](rust/salsa_net/src/ctl_cli.rs), [`salsa_installer.rs`](rust/salsa_tools/src/bin/salsa_installer.rs), [`lasapi_run.rs`](rust/salsa_tools/src/bin/lasapi_run.rs), [`lasapi_autosync.rs`](rust/salsa_tools/src/bin/lasapi_autosync.rs), [`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs), and [`debug_core.rs`](rust/salsa_tools/src/debug_core.rs).
+- Fixed three live host configuration drifts: unified `ALSOFT_DRIVERS` to `"pulse,alsa"` in `lasapi_run`, corrected `qt_bridge`'s check path from `pipewire/pipewire.conf.d/99-salsa-direct.conf` to `environment.d/99-salsa-direct.conf`, and unified `debug_core`'s settings file check to `settings.json`.
+
+### 3. Verified Optional `dlopen`, Safe Bluetooth Codec Adapters & Daemon Reset IPC
+- Removed legacy `dl_open_any` from [`unix_sys.rs`](rust/salsa_net/src/unix_sys.rs) after migrating [`bluez_ffi.rs`](rust/salsa_net/src/bluez_ffi.rs), [`dsp.rs`](rust/salsa_net/src/dsp.rs), [`midi_hub.rs`](rust/salsa_net/src/midi_hub.rs), [`dmabuf_gl.rs`](rust/salsa_net/src/dmabuf_gl.rs), [`zlib_png.rs`](rust/salsa_tools/src/zlib_png.rs), [`x11_util.rs`](rust/salsa_ui/src/x11_util.rs), and unified GLib/GObject/GIO portal loading in [`gio_dbus.rs`](rust/salsa_ui/src/gio_dbus.rs) onto `salsa_host_dl::open_verified_optional_lib`.
+- Wrapped A2DP/mSBC codecs behind `A2dpCodecAdapter` and `MsbcScoTranscoder` in [`bluez_ffi.rs`](rust/salsa_net/src/bluez_ffi.rs), removed raw `*mut c_void` pointers from `RealBluezBackend` in [`bluez_runtime.rs`](rust/salsa_net/src/bluez_runtime.rs), and added `LASAPI_BT_CONN_RESET` / `BtConnOp::Reset` / `reset_device_prefer_daemon()` across [`control_ipc.rs`](rust/salsa_net/src/control_ipc.rs), [`ctl_cli.rs`](rust/salsa_net/src/ctl_cli.rs), and [`qt_bridge.rs`](rust/salsa_ui/src/qt_bridge.rs).
+
+### 4. Zero-Aliasing PipeWire Preview SHM Seqlock Seam (`salsa_net::preview_shm`)
+- Added [`preview_shm.rs`](rust/salsa_net/src/preview_shm.rs) (`PreviewShmWriter` and `PreviewShmReader`) using raw field pointers and atomic seqlock fences with frame-dimension validation, wired into [`pw_broker.rs`](rust/salsa_net/src/pw_broker.rs) and [`debug_core.rs`](rust/salsa_tools/src/debug_core.rs).
+
+---
+
+## V1.26.15 (`2026-11-26`)
 
 ### 1. Zero-Drop Bluetooth A2DP AAC Streaming, `PEAK_BITRATE` Sink Compliance & Immediate `TIOCOUTQ` ABR
 - Updated [`bluez_runtime.rs`](rust/salsa_net/src/bluez_runtime.rs) (`init_bt_encoder()`, `configure_bt_l2cap_socket()`, `send_l2cap_packet()`, `adapt_bt_bitrate_after_tx()`, `spawn_tx_thread()`), [`bluez_wire.rs`](rust/salsa_net/src/bluez_wire.rs) (`abr_step_aac()`, `abr_step_ldac()`), and [`unix_sys.rs`](rust/salsa_net/src/unix_sys.rs) (`socket_outq_bytes()` / `TIOCOUTQ`):

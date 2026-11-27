@@ -20,7 +20,7 @@ use crate::pw_wire::{
     DRM_MOD_INVALID, VF_ABGR, VF_ARGB, VF_BGRA, VF_BGRX, VF_I420, VF_NV12, VF_RGBA, VF_RGBX,
     VF_XBGR, VF_XRGB, VF_YUY2,
 };
-use crate::unix_sys::{dl_close, dl_open_any, dl_sym};
+use crate::unix_sys::{dl_close, dl_sym};
 
 const O_RDWR_CLOEXEC: c_int = 2 | 0o2000000;
 
@@ -220,9 +220,15 @@ unsafe fn load_egl_ext<T: Copy>(gpa: EglGetProcAddressFn, name: &str) -> Option<
 impl GlApi {
     fn load() -> Option<Self> {
         unsafe {
-            let lib_gbm = dl_open_any(&["libgbm.so.1", "libgbm.so"]);
-            let lib_egl = dl_open_any(&["libEGL.so.1", "libEGL.so"]);
-            let lib_gles = dl_open_any(&["libGLESv2.so.2", "libGLESv2.so"]);
+            let anchor = Self::load as *const () as *const c_void;
+            let lib_gbm =
+                salsa_host_dl::open_verified_optional_lib(&["libgbm.so.1", "libgbm.so"], anchor);
+            let lib_egl =
+                salsa_host_dl::open_verified_optional_lib(&["libEGL.so.1", "libEGL.so"], anchor);
+            let lib_gles = salsa_host_dl::open_verified_optional_lib(
+                &["libGLESv2.so.2", "libGLESv2.so"],
+                anchor,
+            );
             if lib_gbm.is_null() || lib_egl.is_null() || lib_gles.is_null() {
                 dl_close(lib_gles);
                 dl_close(lib_egl);
@@ -710,7 +716,13 @@ mod tests {
         else {
             return;
         };
-        let lib_gbm = unsafe { dl_open_any(&["libgbm.so.1", "libgbm.so"]) };
+        let lib_gbm = unsafe {
+            salsa_host_dl::open_verified_optional_lib(
+                &["libgbm.so.1", "libgbm.so"],
+                gbm_dmabuf_gl_blitter_decodes_when_render_node_accessible as *const ()
+                    as *const c_void,
+            )
+        };
         if lib_gbm.is_null() {
             return;
         }

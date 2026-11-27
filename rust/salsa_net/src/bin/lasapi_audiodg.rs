@@ -5,6 +5,10 @@
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
-fn main() {
-    salsa_wire::c_abi::run_c_main(salsa_wire::audiodg_engine::salsa_audiodg_main);
+#![deny(unsafe_code)]
+
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    ExitCode::from(salsa_wire::audiodg_engine::run_audiodg_from_env() as u8)
 }

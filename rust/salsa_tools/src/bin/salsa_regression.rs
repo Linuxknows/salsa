@@ -5,7 +5,6 @@
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
-use core::mem;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -31,7 +30,7 @@ use salsa_tools::ipc::{
 };
 use salsa_tools::json::JsonValue;
 use salsa_tools::zlib_png::{decode_png_rgba, encode_png_rgba, resize_rgba, RgbaImage};
-use salsa_wire::hw_analog::{lasapi_hw_analog_default_cfg, lasapi_hw_analog_score_card};
+use salsa_wire::hw_analog::{default_hw_analog_cfg, score_card_by_index};
 use salsa_wire::unix_sys::reset_sigpipe_default;
 
 struct TempDirGuard {
@@ -659,8 +658,7 @@ fn test_elf_hardening_and_proxy_parity(base_dir: &Path) -> Result<String, String
 }
 
 fn test_rev62_hw_analog_scoring_and_defaults(_base_dir: &Path) -> Result<String, String> {
-    let mut cfg = unsafe { mem::zeroed() };
-    unsafe { lasapi_hw_analog_default_cfg(&mut cfg) };
+    let cfg = default_hw_analog_cfg();
     if cfg.hw_dac_unity_vol != 1
         || cfg.hp_amp_tier != 0
         || cfg.output_route != 0
@@ -668,13 +666,13 @@ fn test_rev62_hw_analog_scoring_and_defaults(_base_dir: &Path) -> Result<String,
         || cfg.analog_boost_db.abs() > 1e-5
         || cfg.mic_hw_boost_db.abs() > 1e-5
     {
-        return Err("lasapi_hw_analog_default_cfg unexpected defaults".to_string());
+        return Err("default_hw_analog_cfg unexpected defaults".to_string());
     }
 
-    let sc_strix = unsafe { lasapi_hw_analog_score_card(99, c"STRIX RAID DLX USB Audio".as_ptr()) };
-    let sc_soar = unsafe { lasapi_hw_analog_score_card(99, c"ASUS STRIX SOAR Audio".as_ptr()) };
-    let sc_scar = unsafe { lasapi_hw_analog_score_card(99, c"Scarlett 2i2 4th Gen".as_ptr()) };
-    let sc_hdmi = unsafe { lasapi_hw_analog_score_card(99, c"HDA ATI HDMI".as_ptr()) };
+    let sc_strix = score_card_by_index(99, "STRIX RAID DLX USB Audio");
+    let sc_soar = score_card_by_index(99, "ASUS STRIX SOAR Audio");
+    let sc_scar = score_card_by_index(99, "Scarlett 2i2 4th Gen");
+    let sc_hdmi = score_card_by_index(99, "HDA ATI HDMI");
     if sc_strix <= sc_hdmi + 100 || sc_soar <= sc_hdmi + 100 || sc_scar <= sc_hdmi + 100 {
         return Err(format!(
             "unexpected scores strix={sc_strix} soar={sc_soar} scarlett={sc_scar} hdmi={sc_hdmi}"

@@ -11,19 +11,17 @@
 use core::ffi::{c_char, c_int, c_long, c_uint, c_void};
 use core::mem;
 use core::ptr;
-use core::slice;
 use core::sync::atomic::Ordering;
 use std::fs;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, LasapiMidiEvent, LasapiMidiHub, LasapiShmRing,
-    LASAPI_DBG_INFO, LASAPI_DBG_MIDI, LASAPI_DBG_TRACE, LASAPI_MIDI_RING_EVENTS,
-    LASAPI_MIDI_RING_MASK,
+    c_str_to_string, copy_str_to_c, LasapiMidiEvent, LasapiMidiHub,
+    LASAPI_DBG_INFO, LASAPI_DBG_MIDI, LASAPI_DBG_TRACE,
 };
 use crate::unix_sys::{
-    close_raw_fd, dbg_emit_vals, dl_close, dl_open_any, dl_sym, mono_ns, nb_read_raw,
+    close_raw_fd, dbg_emit_vals, dl_close, dl_sym, mono_ns, nb_read_raw,
     open_raw_flags, O_CLOEXEC, O_NONBLOCK, O_RDONLY,
 };
 
@@ -265,20 +263,12 @@ pub fn init_hub(hub: &mut LasapiMidiHub) -> c_int {
         }
     }
 
-    const ALSA_CANDS: &[&str] = &[
-        "/usr/lib/libasound.so.2.0.0",
-        "/usr/lib/libasound.so.2",
-        "/usr/lib64/libasound.so.2.0.0",
-        "/usr/lib64/libasound.so.2",
-        "/usr/lib/x86_64-linux-gnu/libasound.so.2.0.0",
-        "/usr/lib/x86_64-linux-gnu/libasound.so.2",
-        "/usr/lib/aarch64-linux-gnu/libasound.so.2.0.0",
-        "/usr/lib/aarch64-linux-gnu/libasound.so.2",
-        "/lib/x86_64-linux-gnu/libasound.so.2",
-        "/lib64/libasound.so.2",
-        "libasound.so.2",
-    ];
-    hub.alsa_dl = unsafe { dl_open_any(ALSA_CANDS) };
+    hub.alsa_dl = unsafe {
+        salsa_host_dl::open_verified_optional_lib(
+            salsa_host_dl::HOST_LIBASOUND_CANDIDATES,
+            init_hub as *const () as *const c_void,
+        )
+    };
 
     let mut has_seq_coder = false;
     let mut has_seq_input = false;
@@ -484,22 +474,6 @@ pub fn poll_events(
     count
 }
 
-pub unsafe fn push_to_ring(ring: *mut LasapiShmRing, ev: &LasapiMidiEvent) {
-    if ring.is_null() {
-        return;
-    }
-    let w = unsafe { (*ring).midi_write_idx.load(Ordering::Relaxed) };
-    let r = unsafe { (*ring).midi_read_idx.load(Ordering::Acquire) };
-    if w.wrapping_sub(r) >= LASAPI_MIDI_RING_EVENTS as u64 {
-        return;
-    }
-    let slot = (w as usize) & LASAPI_MIDI_RING_MASK;
-    unsafe {
-        ptr::addr_of_mut!((*ring).midi_ring[slot]).write(*ev);
-        (*ring).midi_write_idx.store(w.wrapping_add(1), Ordering::Release);
-    }
-}
-
 pub fn close_hub(hub: &mut LasapiMidiHub) {
     if !hub.initialized {
         return;
@@ -534,47 +508,69 @@ pub fn close_hub(hub: &mut LasapiMidiHub) {
     hub.initialized = false;
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_midi_init(m: *mut LasapiMidiHub) -> c_int {
-    if m.is_null() {
-        return -1;
-    }
-    init_hub(unsafe { &mut *m })
+#[derive(Clone, Copy, Debug)]
+pub struct MidiHubMetaSnapshot {
+    pub initialized: bool,
+    pub rawmidi_open: bool,
+    pub controller_name: [u8; 64],
+    pub dev_path: [u8; 64],
+    pub seq_client_id: i32,
+    pub seq_in_port: i32,
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_midi_poll_events(
-    m: *mut LasapiMidiHub,
-    out_events: *mut LasapiMidiEvent,
-    max_events: c_int,
-    period_start_ns: u64,
-    sample_rate: u32,
-    period_frames: u32,
-) -> c_int {
-    if m.is_null() || out_events.is_null() || max_events <= 0 {
-        return 0;
+pub struct MidiHub(Box<LasapiMidiHub>);
+
+unsafe impl Send for MidiHub {}
+
+impl Default for MidiHub {
+    fn default() -> Self {
+        Self::new()
     }
-    let out = unsafe { slice::from_raw_parts_mut(out_events, max_events as usize) };
-    poll_events(unsafe { &mut *m }, out, period_start_ns, sample_rate, period_frames) as c_int
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_midi_push_to_ring(
-    ring: *mut LasapiShmRing,
-    ev: *const LasapiMidiEvent,
-) {
-    if ring.is_null() || ev.is_null() {
-        return;
+impl MidiHub {
+    pub fn new() -> Self {
+        Self(Box::default())
     }
-    unsafe { push_to_ring(ring, &*ev) };
+
+    pub fn init(&mut self) -> i32 {
+        init_hub(&mut self.0)
+    }
+
+    pub fn poll_events(
+        &mut self,
+        out: &mut [LasapiMidiEvent],
+        period_start_ns: u64,
+        sample_rate: u32,
+        period_frames: u32,
+    ) -> usize {
+        poll_events(&mut self.0, out, period_start_ns, sample_rate, period_frames)
+    }
+
+    pub fn close(&mut self) {
+        close_hub(&mut self.0);
+    }
+
+    pub fn total_events(&self) -> u64 {
+        self.0.total_events.load(Ordering::Relaxed)
+    }
+
+    pub fn meta_snapshot(&self) -> MidiHubMetaSnapshot {
+        MidiHubMetaSnapshot {
+            initialized: self.0.initialized,
+            rawmidi_open: self.0.rawmidi_fd >= 0,
+            controller_name: self.0.controller_name,
+            dev_path: self.0.dev_path,
+            seq_client_id: self.0.seq_client_id,
+            seq_in_port: self.0.seq_in_port,
+        }
+    }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_midi_close(m: *mut LasapiMidiHub) {
-    if m.is_null() {
-        return;
+impl Drop for MidiHub {
+    fn drop(&mut self) {
+        close_hub(&mut self.0);
     }
-    close_hub(unsafe { &mut *m });
 }
 
 #[cfg(test)]
@@ -583,9 +579,10 @@ mod tests {
 
     #[test]
     fn rawmidi_running_status_and_realtime_interleave() {
-        let mut hub: LasapiMidiHub = unsafe { mem::zeroed() };
-        hub.initialized = true;
-        hub.rawmidi_fd = -1;
+        let mut hub = LasapiMidiHub {
+            initialized: true,
+            ..LasapiMidiHub::default()
+        };
 
         assert!(feed_raw_byte(&mut hub, 0x90, 10_000, 0, 48_000, 128).is_none());
         assert!(feed_raw_byte(&mut hub, 60, 10_000, 0, 48_000, 128).is_none());
@@ -608,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn proc_asound_card_parser_and_shm_push() {
+    fn proc_asound_card_parser_extracts_card_name() {
         let sample = " 0 [Pro            ]: USB-Audio - Scarlett 2i2 4th Gen\n \
                       5 [FLkey37        ]: USB-Audio - Novation FLkey 37\n";
         assert_eq!(
@@ -616,21 +613,5 @@ mod tests {
             Some("Novation FLkey 37")
         );
         assert!(parse_proc_asound_cards(sample, 9).is_none());
-
-        let mut boxed: Box<LasapiShmRing> = unsafe {
-            let mut u = Box::<LasapiShmRing>::new_uninit();
-            ptr::write_bytes(u.as_mut_ptr(), 0, 1);
-            u.assume_init()
-        };
-        let ev = LasapiMidiEvent {
-            frame_offset: 12,
-            size: 3,
-            port: 0,
-            data: [0x90, 64, 127, 0],
-            timestamp_ns: 999,
-        };
-        unsafe { push_to_ring(&mut *boxed, &ev) };
-        assert_eq!(boxed.midi_write_idx.load(Ordering::Acquire), 1);
-        assert_eq!(boxed.midi_ring[0], ev);
     }
 }

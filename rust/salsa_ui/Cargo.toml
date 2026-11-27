@@ -11,6 +11,7 @@ crate-type = ["rlib", "staticlib"]
 path = "src/lib.rs"
 
 [dependencies]
-salsa_net = { path = "../salsa_net" }
 lasapi_client = { path = "../lasapi_client" }
+salsa_host_dl = { path = "../salsa_host_dl" }
+salsa_net = { path = "../salsa_net" }
 salsa_tools = { path = "../salsa_tools" }

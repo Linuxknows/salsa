@@ -22,24 +22,24 @@ use std::sync::OnceLock;
 
 use salsa_wire::c_abi::{
     copy_str_to_c, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_ALREADY_INITIALIZED,
-    AUDCLNT_E_BUFFER_TOO_LARGE, AUDCLNT_E_NOT_INITIALIZED, E_FAIL, E_INVALIDARG, E_OUTOFMEMORY,
+    AUDCLNT_E_BUFFER_TOO_LARGE, AUDCLNT_E_NOT_INITIALIZED, E_FAIL, E_INVALIDARG,
     LASAPI_CMD_CREATE_SESSION, LASAPI_DBG_INFO, LASAPI_DBG_LASAPI, LASAPI_DBG_SHIM,
     LASAPI_DBG_TRACE, LASAPI_DBG_WARN, LASAPI_DEBUG_DGRAM_MAGIC, LASAPI_FMT_FLOAT32,
-    LASAPI_FMT_S16_LE, LASAPI_FMT_S32_LE, LASAPI_MAX_CHANNELS, LASAPI_MIDI_RING_EVENTS,
-    LASAPI_MIDI_RING_MASK, LASAPI_RING_FRAMES, LASAPI_RING_MAGIC, LASAPI_RING_MASK,
-    LasapiBtCodecCfg, LasapiDbgDgram, LasapiDeviceList, LasapiEngineStatus, LasapiEqConfig,
-    LasapiHwAnalogCfg, LasapiIpcReq, LasapiIpcResp, LasapiMicApoCfg, LasapiMidiEvent,
-    LasapiParamEqExt, LasapiParamEqPayload, LasapiShmRing, WaveFormatEx, S_OK,
+    LASAPI_FMT_S16_LE, LASAPI_FMT_S32_LE, LASAPI_MAX_CHANNELS, LasapiBtCodecCfg, LasapiDbgDgram,
+    LasapiDeviceList, LasapiEngineStatus, LasapiEqConfig, LasapiHwAnalogCfg, LasapiIpcReq,
+    LasapiIpcResp, LasapiMicApoCfg, LasapiMidiEvent, LasapiParamEqExt, LasapiParamEqPayload,
+    WaveFormatEx, S_OK,
 };
 use salsa_wire::control_ipc::{
     BtConnOp, ControlClient, ControlPayload, ControlRequest, MuteOp, SessionTarget,
 };
 use salsa_wire::unix_sys::{
     audiodg_sock_path, close_raw_fd, connect_unix_stream_blocking, current_pid, debug_in_sock_path,
-    do_poll, eventfd_drain, last_errno, memfd_size_valid, recv_blocking_exact_with_2fds,
-    send_all_nosignal, sendto_unix_dgram_nonblock, socket_raw, MappedMem, PollFd, AF_UNIX, POLLIN,
-    SOCK_CLOEXEC, SOCK_DGRAM, SOCK_NONBLOCK,
+    do_poll, eventfd_drain, last_errno, recv_blocking_exact_with_2fds, send_all_nosignal,
+    sendto_unix_dgram_nonblock, socket_raw, PollFd, AF_UNIX, POLLIN, SOCK_CLOEXEC, SOCK_DGRAM,
+    SOCK_NONBLOCK,
 };
+use salsa_wire::wavert_ring::WaveRtClientRing;
 
 pub type HRESULT = i32;
 pub type AUDCLNT_SHAREMODE = u32;
@@ -53,7 +53,7 @@ pub struct IAudioClient {
     sock_fd: Option<OwnedFd>,
     shm_fd: Option<OwnedFd>,
     event_fd: Option<OwnedFd>,
-    ring: Option<MappedMem>,
+    ring: Option<WaveRtClientRing>,
     channels: usize,
     buffer_frames: u32,
     locked_frames: u32,
@@ -154,14 +154,6 @@ unsafe fn as_bytes<T>(val: &T) -> &[u8] {
 #[inline]
 unsafe fn as_bytes_mut<T>(val: &mut T) -> &mut [u8] {
     unsafe { slice::from_raw_parts_mut((val as *mut T).cast::<u8>(), mem::size_of::<T>()) }
-}
-
-#[inline]
-unsafe fn ring_ptr(client: &IAudioClient) -> *mut LasapiShmRing {
-    client
-        .ring
-        .as_ref()
-        .map_or(ptr::null_mut(), |m| m.as_ptr().cast::<LasapiShmRing>().cast_mut())
 }
 
 #[no_mangle]
@@ -401,89 +393,36 @@ pub unsafe extern "C" fn IAudioClient_Initialize(
         return resp.hr;
     }
 
-    if !memfd_size_valid(
+    let (ring, _ring_ch, _ring_buf_frames) = match WaveRtClientRing::attach_fd(
         shm_fd.as_raw_fd(),
-        0,
-        mem::size_of::<LasapiShmRing>() as u64,
+        resp.actual_buffer_frames,
+        resp.actual_channels,
     ) {
-        dbg_emit_dgram(
-            LASAPI_DBG_LASAPI,
-            salsa_wire::c_abi::LASAPI_DBG_ERR,
-            resp.session_id,
-            0,
-            0,
-            E_FAIL,
-            "LASAPI_INIT_FAIL",
-            &cname,
-            "shm ring size validation failed",
-        );
-        return E_FAIL;
-    }
-
-    let Some(ring) = MappedMem::map_fd(shm_fd.as_raw_fd(), mem::size_of::<LasapiShmRing>(), true, 0)
-    else {
-        dbg_emit_dgram(
-            LASAPI_DBG_LASAPI,
-            salsa_wire::c_abi::LASAPI_DBG_ERR,
-            resp.session_id,
-            0,
-            0,
-            E_OUTOFMEMORY,
-            "LASAPI_INIT_FAIL",
-            &cname,
-            "mmap shm ring failed",
-        );
-        return E_OUTOFMEMORY;
+        Ok(ok) => ok,
+        Err(hr) => {
+            dbg_emit_dgram(
+                LASAPI_DBG_LASAPI,
+                salsa_wire::c_abi::LASAPI_DBG_ERR,
+                resp.session_id,
+                0,
+                0,
+                hr,
+                "LASAPI_INIT_FAIL",
+                &cname,
+                "WaveRtClientRing attach/validation failed",
+            );
+            return hr;
+        }
     };
+    let sb_frames = ring.buffer_frames();
+    let sb_ch = ring.channels();
 
-    let ring_hdr = ring.as_ptr().cast::<LasapiShmRing>();
-    let (ring_magic, ring_ch, ring_buf_frames) = unsafe {
-        (
-            ptr::addr_of!((*ring_hdr).magic).read(),
-            ptr::addr_of!((*ring_hdr).channels).read(),
-            ptr::addr_of!((*ring_hdr).buffer_frames).read(),
-        )
-    };
-    if ring_magic != LASAPI_RING_MAGIC
-        || ring_ch == 0
-        || ring_ch as usize > LASAPI_MAX_CHANNELS
-        || ring_buf_frames == 0
-        || ring_buf_frames as usize > LASAPI_RING_FRAMES
-    {
-        dbg_emit_dgram(
-            LASAPI_DBG_LASAPI,
-            salsa_wire::c_abi::LASAPI_DBG_ERR,
-            resp.session_id,
-            ring_ch as i32,
-            ring_buf_frames as i32,
-            E_FAIL,
-            "LASAPI_INIT_FAIL",
-            &cname,
-            "shm ring header validation failed",
-        );
-        return E_FAIL;
-    }
-
-    let sb_frames = if resp.actual_buffer_frames != 0 {
-        resp.actual_buffer_frames.min(ring_buf_frames)
-    } else {
-        ring_buf_frames
-    };
-    let sb_ch = if resp.actual_channels != 0 {
-        resp.actual_channels.min(ring_ch)
-    } else {
-        ring_ch
-    };
-    if sb_frames == 0 || sb_ch == 0 {
-        return E_FAIL;
-    }
-
-    c.staging_buf = vec![0.0f32; (sb_frames as usize) * (sb_ch as usize)];
+    c.staging_buf = vec![0.0f32; (sb_frames as usize) * sb_ch];
     c.sock_fd = Some(sock);
     c.shm_fd = Some(shm_fd);
     c.event_fd = Some(ev_fd);
     c.ring = Some(ring);
-    c.channels = sb_ch as usize;
+    c.channels = sb_ch;
     c.buffer_frames = sb_frames;
     c.session_id = resp.session_id;
     c.initialized = true;
@@ -519,7 +458,7 @@ pub unsafe extern "C" fn IAudioClient_GetBufferSize(
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     let c = unsafe { &*client };
-    if !c.initialized || unsafe { ring_ptr(c) }.is_null() {
+    if !c.initialized || c.ring.is_none() {
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     unsafe { *pNumBufferFrames = c.buffer_frames };
@@ -536,19 +475,15 @@ pub unsafe extern "C" fn IAudioClient_GetDevicePeriod(
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     let c = unsafe { &*client };
-    if !c.initialized {
+    let Some(ring) = c.ring.as_ref().filter(|_| c.initialized) else {
         return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() {
-        return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r = unsafe { &*r_ptr };
+    };
+    let pf = ring.period_frames();
     if !pDefaultPeriodFrames.is_null() {
-        unsafe { *pDefaultPeriodFrames = r.period_frames };
+        unsafe { *pDefaultPeriodFrames = pf };
     }
     if !pMinimumPeriodFrames.is_null() {
-        unsafe { *pMinimumPeriodFrames = r.period_frames };
+        unsafe { *pMinimumPeriodFrames = pf };
     }
     S_OK
 }
@@ -562,20 +497,10 @@ pub unsafe extern "C" fn IAudioClient_GetCurrentPadding(
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     let c = unsafe { &*client };
-    if !c.initialized {
+    let Some(ring) = c.ring.as_ref().filter(|_| c.initialized) else {
         return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() {
-        return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let (w, rd) = unsafe {
-        (
-            (*ptr::addr_of!((*r_ptr).write_frame)).load(Ordering::Relaxed),
-            (*ptr::addr_of!((*r_ptr).read_frame)).load(Ordering::Acquire),
-        )
     };
-    unsafe { *pNumPaddingFrames = w.saturating_sub(rd) as u32 };
+    unsafe { *pNumPaddingFrames = ring.current_padding() };
     S_OK
 }
 
@@ -603,15 +528,10 @@ pub unsafe extern "C" fn IAudioClient_Start(client: *mut IAudioClient) -> HRESUL
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     let c = unsafe { &*client };
-    if !c.initialized {
+    let Some(ring) = c.ring.as_ref().filter(|_| c.initialized) else {
         return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() {
-        return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r = unsafe { &*r_ptr };
-    r.active.store(1, Ordering::Release);
+    };
+    ring.start();
     dbg_emit_dgram(
         LASAPI_DBG_LASAPI,
         LASAPI_DBG_INFO,
@@ -632,15 +552,10 @@ pub unsafe extern "C" fn IAudioClient_Stop(client: *mut IAudioClient) -> HRESULT
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     let c = unsafe { &*client };
-    if !c.initialized {
+    let Some(ring) = c.ring.as_ref().filter(|_| c.initialized) else {
         return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() {
-        return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r = unsafe { &*r_ptr };
-    r.active.store(0, Ordering::Release);
+    };
+    ring.stop();
     dbg_emit_dgram(
         LASAPI_DBG_LASAPI,
         LASAPI_DBG_INFO,
@@ -661,43 +576,26 @@ pub unsafe extern "C" fn IAudioClient_Reset(client: *mut IAudioClient) -> HRESUL
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     let c = unsafe { &*client };
-    if !c.initialized {
+    let Some(ring) = c.ring.as_ref().filter(|_| c.initialized) else {
         return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() {
-        return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r = unsafe { &*r_ptr };
-    if r.is_capture != 0 {
-        let cw = r.cap_write_frame.load(Ordering::Acquire);
-        r.cap_read_frame.store(cw, Ordering::Release);
-        dbg_emit_dgram(
-            LASAPI_DBG_LASAPI,
-            LASAPI_DBG_TRACE,
-            c.session_id,
-            0,
-            0,
-            S_OK,
-            "LASAPI_RESET",
-            cbuf_to_str(&c.client_name),
-            &format!("cap_read_frame=cap_write_frame={cw}"),
-        );
+    };
+    let (is_cap, cursor) = ring.reset();
+    let msg = if is_cap {
+        format!("cap_read_frame=cap_write_frame={cursor}")
     } else {
-        let rd = r.read_frame.load(Ordering::Acquire);
-        r.write_frame.store(rd, Ordering::Release);
-        dbg_emit_dgram(
-            LASAPI_DBG_LASAPI,
-            LASAPI_DBG_TRACE,
-            c.session_id,
-            0,
-            0,
-            S_OK,
-            "LASAPI_RESET",
-            cbuf_to_str(&c.client_name),
-            &format!("write_frame=read_frame={rd}"),
-        );
-    }
+        format!("write_frame=read_frame={cursor}")
+    };
+    dbg_emit_dgram(
+        LASAPI_DBG_LASAPI,
+        LASAPI_DBG_TRACE,
+        c.session_id,
+        0,
+        0,
+        S_OK,
+        "LASAPI_RESET",
+        cbuf_to_str(&c.client_name),
+        &msg,
+    );
     S_OK
 }
 
@@ -719,8 +617,7 @@ pub unsafe extern "C" fn IAudioRenderClient_GetBuffer(
     if !c.initialized {
         return AUDCLNT_E_NOT_INITIALIZED;
     }
-    let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() || c.channels == 0 || c.buffer_frames == 0 {
+    if c.ring.is_none() || c.channels == 0 || c.buffer_frames == 0 {
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     if padding.saturating_add(NumFramesRequested) > c.buffer_frames {
@@ -755,8 +652,10 @@ pub unsafe extern "C" fn IAudioRenderClient_ReleaseBuffer(
         return E_INVALIDARG;
     }
 
-    let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() || c.channels == 0 {
+    let Some(ref ring) = c.ring else {
+        return AUDCLNT_E_NOT_INITIALIZED;
+    };
+    if c.channels == 0 {
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     let ch = c.channels;
@@ -767,46 +666,11 @@ pub unsafe extern "C" fn IAudioRenderClient_ReleaseBuffer(
     if need > c.staging_buf.len() {
         return E_INVALIDARG;
     }
-    let w = unsafe { (*ptr::addr_of!((*r_ptr).write_frame)).load(Ordering::Relaxed) };
-    let pcm_base = unsafe { ptr::addr_of_mut!((*r_ptr).pcm_data.0) }.cast::<f32>();
-
-    if total_frames > 0 {
-        let start = (w as usize) & LASAPI_RING_MASK;
-        let first = total_frames.min(LASAPI_RING_FRAMES - start);
-        let second = total_frames - first;
-        if (dwFlags & AUDCLNT_BUFFERFLAGS_SILENT) != 0 {
-            unsafe {
-                ptr::write_bytes(
-                    pcm_base.add(start * ch),
-                    0,
-                    first * ch * mem::size_of::<f32>(),
-                );
-                if second > 0 {
-                    ptr::write_bytes(pcm_base, 0, second * ch * mem::size_of::<f32>());
-                }
-            }
-        } else {
-            unsafe {
-                ptr::copy_nonoverlapping(
-                    c.staging_buf.as_ptr(),
-                    pcm_base.add(start * ch),
-                    first * ch,
-                );
-                if second > 0 {
-                    ptr::copy_nonoverlapping(
-                        c.staging_buf.as_ptr().add(first * ch),
-                        pcm_base,
-                        second * ch,
-                    );
-                }
-            }
-        }
-    }
-
-    unsafe {
-        (*ptr::addr_of!((*r_ptr).write_frame))
-            .store(w + u64::from(NumFramesWritten), Ordering::Release);
-    }
+    ring.write_playback_f32(
+        &c.staging_buf[..need],
+        NumFramesWritten,
+        (dwFlags & AUDCLNT_BUFFERFLAGS_SILENT) != 0,
+    );
     c.locked_frames = 0;
     S_OK
 }
@@ -852,16 +716,15 @@ pub unsafe extern "C" fn IAudioRenderClient_WriteFrames(
     {
         return E_INVALIDARG;
     }
-    let (ch, buf_frames, r_ptr) = {
+    let (ch, buf_frames) = {
         let c = unsafe { &*client };
         if !c.initialized || c.channels == 0 || c.buffer_frames == 0 {
             return E_INVALIDARG;
         }
-        let rp = unsafe { ring_ptr(c) };
-        if rp.is_null() {
+        if c.ring.is_none() {
             return AUDCLNT_E_NOT_INITIALIZED;
         }
-        (c.channels as u32, c.buffer_frames, rp)
+        (c.channels as u32, c.buffer_frames)
     };
 
     let mut remaining = frames;
@@ -876,7 +739,12 @@ pub unsafe extern "C" fn IAudioRenderClient_WriteFrames(
         }
         let space = buf_frames.saturating_sub(padding);
         if space == 0 {
-            let active = unsafe { (*ptr::addr_of!((*r_ptr).active)).load(Ordering::Acquire) };
+            let active = u32::from(
+                unsafe { &*client }
+                    .ring
+                    .as_ref()
+                    .is_some_and(WaveRtClientRing::is_active),
+            );
             if padding >= prev_pad || active == 0 {
                 stall_waits += 1;
             } else {
@@ -950,17 +818,10 @@ pub unsafe extern "C" fn IAudioCaptureClient_GetNextPacketSize(
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     let c = unsafe { &*client };
-    if !c.initialized {
+    let Some(ring) = c.ring.as_ref().filter(|_| c.initialized) else {
         return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() {
-        return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r = unsafe { &*r_ptr };
-    let cw = r.cap_write_frame.load(Ordering::Acquire);
-    let cr = r.cap_read_frame.load(Ordering::Relaxed);
-    unsafe { *pNumFramesInNextPacket = cw.saturating_sub(cr) as u32 };
+    };
+    unsafe { *pNumFramesInNextPacket = ring.next_capture_packet_frames() };
     S_OK
 }
 
@@ -984,12 +845,10 @@ pub unsafe extern "C" fn IAudioCaptureClient_ReadFrames(
     if !c.initialized || c.channels == 0 {
         return E_INVALIDARG;
     }
-    let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() {
+    let Some(ref ring) = c.ring else {
         return AUDCLNT_E_NOT_INITIALIZED;
-    }
+    };
 
-    let r = unsafe { &*r_ptr };
     let ch = c.channels.min(LASAPI_MAX_CHANNELS);
     let bps = if dst_fmt == LASAPI_FMT_S16_LE { 2usize } else { 4usize };
     if (frames as usize)
@@ -1001,66 +860,52 @@ pub unsafe extern "C" fn IAudioCaptureClient_ReadFrames(
     }
     let out_ptr = dst.cast::<u8>();
 
-    let mut cw = r.cap_write_frame.load(Ordering::Acquire);
-    let mut cr = r.cap_read_frame.load(Ordering::Relaxed);
-    if cw <= cr {
+    if ring.next_capture_packet_frames() == 0 {
         let _ = unsafe { IAudioClient_WaitForPeriod(client, 10) };
-        cw = r.cap_write_frame.load(Ordering::Acquire);
-        cr = r.cap_read_frame.load(Ordering::Relaxed);
     }
 
-    let mut avail = cw.saturating_sub(cr);
-    if avail > LASAPI_RING_FRAMES as u64 {
-        cr = cw - (LASAPI_RING_FRAMES as u64 / 2);
-        avail = cw - cr;
-    }
-
-    let to_copy = avail.min(u64::from(frames)) as u32;
-    let vol = if r.muted.load(Ordering::Relaxed) != 0 {
-        0.0f32
-    } else {
-        (r.volume_milli.load(Ordering::Relaxed) as f32) / 1000.0
-    };
-
-    for f in 0..to_copy as usize {
-        let idx = (((cr + f as u64) as usize) & LASAPI_RING_MASK) * 2;
-        for ch_i in 0..ch {
-            let raw_s = r.cap_pcm_data.0[idx + (ch_i & 1)] * vol;
-            let sample = if raw_s.is_finite() {
-                raw_s.clamp(-1.0, 1.0)
-            } else {
-                0.0
-            };
-            let out_idx = f * ch + ch_i;
-            if dst_fmt == LASAPI_FMT_FLOAT32 {
-                unsafe { ptr::write_unaligned(out_ptr.cast::<f32>().add(out_idx), sample) };
-            } else if dst_fmt == LASAPI_FMT_S16_LE {
-                unsafe {
-                    ptr::write_unaligned(
-                        out_ptr.cast::<i16>().add(out_idx),
-                        (sample * 32767.0) as i16,
-                    );
-                }
-            } else {
-                unsafe {
-                    ptr::write_unaligned(
-                        out_ptr.cast::<i32>().add(out_idx),
-                        (sample * 2_147_483_520.0) as i32,
-                    );
+    let mut copied_total = 0u32;
+    let mut scratch = [0.0f32; 256 * LASAPI_MAX_CHANNELS];
+    while copied_total < frames {
+        let chunk_req = (frames - copied_total).min(256);
+        let got = ring.read_capture_f32(chunk_req, &mut scratch[..(chunk_req as usize) * ch]);
+        if got == 0 {
+            break;
+        }
+        let base_out = (copied_total as usize) * ch;
+        for f in 0..got as usize {
+            for ch_i in 0..ch {
+                let sample = scratch[f * ch + ch_i];
+                let out_idx = base_out + f * ch + ch_i;
+                if dst_fmt == LASAPI_FMT_FLOAT32 {
+                    unsafe { ptr::write_unaligned(out_ptr.cast::<f32>().add(out_idx), sample) };
+                } else if dst_fmt == LASAPI_FMT_S16_LE {
+                    unsafe {
+                        ptr::write_unaligned(
+                            out_ptr.cast::<i16>().add(out_idx),
+                            (sample * 32767.0) as i16,
+                        );
+                    }
+                } else {
+                    unsafe {
+                        ptr::write_unaligned(
+                            out_ptr.cast::<i32>().add(out_idx),
+                            (sample * 2_147_483_520.0) as i32,
+                        );
+                    }
                 }
             }
         }
+        copied_total += got;
+        if got < chunk_req {
+            break;
+        }
     }
 
-    if to_copy < frames {
-        let zero_off = (to_copy as usize) * ch * bps;
-        let zero_len = ((frames - to_copy) as usize) * ch * bps;
+    if copied_total < frames {
+        let zero_off = (copied_total as usize) * ch * bps;
+        let zero_len = ((frames - copied_total) as usize) * ch * bps;
         unsafe { ptr::write_bytes(out_ptr.add(zero_off), 0, zero_len) };
-    }
-
-    if to_copy > 0 {
-        r.cap_read_frame
-            .store(cr + u64::from(to_copy), Ordering::Release);
     }
     S_OK
 }
@@ -1074,17 +919,10 @@ pub unsafe extern "C" fn ISimpleAudioVolume_SetMasterVolume(
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     let c = unsafe { &*client };
-    if !c.initialized {
+    let Some(ring) = c.ring.as_ref().filter(|_| c.initialized) else {
         return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let lvl = fLevel.clamp(0.0, 2.0);
-    let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() {
-        return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r = unsafe { &*r_ptr };
-    r.volume_milli
-        .store((lvl * 1000.0) as u32, Ordering::Relaxed);
+    };
+    ring.set_master_volume(fLevel);
     S_OK
 }
 
@@ -1097,15 +935,10 @@ pub unsafe extern "C" fn ISimpleAudioVolume_GetMasterVolume(
         return AUDCLNT_E_NOT_INITIALIZED;
     }
     let c = unsafe { &*client };
-    if !c.initialized {
+    let Some(ring) = c.ring.as_ref().filter(|_| c.initialized) else {
         return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() {
-        return AUDCLNT_E_NOT_INITIALIZED;
-    }
-    let r = unsafe { &*r_ptr };
-    unsafe { *pfLevel = (r.volume_milli.load(Ordering::Relaxed) as f32) / 1000.0 };
+    };
+    unsafe { *pfLevel = ring.master_volume() };
     S_OK
 }
 
@@ -1119,33 +952,11 @@ pub unsafe extern "C" fn IAudioClient_ReadMidiEvents(
         return 0;
     }
     let c = unsafe { &*client };
-    if !c.initialized {
+    let Some(ring) = c.ring.as_ref().filter(|_| c.initialized) else {
         return 0;
-    }
-    let r_ptr = unsafe { ring_ptr(c) };
-    if r_ptr.is_null() {
-        return 0;
-    }
-    let r = unsafe { &*r_ptr };
-    let w = r.midi_write_idx.load(Ordering::Acquire);
-    let mut rd = r.midi_read_idx.load(Ordering::Relaxed);
-    if rd > w {
-        rd = w;
-    } else if w - rd > LASAPI_MIDI_RING_EVENTS as u64 {
-        rd = w - LASAPI_MIDI_RING_EVENTS as u64;
-    }
-
-    let mut count = 0u32;
-    while rd < w && count < max_events {
-        let ev = r.midi_ring[(rd as usize) & LASAPI_MIDI_RING_MASK];
-        unsafe { *events_out.add(count as usize) = ev };
-        count += 1;
-        rd += 1;
-    }
-    if count > 0 || rd != r.midi_read_idx.load(Ordering::Relaxed) {
-        r.midi_read_idx.store(rd, Ordering::Release);
-    }
-    count
+    };
+    let out_slice = unsafe { slice::from_raw_parts_mut(events_out, max_events as usize) };
+    ring.read_midi_events(out_slice)
 }
 
 #[no_mangle]
@@ -1184,10 +995,8 @@ pub unsafe extern "C" fn IAudioClient_Release(client: *mut IAudioClient) -> HRES
             cbuf_to_str(&c.client_name),
             "closing session shm/eventfd",
         );
-        let r_ptr = unsafe { ring_ptr(&c) };
-        if !r_ptr.is_null() {
-            let r = unsafe { &*r_ptr };
-            r.active.store(0, Ordering::SeqCst);
+        if let Some(ref ring) = c.ring {
+            ring.stop_seqcst();
         }
     }
     S_OK
@@ -1446,7 +1255,7 @@ pub unsafe extern "C" fn LASAPI_BtConnectionCtl(
     let mac = unsafe { cstr_to_str(mac_or_empty) }.to_string();
     match ControlClient::send(&ControlRequest::BtConnection { op, mac }) {
         Ok(resp) => {
-            if let ControlPayload::BtFlags(flags) = resp.payload {
+            if let ControlPayload::BtFlags(flags) | ControlPayload::BtFlagsMsg { flags, .. } = resp.payload {
                 if !out_flags.is_null() {
                     unsafe { *out_flags = flags };
                 }

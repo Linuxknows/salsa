@@ -47,3 +47,15 @@ _Avoid_: Video relay, PW stub
 **Hotplug Tracker**:
 The subsystem that detects hardware or Bluetooth device arrivals and departures and switches active playback or capture endpoints while preserving user preferences.
 _Avoid_: Device poller, plug watcher
+
+**Analog Stage**:
+The hardware output gain tier, DAC unity lock, discrete headphone amplifier drive, and physical USB/HID volume stage applied after digital mixing.
+_Avoid_: ALSA mixer controls, HW analog ctx
+
+**Zero-PipeWire Cutover**:
+The reversible host routing state in which SALSA claims desktop audio and video screen-casting sockets while masking conflicting upstream audio daemons.
+_Avoid_: Auto-enable mode, PipeWire zero hack
+
+**Preview Seqlock**:
+The lock-free shared-memory frame channel carrying live **ScreenCast Broker** video thumbnails from the daemon to diagnostic and studio viewers.
+_Avoid_: Preview SHM buffer, frame dump slot

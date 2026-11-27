@@ -7,7 +7,7 @@
 
 #![allow(unsafe_code)]
 
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{c_int, c_void};
 use core::mem;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, AtomicU64, Ordering};
@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crate::audiodg_engine::{
+use crate::unix_sys::{
     ERRNO_EAGAIN, ERRNO_EBADF, ERRNO_ECONNRESET, ERRNO_EINPROGRESS, ERRNO_EINTR, ERRNO_EPIPE,
 };
 use crate::bluez_cap::{
@@ -28,21 +28,16 @@ use crate::bluez_ffi::{
     add_dict_entry_bool, add_dict_entry_byte, add_dict_entry_bytes, add_dict_entry_obj_path,
     add_dict_entry_str, add_dict_entry_u16, cptr_to_opt_str, dbus_error_msg, dbus_get_bool_prop,
     dbus_get_str_prop, dbus_get_u16_prop, dbus_new_method_call, dbus_set_avrcp_volume,
-    dbus_set_str_prop, iter_append_str, iter_get_bool, iter_get_byte, iter_get_byte_array,
-    iter_get_str, iter_get_u16, iter_get_unix_fd, load_aptx_library, load_dbus_library,
-    load_fdk_aac_library, load_ldac_abr_library, load_ldac_library, load_sbc_library, BdAddr,
-    BtVoice, DBusApi, DBusConnection, DBusError, DBusHandlerResult, DBusMessage, DBusMessageIter,
-    DBusObjectPathVTable, DBusPendingCall, FdkBufDesc, FdkInArgs, FdkInfo, FdkOutArgs, SbcStruct,
-    SockaddrSco, AF_BLUETOOTH, BTPROTO_SCO, BT_VOICE, BT_VOICE_CVSD_16BIT, BT_VOICE_TRANSPARENT,
-    DBUS_BUS_SYSTEM, DBUS_HANDLER_RESULT_HANDLED, DBUS_HANDLER_RESULT_NOT_YET_HANDLED,
-    DBUS_MESSAGE_TYPE_ERROR, DBUS_MESSAGE_TYPE_SIGNAL, DBUS_TYPE_ARRAY, DBUS_TYPE_BYTE,
-    DBUS_TYPE_DICT_ENTRY, DBUS_TYPE_OBJECT_PATH, DBUS_TYPE_STRING, FDK_AACENC_OK, FDK_AOT_AAC_LC,
-    FDK_AOT_MP2_AAC_LC, FDK_IN_AUDIO_DATA, FDK_OUT_BITSTREAM_DATA, FDK_PARAM_AFTERBURNER,
-    FDK_PARAM_AOT, FDK_PARAM_AUDIOMUXVER, FDK_PARAM_BANDWIDTH, FDK_PARAM_BITRATE,
-    FDK_PARAM_BITRATEMODE, FDK_PARAM_CHANNELMODE, FDK_PARAM_HEADER_PERIOD, FDK_PARAM_PEAK_BITRATE,
-    FDK_PARAM_SAMPLERATE, FDK_PARAM_SIGNALING_MODE, FDK_PARAM_TRANSMUX, FDK_TT_MP4_LATM_MCP1,
-    LDACBT_ENC_LSU, LDACBT_EQMID_HQ, LDACBT_EQMID_MQ, LDACBT_EQMID_SQ, LDACBT_SMPL_FMT_S16,
-    SBC_LE, SOL_BLUETOOTH,
+    dbus_set_str_prop, is_aptx_available, is_fdk_aac_available, is_ldac_available,
+    iter_append_str, iter_get_bool, iter_get_byte, iter_get_byte_array, iter_get_str, iter_get_u16,
+    iter_get_unix_fd, load_dbus_library, A2dpCodecAdapter, BdAddr, BtVoice, DBusApi,
+    DBusConnection, DBusError, DBusHandlerResult, DBusMessage, DBusMessageIter,
+    DBusObjectPathVTable, DBusPendingCall, MsbcScoTranscoder, SockaddrSco, AF_BLUETOOTH,
+    BTPROTO_SCO, BT_VOICE, BT_VOICE_CVSD_16BIT, BT_VOICE_TRANSPARENT, DBUS_BUS_SYSTEM,
+    DBUS_HANDLER_RESULT_HANDLED, DBUS_HANDLER_RESULT_NOT_YET_HANDLED, DBUS_MESSAGE_TYPE_ERROR,
+    DBUS_MESSAGE_TYPE_SIGNAL, DBUS_TYPE_ARRAY, DBUS_TYPE_BYTE, DBUS_TYPE_DICT_ENTRY,
+    DBUS_TYPE_OBJECT_PATH, DBUS_TYPE_STRING, FDK_AOT_AAC_LC, FDK_AOT_MP2_AAC_LC, LDACBT_ENC_LSU,
+    LDACBT_EQMID_HQ, LDACBT_EQMID_MQ, LDACBT_EQMID_SQ, SOL_BLUETOOTH,
 };
 use crate::bluez_media::{
     bt_tx_margin_frames, pop_bt_resampled_s16, sco_push_pcm_to_cap_ring, write_tx_period,
@@ -55,11 +50,12 @@ use crate::bluez_wire::{
     BT_WIRE_APTX_HD, BT_WIRE_LDAC, BT_WIRE_SBC,
 };
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, LasapiBtCodecCfg, LasapiDeviceEntry, LasapiDeviceList,
-    SalsaBtSnapshot,
+    copy_str_to_c, LasapiBtCodecCfg, LasapiDeviceEntry, LasapiDeviceList,
+    PodBytes, SalsaBtSnapshot,
     LASAPI_BT_CAP_AAC, LASAPI_BT_CAP_APTX, LASAPI_BT_CAP_APTX_HD, LASAPI_BT_CAP_LDAC,
-    LASAPI_BT_CAP_SBC, LASAPI_BT_CONN_CONNECT, LASAPI_BT_CONN_DISCONNECT,
-    LASAPI_BT_CONN_SET_AUTOCONN, LASAPI_BT_CONN_SET_OPTIONAL, LASAPI_BT_PREF_AAC,
+    LASAPI_BT_CAP_SBC, LASAPI_BT_CONN_CONNECT, LASAPI_BT_CONN_DISCONNECT, LASAPI_BT_CONN_QUERY,
+    LASAPI_BT_CONN_RESET, LASAPI_BT_CONN_SET_AUTOCONN, LASAPI_BT_CONN_SET_OPTIONAL,
+    LASAPI_BT_PREF_AAC,
     LASAPI_BT_PREF_APTX, LASAPI_BT_PREF_APTX_HD, LASAPI_BT_PREF_AUTO, LASAPI_BT_PREF_LDAC,
     LASAPI_BT_PREF_SBC, LASAPI_BT_STAT_CONNECTED, LASAPI_BT_STAT_OPTIONAL,
     LASAPI_BT_STAT_TRANSPORT, LASAPI_DBG_BLUEZ, LASAPI_DBG_ERR, LASAPI_DBG_INFO,
@@ -140,61 +136,6 @@ const LDAC_CHANNEL_MODE_STEREO: u8 = 0x01;
 
 const MAX_HFP_DEVS: usize = 8;
 
-#[derive(Default)]
-struct BtEncoders {
-    sbc_enc: Option<Box<SbcStruct>>,
-    fdk_enc: *mut c_void,
-    fdk_frame_length: u32,
-    ldac_enc: *mut c_void,
-    ldac_eqmid: i32,
-    ldac_abr: *mut c_void,
-    aptx_enc: *mut c_void,
-}
-
-unsafe impl Send for BtEncoders {}
-
-impl BtEncoders {
-    fn close_all(&mut self) {
-        if !self.ldac_abr.is_null() {
-            if let Some(abr) = load_ldac_abr_library() {
-                unsafe { (abr.free_handle)(self.ldac_abr) };
-            }
-            self.ldac_abr = ptr::null_mut();
-        }
-        if !self.fdk_enc.is_null() {
-            if let Some(fdk) = load_fdk_aac_library() {
-                unsafe {
-                    let _ = (fdk.close)(&mut self.fdk_enc);
-                }
-            }
-            self.fdk_enc = ptr::null_mut();
-        }
-        if !self.ldac_enc.is_null() {
-            if let Some(ldac) = load_ldac_library() {
-                unsafe { (ldac.free_handle)(self.ldac_enc) };
-            }
-            self.ldac_enc = ptr::null_mut();
-        }
-        if !self.aptx_enc.is_null() {
-            if let Some(aptx) = load_aptx_library() {
-                unsafe { (aptx.finish)(self.aptx_enc) };
-            }
-            self.aptx_enc = ptr::null_mut();
-        }
-        if let Some(mut sbc) = self.sbc_enc.take() {
-            if let Some(api) = load_sbc_library() {
-                unsafe { (api.finish)(&mut *sbc) };
-            }
-        }
-    }
-}
-
-impl Drop for BtEncoders {
-    fn drop(&mut self) {
-        self.close_all();
-    }
-}
-
 struct BtMutable {
     has_bluez_transport: bool,
     direct_socket_mode: bool,
@@ -239,7 +180,7 @@ struct BtMutable {
     tx_clean_streak: u32,
     hfp_sco_enabled: u32,
 
-    enc: BtEncoders,
+    enc: A2dpCodecAdapter,
 
     // D-Bus state synchronized with bt_dbus_thread_fn
     bt_kick_dev: String,
@@ -290,7 +231,7 @@ impl Default for BtMutable {
             tx_congest_streak: 0,
             tx_clean_streak: 0,
             hfp_sco_enabled: 0,
-            enc: BtEncoders::default(),
+            enc: A2dpCodecAdapter::default(),
             bt_kick_dev: String::new(),
             bt_startup_autoconnect_dev: String::new(),
             renegotiate_start_ns: 0,
@@ -475,9 +416,6 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
     st.abr_last_ms = 0;
 
     if st.active_codec_kind == LASAPI_BT_CODEC_LDAC {
-        let Some(ldac) = load_ldac_library() else {
-            return -1;
-        };
         if st.a2dp_config_len < 8 {
             return -1;
         }
@@ -523,41 +461,13 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
             }
         };
 
-        let lh = unsafe { (ldac.get_handle)() };
-        if lh.is_null() {
+        let try_abr = st.ldac_mode == LASAPI_LDAC_MODE_ADAPTIVE && st.wireless_abr_enabled != 0;
+        if !st.enc.init_ldac(payload_mtu, eqmid, cm, sf, try_abr) {
             return -1;
         }
-        if unsafe {
-            (ldac.init_encode)(
-                lh,
-                c_int::from(payload_mtu),
-                eqmid,
-                cm,
-                LDACBT_SMPL_FMT_S16,
-                sf as c_int,
-            )
-        } < 0
-        {
-            unsafe { (ldac.free_handle)(lh) };
-            return -1;
-        }
-        st.enc.ldac_enc = lh;
-        st.enc.ldac_eqmid = eqmid;
         st.bt_sample_rate = sf;
         st.bt_channels = ch;
         st.effective_kbps = ldac_eqmid_to_kbps(sf, eqmid);
-        if st.ldac_mode == LASAPI_LDAC_MODE_ADAPTIVE && st.wireless_abr_enabled != 0 {
-            if let Some(abr_api) = load_ldac_abr_library() {
-                let abr = unsafe { (abr_api.get_handle)() };
-                if !abr.is_null() {
-                    unsafe {
-                        let _ = (abr_api.init)(abr, 20);
-                        let _ = (abr_api.set_thresholds)(abr, 5, 3, 1);
-                    }
-                    st.enc.ldac_abr = abr;
-                }
-            }
-        }
         st.codec_name = "LDAC".to_string();
         return 0;
     }
@@ -567,9 +477,6 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
     {
         let is_hd = st.active_codec_kind == LASAPI_BT_CODEC_APTX_HD;
         let need_len = if is_hd { 11 } else { 7 };
-        let Some(aptx) = load_aptx_library() else {
-            return -1;
-        };
         if st.a2dp_config_len < need_len {
             return -1;
         }
@@ -585,11 +492,9 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
         } else {
             48_000
         };
-        let ah = unsafe { (aptx.init)(c_int::from(is_hd)) };
-        if ah.is_null() {
+        if !st.enc.init_aptx(is_hd) {
             return -1;
         }
-        st.enc.aptx_enc = ah;
         st.bt_sample_rate = sf;
         st.bt_channels = 2;
         st.effective_kbps = if is_hd { 576 } else { 352 };
@@ -602,9 +507,6 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
     }
 
     if st.codec_id == A2DP_CODEC_MPEG24 || st.active_codec_kind == LASAPI_BT_CODEC_AAC {
-        let Some(fdk) = load_fdk_aac_library() else {
-            return -1;
-        };
         let obj = st.a2dp_config[0];
         let freq_mask = (u16::from(st.a2dp_config[1]) << 4) | u16::from((st.a2dp_config[2] >> 4) & 0x0F);
         let ch_bits = st.a2dp_config[2] & 0x0F;
@@ -641,10 +543,6 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
                 .max(target_bps)
         };
 
-        let mut enc: *mut c_void = ptr::null_mut();
-        if unsafe { (fdk.open)(&mut enc, 0, st.bt_channels) } != FDK_AACENC_OK || enc.is_null() {
-            return -1;
-        }
         let aot = if (obj & AAC_OBJECT_TYPE_MPEG4_AAC_LC) != 0 {
             FDK_AOT_AAC_LC
         } else if (obj & AAC_OBJECT_TYPE_MPEG2_AAC_LC) != 0 {
@@ -652,41 +550,14 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
         } else {
             FDK_AOT_AAC_LC
         };
-        unsafe {
-            let _ = (fdk.set_param)(enc, FDK_PARAM_AOT, aot);
-            let _ = (fdk.set_param)(enc, FDK_PARAM_SAMPLERATE, st.bt_sample_rate);
-            let _ = (fdk.set_param)(enc, FDK_PARAM_CHANNELMODE, st.bt_channels);
-            // Keep FDK-AAC in BITRATEMODE=0 (CBR + bit reservoir bounded by PEAK_BITRATE)
-            // so AACENC_BITRATE is strictly honored and live ABR adjustments take effect;
-            // FDK VBR_5 ignores AACENC_BITRATE and bursts ~228-331 kbps past 192 kbps sinks.
-            let _ = (fdk.set_param)(enc, FDK_PARAM_BITRATEMODE, 0);
-            let _ = (fdk.set_param)(enc, FDK_PARAM_AUDIOMUXVER, 2);
-            let _ = (fdk.set_param)(enc, FDK_PARAM_SIGNALING_MODE, 1);
-            let _ = (fdk.set_param)(enc, FDK_PARAM_BITRATE, target_bps);
-            let _ = (fdk.set_param)(enc, FDK_PARAM_PEAK_BITRATE, init_peak_bps);
-            if target_bps > 110_000 {
-                let _ = (fdk.set_param)(enc, FDK_PARAM_BANDWIDTH, 19_293);
-            }
-            let _ = (fdk.set_param)(enc, FDK_PARAM_TRANSMUX, FDK_TT_MP4_LATM_MCP1);
-            let _ = (fdk.set_param)(enc, FDK_PARAM_HEADER_PERIOD, 1);
-            let _ = (fdk.set_param)(enc, FDK_PARAM_AFTERBURNER, 1);
-            if (fdk.encode)(enc, ptr::null(), ptr::null(), ptr::null(), ptr::null_mut())
-                != FDK_AACENC_OK
-            {
-                let _ = (fdk.close)(&mut enc);
-                return -1;
-            }
-            let mut info = FdkInfo::default();
-            if (fdk.info)(enc, &mut info) != FDK_AACENC_OK {
-                let _ = (fdk.close)(&mut enc);
-                return -1;
-            }
-            st.enc.fdk_enc = enc;
-            st.enc.fdk_frame_length = if info.frame_length > 0 {
-                info.frame_length
-            } else {
-                1024
-            };
+        if !st.enc.init_fdk_aac(
+            st.bt_channels,
+            aot,
+            st.bt_sample_rate,
+            target_bps,
+            init_peak_bps,
+        ) {
+            return -1;
         }
         st.aac_peak_cap_bps = init_peak_bps;
         st.aac_max_bps = target_bps;
@@ -697,9 +568,6 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
     }
 
     // Baseline SBC encoder via libsbc.so.1
-    let Some(sbc_api) = load_sbc_library() else {
-        return -1;
-    };
     let mut scfg = if st.a2dp_config_len >= 4 {
         [
             st.a2dp_config[0],
@@ -715,12 +583,9 @@ fn init_bt_encoder_for_transport_locked(st: &mut BtMutable) -> i32 {
             53,
         ]
     };
-    let mut sbc = Box::<SbcStruct>::default();
-    unsafe {
-        let _ = (sbc_api.init_a2dp)(&mut *sbc, 0, scfg.as_mut_ptr().cast::<c_void>(), 4);
+    if !st.enc.init_sbc_a2dp(&mut scfg) {
+        return -1;
     }
-    sbc.endian = SBC_LE;
-    st.enc.sbc_enc = Some(sbc);
 
     let freq_nibble = (scfg[0] >> 4) & 0x0F;
     let ch_nibble = scfg[0] & 0x0F;
@@ -890,7 +755,7 @@ fn adapt_bt_bitrate_after_tx(
     *local_clean_streak = 0;
 
     if st.active_codec_kind == LASAPI_BT_CODEC_LDAC
-        && !st.enc.ldac_enc.is_null()
+        && st.enc.has_ldac()
         && st.ldac_mode == LASAPI_LDAC_MODE_ADAPTIVE
         && st.wireless_abr_enabled != 0
         && now_ms.saturating_sub(st.abr_last_ms) >= 20
@@ -901,20 +766,16 @@ fn adapt_bt_bitrate_after_tx(
         } else {
             0
         };
-        let prev_eq = st.enc.ldac_eqmid;
+        let prev_eq = st.enc.ldac_eqmid();
         let mut new_eq = prev_eq;
-        if !st.enc.ldac_abr.is_null() {
-            if let Some(abr_api) = load_ldac_abr_library() {
-                let ret =
-                    unsafe { (abr_api.proc_step)(st.enc.ldac_enc, st.enc.ldac_abr, qdepth, 1) };
-                if (LDACBT_EQMID_HQ..=LDACBT_EQMID_MQ).contains(&ret) {
-                    new_eq = ret;
-                }
+        if st.enc.has_ldac_abr() {
+            if let Some(ret) = st.enc.step_ldac_abr(qdepth) {
+                new_eq = ret;
             }
-        } else if let Some(set_eqmid) = load_ldac_library().and_then(|l| l.set_eqmid) {
+        } else {
             let (cand_eq, clr_cong, clr_clean) =
                 abr_step_ldac(prev_eq, st.tx_congest_streak, st.tx_clean_streak);
-            if cand_eq != prev_eq && unsafe { set_eqmid(st.enc.ldac_enc, cand_eq) } == 0 {
+            if cand_eq != prev_eq && st.enc.set_ldac_eqmid(cand_eq) {
                 new_eq = cand_eq;
                 if clr_cong {
                     st.tx_congest_streak = 0;
@@ -925,7 +786,6 @@ fn adapt_bt_bitrate_after_tx(
             }
         }
         if new_eq != prev_eq && (LDACBT_EQMID_HQ..=LDACBT_EQMID_MQ).contains(&new_eq) {
-            st.enc.ldac_eqmid = new_eq;
             st.effective_kbps = ldac_eqmid_to_kbps(st.bt_sample_rate, new_eq);
             st.neg_reason = format!("LDAC ABR adapted -> {}kbps", st.effective_kbps);
             dbg_emit_vals(
@@ -942,7 +802,7 @@ fn adapt_bt_bitrate_after_tx(
             );
         }
     } else if (st.codec_id == A2DP_CODEC_MPEG24 || st.active_codec_kind == LASAPI_BT_CODEC_AAC)
-        && !st.enc.fdk_enc.is_null()
+        && st.enc.has_fdk_aac()
         && st.wireless_abr_enabled != 0
     {
         let cur_bps = if st.aac_target_bps > 0 {
@@ -964,42 +824,35 @@ fn adapt_bt_bitrate_after_tx(
             st.tx_clean_streak = 0;
         }
         if next_bps != cur_bps {
-            if let Some(fdk) = load_fdk_aac_library() {
-                let peak_cap = if st.aac_peak_cap_bps > 0 {
-                    st.aac_peak_cap_bps
-                } else {
-                    max_bps
-                };
-                let next_peak = (next_bps.saturating_mul(6) / 5)
-                    .min(peak_cap.max(next_bps))
-                    .max(next_bps);
-                if unsafe { (fdk.set_param)(st.enc.fdk_enc, FDK_PARAM_BITRATE, next_bps) }
-                    == FDK_AACENC_OK
-                {
-                    unsafe {
-                        let _ = (fdk.set_param)(st.enc.fdk_enc, FDK_PARAM_PEAK_BITRATE, next_peak);
-                    }
-                    st.aac_target_bps = next_bps;
-                    st.effective_kbps = next_bps / 1000;
-                    st.neg_reason = format!("AAC ABR adapted -> {}kbps", st.effective_kbps);
-                    dbg_emit_vals(
-                        LASAPI_DBG_BLUEZ,
-                        LASAPI_DBG_INFO,
-                        0,
-                        0,
-                        (cur_bps / 1000) as i32,
-                        st.effective_kbps as i32,
-                        (next_peak / 1000) as i32,
-                        "BT_AAC_ABR",
-                        &st.device_alias,
-                        &format!(
-                            "bitrate {}kbps -> {}kbps (peak {}kbps)",
-                            cur_bps / 1000,
-                            st.effective_kbps,
-                            next_peak / 1000
-                        ),
-                    );
-                }
+            let peak_cap = if st.aac_peak_cap_bps > 0 {
+                st.aac_peak_cap_bps
+            } else {
+                max_bps
+            };
+            let next_peak = (next_bps.saturating_mul(6) / 5)
+                .min(peak_cap.max(next_bps))
+                .max(next_bps);
+            if st.enc.set_fdk_aac_bitrate(next_bps, next_peak) {
+                st.aac_target_bps = next_bps;
+                st.effective_kbps = next_bps / 1000;
+                st.neg_reason = format!("AAC ABR adapted -> {}kbps", st.effective_kbps);
+                dbg_emit_vals(
+                    LASAPI_DBG_BLUEZ,
+                    LASAPI_DBG_INFO,
+                    0,
+                    0,
+                    (cur_bps / 1000) as i32,
+                    st.effective_kbps as i32,
+                    (next_peak / 1000) as i32,
+                    "BT_AAC_ABR",
+                    &st.device_alias,
+                    &format!(
+                        "bitrate {}kbps -> {}kbps (peak {}kbps)",
+                        cur_bps / 1000,
+                        st.effective_kbps,
+                        next_peak / 1000
+                    ),
+                );
             }
         }
     }
@@ -1037,8 +890,8 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                     if st.write_mtu > 0 { usize::from(st.write_mtu) } else { 672 },
                     st.codec_id,
                     st.active_codec_kind,
-                    if st.enc.fdk_frame_length > 0 {
-                        st.enc.fdk_frame_length
+                    if st.enc.fdk_frame_length() > 0 {
+                        st.enc.fdk_frame_length()
                     } else {
                         1024
                     },
@@ -1156,7 +1009,7 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                 if pending_pkt_len > 0 {
                     pkt_len = pending_pkt_len;
                     ts_step = pending_ts_step;
-                } else if st.active_codec_kind == LASAPI_BT_CODEC_LDAC && !st.enc.ldac_enc.is_null() {
+                } else if st.active_codec_kind == LASAPI_BT_CODEC_LDAC && st.enc.has_ldac() {
                     let flen = LDACBT_ENC_LSU;
                     let hdr_off = BT_RTP_HDR_BYTES + BT_RTP_SBC_PL_BYTES;
                     expected_pop = flen;
@@ -1170,44 +1023,27 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                         drift_scale,
                     );
                     if mtu > hdr_off {
-                        if let Some(ldac) = load_ldac_library() {
-                            let mut pcm_used = (flen * (ch as usize) * 2) as c_int;
-                            let mut stream_sz = (mtu - hdr_off) as c_int;
-                            let mut frame_num = 0 as c_int;
-                            let enc_rc = unsafe {
-                                (ldac.encode)(
-                                    st.enc.ldac_enc,
-                                    pcm.as_mut_ptr().cast::<c_void>(),
-                                    &mut pcm_used,
-                                    pkt[hdr_off..].as_mut_ptr(),
-                                    &mut stream_sz,
-                                    &mut frame_num,
-                                )
-                            };
-                            if enc_rc == 0
-                                && frame_num > 0
-                                && stream_sz > 0
-                                && hdr_off + (stream_sz as usize) <= mtu
+                        if let Some((stream_sz, frame_num)) =
+                            st.enc.encode_ldac(&mut pcm, flen, ch, &mut pkt[hdr_off..mtu])
+                        {
+                            let seq = st.rtp_seq;
+                            st.rtp_seq = st.rtp_seq.wrapping_add(1);
+                            let ts = st.rtp_timestamp;
+                            if write_rtp_header(&mut pkt[..mtu], 96, false, seq, ts, 1)
+                                == Some(BT_RTP_HDR_BYTES)
+                                && write_rtp_sbc_payload_hdr(
+                                    &mut pkt[BT_RTP_HDR_BYTES..mtu],
+                                    frame_num,
+                                ) == Some(BT_RTP_SBC_PL_BYTES)
                             {
-                                let seq = st.rtp_seq;
-                                st.rtp_seq = st.rtp_seq.wrapping_add(1);
-                                let ts = st.rtp_timestamp;
-                                if write_rtp_header(&mut pkt[..mtu], 96, false, seq, ts, 1)
-                                    == Some(BT_RTP_HDR_BYTES)
-                                    && write_rtp_sbc_payload_hdr(
-                                        &mut pkt[BT_RTP_HDR_BYTES..mtu],
-                                        frame_num as u8,
-                                    ) == Some(BT_RTP_SBC_PL_BYTES)
-                                {
-                                    pkt_len = hdr_off + (stream_sz as usize);
-                                }
+                                pkt_len = hdr_off + stream_sz;
                             }
                         }
                     }
                     ts_step = flen as u32;
                 } else if (st.active_codec_kind == LASAPI_BT_CODEC_APTX_HD
                     || st.active_codec_kind == LASAPI_BT_CODEC_APTX)
-                    && !st.enc.aptx_enc.is_null()
+                    && st.enc.has_aptx()
                 {
                     let is_hd = st.active_codec_kind == LASAPI_BT_CODEC_APTX_HD;
                     let hdr_off = if is_hd { BT_RTP_HDR_BYTES } else { 0 };
@@ -1226,23 +1062,11 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                         drift_scale,
                     );
                     let nsamp = flen * 2;
-                    if let (Some(aptx), Some(s24_len)) = (
-                        load_aptx_library(),
-                        pack_s16_to_s24le(&pcm[..nsamp], &mut s24_buf),
-                    ) {
+                    if let Some(s24_len) = pack_s16_to_s24le(&pcm[..nsamp], &mut s24_buf) {
                         if s24_len > 0 && avail_out >= enc_blk_bytes {
-                            let mut written = 0usize;
-                            unsafe {
-                                let _ = (aptx.encode)(
-                                    st.enc.aptx_enc,
-                                    s24_buf.as_ptr(),
-                                    s24_len,
-                                    pkt[hdr_off..].as_mut_ptr(),
-                                    avail_out,
-                                    &mut written,
-                                );
-                            }
-                            if written > 0 && hdr_off + written <= mtu {
+                            if let Some(written) =
+                                st.enc.encode_aptx(&s24_buf[..s24_len], &mut pkt[hdr_off..mtu])
+                            {
                                 if !is_hd {
                                     pkt_len = hdr_off + written;
                                 } else {
@@ -1261,10 +1085,10 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                     ts_step = flen as u32;
                 } else if (st.codec_id == A2DP_CODEC_MPEG24
                     || st.active_codec_kind == LASAPI_BT_CODEC_AAC)
-                    && !st.enc.fdk_enc.is_null()
+                    && st.enc.has_fdk_aac()
                 {
-                    let flen = if st.enc.fdk_frame_length > 0 {
-                        st.enc.fdk_frame_length as usize
+                    let flen = if st.enc.fdk_frame_length() > 0 {
+                        st.enc.fdk_frame_length() as usize
                     } else {
                         1024
                     };
@@ -1279,57 +1103,23 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                         drift_scale,
                     );
                     if mtu > BT_RTP_HDR_BYTES {
-                        if let Some(fdk) = load_fdk_aac_library() {
-                            let mut in_ptr = pcm.as_mut_ptr().cast::<c_void>();
-                            let mut out_ptr = pkt[BT_RTP_HDR_BYTES..].as_mut_ptr().cast::<c_void>();
-                            let mut in_id = FDK_IN_AUDIO_DATA;
-                            let mut out_id = FDK_OUT_BITSTREAM_DATA;
-                            let mut in_sz = (flen * (ch as usize) * 2) as c_int;
-                            let mut out_sz = (mtu - BT_RTP_HDR_BYTES) as c_int;
-                            let mut in_el = 2 as c_int;
-                            let mut out_el = 1 as c_int;
-                            let in_desc = FdkBufDesc {
-                                num_bufs: 1,
-                                bufs: &mut in_ptr,
-                                buffer_identifiers: &mut in_id,
-                                buf_sizes: &mut in_sz,
-                                buf_el_sizes: &mut in_el,
-                            };
-                            let out_desc = FdkBufDesc {
-                                num_bufs: 1,
-                                bufs: &mut out_ptr,
-                                buffer_identifiers: &mut out_id,
-                                buf_sizes: &mut out_sz,
-                                buf_el_sizes: &mut out_el,
-                            };
-                            let in_args = FdkInArgs {
-                                num_in_samples: (flen * (ch as usize)) as c_int,
-                                num_anc_bytes: 0,
-                            };
-                            let mut out_args = FdkOutArgs::default();
-                            let enc_rc = unsafe {
-                                (fdk.encode)(
-                                    st.enc.fdk_enc,
-                                    &in_desc,
-                                    &out_desc,
-                                    &in_args,
-                                    &mut out_args,
-                                )
-                            };
-                            if enc_rc == FDK_AACENC_OK
-                                && out_args.num_out_bytes > 0
-                                && BT_RTP_HDR_BYTES + (out_args.num_out_bytes as usize) <= mtu
-                            {
+                        match st.enc.encode_fdk_aac(
+                            &mut pcm,
+                            flen,
+                            ch,
+                            &mut pkt[BT_RTP_HDR_BYTES..mtu],
+                        ) {
+                            Ok(out_bytes) => {
                                 let seq = st.rtp_seq;
                                 st.rtp_seq = st.rtp_seq.wrapping_add(1);
                                 let ts = st.rtp_timestamp;
                                 if write_rtp_header(&mut pkt[..mtu], 96, true, seq, ts, 1)
                                     == Some(BT_RTP_HDR_BYTES)
                                 {
-                                    pkt_len =
-                                        BT_RTP_HDR_BYTES + (out_args.num_out_bytes as usize);
+                                    pkt_len = BT_RTP_HDR_BYTES + out_bytes;
                                 }
-                            } else {
+                            }
+                            Err((enc_rc, num_out)) => {
                                 let now_e = mono_ns();
                                 if now_e.saturating_sub(last_eagain_log_ns) >= 500_000_000 {
                                     last_eagain_log_ns = now_e;
@@ -1339,13 +1129,12 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                                         0,
                                         0,
                                         enc_rc,
-                                        out_args.num_out_bytes,
+                                        num_out,
                                         mtu as i32,
                                         "BT_AAC_ENC_DROP",
                                         &dev_alias,
                                         &format!(
-                                            "FDK-AAC encode skip/overflow rc=0x{enc_rc:x} out={} mtu={mtu}",
-                                            out_args.num_out_bytes
+                                            "FDK-AAC encode skip/overflow rc=0x{enc_rc:x} out={num_out} mtu={mtu}",
                                         ),
                                     );
                                 }
@@ -1353,15 +1142,8 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                         }
                     }
                     ts_step = flen as u32;
-                } else if st.enc.sbc_enc.is_some() {
-                    if let Some(sbc_api) = load_sbc_library() {
-                        let sbc_ptr = (&mut **st.enc.sbc_enc.as_mut().unwrap()) as *mut SbcStruct;
-                        let codesize = unsafe { (sbc_api.get_codesize)(sbc_ptr) };
-                        let mut samples_per_frame =
-                            codesize / ((ch as usize).max(1) * mem::size_of::<i16>());
-                        if samples_per_frame == 0 {
-                            samples_per_frame = 128;
-                        }
+                } else if st.enc.has_sbc() {
+                    if let Some((codesize, samples_per_frame)) = st.enc.sbc_samples_per_frame(ch) {
                         let max_frames = if 4 * samples_per_frame * (ch as usize) > 4096 {
                             2usize
                         } else {
@@ -1382,24 +1164,17 @@ fn spawn_tx_thread(rt: Arc<BluezRuntime>) {
                         let mut encoded_cnt = 0u32;
                         if mtu > header_len {
                             for f in 0..max_frames {
-                                let mut enc_written = 0isize;
                                 let pcm_off = f * samples_per_frame * (ch as usize);
-                                let in_consumed = unsafe {
-                                    (sbc_api.encode)(
-                                        sbc_ptr,
-                                        pcm[pcm_off..].as_ptr().cast::<c_void>(),
-                                        codesize,
-                                        pkt[off..].as_mut_ptr().cast::<c_void>(),
-                                        mtu - off,
-                                        &mut enc_written,
-                                    )
-                                };
-                                if in_consumed <= 0 || enc_written <= 0 {
+                                let Some(enc_written) = st.enc.encode_sbc_frame(
+                                    &pcm[pcm_off..],
+                                    codesize,
+                                    &mut pkt[off..mtu],
+                                ) else {
                                     break;
-                                }
-                                off += enc_written as usize;
+                                };
+                                off += enc_written;
                                 encoded_cnt += 1;
-                                if off + (enc_written as usize) > mtu {
+                                if off + enc_written > mtu {
                                     break;
                                 }
                             }
@@ -3524,9 +3299,9 @@ fn register_all_adapters_and_kick_connected(
         st.bt_startup_autoconnect_dev = startup_auto;
     }
 
-    let ldac_ok = load_ldac_library().is_some();
-    let aptx_ok = load_aptx_library().is_some();
-    let aac_ok = load_fdk_aac_library().is_some();
+    let ldac_ok = is_ldac_available();
+    let aptx_ok = is_aptx_available();
+    let aac_ok = is_fdk_aac_available();
 
     let mut ldac_caps = [0u8; 8];
     write_vendor_hdr(&mut ldac_caps, LDAC_VENDOR_ID, LDAC_CODEC_ID);
@@ -3877,19 +3652,13 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
 
                 let (target_cap, local_ep) = match want_pref {
                     LASAPI_BT_PREF_AUTO => {
-                        if (sup_mask & LASAPI_BT_CAP_LDAC) != 0 && load_ldac_library().is_some() {
+                        if (sup_mask & LASAPI_BT_CAP_LDAC) != 0 && is_ldac_available() {
                             (LASAPI_BT_CAP_LDAC, LASAPI_EP_LDAC)
-                        } else if (sup_mask & LASAPI_BT_CAP_APTX_HD) != 0
-                            && load_aptx_library().is_some()
-                        {
+                        } else if (sup_mask & LASAPI_BT_CAP_APTX_HD) != 0 && is_aptx_available() {
                             (LASAPI_BT_CAP_APTX_HD, LASAPI_EP_APTXHD)
-                        } else if (sup_mask & LASAPI_BT_CAP_APTX) != 0
-                            && load_aptx_library().is_some()
-                        {
+                        } else if (sup_mask & LASAPI_BT_CAP_APTX) != 0 && is_aptx_available() {
                             (LASAPI_BT_CAP_APTX, LASAPI_EP_APTX)
-                        } else if (sup_mask & LASAPI_BT_CAP_AAC) != 0
-                            && load_fdk_aac_library().is_some()
-                        {
+                        } else if (sup_mask & LASAPI_BT_CAP_AAC) != 0 && is_fdk_aac_available() {
                             (LASAPI_BT_CAP_AAC, LASAPI_EP_AAC)
                         } else {
                             (LASAPI_BT_CAP_SBC, LASAPI_EP_SBC)
@@ -3933,7 +3702,7 @@ fn spawn_dbus_thread(rt: Arc<BluezRuntime>) {
                             &sep_path,
                             &format!("Switching SEP -> {local_ep} (pref={want_pref})"),
                         );
-                        set_tx_enabled_impl(&rt, false);
+                        rt.set_tx_enabled(false);
                         {
                             let mut st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
                             st.close_bt_fd();
@@ -4492,15 +4261,11 @@ fn open_sco_capture(rt: &BluezRuntime, mac_or_empty: &str) -> i32 {
     let rt_arc = Arc::clone(global_bt_arc());
     let use_msbc = want_msbc;
     let jh = thread::spawn(move || {
-        let sbc_api = if use_msbc { load_sbc_library() } else { None };
-        let mut sbc_dec = SbcStruct::default();
-        let mut sbc_enc = SbcStruct::default();
-        if let Some(api) = sbc_api {
-            unsafe {
-                let _ = (api.init_msbc)(&mut sbc_dec, 0);
-                let _ = (api.init_msbc)(&mut sbc_enc, 0);
-            }
-        }
+        let mut msbc = if use_msbc {
+            MsbcScoTranscoder::new_if_available()
+        } else {
+            None
+        };
         let mut rx_pkt = [0u8; 256];
         let mut tx_pkt = [0u8; 64];
         let mut dec_pcm = [0i16; 256];
@@ -4539,39 +4304,18 @@ fn open_sco_capture(rt: &BluezRuntime, mac_or_empty: &str) -> i32 {
             let rlen = r as usize;
             let mut nsamp = 0usize;
             if use_msbc && rlen >= 59 {
-                if let Some(api) = sbc_api {
+                if let Some(ref mut tr) = msbc {
                     let off = msbc_rx_strip_offset(&rx_pkt[..rlen]);
-                    let mut written = 0usize;
-                    if rlen > off
-                        && unsafe {
-                            (api.decode)(
-                                &mut sbc_dec,
-                                rx_pkt[off..rlen].as_ptr().cast::<c_void>(),
-                                rlen - off,
-                                dec_pcm.as_mut_ptr().cast::<c_void>(),
-                                mem::size_of_val(&dec_pcm),
-                                &mut written,
-                            )
-                        } > 0
-                    {
-                        nsamp = written / 2;
+                    if rlen > off {
+                        if let Some(decoded) = tr.decode_frame(&rx_pkt[off..rlen], &mut dec_pcm) {
+                            nsamp = decoded;
+                        }
                     }
-                    let mut enc_written = 0isize;
                     tx_pkt[0] = 0x01;
                     tx_pkt[1] = msbc_h2_byte(seq);
                     seq = seq.wrapping_add(1);
-                    if unsafe {
-                        (api.encode)(
-                            &mut sbc_enc,
-                            zero_bytes.as_ptr().cast::<c_void>(),
-                            240,
-                            tx_pkt[2..].as_mut_ptr().cast::<c_void>(),
-                            tx_pkt.len() - 3,
-                            &mut enc_written,
-                        )
-                    } > 0
-                        && enc_written == 57
-                    {
+                    let end = tx_pkt.len() - 1;
+                    if tr.encode_frame(&zero_bytes[..240], &mut tx_pkt[2..end]) == Some(57) {
                         tx_pkt[59] = 0x00;
                         let _ = send_raw(cur_fd, &tx_pkt[..60], MSG_DONTWAIT | MSG_NOSIGNAL);
                     }
@@ -4606,12 +4350,7 @@ fn open_sco_capture(rt: &BluezRuntime, mac_or_empty: &str) -> i32 {
                 );
             }
         }
-        if let Some(api) = sbc_api {
-            unsafe {
-                (api.finish)(&mut sbc_dec);
-                (api.finish)(&mut sbc_enc);
-            }
-        }
+        drop(msbc);
         rt_arc.hfp_sco_active.store(0, Ordering::Release);
     });
     *rt.sco_thread.lock().unwrap() = Some(jh);
@@ -4629,115 +4368,8 @@ fn open_sco_capture(rt: &BluezRuntime, mac_or_empty: &str) -> i32 {
 }
 
 // ============================================================================
-// Public Entrypoints Backing c_abi.rs / SalsaBtOps
+// Direct Safe BluezRuntime Methods & BluetoothBackend Seam
 // ============================================================================
-
-pub fn audiodg_bt_ptr_impl() -> *mut c_void {
-    let rt = global_bt_arc();
-    ((&**rt) as *const BluezRuntime as *mut BluezRuntime).cast::<c_void>()
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a valid handle returned by `audiodg_bt_ptr_impl`.
-pub unsafe fn bt_is_initialized_impl(bt: *const c_void) -> bool {
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return false;
-    };
-    rt.initialized.load(Ordering::Acquire)
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`, and any
-/// non-null `out_vol_pct` or `out_muted` pointer must be valid for scalar writes.
-pub unsafe fn bt_rt_master_vol_impl(
-    bt: *const c_void,
-    out_vol_pct: *mut u32,
-    out_muted: *mut bool,
-) {
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        if !out_vol_pct.is_null() {
-            unsafe { *out_vol_pct = 100 };
-        }
-        if !out_muted.is_null() {
-            unsafe { *out_muted = false };
-        }
-        return;
-    };
-    if !out_vol_pct.is_null() {
-        unsafe { *out_vol_pct = rt.desktop_volume_pct.load(Ordering::Relaxed) };
-    }
-    if !out_muted.is_null() {
-        unsafe { *out_muted = rt.desktop_muted.load(Ordering::Relaxed) };
-    }
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl` and
-/// `out` must point to writable storage for `SalsaBtSnapshot`.
-pub unsafe fn bt_get_snapshot_impl(bt: *const c_void, out: *mut SalsaBtSnapshot) {
-    if out.is_null() {
-        return;
-    }
-    let out_ref = unsafe { &mut *out };
-    *out_ref = unsafe { mem::zeroed() };
-    out_ref.bt_fd = -1;
-    out_ref.cap_pcm_fd = -1;
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return;
-    };
-
-    out_ref.initialized = rt.initialized.load(Ordering::Acquire);
-    out_ref.has_capture_hw = rt.cap.has_capture_hw.load(Ordering::Acquire);
-    out_ref.tx_paused = rt.tx_paused.load(Ordering::Relaxed);
-    out_ref.cap_is_usb = rt.cap.cap_is_usb.load(Ordering::Relaxed);
-    out_ref.cap_pcm_fd = rt.cap.cap_pcm_fd.load(Ordering::Relaxed);
-    out_ref.delay_tenths_ms = rt.delay_tenths_ms.load(Ordering::Relaxed);
-    out_ref.avrcp_volume = rt.avrcp_volume.load(Ordering::Relaxed);
-    out_ref.cap_hw_rate = rt.cap.cap_hw_rate.load(Ordering::Relaxed);
-    out_ref.cap_hw_channels = rt.cap.cap_hw_channels.load(Ordering::Relaxed);
-    out_ref.cap_hw_format = rt.cap.cap_hw_format.load(Ordering::Relaxed);
-    out_ref.cap_measured_rate = rt.cap.cap_measured_rate.load(Ordering::Relaxed);
-    out_ref.cap_kick_count = rt.cap.cap_kick_count.load(Ordering::Relaxed);
-    out_ref.desktop_volume_pct = rt.desktop_volume_pct.load(Ordering::Relaxed);
-    out_ref.desktop_muted = rt.desktop_muted.load(Ordering::Relaxed);
-    out_ref.desktop_mic_volume_pct = rt.cap.desktop_mic_volume_pct.load(Ordering::Relaxed);
-    out_ref.desktop_mic_muted = rt.cap.desktop_mic_muted.load(Ordering::Relaxed);
-    out_ref.desktop_mic_gain_ppm = rt.cap.desktop_mic_gain_ppm.load(Ordering::Relaxed);
-
-    let tx_wr = rt.tx_write_frame.load(Ordering::Relaxed);
-    let tx_rd = rt.tx_read_frame.load(Ordering::Relaxed);
-    out_ref.tx_ring_fill = tx_wr.saturating_sub(tx_rd);
-    out_ref.tx_packets_sent = rt.tx_packets_sent.load(Ordering::Relaxed);
-    out_ref.tx_underruns = rt.tx_underruns.load(Ordering::Relaxed);
-    out_ref.tx_errors = rt.tx_errors.load(Ordering::Relaxed);
-    out_ref.cap_hw_write_frame = rt.cap.cap_hw_write_frame.load(Ordering::Relaxed);
-
-    {
-        let m = rt.cap.meta.lock().unwrap();
-        copy_str_to_c(&mut out_ref.cap_device_id, &m.cap_device_id);
-        copy_str_to_c(&mut out_ref.cap_pcm_path, &m.cap_pcm_path);
-        copy_str_to_c(&mut out_ref.capture_device_alias, &m.capture_device_alias);
-    }
-
-    let st = rt.state.lock().unwrap();
-    out_ref.has_bluez_transport = st.has_bluez_transport;
-    out_ref.direct_socket_mode = st.direct_socket_mode;
-    out_ref.endpoints_registered = st.endpoints_registered;
-    out_ref.bt_fd = st.bt_fd;
-    out_ref.read_mtu = st.read_mtu;
-    out_ref.write_mtu = st.write_mtu;
-    out_ref.bt_sample_rate = st.bt_sample_rate;
-    out_ref.bt_channels = st.bt_channels;
-    copy_str_to_c(&mut out_ref.mac_address, &st.mac_address);
-    copy_str_to_c(&mut out_ref.device_alias, &st.device_alias);
-    copy_str_to_c(&mut out_ref.codec_name, &st.codec_name);
-    copy_str_to_c(&mut out_ref.device_path, &st.device_path);
-    copy_str_to_c(&mut out_ref.transport_path, &st.transport_path);
-    copy_str_to_c(&mut out_ref.endpoint_path, &st.endpoint_path);
-}
 
 /// Decides whether enabling BlueZ TX should immediately acquire an existing transport
 /// or ask the D-Bus loop to activate/connect the target A2DP device.
@@ -4755,307 +4387,6 @@ fn classify_tx_enable_action(
         (bt_fd < 0, false)
     } else {
         (false, bt_fd < 0 || !mac_matches)
-    }
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl` and
-/// `preferred_pb_id` must be null or point to a valid NUL-terminated C string.
-pub unsafe fn bluez_set_preferred_target_impl(bt: *mut c_void, preferred_pb_id: *const c_char) {
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return;
-    };
-    let pb = crate::c_abi::ptr_to_opt_str(preferred_pb_id).unwrap_or_default();
-    let mac = if pb.len() >= 6 && pb[..6].eq_ignore_ascii_case("bluez:") {
-        extract_mac_str(&pb).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let switching_mac = {
-        let mut st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
-        let diff = !mac.is_empty()
-            && !st.mac_address.is_empty()
-            && !st.mac_address.eq_ignore_ascii_case(&mac);
-        st.preferred_mac = mac;
-        diff && (st.bt_fd >= 0 || st.has_bluez_transport)
-    };
-    if switching_mac {
-        rt.need_release.store(true, Ordering::Release);
-        rt.need_activate.store(true, Ordering::Release);
-    }
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`, and
-/// `preferred_cap_id` / `preferred_pb_id` must be null or valid NUL-terminated
-/// C strings.
-pub unsafe fn bluez_init_rates_impl(
-    bt: *mut c_void,
-    engine_sample_rate: u32,
-    capture_sample_rate: u32,
-    preferred_cap_id: *const c_char,
-    preferred_pb_id: *const c_char,
-) -> c_int {
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return -1;
-    };
-    bluez_close_impl(bt);
-
-    let pb = crate::c_abi::ptr_to_opt_str(preferred_pb_id).unwrap_or_default();
-    let cap_id = crate::c_abi::ptr_to_opt_str(preferred_cap_id).unwrap_or_default();
-    let eff_eng = if engine_sample_rate > 0 {
-        engine_sample_rate
-    } else {
-        48_000
-    };
-
-    rt.engine_sample_rate.store(eff_eng, Ordering::Release);
-    rt.desktop_volume_pct.store(100, Ordering::Relaxed);
-    rt.desktop_muted.store(false, Ordering::Relaxed);
-    rt.cap.desktop_mic_volume_pct.store(100, Ordering::Relaxed);
-    rt.cap.desktop_mic_muted.store(false, Ordering::Relaxed);
-    rt.cap
-        .desktop_mic_gain_ppm
-        .store(1_000_000, Ordering::Relaxed);
-    rt.avrcp_volume.store(127, Ordering::Relaxed);
-    rt.tx_drop_event_ns.store(0, Ordering::Relaxed);
-    rt.tx_write_frame.store(0, Ordering::Release);
-    rt.tx_read_frame.store(0, Ordering::Release);
-    rt.tx_transport_ready.store(false, Ordering::Release);
-    let want_bt_pref = {
-        let mut st = rt.state.lock().unwrap();
-        *st = BtMutable::default();
-        if pb.len() >= 6 && pb[..6].eq_ignore_ascii_case("bluez:") {
-            st.preferred_mac = extract_mac_str(&pb).unwrap_or_default();
-        }
-        !st.preferred_mac.is_empty()
-            || pb.eq_ignore_ascii_case("bluetooth")
-            || pb.eq_ignore_ascii_case("bluez")
-    };
-    rt.tx_paused.store(!want_bt_pref, Ordering::Release);
-    rt.need_release.store(false, Ordering::Release);
-    rt.initialized.store(true, Ordering::Release);
-
-    rt.dbus_thread_running.store(true, Ordering::Release);
-    spawn_dbus_thread(Arc::clone(global_bt_arc()));
-
-    rt.tx_thread_running.store(true, Ordering::Release);
-    spawn_tx_thread(Arc::clone(global_bt_arc()));
-
-    let max_wait_ticks = if want_bt_pref { 125 } else { 20 };
-    let mut bt_ready_now = false;
-    for tick in 0..max_wait_ticks {
-        let (ep_reg, has_tp, is_live) = {
-            let st = rt.state.lock().unwrap();
-            (
-                st.endpoints_registered,
-                st.has_bluez_transport && !st.transport_path.is_empty(),
-                st.has_bluez_transport && st.direct_socket_mode && st.bt_fd >= 0,
-            )
-        };
-        bt_ready_now = is_live;
-        if want_bt_pref {
-            if is_live {
-                break;
-            }
-        } else if ep_reg && (has_tp || tick >= 12) {
-            break;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-
-    let req_cap = if capture_sample_rate > 0 {
-        capture_sample_rate
-    } else {
-        eff_eng
-    };
-    unsafe { bluez_open_capture_impl(bt, preferred_cap_id, req_cap) };
-    let _ = cap_id;
-    if bt_ready_now {
-        0
-    } else {
-        -1
-    }
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`.
-pub unsafe fn bluez_reconfigure_rate_impl(bt: *mut c_void, new_engine_sample_rate: u32) -> c_int {
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return -1;
-    };
-    if !rt.initialized.load(Ordering::Acquire) {
-        return -1;
-    }
-    if (44_100..=192_000).contains(&new_engine_sample_rate) {
-        let _g = rt.state.lock().unwrap();
-        rt.engine_sample_rate
-            .store(new_engine_sample_rate, Ordering::Release);
-    }
-    0
-}
-
-fn set_tx_enabled_impl(rt: &BluezRuntime, enabled: bool) {
-    if !enabled {
-        rt.tx_paused.store(true, Ordering::Release);
-        rt.need_acquire.store(false, Ordering::Release);
-        rt.need_activate.store(false, Ordering::Release);
-        rt.need_release.store(true, Ordering::Release);
-    } else {
-        let was_paused = rt.tx_paused.swap(false, Ordering::AcqRel);
-        rt.need_release.store(false, Ordering::Release);
-        if was_paused {
-            let _ring = rt.tx_ring.lock().unwrap_or_else(|e| e.into_inner());
-            let wr = rt.tx_write_frame.load(Ordering::Acquire);
-            rt.tx_read_frame.store(wr, Ordering::Release);
-        }
-        let (need_acq, need_act) = {
-            let st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
-            classify_tx_enable_action(
-                st.has_bluez_transport,
-                &st.transport_path,
-                &st.preferred_mac,
-                &st.mac_address,
-                st.bt_fd,
-            )
-        };
-        if need_acq {
-            rt.need_acquire.store(true, Ordering::Release);
-        }
-        if need_act {
-            rt.need_activate.store(true, Ordering::Release);
-        }
-    }
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`.
-pub unsafe fn bluez_set_tx_enabled_impl(bt: *mut c_void, enabled: bool) {
-    if let Some(rt) = unsafe { bt_from_ptr(bt) } {
-        set_tx_enabled_impl(rt, enabled);
-    }
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`, and
-/// `interleaved_float` must point to at least `frames * channels` readable
-/// `f32` samples.
-pub unsafe fn bluez_write_period_impl(
-    bt: *mut c_void,
-    interleaved_float: *const f32,
-    frames: u32,
-    channels: u32,
-) -> c_int {
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return -1;
-    };
-    if !rt.initialized.load(Ordering::Acquire)
-        || !rt.tx_transport_ready.load(Ordering::Acquire)
-        || interleaved_float.is_null()
-        || frames == 0
-        || channels == 0
-    {
-        return -1;
-    }
-    let Some(total) = (frames as usize).checked_mul(channels as usize) else {
-        return -1;
-    };
-    let in_slice = unsafe { core::slice::from_raw_parts(interleaved_float, total) };
-    let paused = rt.tx_paused.load(Ordering::Relaxed);
-    let mut ring = rt.tx_ring.lock().unwrap();
-    write_tx_period(
-        &mut ring,
-        &rt.tx_write_frame,
-        paused,
-        in_slice,
-        frames as usize,
-        channels as usize,
-    )
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`, and
-/// `preferred_cap_id` must be null or point to a valid NUL-terminated C string.
-pub unsafe fn bluez_open_capture_impl(
-    bt: *mut c_void,
-    preferred_cap_id: *const c_char,
-    capture_sample_rate: u32,
-) -> c_int {
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return -1;
-    };
-    stop_capture_thread(&rt.cap);
-    stop_sco_capture(rt);
-
-    let mut eng_rate = rt.engine_sample_rate.load(Ordering::Relaxed);
-    if eng_rate == 0 {
-        eng_rate = if capture_sample_rate > 0 {
-            capture_sample_rate
-        } else {
-            48_000
-        };
-        rt.engine_sample_rate.store(eng_rate, Ordering::Release);
-    }
-    let cap_id = crate::c_abi::ptr_to_opt_str(preferred_cap_id).unwrap_or_default();
-    let sco_enabled = rt.state.lock().unwrap().hfp_sco_enabled != 0;
-    if let Some(mac) = cap_id.strip_prefix("bluez_sco:") {
-        if sco_enabled && open_sco_capture(rt, mac) == 0 {
-            return 0;
-        }
-    }
-
-    let mut card_names: [String; MAX_ALSA_CARDS_SCAN] = std::array::from_fn(|_| String::new());
-    let mut card_is_usb = [false; MAX_ALSA_CARDS_SCAN];
-    parse_asound_cards(&mut card_names, &mut card_is_usb);
-    open_alsa_capture(
-        &rt.cap,
-        eng_rate,
-        &cap_id,
-        capture_sample_rate,
-        &card_names,
-        &card_is_usb,
-    )
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`,
-/// `out_stereo_float` must point to writable storage for `max_frames * 2`
-/// `f32` samples, and any non-null scalar output pointers must be valid.
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn bluez_read_capture_native_impl(
-    bt: *mut c_void,
-    out_stereo_float: *mut f32,
-    max_frames: u32,
-    out_frames: *mut u32,
-    out_rate: *mut u32,
-    eng_frames: u32,
-    eng_rate: u32,
-    io_read_cursor: *mut u64,
-) -> c_int {
-    let rt = unsafe { bt_from_ptr(bt) };
-    let (cap_ref, init) = match rt {
-        Some(r) => (Some(&*r.cap), r.initialized.load(Ordering::Acquire)),
-        None => (None, false),
-    };
-    unsafe {
-        read_capture_native(
-            cap_ref,
-            init,
-            out_stereo_float,
-            max_frames,
-            out_frames,
-            out_rate,
-            eng_frames,
-            eng_rate,
-            io_read_cursor,
-        )
     }
 }
 
@@ -5085,720 +4416,6 @@ fn format_bt_enum_entry_name<'a>(
     (cn, format!("{label} ({cn})"))
 }
 
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`,
-/// `active_pb_id` and `active_cap_id` must be valid NUL-terminated C strings,
-/// and `out_list` must point to writable storage for `LasapiDeviceList`.
-pub unsafe fn bluez_enumerate_devices_impl(
-    bt: *const c_void,
-    active_pb_id: *const c_char,
-    active_cap_id: *const c_char,
-    out_list: *mut LasapiDeviceList,
-) -> c_int {
-    if out_list.is_null() {
-        return -1;
-    }
-    let out = unsafe { &mut *out_list };
-    *out = unsafe { mem::zeroed() };
-
-    let pb_id = crate::c_abi::ptr_to_opt_str(active_pb_id).unwrap_or_default();
-    let cap_id = crate::c_abi::ptr_to_opt_str(active_cap_id).unwrap_or_default();
-    let rt = unsafe { bt_from_ptr(bt) };
-
-    let mut card_names: [String; MAX_ALSA_CARDS_SCAN] = std::array::from_fn(|_| String::new());
-    let mut card_is_usb = [false; MAX_ALSA_CARDS_SCAN];
-    parse_asound_cards(&mut card_names, &mut card_is_usb);
-
-    {
-        let _guard = DBUS_ENUM_LOCK.lock().unwrap();
-        if let Some(db) = load_dbus_library() {
-            unsafe { (db.threads_init_default)() };
-            let mut err = DBusError::default();
-            unsafe { (db.error_init)(&mut err) };
-            let conn = unsafe { (db.bus_get_private)(DBUS_BUS_SYSTEM, &mut err) };
-            unsafe { (db.error_free)(&mut err) };
-            if !conn.is_null() {
-                unsafe { (db.connection_set_exit_on_disconnect)(conn, 0) };
-                if let Some(objs) = fetch_managed_objects(db, conn, 1200) {
-                    sync_known_bt_devices(rt, &objs);
-                    let (bt_live, bt_mac, bt_codec, sco_en) = if let Some(r) = rt {
-                        let st = r.state.lock().unwrap();
-                        (
-                            st.has_bluez_transport && st.direct_socket_mode && st.bt_fd >= 0,
-                            st.mac_address.clone(),
-                            st.codec_name.clone(),
-                            st.hfp_sco_enabled != 0,
-                        )
-                    } else {
-                        (false, String::new(), String::new(), false)
-                    };
-
-                    for d in &objs.devices {
-                        if (out.num_devices as usize) >= LASAPI_MAX_DEVICES {
-                            break;
-                        }
-                        let has_mt = objs.transports.iter().any(|t| t.device_path == d.obj_path);
-                        let matches_live =
-                            bt_live && !bt_mac.is_empty() && bt_mac.eq_ignore_ascii_case(&d.address);
-                        if should_enumerate_bt_a2dp_device(d.connected, d.has_a2dp_sink, &d.address) {
-                            let idx = out.num_devices as usize;
-                            out.num_devices += 1;
-                            let mut e: LasapiDeviceEntry = unsafe { mem::zeroed() };
-                            let eid = format!("bluez:{}", d.address);
-                            let (cn, ename) = format_bt_enum_entry_name(
-                                &d.alias,
-                                &d.address,
-                                &bt_codec,
-                                matches_live,
-                                bt_live,
-                                bt_mac.is_empty(),
-                                has_mt,
-                            );
-                            copy_str_to_c(&mut e.id, &eid);
-                            copy_str_to_c(&mut e.name, &ename);
-                            copy_str_to_c(&mut e.driver, "bluez-a2dp");
-                            e.is_capture = 0;
-                            e.is_bluetooth = 1;
-                            e.is_active = u32::from(
-                                pb_id == eid
-                                    || pb_id == "bluetooth"
-                                    || pb_id == "bluez",
-                            );
-                            e.min_rate = 44_100;
-                            e.max_rate = if cn == "LDAC" { 96_000 } else { 48_000 };
-                            out.devices[idx] = e;
-                        }
-
-                        if d.connected
-                            && d.has_hfp_hf
-                            && !d.address.is_empty()
-                            && sco_en
-                            && (out.num_devices as usize) < LASAPI_MAX_DEVICES
-                        {
-                            let idx = out.num_devices as usize;
-                            out.num_devices += 1;
-                            let mut sc: LasapiDeviceEntry = unsafe { mem::zeroed() };
-                            let sid = format!("bluez_sco:{}", d.address);
-                            let label: String = if !d.alias.is_empty() {
-                                d.alias.chars().take(42).collect()
-                            } else {
-                                d.address.chars().take(42).collect()
-                            };
-                            let sname = format!("{label} (HFP SCO Mic)");
-                            copy_str_to_c(&mut sc.id, &sid);
-                            copy_str_to_c(&mut sc.name, &sname);
-                            copy_str_to_c(&mut sc.driver, "bluez-hfp-sco");
-                            sc.is_capture = 1;
-                            sc.is_bluetooth = 1;
-                            sc.is_active = u32::from(cap_id == sid);
-                            sc.min_rate = 8_000;
-                            sc.max_rate = 16_000;
-                            out.devices[idx] = sc;
-                        }
-                    }
-                }
-                unsafe {
-                    (db.connection_close)(conn);
-                    (db.connection_unref)(conn);
-                }
-            }
-        }
-    }
-
-    append_alsa_devices(out, &pb_id, &cap_id, &card_names, &card_is_usb);
-    0
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`.
-pub unsafe fn bluez_hw_fingerprint_impl(bt: *const c_void) -> u64 {
-    let mut h = alsa_hw_fingerprint_seed();
-    if let Some(rt) = unsafe { bt_from_ptr(bt) } {
-        let (bt_live, tx_act, cid, mac, known_conn, known_cnt) = {
-            let st = rt.state.lock().unwrap();
-            (
-                st.has_bluez_transport && !st.transport_path.is_empty(),
-                st.tx_stream_active,
-                st.codec_id,
-                st.mac_address.clone(),
-                st.known_bt_audio_connected,
-                st.known_bt_audio_aliases.len().min(255) as u8,
-            )
-        };
-        let has_cap = rt.cap.has_capture_hw.load(Ordering::Acquire);
-        let cap_id = rt.cap.meta.lock().unwrap().cap_device_id.clone();
-        let topo_gen = rt.bt_topo_gen.load(Ordering::Acquire);
-        let flags = [
-            u8::from(bt_live),
-            u8::from(tx_act),
-            u8::from(has_cap),
-            cid,
-            u8::from(known_conn),
-            known_cnt,
-        ];
-        h = fnv1a_step(h, &flags);
-        h = fnv1a_step(h, &topo_gen.to_le_bytes());
-        if bt_live {
-            h = fnv1a_step(h, mac.as_bytes());
-        }
-        h = fnv1a_step(h, cap_id.as_bytes());
-    }
-    h
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`.
-pub unsafe fn bluez_set_volume_impl(bt: *mut c_void, vol_pct: c_int, mute_flag: c_int) -> c_int {
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return -1;
-    };
-    if vol_pct >= 0 {
-        let clamped = vol_pct.clamp(0, 150);
-        rt.desktop_volume_pct
-            .store(clamped as u32, Ordering::Relaxed);
-        rt.pending_avrcp_vol.store(clamped, Ordering::Relaxed);
-        rt.need_avrcp_sync.store(true, Ordering::Release);
-    }
-    if mute_flag >= 0 {
-        rt.desktop_muted.store(mute_flag != 0, Ordering::Relaxed);
-    }
-    0
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`.
-pub unsafe fn bluez_set_mic_volume_impl(
-    bt: *mut c_void,
-    vol_pct: c_int,
-    mute_flag: c_int,
-) -> c_int {
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return -1;
-    };
-    if vol_pct >= 0 {
-        let clamped = vol_pct.clamp(0, 150) as u32;
-        rt.cap.desktop_mic_volume_pct.store(clamped, Ordering::Relaxed);
-        rt.cap
-            .desktop_mic_gain_ppm
-            .store(clamped * 10_000, Ordering::Relaxed);
-    }
-    if mute_flag >= 0 {
-        rt.cap
-            .desktop_mic_muted
-            .store(mute_flag != 0, Ordering::Relaxed);
-    }
-    0
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`.
-pub unsafe fn bluez_set_mic_gain_ppm_impl(
-    bt: *mut c_void,
-    gain_ppm: u32,
-    vol_pct: c_int,
-    mute_flag: c_int,
-) -> c_int {
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return -1;
-    };
-    let clamped_ppm = gain_ppm.min(2_000_000);
-    rt.cap
-        .desktop_mic_gain_ppm
-        .store(clamped_ppm, Ordering::Relaxed);
-    if vol_pct >= 0 {
-        rt.cap
-            .desktop_mic_volume_pct
-            .store(vol_pct.clamp(0, 150) as u32, Ordering::Relaxed);
-    }
-    if mute_flag >= 0 {
-        rt.cap
-            .desktop_mic_muted
-            .store(mute_flag != 0, Ordering::Relaxed);
-    }
-    0
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl` and
-/// `cfg_ptr` must point to a valid `LasapiBtCodecCfg`.
-pub unsafe fn bluez_set_codec_config_impl(
-    bt: *mut c_void,
-    cfg_ptr: *const LasapiBtCodecCfg,
-) -> c_int {
-    if bt.is_null() || cfg_ptr.is_null() {
-        return -1;
-    }
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return -1;
-    };
-    let cfg = unsafe { &*cfg_ptr };
-
-    let need_reneg;
-    let new_sco = cfg.hfp_sco_enabled != 0;
-    {
-        let mut st = rt.state.lock().unwrap();
-        let old_pref = st.pref_codec;
-        let new_pref = if cfg.preferred_codec <= LASAPI_BT_PREF_SBC {
-            cfg.preferred_codec
-        } else {
-            LASAPI_BT_PREF_AUTO
-        };
-        let new_ldac = if cfg.ldac_mode <= LASAPI_LDAC_MODE_330 {
-            cfg.ldac_mode
-        } else {
-            LASAPI_LDAC_MODE_ADAPTIVE
-        };
-        let new_abr = u32::from(cfg.wireless_abr_enabled != 0);
-        let sup_mask = st.supported_codecs_mask;
-        let has_link = st.has_bluez_transport;
-        let mut preflight_ok = true;
-
-        if new_pref != LASAPI_BT_PREF_AUTO {
-            let (want_cap, lib_ok, codec_label) = match new_pref {
-                LASAPI_BT_PREF_LDAC => (LASAPI_BT_CAP_LDAC, load_ldac_library().is_some(), "LDAC"),
-                LASAPI_BT_PREF_APTX_HD => {
-                    (LASAPI_BT_CAP_APTX_HD, load_aptx_library().is_some(), "aptX HD")
-                }
-                LASAPI_BT_PREF_APTX => (LASAPI_BT_CAP_APTX, load_aptx_library().is_some(), "aptX"),
-                LASAPI_BT_PREF_AAC => (
-                    LASAPI_BT_CAP_AAC,
-                    load_fdk_aac_library().is_some(),
-                    "AAC",
-                ),
-                _ => (LASAPI_BT_CAP_SBC, true, "SBC"),
-            };
-            let cur_name = match st.active_codec_kind {
-                LASAPI_BT_CODEC_LDAC => "LDAC",
-                LASAPI_BT_CODEC_APTX_HD => "aptX HD",
-                LASAPI_BT_CODEC_APTX => "aptX",
-                LASAPI_BT_CODEC_AAC => "AAC",
-                _ => "SBC",
-            };
-            if !lib_ok {
-                preflight_ok = false;
-                st.neg_reason =
-                    format!("{codec_label} host encoder library missing — keeping {cur_name}");
-                dbg_emit(
-                    LASAPI_DBG_BLUEZ,
-                    LASAPI_DBG_WARN,
-                    0,
-                    0,
-                    "BT_CODEC_PREFLIGHT",
-                    codec_label,
-                    "Rejected host-missing codec without disturbing BlueZ",
-                );
-            } else if has_link && sup_mask != 0 && (sup_mask & want_cap) == 0 {
-                preflight_ok = false;
-                st.neg_reason =
-                    format!("Headset does not advertise {codec_label} SEP — keeping {cur_name}");
-                dbg_emit(
-                    LASAPI_DBG_BLUEZ,
-                    LASAPI_DBG_WARN,
-                    0,
-                    0,
-                    "BT_CODEC_PREFLIGHT",
-                    codec_label,
-                    "Headset lacks peer SEP for requested codec — active link preserved",
-                );
-            }
-        }
-
-        st.pref_codec = if preflight_ok { new_pref } else { old_pref };
-        st.ldac_mode = new_ldac;
-        st.wireless_abr_enabled = new_abr;
-        st.hfp_sco_enabled = u32::from(new_sco);
-
-        if preflight_ok
-            && st.active_codec_kind == LASAPI_BT_CODEC_LDAC
-            && !st.enc.ldac_enc.is_null()
-            && new_pref == old_pref
-        {
-            if new_ldac != LASAPI_LDAC_MODE_ADAPTIVE {
-                let eq = match new_ldac {
-                    LASAPI_LDAC_MODE_990 => LDACBT_EQMID_HQ,
-                    LASAPI_LDAC_MODE_660 => LDACBT_EQMID_SQ,
-                    _ => LDACBT_EQMID_MQ,
-                };
-                if let Some(set_eqmid) = load_ldac_library().and_then(|l| l.set_eqmid) {
-                    if unsafe { set_eqmid(st.enc.ldac_enc, eq) } == 0 {
-                        st.enc.ldac_eqmid = eq;
-                        st.effective_kbps = ldac_eqmid_to_kbps(st.bt_sample_rate, eq);
-                        st.neg_reason =
-                            format!("LDAC locked manually -> {}kbps", st.effective_kbps);
-                    }
-                }
-            } else if new_abr != 0 {
-                if st.enc.ldac_abr.is_null() {
-                    if let Some(abr_api) = load_ldac_abr_library() {
-                        let abr = unsafe { (abr_api.get_handle)() };
-                        if !abr.is_null() {
-                            unsafe {
-                                let _ = (abr_api.init)(abr, 20);
-                                let _ = (abr_api.set_thresholds)(abr, 5, 3, 1);
-                            }
-                            st.enc.ldac_abr = abr;
-                        }
-                    }
-                }
-                st.neg_reason = format!("LDAC Adaptive Bitrate active ({}kbps)", st.effective_kbps);
-            }
-        }
-
-        let cur_pref_kind = match st.active_codec_kind {
-            LASAPI_BT_CODEC_LDAC => LASAPI_BT_PREF_LDAC,
-            LASAPI_BT_CODEC_APTX_HD => LASAPI_BT_PREF_APTX_HD,
-            LASAPI_BT_CODEC_APTX => LASAPI_BT_PREF_APTX,
-            LASAPI_BT_CODEC_AAC => LASAPI_BT_PREF_AAC,
-            _ => LASAPI_BT_PREF_SBC,
-        };
-        let mut target_pref = new_pref;
-        if target_pref == LASAPI_BT_PREF_AUTO && sup_mask != 0 {
-            target_pref =
-                if (sup_mask & LASAPI_BT_CAP_LDAC) != 0 && load_ldac_library().is_some() {
-                    LASAPI_BT_PREF_LDAC
-                } else if (sup_mask & LASAPI_BT_CAP_APTX_HD) != 0 && load_aptx_library().is_some()
-                {
-                    LASAPI_BT_PREF_APTX_HD
-                } else if (sup_mask & LASAPI_BT_CAP_APTX) != 0 && load_aptx_library().is_some() {
-                    LASAPI_BT_PREF_APTX
-                } else if (sup_mask & LASAPI_BT_CAP_AAC) != 0 && load_fdk_aac_library().is_some()
-                {
-                    LASAPI_BT_PREF_AAC
-                } else {
-                    LASAPI_BT_PREF_SBC
-                };
-        }
-        need_reneg = preflight_ok && (new_pref != old_pref) && (target_pref != cur_pref_kind);
-    }
-
-    if !new_sco
-        && rt
-            .cap
-            .meta
-            .lock()
-            .unwrap()
-            .cap_device_id
-            .starts_with("bluez_sco:")
-    {
-        stop_sco_capture(rt);
-    }
-    if need_reneg {
-        rt.bt_renegotiate_req.store(true, Ordering::Release);
-    }
-    0
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl` and
-/// `out_cfg` must point to writable storage for `LasapiBtCodecCfg`.
-pub unsafe fn bluez_get_codec_config_impl(
-    bt: *const c_void,
-    out_cfg: *mut LasapiBtCodecCfg,
-) {
-    if out_cfg.is_null() {
-        return;
-    }
-    let out = unsafe { &mut *out_cfg };
-    *out = unsafe { mem::zeroed() };
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return;
-    };
-    let st = rt.state.lock().unwrap();
-    out.preferred_codec = st.pref_codec;
-    out.ldac_mode = st.ldac_mode;
-    out.wireless_abr_enabled = st.wireless_abr_enabled;
-    out.effective_kbps = st.effective_kbps;
-    out.supported_codecs_mask = st.supported_codecs_mask;
-    out.hfp_sco_enabled = st.hfp_sco_enabled;
-    out.hfp_sco_active = rt.hfp_sco_active.load(Ordering::Acquire);
-    copy_str_to_c(&mut out.bt_sco_codec, &st.bt_sco_codec);
-    copy_str_to_c(&mut out.neg_reason, &st.neg_reason);
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`.
-pub unsafe fn bluez_set_sco_enabled_impl(bt: *mut c_void, enabled: bool) -> c_int {
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return -1;
-    };
-    rt.state.lock().unwrap().hfp_sco_enabled = u32::from(enabled);
-    if !enabled {
-        stop_sco_capture(rt);
-    }
-    0
-}
-
-/// # Safety
-///
-/// If non-null, `bt` must be a handle returned by `audiodg_bt_ptr_impl`.
-pub unsafe fn bluez_close_impl(bt: *mut c_void) {
-    let Some(rt) = (unsafe { bt_from_ptr(bt) }) else {
-        return;
-    };
-    stop_capture_thread(&rt.cap);
-    stop_sco_capture(rt);
-
-    rt.tx_thread_running.store(false, Ordering::Release);
-    if let Some(jh) = rt.tx_thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        let _ = jh.join();
-    }
-    rt.dbus_thread_running.store(false, Ordering::Release);
-    if let Some(jh) = rt.dbus_thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        let _ = jh.join();
-    }
-
-    {
-        let mut devs = rt.hfp_devs.lock().unwrap_or_else(|e| e.into_inner());
-        for d in devs.iter_mut() {
-            if d.fd >= 0 {
-                shutdown_rdwr(d.fd);
-                d.fd_owner = None;
-                d.fd = -1;
-            }
-            d.rfcomm_active = false;
-            d.in_use = false;
-        }
-    }
-
-    {
-        let mut st = rt.state.lock().unwrap_or_else(|e| e.into_inner());
-        st.close_bt_fd();
-        st.enc.close_all();
-        st.direct_socket_mode = false;
-        st.has_bluez_transport = false;
-        st.tx_stream_active = false;
-        sync_tx_ready(rt, &st);
-    }
-    rt.initialized.store(false, Ordering::Release);
-}
-
-fn dbus_poll_device_connected(
-    db: &DBusApi,
-    conn: *mut DBusConnection,
-    obj_path: &str,
-    want_connected: bool,
-    max_iters: usize,
-    step_ms: u64,
-) -> bool {
-    for i in 0..max_iters {
-        let cur = unsafe { dbus_get_bool_prop(db, conn, obj_path, "org.bluez.Device1", "Connected") }
-            .unwrap_or(!want_connected);
-        if cur == want_connected {
-            return true;
-        }
-        if i + 1 < max_iters {
-            thread::sleep(Duration::from_millis(step_ms));
-        }
-    }
-    false
-}
-
-/// # Safety
-///
-/// If non-null, `mac_or_empty` must point to a valid NUL-terminated C string,
-/// and `out_msg` must point to writable storage of at least `out_len` bytes.
-pub unsafe fn bluez_reset_device_impl(
-    mac_or_empty: *const c_char,
-    out_msg: *mut c_char,
-    out_len: usize,
-) -> c_int {
-    let write_msg = |msg: &str| {
-        if !out_msg.is_null() && out_len > 0 {
-            let dst = unsafe { core::slice::from_raw_parts_mut(out_msg.cast::<u8>(), out_len) };
-            copy_str_to_c(dst, msg);
-        }
-    };
-    let Some(db) = load_dbus_library() else {
-        write_msg("Failed to load libdbus-1.so.3");
-        return -1;
-    };
-    let mut err = DBusError::default();
-    unsafe { (db.error_init)(&mut err) };
-    let conn = unsafe { (db.bus_get_private)(DBUS_BUS_SYSTEM, &mut err) };
-    if conn.is_null() {
-        let emsg = unsafe { dbus_error_msg(&err) };
-        write_msg(&format!("Failed to connect to system D-Bus: {emsg}"));
-        unsafe { (db.error_free)(&mut err) };
-        return -1;
-    }
-    unsafe { (db.connection_set_exit_on_disconnect)(conn, 0) };
-
-    let mac_filter = crate::c_abi::ptr_to_opt_str(mac_or_empty).unwrap_or_default();
-    let want_mac = extract_mac_str(&mac_filter);
-
-    let mut rc = -1i32;
-    if let Some(objs) = fetch_managed_objects(db, conn, 2000) {
-        let best = pick_best_paired_a2dp_device(&objs.devices, want_mac.as_deref());
-
-        if let Some(dev) = best {
-            let label = if dev.alias.is_empty() {
-                dev.address.as_str()
-            } else {
-                dev.alias.as_str()
-            };
-            if unsafe {
-                dbus_get_bool_prop(db, conn, &dev.obj_path, "org.bluez.Device1", "Connected")
-            }
-            .unwrap_or(false)
-            {
-                let dmsg = dbus_new_method_call(
-                    db,
-                    "org.bluez",
-                    &dev.obj_path,
-                    "org.bluez.Device1",
-                    "Disconnect",
-                );
-                if !dmsg.is_null() {
-                    unsafe {
-                        let drep = (db.connection_send_with_reply_and_block)(
-                            conn,
-                            dmsg,
-                            5000,
-                            ptr::null_mut(),
-                        );
-                        (db.message_unref)(dmsg);
-                        if !drep.is_null() {
-                            (db.message_unref)(drep);
-                        }
-                    }
-                }
-                dbus_poll_device_connected(db, conn, &dev.obj_path, false, 20, 250);
-                thread::sleep(Duration::from_millis(400));
-            }
-            unsafe {
-                dbus_set_str_prop(
-                    db,
-                    conn,
-                    &dev.obj_path,
-                    "org.bluez.Device1",
-                    "PreferredBearer",
-                    "bredr",
-                );
-            }
-            let mut cerr = DBusError::default();
-            unsafe { (db.error_init)(&mut cerr) };
-            let cmsg = dbus_new_method_call(
-                db,
-                "org.bluez",
-                &dev.obj_path,
-                "org.bluez.Device1",
-                "Connect",
-            );
-            let mut key_missing = false;
-            let mut conn_failed: Option<String> = None;
-            if !cmsg.is_null() {
-                unsafe {
-                    let crep =
-                        (db.connection_send_with_reply_and_block)(conn, cmsg, 12_000, &mut cerr);
-                    (db.message_unref)(cmsg);
-                    if crep.is_null() {
-                        let em = dbus_error_msg(&cerr);
-                        if em.contains("br-connection-key-missing") {
-                            key_missing = true;
-                            rc = -2;
-                        } else if !em.contains("AlreadyConnected") && !em.contains("InProgress") {
-                            conn_failed = Some(em);
-                        }
-                    } else {
-                        (db.message_unref)(crep);
-                    }
-                    (db.error_free)(&mut cerr);
-                }
-            }
-            if key_missing {
-                write_msg(&format!(
-                    "Bluetooth link key mismatch (br-connection-key-missing) for {label}. Please re-pair headphones."
-                ));
-            } else if let Some(em) = conn_failed {
-                write_msg(&format!("Failed to connect {label}: {em}"));
-            } else {
-                let conn_ok = dbus_poll_device_connected(db, conn, &dev.obj_path, true, 24, 250);
-                if !conn_ok {
-                    write_msg(&format!(
-                        "Failed to connect {label}. Ensure headphones are powered on."
-                    ));
-                } else {
-                    let mut tp_ok = false;
-                    for _ in 0..30 {
-                        if let Some(m2) = fetch_managed_objects(db, conn, 1500) {
-                            if m2.transports.iter().any(|t| {
-                                t.device_path == dev.obj_path
-                                    && (t.state == "active" || t.state == "idle")
-                            }) {
-                                tp_ok = true;
-                                break;
-                            }
-                        }
-                        thread::sleep(Duration::from_millis(200));
-                    }
-                    if tp_ok {
-                        rc = 0;
-                        write_msg(&format!(
-                            "{} ({}) reconnected on BR/EDR A2DP.",
-                            if dev.alias.is_empty() {
-                                "Bluetooth device"
-                            } else {
-                                dev.alias.as_str()
-                            },
-                            dev.address
-                        ));
-                    } else {
-                        write_msg(&format!(
-                            "{label} connected on BR/EDR, but A2DP audio transport is still initializing."
-                        ));
-                    }
-                }
-            }
-        } else if !mac_filter.is_empty() {
-            write_msg(&format!(
-                "No paired Bluetooth A2DP sink found matching '{mac_filter}'."
-            ));
-        } else {
-            write_msg("No paired Bluetooth A2DP sink device found in BlueZ.");
-        }
-    } else if !mac_filter.is_empty() {
-        write_msg(&format!(
-            "No paired Bluetooth A2DP sink found matching '{mac_filter}'."
-        ));
-    } else {
-        write_msg("No paired Bluetooth A2DP sink device found in BlueZ.");
-    }
-
-    unsafe {
-        (db.connection_close)(conn);
-        (db.connection_unref)(conn);
-    }
-    rc
-}
-
-/// Configures whether BlueZ audio connection is optional (USB/local prioritized).
-///
-/// # Safety
-/// If non-null, `bt` must point to a valid `BluezRuntime` instance.
-pub unsafe fn bluez_set_optional_mode_impl(bt: *mut c_void, optional: bool) {
-    if let Some(rt) = unsafe { bt_from_ptr(bt) } {
-        rt.bt_optional_mode.store(optional, Ordering::Release);
-    }
-}
-
-/// Returns `true` when BlueZ audio connection policy is optional (USB-first).
-///
-/// # Safety
-/// If non-null, `bt` must point to a valid `BluezRuntime` instance.
-pub unsafe fn bluez_is_optional_mode_impl(bt: *const c_void) -> bool {
-    unsafe { bt_from_ptr(bt) }
-        .map(|rt| rt.bt_optional_mode.load(Ordering::Acquire))
-        .unwrap_or(true)
-}
-
 fn sync_known_bt_devices(rt: Option<&BluezRuntime>, objs: &ManagedObjects) {
     let Some(r) = rt else {
         return;
@@ -5825,22 +4442,6 @@ fn sync_known_bt_devices(rt: Option<&BluezRuntime>, objs: &ManagedObjects) {
     }
 }
 
-/// Returns paired/connected BlueZ A2DP audio device aliases observed by `BluezRuntime`.
-///
-/// # Safety
-/// If non-null, `bt` must point to a valid `BluezRuntime` instance.
-pub unsafe fn bluez_known_audio_aliases_impl(bt: *const c_void) -> Vec<String> {
-    unsafe { bt_from_ptr(bt) }
-        .map(|rt| {
-            rt.state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .known_bt_audio_aliases
-                .clone()
-        })
-        .unwrap_or_default()
-}
-
 fn bt_status_flags(rt: Option<&BluezRuntime>, dbus_connected: bool) -> u32 {
     let mut flags = 0u32;
     let opt = rt.map(|r| r.bt_optional_mode.load(Ordering::Acquire)).unwrap_or(true);
@@ -5865,272 +4466,1120 @@ fn bt_status_flags(rt: Option<&BluezRuntime>, dbus_connected: bool) -> u32 {
     flags
 }
 
-/// # Safety
-///
-/// If non-null, `bt` must be a `BluezRuntime` handle and string/flag pointers must be valid.
-pub unsafe fn bluez_connection_ctl_impl(
-    bt: *mut c_void,
-    action: u32,
-    mac_or_empty: *const c_char,
-    out_msg: *mut c_char,
-    out_len: usize,
-    out_flags: *mut u32,
-) -> c_int {
-    let write_msg = |msg: &str| {
-        if !out_msg.is_null() && out_len > 0 {
-            let dst = unsafe { core::slice::from_raw_parts_mut(out_msg.cast::<u8>(), out_len) };
-            copy_str_to_c(dst, msg);
+fn dbus_poll_device_connected(
+    db: &DBusApi,
+    conn: *mut DBusConnection,
+    obj_path: &str,
+    want_connected: bool,
+    max_iters: usize,
+    step_ms: u64,
+) -> bool {
+    for i in 0..max_iters {
+        let cur = unsafe { dbus_get_bool_prop(db, conn, obj_path, "org.bluez.Device1", "Connected") }
+            .unwrap_or(!want_connected);
+        if cur == want_connected {
+            return true;
         }
-    };
-    let rt = unsafe { bt_from_ptr(bt) };
+        if i + 1 < max_iters {
+            thread::sleep(Duration::from_millis(step_ms));
+        }
+    }
+    false
+}
 
-    match action {
-        crate::c_abi::LASAPI_BT_CONN_QUERY => {
-            let flags = bt_status_flags(rt, false);
-            if !out_flags.is_null() {
-                unsafe { *out_flags = flags };
-            }
-            write_msg(if (flags & LASAPI_BT_STAT_CONNECTED) != 0 {
-                "Bluetooth audio connected"
-            } else {
-                "Bluetooth audio disconnected"
-            });
-            return 0;
+fn perform_dbus_bt_reset(
+    rt: Option<&BluezRuntime>,
+    db: &DBusApi,
+    conn: *mut DBusConnection,
+    mac_filter: &str,
+    initial_objs: Option<&ManagedObjects>,
+) -> (i32, String) {
+    if let Some(r) = rt {
+        r.set_tx_enabled(false);
+        let has_tp = !r.state.lock().unwrap().transport_path.is_empty();
+        if has_tp {
+            release_bluez_transport(db, conn, r);
         }
-        LASAPI_BT_CONN_SET_OPTIONAL => {
-            if let Some(r) = rt {
-                r.bt_optional_mode.store(true, Ordering::Release);
-            }
-            if !out_flags.is_null() {
-                unsafe { *out_flags = bt_status_flags(rt, false) };
-            }
-            write_msg("Bluetooth audio policy set to Optional (USB-First)");
-            return 0;
-        }
-        LASAPI_BT_CONN_SET_AUTOCONN => {
-            if let Some(r) = rt {
-                r.bt_optional_mode.store(false, Ordering::Release);
-            }
-            if !out_flags.is_null() {
-                unsafe { *out_flags = bt_status_flags(rt, false) };
-            }
-            write_msg("Bluetooth audio policy set to Auto-Connect");
-            return 0;
-        }
-        _ => {}
+        let mut st = r.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.close_bt_fd();
+        st.direct_socket_mode = false;
+        st.has_bluez_transport = false;
+        st.tx_stream_active = false;
+        st.transport_path.clear();
+        st.bt_kick_dev.clear();
+        st.enc.close_all();
+        sync_tx_ready(r, &st);
     }
 
-    let Some(db) = load_dbus_library() else {
-        if !out_flags.is_null() {
-            unsafe { *out_flags = bt_status_flags(rt, false) };
-        }
-        write_msg("Failed to load libdbus-1.so.3");
-        return -1;
+    let want_mac = extract_mac_str(mac_filter);
+    let owned_objs;
+    let objs_ref = if let Some(o) = initial_objs {
+        Some(o)
+    } else {
+        owned_objs = fetch_managed_objects(db, conn, 2000);
+        owned_objs.as_ref()
     };
+
+    let Some(objs) = objs_ref else {
+        let msg = if !mac_filter.is_empty() {
+            format!("No paired Bluetooth A2DP sink found matching '{mac_filter}'.")
+        } else {
+            "No paired Bluetooth A2DP sink device found in BlueZ.".to_string()
+        };
+        return (-1, msg);
+    };
+
+    let Some(dev) = pick_best_paired_a2dp_device(&objs.devices, want_mac.as_deref()) else {
+        let msg = if !mac_filter.is_empty() {
+            format!("No paired Bluetooth A2DP sink found matching '{mac_filter}'.")
+        } else {
+            "No paired Bluetooth A2DP sink device found in BlueZ.".to_string()
+        };
+        return (-1, msg);
+    };
+
+    let label = if dev.alias.is_empty() {
+        dev.address.as_str()
+    } else {
+        dev.alias.as_str()
+    };
+    if unsafe { dbus_get_bool_prop(db, conn, &dev.obj_path, "org.bluez.Device1", "Connected") }
+        .unwrap_or(false)
+    {
+        let dmsg = dbus_new_method_call(
+            db,
+            "org.bluez",
+            &dev.obj_path,
+            "org.bluez.Device1",
+            "Disconnect",
+        );
+        if !dmsg.is_null() {
+            unsafe {
+                let drep =
+                    (db.connection_send_with_reply_and_block)(conn, dmsg, 5000, ptr::null_mut());
+                (db.message_unref)(dmsg);
+                if !drep.is_null() {
+                    (db.message_unref)(drep);
+                }
+            }
+        }
+        dbus_poll_device_connected(db, conn, &dev.obj_path, false, 20, 250);
+        thread::sleep(Duration::from_millis(400));
+    }
+
+    unsafe {
+        dbus_set_str_prop(
+            db,
+            conn,
+            &dev.obj_path,
+            "org.bluez.Device1",
+            "PreferredBearer",
+            "bredr",
+        );
+    }
+
+    let mut rc = -1i32;
     let mut err = DBusError::default();
     unsafe { (db.error_init)(&mut err) };
-    let conn = unsafe { (db.bus_get_private)(DBUS_BUS_SYSTEM, &mut err) };
-    if conn.is_null() {
-        let emsg = unsafe { dbus_error_msg(&err) };
-        unsafe { (db.error_free)(&mut err) };
-        if !out_flags.is_null() {
-            unsafe { *out_flags = bt_status_flags(rt, false) };
+    let cmsg = dbus_new_method_call(
+        db,
+        "org.bluez",
+        &dev.obj_path,
+        "org.bluez.Device1",
+        "Connect",
+    );
+    let mut key_missing = false;
+    let mut conn_failed: Option<String> = None;
+    if !cmsg.is_null() {
+        unsafe {
+            let crep = (db.connection_send_with_reply_and_block)(conn, cmsg, 12_000, &mut err);
+            (db.message_unref)(cmsg);
+            if crep.is_null() {
+                let em = dbus_error_msg(&err);
+                if em.contains("br-connection-key-missing") {
+                    key_missing = true;
+                    rc = -2;
+                } else if !em.contains("AlreadyConnected") && !em.contains("InProgress") {
+                    conn_failed = Some(em);
+                }
+            } else {
+                (db.message_unref)(crep);
+            }
+            (db.error_free)(&mut err);
         }
-        write_msg(&format!("D-Bus unavailable: {emsg}"));
-        return -1;
     }
-    unsafe { (db.connection_set_exit_on_disconnect)(conn, 0) };
 
-    let mac_filter = crate::c_abi::ptr_to_opt_str(mac_or_empty).unwrap_or_default();
-    let want_mac = extract_mac_str(&mac_filter);
-    let mut rc = 0i32;
-    let mut any_connected = false;
-
-    if let Some(objs) = fetch_managed_objects(db, conn, 1500) {
-        sync_known_bt_devices(rt, &objs);
-        any_connected = objs.devices.iter().any(|d| d.has_a2dp_sink && d.connected);
-        let best = pick_best_paired_a2dp_device(&objs.devices, want_mac.as_deref());
-
-        if action == LASAPI_BT_CONN_CONNECT {
-            if let Some(dev) = best {
-                let label = if dev.alias.is_empty() {
-                    dev.address.as_str()
+    let msg = if key_missing {
+        format!("Bluetooth link key mismatch (br-connection-key-missing) for {label}. Please re-pair headphones.")
+    } else if let Some(em) = conn_failed {
+        format!("Failed to connect {label}: {em}")
+    } else if !dbus_poll_device_connected(db, conn, &dev.obj_path, true, 24, 250) {
+        format!("Failed to connect {label}. Ensure headphones are powered on.")
+    } else {
+        let mut tp_ok = false;
+        for _ in 0..30 {
+            if let Some(m2) = fetch_managed_objects(db, conn, 1500) {
+                sync_known_bt_devices(rt, &m2);
+                if m2.transports.iter().any(|t| {
+                    t.device_path == dev.obj_path && (t.state == "active" || t.state == "idle")
+                }) {
+                    tp_ok = true;
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        if tp_ok {
+            rc = 0;
+            if let Some(r) = rt {
+                r.tx_paused.store(false, Ordering::Release);
+                r.need_release.store(false, Ordering::Release);
+                r.need_activate.store(true, Ordering::Release);
+            }
+            format!(
+                "{} ({}) reconnected on BR/EDR A2DP.",
+                if dev.alias.is_empty() {
+                    "Bluetooth device"
                 } else {
                     dev.alias.as_str()
-                };
-                if let Some(r) = rt {
-                    r.tx_paused.store(false, Ordering::Release);
-                    r.need_release.store(false, Ordering::Release);
+                },
+                dev.address
+            )
+        } else {
+            format!("{label} connected on BR/EDR, but A2DP audio transport is still initializing.")
+        }
+    };
+
+    (rc, msg)
+}
+
+impl BluezRuntime {
+    pub fn is_initialized(&self) -> bool {
+        self.initialized.load(Ordering::Acquire)
+    }
+
+    pub fn rt_master_vol(&self) -> (u32, bool) {
+        (
+            self.desktop_volume_pct.load(Ordering::Relaxed),
+            self.desktop_muted.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn snapshot(&self) -> SalsaBtSnapshot {
+        let mut out = SalsaBtSnapshot::zeroed();
+        out.bt_fd = -1;
+        out.cap_pcm_fd = -1;
+        out.initialized = self.initialized.load(Ordering::Acquire);
+        out.has_capture_hw = self.cap.has_capture_hw.load(Ordering::Acquire);
+        out.tx_paused = self.tx_paused.load(Ordering::Relaxed);
+        out.cap_is_usb = self.cap.cap_is_usb.load(Ordering::Relaxed);
+        out.cap_pcm_fd = self.cap.cap_pcm_fd.load(Ordering::Relaxed);
+        out.delay_tenths_ms = self.delay_tenths_ms.load(Ordering::Relaxed);
+        out.avrcp_volume = self.avrcp_volume.load(Ordering::Relaxed);
+        out.cap_hw_rate = self.cap.cap_hw_rate.load(Ordering::Relaxed);
+        out.cap_hw_channels = self.cap.cap_hw_channels.load(Ordering::Relaxed);
+        out.cap_hw_format = self.cap.cap_hw_format.load(Ordering::Relaxed);
+        out.cap_measured_rate = self.cap.cap_measured_rate.load(Ordering::Relaxed);
+        out.cap_kick_count = self.cap.cap_kick_count.load(Ordering::Relaxed);
+        out.desktop_volume_pct = self.desktop_volume_pct.load(Ordering::Relaxed);
+        out.desktop_muted = self.desktop_muted.load(Ordering::Relaxed);
+        out.desktop_mic_volume_pct = self.cap.desktop_mic_volume_pct.load(Ordering::Relaxed);
+        out.desktop_mic_muted = self.cap.desktop_mic_muted.load(Ordering::Relaxed);
+        out.desktop_mic_gain_ppm = self.cap.desktop_mic_gain_ppm.load(Ordering::Relaxed);
+
+        let tx_wr = self.tx_write_frame.load(Ordering::Relaxed);
+        let tx_rd = self.tx_read_frame.load(Ordering::Relaxed);
+        out.tx_ring_fill = tx_wr.saturating_sub(tx_rd);
+        out.tx_packets_sent = self.tx_packets_sent.load(Ordering::Relaxed);
+        out.tx_underruns = self.tx_underruns.load(Ordering::Relaxed);
+        out.tx_errors = self.tx_errors.load(Ordering::Relaxed);
+        out.cap_hw_write_frame = self.cap.cap_hw_write_frame.load(Ordering::Relaxed);
+
+        {
+            let m = self.cap.meta.lock().unwrap();
+            copy_str_to_c(&mut out.cap_device_id, &m.cap_device_id);
+            copy_str_to_c(&mut out.cap_pcm_path, &m.cap_pcm_path);
+            copy_str_to_c(&mut out.capture_device_alias, &m.capture_device_alias);
+        }
+
+        let st = self.state.lock().unwrap();
+        out.has_bluez_transport = st.has_bluez_transport;
+        out.direct_socket_mode = st.direct_socket_mode;
+        out.endpoints_registered = st.endpoints_registered;
+        out.bt_fd = st.bt_fd;
+        out.read_mtu = st.read_mtu;
+        out.write_mtu = st.write_mtu;
+        out.bt_sample_rate = st.bt_sample_rate;
+        out.bt_channels = st.bt_channels;
+        copy_str_to_c(&mut out.mac_address, &st.mac_address);
+        copy_str_to_c(&mut out.device_alias, &st.device_alias);
+        copy_str_to_c(&mut out.codec_name, &st.codec_name);
+        copy_str_to_c(&mut out.device_path, &st.device_path);
+        copy_str_to_c(&mut out.transport_path, &st.transport_path);
+        copy_str_to_c(&mut out.endpoint_path, &st.endpoint_path);
+        out
+    }
+
+    pub fn set_preferred_target(&self, pb: &str) {
+        let mac = if pb.len() >= 6 && pb[..6].eq_ignore_ascii_case("bluez:") {
+            extract_mac_str(pb).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let switching_mac = {
+            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let diff = !mac.is_empty()
+                && !st.mac_address.is_empty()
+                && !st.mac_address.eq_ignore_ascii_case(&mac);
+            st.preferred_mac = mac;
+            diff && (st.bt_fd >= 0 || st.has_bluez_transport)
+        };
+        if switching_mac {
+            self.need_release.store(true, Ordering::Release);
+            self.need_activate.store(true, Ordering::Release);
+        }
+    }
+
+    pub fn init_rates(
+        self: &Arc<Self>,
+        engine_sample_rate: u32,
+        capture_sample_rate: u32,
+        preferred_cap_id: &str,
+        preferred_pb_id: &str,
+    ) -> i32 {
+        self.close();
+
+        let eff_eng = if engine_sample_rate > 0 {
+            engine_sample_rate
+        } else {
+            48_000
+        };
+        self.engine_sample_rate.store(eff_eng, Ordering::Release);
+        self.desktop_volume_pct.store(100, Ordering::Relaxed);
+        self.desktop_muted.store(false, Ordering::Relaxed);
+        self.cap.desktop_mic_volume_pct.store(100, Ordering::Relaxed);
+        self.cap.desktop_mic_muted.store(false, Ordering::Relaxed);
+        self.cap.desktop_mic_gain_ppm.store(1_000_000, Ordering::Relaxed);
+        self.avrcp_volume.store(127, Ordering::Relaxed);
+        self.tx_drop_event_ns.store(0, Ordering::Relaxed);
+        self.tx_write_frame.store(0, Ordering::Release);
+        self.tx_read_frame.store(0, Ordering::Release);
+        self.tx_transport_ready.store(false, Ordering::Release);
+        let want_bt_pref = {
+            let mut st = self.state.lock().unwrap();
+            *st = BtMutable::default();
+            if preferred_pb_id.len() >= 6 && preferred_pb_id[..6].eq_ignore_ascii_case("bluez:") {
+                st.preferred_mac = extract_mac_str(preferred_pb_id).unwrap_or_default();
+            }
+            !st.preferred_mac.is_empty()
+                || preferred_pb_id.eq_ignore_ascii_case("bluetooth")
+                || preferred_pb_id.eq_ignore_ascii_case("bluez")
+        };
+        self.tx_paused.store(!want_bt_pref, Ordering::Release);
+        self.need_release.store(false, Ordering::Release);
+        self.initialized.store(true, Ordering::Release);
+
+        self.dbus_thread_running.store(true, Ordering::Release);
+        spawn_dbus_thread(Arc::clone(self));
+
+        self.tx_thread_running.store(true, Ordering::Release);
+        spawn_tx_thread(Arc::clone(self));
+
+        let max_wait_ticks = if want_bt_pref { 125 } else { 20 };
+        let mut bt_ready_now = false;
+        for tick in 0..max_wait_ticks {
+            let (ep_reg, has_tp, is_live) = {
+                let st = self.state.lock().unwrap();
+                (
+                    st.endpoints_registered,
+                    st.has_bluez_transport && !st.transport_path.is_empty(),
+                    st.has_bluez_transport && st.direct_socket_mode && st.bt_fd >= 0,
+                )
+            };
+            bt_ready_now = is_live;
+            if want_bt_pref {
+                if is_live {
+                    break;
                 }
-                if !dev.connected {
+            } else if ep_reg && (has_tp || tick >= 12) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        let req_cap = if capture_sample_rate > 0 {
+            capture_sample_rate
+        } else {
+            eff_eng
+        };
+        self.open_capture(preferred_cap_id, req_cap);
+        if bt_ready_now { 0 } else { -1 }
+    }
+
+    pub fn reconfigure_rate(&self, new_engine_sample_rate: u32) -> i32 {
+        if !self.initialized.load(Ordering::Acquire) {
+            return -1;
+        }
+        if (44_100..=192_000).contains(&new_engine_sample_rate) {
+            let _g = self.state.lock().unwrap();
+            self.engine_sample_rate
+                .store(new_engine_sample_rate, Ordering::Release);
+        }
+        0
+    }
+
+    pub fn set_tx_enabled(&self, enabled: bool) {
+        if !enabled {
+            self.tx_paused.store(true, Ordering::Release);
+            self.need_acquire.store(false, Ordering::Release);
+            self.need_activate.store(false, Ordering::Release);
+            self.need_release.store(true, Ordering::Release);
+        } else {
+            let was_paused = self.tx_paused.swap(false, Ordering::AcqRel);
+            self.need_release.store(false, Ordering::Release);
+            if was_paused {
+                let _ring = self.tx_ring.lock().unwrap_or_else(|e| e.into_inner());
+                let wr = self.tx_write_frame.load(Ordering::Acquire);
+                self.tx_read_frame.store(wr, Ordering::Release);
+            }
+            let (need_acq, need_act) = {
+                let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                classify_tx_enable_action(
+                    st.has_bluez_transport,
+                    &st.transport_path,
+                    &st.preferred_mac,
+                    &st.mac_address,
+                    st.bt_fd,
+                )
+            };
+            if need_acq {
+                self.need_acquire.store(true, Ordering::Release);
+            }
+            if need_act {
+                self.need_activate.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    pub fn write_period(&self, pcm_interleaved: &[f32], frames: u32, channels: u32) -> i32 {
+        if !self.initialized.load(Ordering::Acquire)
+            || !self.tx_transport_ready.load(Ordering::Acquire)
+            || frames == 0
+            || channels == 0
+        {
+            return -1;
+        }
+        let Some(total) = (frames as usize).checked_mul(channels as usize) else {
+            return -1;
+        };
+        if pcm_interleaved.len() < total {
+            return -1;
+        }
+        let paused = self.tx_paused.load(Ordering::Relaxed);
+        let mut ring = self.tx_ring.lock().unwrap();
+        write_tx_period(
+            &mut ring,
+            &self.tx_write_frame,
+            paused,
+            &pcm_interleaved[..total],
+            frames as usize,
+            channels as usize,
+        )
+    }
+
+    pub fn open_capture(&self, preferred_cap_id: &str, capture_sample_rate: u32) -> i32 {
+        stop_capture_thread(&self.cap);
+        stop_sco_capture(self);
+
+        let mut eng_rate = self.engine_sample_rate.load(Ordering::Relaxed);
+        if eng_rate == 0 {
+            eng_rate = if capture_sample_rate > 0 {
+                capture_sample_rate
+            } else {
+                48_000
+            };
+            self.engine_sample_rate.store(eng_rate, Ordering::Release);
+        }
+        let sco_enabled = self.state.lock().unwrap().hfp_sco_enabled != 0;
+        if let Some(mac) = preferred_cap_id.strip_prefix("bluez_sco:") {
+            if sco_enabled && open_sco_capture(self, mac) == 0 {
+                return 0;
+            }
+        }
+
+        let mut card_names: [String; MAX_ALSA_CARDS_SCAN] = std::array::from_fn(|_| String::new());
+        let mut card_is_usb = [false; MAX_ALSA_CARDS_SCAN];
+        parse_asound_cards(&mut card_names, &mut card_is_usb);
+        open_alsa_capture(
+            &self.cap,
+            eng_rate,
+            preferred_cap_id,
+            capture_sample_rate,
+            &card_names,
+            &card_is_usb,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn read_capture_native(
+        &self,
+        out: &mut [f32],
+        max_frames: u32,
+        out_frames: &mut u32,
+        out_rate: &mut u32,
+        eng_frames: u32,
+        eng_rate: u32,
+        io_read_cursor: &mut u64,
+    ) -> i32 {
+        let cap_max = max_frames.min((out.len() / 2) as u32);
+        unsafe {
+            read_capture_native(
+                Some(&*self.cap),
+                self.initialized.load(Ordering::Acquire),
+                out.as_mut_ptr(),
+                cap_max,
+                out_frames,
+                out_rate,
+                eng_frames,
+                eng_rate,
+                io_read_cursor,
+            )
+        }
+    }
+
+    pub fn enumerate_devices(
+        &self,
+        pref_pb: Option<&str>,
+        pref_cap: Option<&str>,
+        out: &mut LasapiDeviceList,
+    ) -> i32 {
+        *out = LasapiDeviceList::zeroed();
+        let pb_id = pref_pb.unwrap_or_default();
+        let cap_id = pref_cap.unwrap_or_default();
+
+        let mut card_names: [String; MAX_ALSA_CARDS_SCAN] = std::array::from_fn(|_| String::new());
+        let mut card_is_usb = [false; MAX_ALSA_CARDS_SCAN];
+        parse_asound_cards(&mut card_names, &mut card_is_usb);
+
+        {
+            let _guard = DBUS_ENUM_LOCK.lock().unwrap();
+            if let Some(db) = load_dbus_library() {
+                unsafe { (db.threads_init_default)() };
+                let mut err = DBusError::default();
+                unsafe { (db.error_init)(&mut err) };
+                let conn = unsafe { (db.bus_get_private)(DBUS_BUS_SYSTEM, &mut err) };
+                unsafe { (db.error_free)(&mut err) };
+                if !conn.is_null() {
+                    unsafe { (db.connection_set_exit_on_disconnect)(conn, 0) };
+                    if let Some(objs) = fetch_managed_objects(db, conn, 1200) {
+                        sync_known_bt_devices(Some(self), &objs);
+                        let (bt_live, bt_mac, bt_codec, sco_en) = {
+                            let st = self.state.lock().unwrap();
+                            (
+                                st.has_bluez_transport && st.direct_socket_mode && st.bt_fd >= 0,
+                                st.mac_address.clone(),
+                                st.codec_name.clone(),
+                                st.hfp_sco_enabled != 0,
+                            )
+                        };
+
+                        for d in &objs.devices {
+                            if (out.num_devices as usize) >= LASAPI_MAX_DEVICES {
+                                break;
+                            }
+                            let has_mt = objs.transports.iter().any(|t| t.device_path == d.obj_path);
+                            let matches_live = bt_live
+                                && !bt_mac.is_empty()
+                                && bt_mac.eq_ignore_ascii_case(&d.address);
+                            if should_enumerate_bt_a2dp_device(d.connected, d.has_a2dp_sink, &d.address) {
+                                let idx = out.num_devices as usize;
+                                out.num_devices += 1;
+                                let mut e = LasapiDeviceEntry::zeroed();
+                                let eid = format!("bluez:{}", d.address);
+                                let (cn, ename) = format_bt_enum_entry_name(
+                                    &d.alias,
+                                    &d.address,
+                                    &bt_codec,
+                                    matches_live,
+                                    bt_live,
+                                    bt_mac.is_empty(),
+                                    has_mt,
+                                );
+                                copy_str_to_c(&mut e.id, &eid);
+                                copy_str_to_c(&mut e.name, &ename);
+                                copy_str_to_c(&mut e.driver, "bluez-a2dp");
+                                e.is_capture = 0;
+                                e.is_bluetooth = 1;
+                                e.is_active =
+                                    u32::from(pb_id == eid || pb_id == "bluetooth" || pb_id == "bluez");
+                                e.min_rate = 44_100;
+                                e.max_rate = if cn == "LDAC" { 96_000 } else { 48_000 };
+                                out.devices[idx] = e;
+                            }
+
+                            if d.connected
+                                && d.has_hfp_hf
+                                && !d.address.is_empty()
+                                && sco_en
+                                && (out.num_devices as usize) < LASAPI_MAX_DEVICES
+                            {
+                                let idx = out.num_devices as usize;
+                                out.num_devices += 1;
+                                let mut sc = LasapiDeviceEntry::zeroed();
+                                let sid = format!("bluez_sco:{}", d.address);
+                                let label: String = if !d.alias.is_empty() {
+                                    d.alias.chars().take(42).collect()
+                                } else {
+                                    d.address.chars().take(42).collect()
+                                };
+                                let sname = format!("{label} (HFP SCO Mic)");
+                                copy_str_to_c(&mut sc.id, &sid);
+                                copy_str_to_c(&mut sc.name, &sname);
+                                copy_str_to_c(&mut sc.driver, "bluez-hfp-sco");
+                                sc.is_capture = 1;
+                                sc.is_bluetooth = 1;
+                                sc.is_active = u32::from(cap_id == sid);
+                                sc.min_rate = 8_000;
+                                sc.max_rate = 16_000;
+                                out.devices[idx] = sc;
+                            }
+                        }
+                    }
                     unsafe {
-                        dbus_set_str_prop(
+                        (db.connection_close)(conn);
+                        (db.connection_unref)(conn);
+                    }
+                }
+            }
+        }
+
+        append_alsa_devices(out, pb_id, cap_id, &card_names, &card_is_usb);
+        0
+    }
+
+    pub fn hw_fingerprint(&self) -> u64 {
+        let mut h = alsa_hw_fingerprint_seed();
+        let (bt_live, tx_act, cid, mac, known_conn, known_cnt) = {
+            let st = self.state.lock().unwrap();
+            (
+                st.has_bluez_transport && !st.transport_path.is_empty(),
+                st.tx_stream_active,
+                st.codec_id,
+                st.mac_address.clone(),
+                st.known_bt_audio_connected,
+                st.known_bt_audio_aliases.len().min(255) as u8,
+            )
+        };
+        let has_cap = self.cap.has_capture_hw.load(Ordering::Acquire);
+        let cap_id = self.cap.meta.lock().unwrap().cap_device_id.clone();
+        let topo_gen = self.bt_topo_gen.load(Ordering::Acquire);
+        let flags = [
+            u8::from(bt_live),
+            u8::from(tx_act),
+            u8::from(has_cap),
+            cid,
+            u8::from(known_conn),
+            known_cnt,
+        ];
+        h = fnv1a_step(h, &flags);
+        h = fnv1a_step(h, &topo_gen.to_le_bytes());
+        if bt_live {
+            h = fnv1a_step(h, mac.as_bytes());
+        }
+        fnv1a_step(h, cap_id.as_bytes())
+    }
+
+    pub fn set_volume(&self, vol_pct: i32, mute_flag: i32) -> i32 {
+        if vol_pct >= 0 {
+            let clamped = vol_pct.clamp(0, 150);
+            self.desktop_volume_pct
+                .store(clamped as u32, Ordering::Relaxed);
+            self.pending_avrcp_vol.store(clamped, Ordering::Relaxed);
+            self.need_avrcp_sync.store(true, Ordering::Release);
+        }
+        if mute_flag >= 0 {
+            self.desktop_muted.store(mute_flag != 0, Ordering::Relaxed);
+        }
+        0
+    }
+
+    pub fn set_mic_volume(&self, vol_pct: i32, mute_flag: i32) -> i32 {
+        if vol_pct >= 0 {
+            let clamped = vol_pct.clamp(0, 150) as u32;
+            self.cap.desktop_mic_volume_pct.store(clamped, Ordering::Relaxed);
+            self.cap
+                .desktop_mic_gain_ppm
+                .store(clamped * 10_000, Ordering::Relaxed);
+        }
+        if mute_flag >= 0 {
+            self.cap
+                .desktop_mic_muted
+                .store(mute_flag != 0, Ordering::Relaxed);
+        }
+        0
+    }
+
+    pub fn set_mic_gain_ppm(&self, gain_ppm: u32, vol_pct: i32, mute_flag: i32) -> i32 {
+        let clamped_ppm = gain_ppm.min(2_000_000);
+        self.cap
+            .desktop_mic_gain_ppm
+            .store(clamped_ppm, Ordering::Relaxed);
+        if vol_pct >= 0 {
+            self.cap
+                .desktop_mic_volume_pct
+                .store(vol_pct.clamp(0, 150) as u32, Ordering::Relaxed);
+        }
+        if mute_flag >= 0 {
+            self.cap
+                .desktop_mic_muted
+                .store(mute_flag != 0, Ordering::Relaxed);
+        }
+        0
+    }
+
+    pub fn set_codec_config(&self, cfg: &LasapiBtCodecCfg) -> i32 {
+        let need_reneg;
+        let new_sco = cfg.hfp_sco_enabled != 0;
+        {
+            let mut st = self.state.lock().unwrap();
+            let old_pref = st.pref_codec;
+            let new_pref = if cfg.preferred_codec <= LASAPI_BT_PREF_SBC {
+                cfg.preferred_codec
+            } else {
+                LASAPI_BT_PREF_AUTO
+            };
+            let new_ldac = if cfg.ldac_mode <= LASAPI_LDAC_MODE_330 {
+                cfg.ldac_mode
+            } else {
+                LASAPI_LDAC_MODE_ADAPTIVE
+            };
+            let new_abr = u32::from(cfg.wireless_abr_enabled != 0);
+            let sup_mask = st.supported_codecs_mask;
+            let has_link = st.has_bluez_transport;
+            let mut preflight_ok = true;
+
+            if new_pref != LASAPI_BT_PREF_AUTO {
+                let (want_cap, lib_ok, codec_label) = match new_pref {
+                    LASAPI_BT_PREF_LDAC => (LASAPI_BT_CAP_LDAC, is_ldac_available(), "LDAC"),
+                    LASAPI_BT_PREF_APTX_HD => (LASAPI_BT_CAP_APTX_HD, is_aptx_available(), "aptX HD"),
+                    LASAPI_BT_PREF_APTX => (LASAPI_BT_CAP_APTX, is_aptx_available(), "aptX"),
+                    LASAPI_BT_PREF_AAC => (LASAPI_BT_CAP_AAC, is_fdk_aac_available(), "AAC"),
+                    _ => (LASAPI_BT_CAP_SBC, true, "SBC"),
+                };
+                let cur_name = match st.active_codec_kind {
+                    LASAPI_BT_CODEC_LDAC => "LDAC",
+                    LASAPI_BT_CODEC_APTX_HD => "aptX HD",
+                    LASAPI_BT_CODEC_APTX => "aptX",
+                    LASAPI_BT_CODEC_AAC => "AAC",
+                    _ => "SBC",
+                };
+                if !lib_ok {
+                    preflight_ok = false;
+                    st.neg_reason =
+                        format!("{codec_label} host encoder library missing — keeping {cur_name}");
+                    dbg_emit(
+                        LASAPI_DBG_BLUEZ,
+                        LASAPI_DBG_WARN,
+                        0,
+                        0,
+                        "BT_CODEC_PREFLIGHT",
+                        codec_label,
+                        "Rejected host-missing codec without disturbing BlueZ",
+                    );
+                } else if has_link && sup_mask != 0 && (sup_mask & want_cap) == 0 {
+                    preflight_ok = false;
+                    st.neg_reason =
+                        format!("Headset does not advertise {codec_label} SEP — keeping {cur_name}");
+                    dbg_emit(
+                        LASAPI_DBG_BLUEZ,
+                        LASAPI_DBG_WARN,
+                        0,
+                        0,
+                        "BT_CODEC_PREFLIGHT",
+                        codec_label,
+                        "Headset lacks peer SEP for requested codec — active link preserved",
+                    );
+                }
+            }
+
+            st.pref_codec = if preflight_ok { new_pref } else { old_pref };
+            st.ldac_mode = new_ldac;
+            st.wireless_abr_enabled = new_abr;
+            st.hfp_sco_enabled = u32::from(new_sco);
+
+            if preflight_ok
+                && st.active_codec_kind == LASAPI_BT_CODEC_LDAC
+                && st.enc.has_ldac()
+                && new_pref == old_pref
+            {
+                if new_ldac != LASAPI_LDAC_MODE_ADAPTIVE {
+                    let eq = match new_ldac {
+                        LASAPI_LDAC_MODE_990 => LDACBT_EQMID_HQ,
+                        LASAPI_LDAC_MODE_660 => LDACBT_EQMID_SQ,
+                        _ => LDACBT_EQMID_MQ,
+                    };
+                    if st.enc.set_ldac_eqmid(eq) {
+                        st.effective_kbps = ldac_eqmid_to_kbps(st.bt_sample_rate, eq);
+                        st.neg_reason = format!("LDAC locked manually -> {}kbps", st.effective_kbps);
+                    }
+                } else if new_abr != 0 {
+                    let _ = st.enc.enable_ldac_abr();
+                    st.neg_reason = format!("LDAC Adaptive Bitrate active ({}kbps)", st.effective_kbps);
+                }
+            }
+
+            let cur_pref_kind = match st.active_codec_kind {
+                LASAPI_BT_CODEC_LDAC => LASAPI_BT_PREF_LDAC,
+                LASAPI_BT_CODEC_APTX_HD => LASAPI_BT_PREF_APTX_HD,
+                LASAPI_BT_CODEC_APTX => LASAPI_BT_PREF_APTX,
+                LASAPI_BT_CODEC_AAC => LASAPI_BT_PREF_AAC,
+                _ => LASAPI_BT_PREF_SBC,
+            };
+            let mut target_pref = new_pref;
+            if target_pref == LASAPI_BT_PREF_AUTO && sup_mask != 0 {
+                target_pref = if (sup_mask & LASAPI_BT_CAP_LDAC) != 0 && is_ldac_available() {
+                    LASAPI_BT_PREF_LDAC
+                } else if (sup_mask & LASAPI_BT_CAP_APTX_HD) != 0 && is_aptx_available() {
+                    LASAPI_BT_PREF_APTX_HD
+                } else if (sup_mask & LASAPI_BT_CAP_APTX) != 0 && is_aptx_available() {
+                    LASAPI_BT_PREF_APTX
+                } else if (sup_mask & LASAPI_BT_CAP_AAC) != 0 && is_fdk_aac_available() {
+                    LASAPI_BT_PREF_AAC
+                } else {
+                    LASAPI_BT_PREF_SBC
+                };
+            }
+            need_reneg = preflight_ok && (new_pref != old_pref) && (target_pref != cur_pref_kind);
+        }
+
+        if !new_sco
+            && self
+                .cap
+                .meta
+                .lock()
+                .unwrap()
+                .cap_device_id
+                .starts_with("bluez_sco:")
+        {
+            stop_sco_capture(self);
+        }
+        if need_reneg {
+            self.bt_renegotiate_req.store(true, Ordering::Release);
+        }
+        0
+    }
+
+    pub fn get_codec_config(&self) -> LasapiBtCodecCfg {
+        let mut out = LasapiBtCodecCfg::zeroed();
+        let st = self.state.lock().unwrap();
+        out.preferred_codec = st.pref_codec;
+        out.ldac_mode = st.ldac_mode;
+        out.wireless_abr_enabled = st.wireless_abr_enabled;
+        out.effective_kbps = st.effective_kbps;
+        out.supported_codecs_mask = st.supported_codecs_mask;
+        out.hfp_sco_enabled = st.hfp_sco_enabled;
+        out.hfp_sco_active = self.hfp_sco_active.load(Ordering::Acquire);
+        copy_str_to_c(&mut out.bt_sco_codec, &st.bt_sco_codec);
+        copy_str_to_c(&mut out.neg_reason, &st.neg_reason);
+        out
+    }
+
+    pub fn set_sco_enabled(&self, enabled: bool) -> i32 {
+        self.state.lock().unwrap().hfp_sco_enabled = u32::from(enabled);
+        if !enabled {
+            stop_sco_capture(self);
+        }
+        0
+    }
+
+    pub fn set_optional_mode(&self, optional: bool) {
+        self.bt_optional_mode.store(optional, Ordering::Release);
+    }
+
+    pub fn is_optional_mode(&self) -> bool {
+        self.bt_optional_mode.load(Ordering::Acquire)
+    }
+
+    pub fn known_audio_aliases(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .known_bt_audio_aliases
+            .clone()
+    }
+
+    pub fn connection_ctl(&self, action: u32, mac: &str) -> (i32, String, u32) {
+        match action {
+            LASAPI_BT_CONN_QUERY => {
+                let flags = bt_status_flags(Some(self), false);
+                let msg = if (flags & LASAPI_BT_STAT_CONNECTED) != 0 {
+                    "Bluetooth audio connected"
+                } else {
+                    "Bluetooth audio disconnected"
+                };
+                return (0, msg.to_string(), flags);
+            }
+            LASAPI_BT_CONN_SET_OPTIONAL => {
+                self.bt_optional_mode.store(true, Ordering::Release);
+                return (
+                    0,
+                    "Bluetooth audio policy set to Optional (USB-First)".to_string(),
+                    bt_status_flags(Some(self), false),
+                );
+            }
+            LASAPI_BT_CONN_SET_AUTOCONN => {
+                self.bt_optional_mode.store(false, Ordering::Release);
+                return (
+                    0,
+                    "Bluetooth audio policy set to Auto-Connect".to_string(),
+                    bt_status_flags(Some(self), false),
+                );
+            }
+            _ => {}
+        }
+
+        let Some(db) = load_dbus_library() else {
+            return (
+                -1,
+                "Failed to load libdbus-1.so.3".to_string(),
+                bt_status_flags(Some(self), false),
+            );
+        };
+        let mut err = DBusError::default();
+        unsafe { (db.error_init)(&mut err) };
+        let conn = unsafe { (db.bus_get_private)(DBUS_BUS_SYSTEM, &mut err) };
+        if conn.is_null() {
+            let emsg = unsafe { dbus_error_msg(&err) };
+            unsafe { (db.error_free)(&mut err) };
+            return (
+                -1,
+                format!("D-Bus unavailable: {emsg}"),
+                bt_status_flags(Some(self), false),
+            );
+        }
+        unsafe { (db.connection_set_exit_on_disconnect)(conn, 0) };
+
+        let want_mac = extract_mac_str(mac);
+        let mut rc = 0i32;
+        let mut any_connected = false;
+        let mut out_msg = String::from("Bluetooth audio disconnected");
+
+        if action == LASAPI_BT_CONN_RESET {
+            let (rrc, rmsg) = perform_dbus_bt_reset(Some(self), db, conn, mac, None);
+            rc = rrc;
+            any_connected = rrc == 0;
+            out_msg = rmsg;
+        } else if let Some(objs) = fetch_managed_objects(db, conn, 1500) {
+            sync_known_bt_devices(Some(self), &objs);
+            any_connected = objs.devices.iter().any(|d| d.has_a2dp_sink && d.connected);
+            let best = pick_best_paired_a2dp_device(&objs.devices, want_mac.as_deref());
+
+            if action == LASAPI_BT_CONN_CONNECT {
+                if let Some(dev) = best {
+                    let label = if dev.alias.is_empty() {
+                        dev.address.as_str()
+                    } else {
+                        dev.alias.as_str()
+                    };
+                    self.tx_paused.store(false, Ordering::Release);
+                    self.need_release.store(false, Ordering::Release);
+                    if !dev.connected {
+                        unsafe {
+                            dbus_set_str_prop(
+                                db,
+                                conn,
+                                &dev.obj_path,
+                                "org.bluez.Device1",
+                                "PreferredBearer",
+                                "bredr",
+                            );
+                        }
+                        let cmsg = dbus_new_method_call(
                             db,
-                            conn,
+                            "org.bluez",
                             &dev.obj_path,
                             "org.bluez.Device1",
-                            "PreferredBearer",
-                            "bredr",
+                            "Connect",
                         );
-                    }
-                    let cmsg = dbus_new_method_call(
-                        db,
-                        "org.bluez",
-                        &dev.obj_path,
-                        "org.bluez.Device1",
-                        "Connect",
-                    );
-                    if !cmsg.is_null() {
-                        unsafe {
-                            let mut cerr = DBusError::default();
-                            (db.error_init)(&mut cerr);
-                            let crep = (db.connection_send_with_reply_and_block)(
-                                conn, cmsg, 12_000, &mut cerr,
-                            );
-                            (db.message_unref)(cmsg);
-                            if crep.is_null() {
-                                let em = dbus_error_msg(&cerr);
-                                if em.contains("AlreadyConnected") {
-                                    send_connect_profile(db, conn, &dev.obj_path, A2DP_SINK_UUID);
-                                } else if em.contains("InProgress") {
-                                    if dbus_poll_device_connected(
+                        if !cmsg.is_null() {
+                            unsafe {
+                                let mut cerr = DBusError::default();
+                                (db.error_init)(&mut cerr);
+                                let crep = (db.connection_send_with_reply_and_block)(
+                                    conn, cmsg, 12_000, &mut cerr,
+                                );
+                                (db.message_unref)(cmsg);
+                                if crep.is_null() {
+                                    let em = dbus_error_msg(&cerr);
+                                    if em.contains("AlreadyConnected") {
+                                        send_connect_profile(db, conn, &dev.obj_path, A2DP_SINK_UUID);
+                                    } else if em.contains("InProgress") {
+                                        if dbus_poll_device_connected(
+                                            db,
+                                            conn,
+                                            &dev.obj_path,
+                                            true,
+                                            24,
+                                            250,
+                                        ) {
+                                            send_connect_profile(
+                                                db,
+                                                conn,
+                                                &dev.obj_path,
+                                                A2DP_SINK_UUID,
+                                            );
+                                        } else {
+                                            rc = -1;
+                                            out_msg = format!("Connect timed out waiting for {label}");
+                                        }
+                                    } else {
+                                        rc = -1;
+                                        out_msg = format!("Connect failed for {label}: {em}");
+                                    }
+                                } else {
+                                    (db.message_unref)(crep);
+                                    if !dbus_poll_device_connected(
                                         db,
                                         conn,
                                         &dev.obj_path,
                                         true,
-                                        24,
-                                        250,
+                                        12,
+                                        200,
                                     ) {
-                                        send_connect_profile(
-                                            db,
-                                            conn,
-                                            &dev.obj_path,
-                                            A2DP_SINK_UUID,
-                                        );
-                                    } else {
                                         rc = -1;
-                                        write_msg(&format!(
-                                            "Connect timed out waiting for {label}"
-                                        ));
+                                        out_msg = format!(
+                                            "Connect failed for {label}: device remained disconnected"
+                                        );
                                     }
-                                } else {
-                                    rc = -1;
-                                    write_msg(&format!("Connect failed for {label}: {em}"));
                                 }
-                            } else {
-                                (db.message_unref)(crep);
-                                if !dbus_poll_device_connected(db, conn, &dev.obj_path, true, 12, 200)
-                                {
-                                    rc = -1;
-                                    write_msg(&format!(
-                                        "Connect failed for {label}: device remained disconnected"
-                                    ));
-                                }
+                                (db.error_free)(&mut cerr);
                             }
-                            (db.error_free)(&mut cerr);
                         }
+                    } else {
+                        send_connect_profile(db, conn, &dev.obj_path, A2DP_SINK_UUID);
+                    }
+                    if rc == 0 {
+                        self.need_activate.store(true, Ordering::Release);
+                        any_connected = true;
+                        out_msg = format!("Connected Bluetooth audio: {label} ({})", dev.address);
                     }
                 } else {
-                    send_connect_profile(db, conn, &dev.obj_path, A2DP_SINK_UUID);
+                    rc = -1;
+                    out_msg = "No paired Bluetooth A2DP audio device found.".to_string();
                 }
-                if rc == 0 {
-                    if let Some(r) = rt {
-                        r.need_activate.store(true, Ordering::Release);
-                    }
-                    any_connected = true;
-                    write_msg(&format!("Connected Bluetooth audio: {label} ({})", dev.address));
-                }
-            } else {
-                rc = -1;
-                write_msg("No paired Bluetooth A2DP audio device found.");
-            }
-        } else if action == LASAPI_BT_CONN_DISCONNECT {
-            if let Some(r) = rt {
-                set_tx_enabled_impl(r, false);
-            }
-            let targets: Vec<_> = objs
-                .devices
-                .iter()
-                .filter(|d| d.has_a2dp_sink && d.connected)
-                .filter(|d| {
-                    want_mac
-                        .as_deref()
-                        .is_none_or(|w| d.address.eq_ignore_ascii_case(w))
-                })
-                .collect();
-            if targets.is_empty() {
-                any_connected = false;
-                write_msg("Bluetooth audio already disconnected.");
-            } else {
-                if objs.transports.iter().any(|t| t.state == "active") {
-                    if let Some(r) = rt {
-                        let has_tp = !r.state.lock().unwrap().transport_path.is_empty();
+            } else if action == LASAPI_BT_CONN_DISCONNECT {
+                self.set_tx_enabled(false);
+                let targets: Vec<_> = objs
+                    .devices
+                    .iter()
+                    .filter(|d| d.has_a2dp_sink && d.connected)
+                    .filter(|d| want_mac.as_deref().is_none_or(|w| d.address.eq_ignore_ascii_case(w)))
+                    .collect();
+                if targets.is_empty() {
+                    any_connected = false;
+                    out_msg = "Bluetooth audio already disconnected.".to_string();
+                } else {
+                    if objs.transports.iter().any(|t| t.state == "active") {
+                        let has_tp = !self.state.lock().unwrap().transport_path.is_empty();
                         if has_tp {
-                            release_bluez_transport(db, conn, r);
+                            release_bluez_transport(db, conn, self);
                         }
                     }
-                }
-                for dev in &targets {
-                    let dmsg = dbus_new_method_call(
-                        db,
-                        "org.bluez",
-                        &dev.obj_path,
-                        "org.bluez.Device1",
-                        "Disconnect",
-                    );
-                    if !dmsg.is_null() {
-                        unsafe {
-                            let drep = (db.connection_send_with_reply_and_block)(
-                                conn,
-                                dmsg,
-                                4000,
-                                ptr::null_mut(),
-                            );
-                            (db.message_unref)(dmsg);
-                            if !drep.is_null() {
-                                (db.message_unref)(drep);
+                    for dev in &targets {
+                        let dmsg = dbus_new_method_call(
+                            db,
+                            "org.bluez",
+                            &dev.obj_path,
+                            "org.bluez.Device1",
+                            "Disconnect",
+                        );
+                        if !dmsg.is_null() {
+                            unsafe {
+                                let drep = (db.connection_send_with_reply_and_block)(
+                                    conn,
+                                    dmsg,
+                                    4000,
+                                    ptr::null_mut(),
+                                );
+                                (db.message_unref)(dmsg);
+                                if !drep.is_null() {
+                                    (db.message_unref)(drep);
+                                }
                             }
+                            dbus_poll_device_connected(db, conn, &dev.obj_path, false, 16, 150);
                         }
-                        dbus_poll_device_connected(db, conn, &dev.obj_path, false, 16, 150);
                     }
+                    thread::sleep(Duration::from_millis(250));
+                    {
+                        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                        st.close_bt_fd();
+                        st.direct_socket_mode = false;
+                        st.has_bluez_transport = false;
+                        st.tx_stream_active = false;
+                        st.transport_path.clear();
+                        st.device_path.clear();
+                        st.device_alias.clear();
+                        st.mac_address.clear();
+                        st.codec_name.clear();
+                        st.bt_kick_dev.clear();
+                        st.enc.close_all();
+                        st.known_bt_audio_connected = false;
+                        sync_tx_ready(self, &st);
+                    }
+                    any_connected = false;
+                    out_msg =
+                        "Disconnected Bluetooth audio headset (USB/mice unaffected).".to_string();
                 }
-                thread::sleep(Duration::from_millis(250));
-                if let Some(r) = rt {
-                    let mut st = r.state.lock().unwrap_or_else(|e| e.into_inner());
-                    st.close_bt_fd();
-                    st.direct_socket_mode = false;
-                    st.has_bluez_transport = false;
-                    st.tx_stream_active = false;
-                    st.transport_path.clear();
-                    st.device_path.clear();
-                    st.device_alias.clear();
-                    st.mac_address.clear();
-                    st.codec_name.clear();
-                    st.bt_kick_dev.clear();
-                    st.enc.close_all();
-                    st.known_bt_audio_connected = false;
-                    sync_tx_ready(r, &st);
-                }
-                any_connected = false;
-                write_msg("Disconnected Bluetooth audio headset (USB/mice unaffected).");
+            } else if any_connected {
+                out_msg = "Bluetooth audio connected".to_string();
             }
-        } else {
-            write_msg(if any_connected {
-                "Bluetooth audio connected"
-            } else {
-                "Bluetooth audio disconnected"
-            });
         }
+
+        let flags = bt_status_flags(Some(self), any_connected);
+        unsafe {
+            (db.connection_close)(conn);
+            (db.connection_unref)(conn);
+        }
+        (rc, out_msg, flags)
     }
 
-    if !out_flags.is_null() {
-        unsafe { *out_flags = bt_status_flags(rt, any_connected) };
+    pub fn close(&self) {
+        stop_capture_thread(&self.cap);
+        stop_sco_capture(self);
+
+        self.tx_thread_running.store(false, Ordering::Release);
+        if let Some(jh) = self.tx_thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = jh.join();
+        }
+        self.dbus_thread_running.store(false, Ordering::Release);
+        if let Some(jh) = self.dbus_thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = jh.join();
+        }
+
+        {
+            let mut devs = self.hfp_devs.lock().unwrap_or_else(|e| e.into_inner());
+            for d in devs.iter_mut() {
+                if d.fd >= 0 {
+                    shutdown_rdwr(d.fd);
+                    d.fd_owner = None;
+                    d.fd = -1;
+                }
+                d.rfcomm_active = false;
+                d.in_use = false;
+            }
+        }
+
+        {
+            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            st.close_bt_fd();
+            st.enc.close_all();
+            st.direct_socket_mode = false;
+            st.has_bluez_transport = false;
+            st.tx_stream_active = false;
+            sync_tx_ready(self, &st);
+        }
+        self.initialized.store(false, Ordering::Release);
     }
-    unsafe {
-        (db.connection_close)(conn);
-        (db.connection_unref)(conn);
-    }
-    rc
 }
 
 /// Records peer-reported AVRCP Volume (0..=127), preserving Salsa's pending AVRCP sync
@@ -6196,68 +5645,52 @@ pub trait BluetoothBackend: Send + Sync {
 }
 
 pub struct RealBluezBackend {
-    ptr: *mut c_void,
+    rt: &'static Arc<BluezRuntime>,
 }
-
-unsafe impl Send for RealBluezBackend {}
-unsafe impl Sync for RealBluezBackend {}
 
 impl RealBluezBackend {
     pub fn global() -> Arc<Self> {
         Arc::new(Self {
-            ptr: audiodg_bt_ptr_impl(),
+            rt: global_bt_arc(),
         })
     }
 }
 
-fn opt_cstr(opt: Option<&str>) -> Option<CString> {
-    opt.and_then(|s| CString::new(s).ok())
-}
-
 impl BluetoothBackend for RealBluezBackend {
     fn is_initialized(&self) -> bool {
-        unsafe { bt_is_initialized_impl(self.ptr) }
+        self.rt.is_initialized()
     }
 
     fn rt_master_vol(&self) -> (u32, bool) {
-        let mut vol = 100u32;
-        let mut muted = false;
-        unsafe { bt_rt_master_vol_impl(self.ptr, &raw mut vol, &raw mut muted) };
-        (vol, muted)
+        self.rt.rt_master_vol()
     }
 
     fn snapshot(&self) -> SalsaBtSnapshot {
-        let mut snap: SalsaBtSnapshot = unsafe { mem::zeroed() };
-        unsafe { bt_get_snapshot_impl(self.ptr, &raw mut snap) };
-        snap
+        self.rt.snapshot()
     }
 
     fn init_rates(&self, rate: u32, cap_rate: u32, target_cap: &str, target_pb: &str) -> i32 {
-        let c_cap = CString::new(target_cap).unwrap_or_default();
-        let c_pb = CString::new(target_pb).unwrap_or_default();
-        unsafe { bluez_init_rates_impl(self.ptr, rate, cap_rate, c_cap.as_ptr(), c_pb.as_ptr()) }
+        self.rt.init_rates(rate, cap_rate, target_cap, target_pb)
     }
 
     fn set_preferred_target(&self, target_pb: &str) {
-        let c_pb = CString::new(target_pb).unwrap_or_default();
-        unsafe { bluez_set_preferred_target_impl(self.ptr, c_pb.as_ptr()) };
+        self.rt.set_preferred_target(target_pb);
     }
 
     fn reconfigure_rate(&self, rate: u32) -> i32 {
-        unsafe { bluez_reconfigure_rate_impl(self.ptr, rate) }
+        self.rt.reconfigure_rate(rate)
     }
 
     fn set_tx_enabled(&self, enabled: bool) {
-        unsafe { bluez_set_tx_enabled_impl(self.ptr, enabled) };
+        self.rt.set_tx_enabled(enabled);
     }
 
     fn write_period(&self, pcm_interleaved: &[f32], frames: u32, ch: u32) -> i32 {
-        unsafe { bluez_write_period_impl(self.ptr, pcm_interleaved.as_ptr(), frames, ch) }
+        self.rt.write_period(pcm_interleaved, frames, ch)
     }
 
     fn open_capture(&self, dev_id: &str, rate: u32) -> i32 {
-        let c_dev = CString::new(dev_id).unwrap_or_default();
-        unsafe { bluez_open_capture_impl(self.ptr, c_dev.as_ptr(), rate) }
+        self.rt.open_capture(dev_id, rate)
     }
 
     fn read_capture_native(
@@ -6270,18 +5703,15 @@ impl BluetoothBackend for RealBluezBackend {
         eng_rate: u32,
         io_read_cursor: &mut u64,
     ) -> i32 {
-        unsafe {
-            bluez_read_capture_native_impl(
-                self.ptr,
-                out.as_mut_ptr(),
-                max_frames,
-                out_frames,
-                out_rate,
-                eng_frames,
-                eng_rate,
-                io_read_cursor,
-            )
-        }
+        self.rt.read_capture_native(
+            out,
+            max_frames,
+            out_frames,
+            out_rate,
+            eng_frames,
+            eng_rate,
+            io_read_cursor,
+        )
     }
 
     fn enumerate_devices(
@@ -6290,79 +5720,55 @@ impl BluetoothBackend for RealBluezBackend {
         pref_cap: Option<&str>,
         out_list: &mut LasapiDeviceList,
     ) -> i32 {
-        let c_pb = opt_cstr(pref_pb);
-        let c_cap = opt_cstr(pref_cap);
-        unsafe {
-            bluez_enumerate_devices_impl(
-                self.ptr,
-                c_pb.as_ref().map_or(ptr::null(), |s| s.as_ptr()),
-                c_cap.as_ref().map_or(ptr::null(), |s| s.as_ptr()),
-                out_list,
-            )
-        }
+        self.rt.enumerate_devices(pref_pb, pref_cap, out_list)
     }
 
     fn hw_fingerprint(&self) -> u64 {
-        unsafe { bluez_hw_fingerprint_impl(self.ptr) }
+        self.rt.hw_fingerprint()
     }
 
     fn set_volume(&self, vol_pct: i32, mute_flag: i32) -> i32 {
-        unsafe { bluez_set_volume_impl(self.ptr, vol_pct, mute_flag) }
+        self.rt.set_volume(vol_pct, mute_flag)
     }
 
     fn set_mic_volume(&self, vol_pct: i32, mute_flag: i32) -> i32 {
-        unsafe { bluez_set_mic_volume_impl(self.ptr, vol_pct, mute_flag) }
+        self.rt.set_mic_volume(vol_pct, mute_flag)
     }
 
     fn set_mic_gain_ppm(&self, gain_ppm: u32, vol_pct: i32, mute_flag: i32) -> i32 {
-        unsafe { bluez_set_mic_gain_ppm_impl(self.ptr, gain_ppm, vol_pct, mute_flag) }
+        self.rt.set_mic_gain_ppm(gain_ppm, vol_pct, mute_flag)
     }
 
     fn set_codec_config(&self, cfg: &LasapiBtCodecCfg) -> i32 {
-        unsafe { bluez_set_codec_config_impl(self.ptr, cfg) }
+        self.rt.set_codec_config(cfg)
     }
 
     fn get_codec_config(&self) -> LasapiBtCodecCfg {
-        let mut cfg: LasapiBtCodecCfg = unsafe { mem::zeroed() };
-        unsafe { bluez_get_codec_config_impl(self.ptr, &raw mut cfg) };
-        cfg
+        self.rt.get_codec_config()
     }
 
     fn set_sco_enabled(&self, enabled: bool) -> i32 {
-        unsafe { bluez_set_sco_enabled_impl(self.ptr, enabled) }
+        self.rt.set_sco_enabled(enabled)
     }
 
     fn is_optional_mode(&self) -> bool {
-        unsafe { bluez_is_optional_mode_impl(self.ptr) }
+        self.rt.is_optional_mode()
     }
 
     fn set_optional_mode(&self, optional: bool) {
-        unsafe { bluez_set_optional_mode_impl(self.ptr, optional) };
+        self.rt.set_optional_mode(optional);
     }
 
     fn known_audio_aliases(&self) -> Vec<String> {
-        unsafe { bluez_known_audio_aliases_impl(self.ptr) }
+        self.rt.known_audio_aliases()
     }
 
     fn connection_ctl(&self, action: u32, mac: &str) -> (i32, String, u32) {
-        let c_mac = CString::new(mac).unwrap_or_default();
-        let mut flags = 0u32;
-        let mut msg_buf = [0u8; 256];
-        let rc = unsafe {
-            bluez_connection_ctl_impl(
-                self.ptr,
-                action,
-                c_mac.as_ptr(),
-                msg_buf.as_mut_ptr().cast(),
-                msg_buf.len(),
-                &raw mut flags,
-            )
-        };
-        (rc, c_str_to_string(&msg_buf), flags)
+        self.rt.connection_ctl(action, mac)
     }
 
     fn close(&self) {
-        unsafe { bluez_close_impl(self.ptr) };
+        self.rt.close();
     }
 }
 
@@ -6379,7 +5785,7 @@ impl BluetoothBackend for NullBluetoothBackend {
     }
 
     fn snapshot(&self) -> SalsaBtSnapshot {
-        let mut s: SalsaBtSnapshot = unsafe { mem::zeroed() };
+        let mut s = SalsaBtSnapshot::zeroed();
         s.bt_fd = -1;
         s.cap_pcm_fd = -1;
         s.desktop_volume_pct = 100;
@@ -6456,7 +5862,7 @@ impl BluetoothBackend for NullBluetoothBackend {
     }
 
     fn get_codec_config(&self) -> LasapiBtCodecCfg {
-        unsafe { mem::zeroed() }
+        LasapiBtCodecCfg::zeroed()
     }
 
     fn set_sco_enabled(&self, _enabled: bool) -> i32 {
@@ -6481,16 +5887,61 @@ impl BluetoothBackend for NullBluetoothBackend {
 }
 
 pub fn reset_device(hint: &str) -> (i32, String) {
-    let c_hint = CString::new(hint).unwrap_or_default();
-    let mut msg_buf = [0u8; 256];
-    let rc = unsafe {
-        bluez_reset_device_impl(
-            c_hint.as_ptr(),
-            msg_buf.as_mut_ptr().cast::<c_char>(),
-            msg_buf.len(),
-        )
+    let Some(db) = load_dbus_library() else {
+        return (-1, "Failed to load libdbus-1.so.3".to_string());
     };
-    (rc, c_str_to_string(&msg_buf))
+    let mut err = DBusError::default();
+    unsafe { (db.error_init)(&mut err) };
+    let conn = unsafe { (db.bus_get_private)(DBUS_BUS_SYSTEM, &mut err) };
+    if conn.is_null() {
+        let emsg = unsafe { dbus_error_msg(&err) };
+        unsafe { (db.error_free)(&mut err) };
+        return (-1, format!("Failed to connect to system D-Bus: {emsg}"));
+    }
+    unsafe { (db.connection_set_exit_on_disconnect)(conn, 0) };
+    let res = perform_dbus_bt_reset(None, db, conn, hint, None);
+    unsafe {
+        (db.connection_close)(conn);
+        (db.connection_unref)(conn);
+    }
+    res
+}
+
+/// Resets Bluetooth audio via the running `lasapi-audiodg` daemon IPC (`BtConnOp::Reset`)
+/// so the daemon pauses/releases its transport cleanly without D-Bus contention, falling
+/// back to offline direct D-Bus reset only when the daemon socket is unreachable.
+pub fn reset_device_prefer_daemon(hint: &str) -> (i32, String) {
+    let sock = crate::unix_sys::audiodg_sock_path();
+    let req = crate::control_ipc::ControlRequest::BtConnection {
+        op: crate::control_ipc::BtConnOp::Reset,
+        mac: hint.to_string(),
+    };
+    if let Some(res) = crate::control_ipc::ControlClient::send_if_reachable_with_timeout(
+        &sock,
+        &req,
+        Duration::from_secs(15),
+    ) {
+        return match res {
+            Ok(resp) => {
+                let msg = match resp.payload {
+                    crate::control_ipc::ControlPayload::BtFlagsMsg { message, .. } => message,
+                    _ => String::new(),
+                };
+                if resp.hr == crate::c_abi::S_OK {
+                    (0, msg)
+                } else if msg.contains("br-connection-key-missing") {
+                    (-2, msg)
+                } else {
+                    (-1, msg)
+                }
+            }
+            Err(hr) => (
+                -1,
+                format!("Daemon Bluetooth reset RPC failed (hr=0x{:08x}).", hr as u32),
+            ),
+        };
+    }
+    reset_device(hint)
 }
 
 #[cfg(test)]
@@ -6500,21 +5951,15 @@ mod tests {
     #[test]
     fn runtime_tx_and_snapshot_smoke() {
         let rt = BluezRuntime::new();
-        let p = ((&rt) as *const BluezRuntime as *mut BluezRuntime).cast::<c_void>();
-        unsafe {
-            assert_eq!(bluez_set_volume_impl(p, 80, 0), 0);
-            assert_eq!(bluez_set_mic_gain_ppm_impl(p, 1_500_000, 120, 0), 0);
-            let mut snap: SalsaBtSnapshot = mem::zeroed();
-            bt_get_snapshot_impl(p, &mut snap);
-            assert_eq!(snap.desktop_volume_pct, 80);
-            assert_eq!(snap.desktop_mic_volume_pct, 120);
-            assert_eq!(snap.desktop_mic_gain_ppm, 1_500_000);
-            let mut vol = 0u32;
-            let mut muted = true;
-            bt_rt_master_vol_impl(p, &mut vol, &mut muted);
-            assert_eq!(vol, 80);
-            assert!(!muted);
-        }
+        assert_eq!(rt.set_volume(80, 0), 0);
+        assert_eq!(rt.set_mic_gain_ppm(1_500_000, 120, 0), 0);
+        let snap = rt.snapshot();
+        assert_eq!(snap.desktop_volume_pct, 80);
+        assert_eq!(snap.desktop_mic_volume_pct, 120);
+        assert_eq!(snap.desktop_mic_gain_ppm, 1_500_000);
+        let (vol, muted) = rt.rt_master_vol();
+        assert_eq!(vol, 80);
+        assert!(!muted);
     }
 
     #[test]
@@ -6527,28 +5972,21 @@ mod tests {
 
         let rt = BluezRuntime::new();
         rt.initialized.store(true, Ordering::Release);
-        let p = (&rt as *const BluezRuntime as *mut BluezRuntime).cast::<c_void>();
         let pcm = [0.25f32; 128 * 2];
 
         // Lock-free tx_transport_ready gates period writes without locking rt.state
-        assert_eq!(
-            unsafe { bluez_write_period_impl(p, pcm.as_ptr(), 128, 2) },
-            -1
-        );
+        assert_eq!(rt.write_period(&pcm, 128, 2), -1);
         rt.tx_transport_ready.store(true, Ordering::Release);
-        assert_eq!(
-            unsafe { bluez_write_period_impl(p, pcm.as_ptr(), 128, 2) },
-            0
-        );
+        assert_eq!(rt.write_period(&pcm, 128, 2), 0);
         assert_eq!(rt.tx_write_frame.load(Ordering::Acquire), 128);
 
         // Re-enabling TX when already unpaused must not flush queued audio
-        set_tx_enabled_impl(&rt, true);
+        rt.set_tx_enabled(true);
         assert_eq!(rt.tx_read_frame.load(Ordering::Acquire), 0);
 
         // Resuming from a real pause advances read cursor cleanly past stale frames
-        set_tx_enabled_impl(&rt, false);
-        set_tx_enabled_impl(&rt, true);
+        rt.set_tx_enabled(false);
+        rt.set_tx_enabled(true);
         assert_eq!(rt.tx_read_frame.load(Ordering::Acquire), 128);
     }
 
@@ -6628,10 +6066,9 @@ mod tests {
     fn bt_fingerprint_reflects_topo_gen_and_known_connected_even_when_paused() {
         let rt = BluezRuntime::new();
         rt.tx_paused.store(true, Ordering::Release);
-        let ptr = (&raw const rt).cast::<c_void>();
-        let fp0 = unsafe { bluez_hw_fingerprint_impl(ptr) };
+        let fp0 = rt.hw_fingerprint();
         rt.bt_topo_gen.fetch_add(1, Ordering::Release);
-        let fp1 = unsafe { bluez_hw_fingerprint_impl(ptr) };
+        let fp1 = rt.hw_fingerprint();
         assert_ne!(fp0, fp1);
 
         {
@@ -6639,7 +6076,7 @@ mod tests {
             st.known_bt_audio_connected = true;
             st.known_bt_audio_aliases.push("Bose QC Ultra 2 HP".to_string());
         }
-        let fp2 = unsafe { bluez_hw_fingerprint_impl(ptr) };
+        let fp2 = rt.hw_fingerprint();
         assert_ne!(fp1, fp2);
     }
 }

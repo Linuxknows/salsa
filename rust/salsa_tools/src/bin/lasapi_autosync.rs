@@ -23,6 +23,10 @@ use salsa_tools::host::{
     natural_version_cmp, read_text_lossy, sha256_file, state_dir, which, write_atomic_secure,
 };
 use salsa_tools::json::JsonValue;
+use salsa_wire::provisioning::{
+    pipewire_zero_drifted as canonical_pipewire_zero_drifted,
+    pipewire_zero_enabled as canonical_pipewire_zero_enabled, RealHostEnvOps, SalsaHostPaths,
+};
 use salsa_wire::unix_sys::reset_sigpipe_default;
 
 const LIBS: [&str; 6] = [
@@ -115,39 +119,6 @@ fn compute_fingerprint() -> String {
         lines.push(format!("hook={marker}:none"));
     }
     lines.join("\n")
-}
-
-fn pipewire_zero_enabled(st_dir: &Path) -> bool {
-    matches!(
-        read_text_lossy(&st_dir.join("pipewire_zero_mode"), 64).trim(),
-        "enabled" | "1"
-    )
-}
-
-fn pipewire_zero_drifted(st_dir: &Path) -> bool {
-    if !pipewire_zero_enabled(st_dir) {
-        return false;
-    }
-    for unit in [
-        "pipewire.service",
-        "pipewire-pulse.service",
-        "wireplumber.service",
-        "pulseaudio.service",
-    ] {
-        let active = Command::new("systemctl")
-            .args(["--user", "is-active", "--quiet", unit])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if active {
-            return true;
-        }
-    }
-    st_dir
-        .parent()
-        .is_some_and(|cfg| cfg.join("systemd/user/lasapi-pipewire.socket").is_file())
-        && systemd_is_active("lasapi-audiodg.service")
-        && !systemd_is_active("lasapi-pipewire.socket")
 }
 
 fn pkg_lock_busy() -> bool {
@@ -347,7 +318,8 @@ fn main() -> ExitCode {
     let state_path = st_dir.join("module_versions.state");
     let prev_fp = read_text_lossy(&state_path, 128 * 1024);
     let fp_changed = prev_fp.trim() != fp.trim();
-    let drifted = pipewire_zero_drifted(&st_dir);
+    let host_paths = SalsaHostPaths::from_env(base_dir.clone());
+    let drifted = canonical_pipewire_zero_drifted(&RealHostEnvOps, &host_paths);
     let freshness = SystemAuditScanner::check_build_freshness(&base_dir);
     let build_stale = freshness
         .get("stale")
@@ -514,7 +486,11 @@ fn run_sync_locked(
         );
     }
 
-    if !drifted && pipewire_zero_enabled(st_dir) && pipewire_zero_drifted(st_dir) {
+    let host_paths = SalsaHostPaths::from_env(base_dir.to_path_buf());
+    if !drifted
+        && canonical_pipewire_zero_enabled(&RealHostEnvOps, &host_paths)
+        && canonical_pipewire_zero_drifted(&RealHostEnvOps, &host_paths)
+    {
         let ctl = base_dir.join("build/lasapi-ctl");
         if ctl.is_file() {
             let _ = Command::new(&ctl).arg("enable-auto").status();

@@ -14,7 +14,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use salsa_wire::unix_sys::{dl_open_any, dl_sym};
+use salsa_wire::unix_sys::dl_sym;
 
 use crate::host::write_atomic_secure;
 
@@ -75,13 +75,10 @@ static ZLIB: OnceLock<Option<ZlibApi>> = OnceLock::new();
 
 fn load_zlib() -> Option<&'static ZlibApi> {
     ZLIB.get_or_init(|| unsafe {
-        let h = dl_open_any(&[
-            "libz.so.1",
-            "/usr/lib/libz.so.1",
-            "/usr/lib64/libz.so.1",
-            "/usr/lib/x86_64-linux-gnu/libz.so.1",
-            "/usr/lib/aarch64-linux-gnu/libz.so.1",
-        ]);
+        let h = salsa_host_dl::open_verified_optional_lib(
+            &["libz.so.1"],
+            load_zlib as *const () as *const c_void,
+        );
         if h.is_null() {
             return None;
         }

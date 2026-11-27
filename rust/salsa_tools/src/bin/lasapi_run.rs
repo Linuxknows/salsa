@@ -10,6 +10,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitCode};
 
 use salsa_tools::host::install_root;
+use salsa_wire::provisioning::{build_shim_launch_env, SalsaHostPaths};
 use salsa_wire::unix_sys::reset_sigpipe_default;
 
 fn set_default_env(key: &str, val: &str) {
@@ -43,20 +44,15 @@ fn main() -> ExitCode {
     }
 
     let root = install_root();
-    let build_dir = root.join("build");
-    let shims_dir = build_dir.join("shims");
-    let mut ld_path = format!("{}:{}", shims_dir.display(), build_dir.display());
-    if let Ok(prev) = env::var("LD_LIBRARY_PATH") {
-        if !prev.is_empty() {
-            ld_path.push(':');
-            ld_path.push_str(&prev);
+    let paths = SalsaHostPaths::from_env(root);
+    let cur_ld = env::var("LD_LIBRARY_PATH").ok();
+    for (key, val) in build_shim_launch_env(&paths, cur_ld.as_deref()) {
+        if key == "LD_LIBRARY_PATH" {
+            env::set_var(key, val);
+        } else {
+            set_default_env(key, &val);
         }
     }
-    env::set_var("LD_LIBRARY_PATH", ld_path);
-
-    set_default_env("PROTON_USE_PIPEWIRE", "0");
-    set_default_env("SDL_AUDIODRIVER", "pulse");
-    set_default_env("ALSOFT_DRIVERS", "alsa,pulse");
 
     let err = Command::new(&args[0]).args(&args[1..]).exec();
     eprintln!("lasapi-run: failed to exec '{}': {err}", args[0]);

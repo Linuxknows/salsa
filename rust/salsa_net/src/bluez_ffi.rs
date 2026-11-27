@@ -15,7 +15,13 @@ use core::ptr;
 use std::ffi::{CStr, CString};
 use std::sync::OnceLock;
 
-use crate::unix_sys::{dl_open_any, dl_sym};
+use salsa_host_dl::open_verified_optional_lib;
+
+use crate::unix_sys::dl_sym;
+
+fn open_optional_host_so(sonames: &[&str]) -> *mut c_void {
+    unsafe { open_verified_optional_lib(sonames, open_optional_host_so as *const c_void) }
+}
 
 // ============================================================================
 // Bluetooth Kernel Socket & Codec ABI Constants
@@ -107,13 +113,7 @@ static SBC_LIB: OnceLock<Option<SbcApi>> = OnceLock::new();
 pub fn load_sbc_library() -> Option<&'static SbcApi> {
     SBC_LIB
         .get_or_init(|| unsafe {
-            let h = dl_open_any(&[
-                "libsbc.so.1",
-                "/usr/lib/libsbc.so.1",
-                "/usr/lib64/libsbc.so.1",
-                "/usr/lib/x86_64-linux-gnu/libsbc.so.1",
-                "/usr/lib/aarch64-linux-gnu/libsbc.so.1",
-            ]);
+            let h = open_optional_host_so(&["libsbc.so.1"]);
             if h.is_null() {
                 return None;
             }
@@ -241,13 +241,7 @@ static FDK_LIB: OnceLock<Option<FdkApi>> = OnceLock::new();
 pub fn load_fdk_aac_library() -> Option<&'static FdkApi> {
     FDK_LIB
         .get_or_init(|| unsafe {
-            let h = dl_open_any(&[
-                "libfdk-aac.so.2",
-                "/usr/lib/libfdk-aac.so.2",
-                "/usr/lib64/libfdk-aac.so.2",
-                "/usr/lib/x86_64-linux-gnu/libfdk-aac.so.2",
-                "/usr/lib/aarch64-linux-gnu/libfdk-aac.so.2",
-            ]);
+            let h = open_optional_host_so(&["libfdk-aac.so.2"]);
             if h.is_null() {
                 return None;
             }
@@ -298,13 +292,7 @@ static LDAC_LIB: OnceLock<Option<LdacApi>> = OnceLock::new();
 pub fn load_ldac_library() -> Option<&'static LdacApi> {
     let api = LDAC_LIB
         .get_or_init(|| unsafe {
-            let h = dl_open_any(&[
-                "/usr/lib/libldacBT_enc.so.2",
-                "/usr/lib64/libldacBT_enc.so.2",
-                "/usr/lib/x86_64-linux-gnu/libldacBT_enc.so.2",
-                "/usr/lib/aarch64-linux-gnu/libldacBT_enc.so.2",
-                "libldacBT_enc.so.2",
-            ]);
+            let h = open_optional_host_so(&["libldacBT_enc.so.2"]);
             if h.is_null() {
                 return None;
             }
@@ -355,13 +343,7 @@ static LDAC_ABR_LIB: OnceLock<Option<LdacAbrApi>> = OnceLock::new();
 pub fn load_ldac_abr_library() -> Option<&'static LdacAbrApi> {
     LDAC_ABR_LIB
         .get_or_init(|| unsafe {
-            let h = dl_open_any(&[
-                "/usr/lib/libldacBT_abr.so.2",
-                "/usr/lib64/libldacBT_abr.so.2",
-                "/usr/lib/x86_64-linux-gnu/libldacBT_abr.so.2",
-                "/usr/lib/aarch64-linux-gnu/libldacBT_abr.so.2",
-                "libldacBT_abr.so.2",
-            ]);
+            let h = open_optional_host_so(&["libldacBT_abr.so.2"]);
             if h.is_null() {
                 return None;
             }
@@ -404,13 +386,7 @@ static APTX_LIB: OnceLock<Option<AptxApi>> = OnceLock::new();
 pub fn load_aptx_library() -> Option<&'static AptxApi> {
     APTX_LIB
         .get_or_init(|| unsafe {
-            let h = dl_open_any(&[
-                "/usr/lib/libfreeaptx.so.0",
-                "/usr/lib64/libfreeaptx.so.0",
-                "/usr/lib/x86_64-linux-gnu/libfreeaptx.so.0",
-                "/usr/lib/aarch64-linux-gnu/libfreeaptx.so.0",
-                "libfreeaptx.so.0",
-            ]);
+            let h = open_optional_host_so(&["libfreeaptx.so.0"]);
             if h.is_null() {
                 return None;
             }
@@ -616,13 +592,7 @@ static DBUS_LIB: OnceLock<Option<DBusApi>> = OnceLock::new();
 pub fn load_dbus_library() -> Option<&'static DBusApi> {
     DBUS_LIB
         .get_or_init(|| unsafe {
-            let h = dl_open_any(&[
-                "libdbus-1.so.3",
-                "/usr/lib/libdbus-1.so.3",
-                "/usr/lib64/libdbus-1.so.3",
-                "/usr/lib/x86_64-linux-gnu/libdbus-1.so.3",
-                "/usr/lib/aarch64-linux-gnu/libdbus-1.so.3",
-            ]);
+            let h = open_optional_host_so(&["libdbus-1.so.3"]);
             if h.is_null() {
                 return None;
             }
@@ -1307,6 +1277,749 @@ pub unsafe fn dbus_error_msg(err: &DBusError) -> String {
     }
 }
 
+// ============================================================================
+// Encapsulated A2DP & SCO Codec Adapters (Host FFI + Deterministic Test Double)
+// ============================================================================
+
+pub fn is_sbc_available() -> bool {
+    load_sbc_library().is_some()
+}
+
+pub fn is_fdk_aac_available() -> bool {
+    load_fdk_aac_library().is_some()
+}
+
+pub fn is_ldac_available() -> bool {
+    load_ldac_library().is_some()
+}
+
+pub fn is_aptx_available() -> bool {
+    load_aptx_library().is_some()
+}
+
+#[derive(Default)]
+struct HostCodecHandles {
+    sbc_enc: Option<Box<SbcStruct>>,
+    fdk_enc: *mut c_void,
+    fdk_frame_length: u32,
+    ldac_enc: *mut c_void,
+    ldac_eqmid: i32,
+    ldac_abr: *mut c_void,
+    aptx_enc: *mut c_void,
+}
+
+#[derive(Default)]
+struct SyntheticCodecState {
+    ldac_active: bool,
+    ldac_abr_active: bool,
+    ldac_eqmid: i32,
+    aptx_active: bool,
+    aptx_hd: bool,
+    fdk_active: bool,
+    fdk_frame_length: u32,
+    fdk_bitrate: u32,
+    sbc_active: bool,
+}
+
+enum CodecAdapterMode {
+    Host(HostCodecHandles),
+    Synthetic(SyntheticCodecState),
+}
+
+impl Default for CodecAdapterMode {
+    fn default() -> Self {
+        Self::Host(HostCodecHandles::default())
+    }
+}
+
+/// Safe owning adapter around dynamically loaded A2DP encoder handles and ABR
+/// state (`LDAC`, `aptX`/`aptX HD`, `FDK-AAC`, `SBC`).
+#[derive(Default)]
+pub struct A2dpCodecAdapter {
+    mode: CodecAdapterMode,
+}
+
+// SAFETY: Host encoder pointers owned uniquely inside `A2dpCodecAdapter` are only accessed under
+// `BluezRuntime`'s state mutex and freed exclusively by `close_all` / `Drop`.
+unsafe impl Send for A2dpCodecAdapter {}
+
+impl A2dpCodecAdapter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn new_synthetic() -> Self {
+        Self {
+            mode: CodecAdapterMode::Synthetic(SyntheticCodecState::default()),
+        }
+    }
+
+    pub fn close_all(&mut self) {
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                if !h.ldac_abr.is_null() {
+                    if let Some(abr) = load_ldac_abr_library() {
+                        unsafe { (abr.free_handle)(h.ldac_abr) };
+                    }
+                    h.ldac_abr = ptr::null_mut();
+                }
+                if !h.fdk_enc.is_null() {
+                    if let Some(fdk) = load_fdk_aac_library() {
+                        unsafe {
+                            let _ = (fdk.close)(&mut h.fdk_enc);
+                        }
+                    }
+                    h.fdk_enc = ptr::null_mut();
+                }
+                if !h.ldac_enc.is_null() {
+                    if let Some(ldac) = load_ldac_library() {
+                        unsafe { (ldac.free_handle)(h.ldac_enc) };
+                    }
+                    h.ldac_enc = ptr::null_mut();
+                }
+                if !h.aptx_enc.is_null() {
+                    if let Some(aptx) = load_aptx_library() {
+                        unsafe { (aptx.finish)(h.aptx_enc) };
+                    }
+                    h.aptx_enc = ptr::null_mut();
+                }
+                if let Some(mut sbc) = h.sbc_enc.take() {
+                    if let Some(api) = load_sbc_library() {
+                        unsafe { (api.finish)(&mut *sbc) };
+                    }
+                }
+                h.fdk_frame_length = 0;
+                h.ldac_eqmid = 0;
+            }
+            CodecAdapterMode::Synthetic(s) => {
+                *s = SyntheticCodecState::default();
+            }
+        }
+    }
+
+    pub fn has_ldac(&self) -> bool {
+        match &self.mode {
+            CodecAdapterMode::Host(h) => !h.ldac_enc.is_null(),
+            CodecAdapterMode::Synthetic(s) => s.ldac_active,
+        }
+    }
+
+    pub fn has_ldac_abr(&self) -> bool {
+        match &self.mode {
+            CodecAdapterMode::Host(h) => !h.ldac_abr.is_null(),
+            CodecAdapterMode::Synthetic(s) => s.ldac_abr_active,
+        }
+    }
+
+    pub fn ldac_eqmid(&self) -> i32 {
+        match &self.mode {
+            CodecAdapterMode::Host(h) => h.ldac_eqmid,
+            CodecAdapterMode::Synthetic(s) => s.ldac_eqmid,
+        }
+    }
+
+    pub fn init_ldac(
+        &mut self,
+        payload_mtu: u16,
+        eqmid: i32,
+        channel_mode: i32,
+        sample_rate: u32,
+        try_abr: bool,
+    ) -> bool {
+        self.close_all();
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                let Some(ldac) = load_ldac_library() else {
+                    return false;
+                };
+                let lh = unsafe { (ldac.get_handle)() };
+                if lh.is_null() {
+                    return false;
+                }
+                if unsafe {
+                    (ldac.init_encode)(
+                        lh,
+                        c_int::from(payload_mtu),
+                        eqmid,
+                        channel_mode,
+                        LDACBT_SMPL_FMT_S16,
+                        sample_rate as c_int,
+                    )
+                } < 0
+                {
+                    unsafe { (ldac.free_handle)(lh) };
+                    return false;
+                }
+                h.ldac_enc = lh;
+                h.ldac_eqmid = eqmid;
+                if try_abr {
+                    let _ = self.enable_ldac_abr();
+                }
+                true
+            }
+            CodecAdapterMode::Synthetic(s) => {
+                s.ldac_active = true;
+                s.ldac_eqmid = eqmid;
+                s.ldac_abr_active = try_abr;
+                true
+            }
+        }
+    }
+
+    pub fn enable_ldac_abr(&mut self) -> bool {
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                if !h.ldac_abr.is_null() {
+                    return true;
+                }
+                let Some(abr_api) = load_ldac_abr_library() else {
+                    return false;
+                };
+                let abr = unsafe { (abr_api.get_handle)() };
+                if abr.is_null() {
+                    return false;
+                }
+                unsafe {
+                    let _ = (abr_api.init)(abr, 20);
+                    let _ = (abr_api.set_thresholds)(abr, 5, 3, 1);
+                }
+                h.ldac_abr = abr;
+                true
+            }
+            CodecAdapterMode::Synthetic(s) => {
+                s.ldac_abr_active = s.ldac_active;
+                s.ldac_abr_active
+            }
+        }
+    }
+
+    pub fn step_ldac_abr(&mut self, qdepth: u32) -> Option<i32> {
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                if h.ldac_enc.is_null() || h.ldac_abr.is_null() {
+                    return None;
+                }
+                let abr_api = load_ldac_abr_library()?;
+                let ret = unsafe { (abr_api.proc_step)(h.ldac_enc, h.ldac_abr, qdepth, 1) };
+                if (LDACBT_EQMID_HQ..=LDACBT_EQMID_MQ).contains(&ret) {
+                    h.ldac_eqmid = ret;
+                    Some(ret)
+                } else {
+                    None
+                }
+            }
+            CodecAdapterMode::Synthetic(s) => {
+                if !s.ldac_active || !s.ldac_abr_active {
+                    return None;
+                }
+                s.ldac_eqmid = if qdepth >= 4 {
+                    LDACBT_EQMID_MQ
+                } else {
+                    LDACBT_EQMID_HQ
+                };
+                Some(s.ldac_eqmid)
+            }
+        }
+    }
+
+    pub fn set_ldac_eqmid(&mut self, eqmid: i32) -> bool {
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                if h.ldac_enc.is_null() {
+                    return false;
+                }
+                let Some(set_eqmid) = load_ldac_library().and_then(|l| l.set_eqmid) else {
+                    return false;
+                };
+                if unsafe { set_eqmid(h.ldac_enc, eqmid) } == 0 {
+                    h.ldac_eqmid = eqmid;
+                    true
+                } else {
+                    false
+                }
+            }
+            CodecAdapterMode::Synthetic(s) => {
+                if s.ldac_active {
+                    s.ldac_eqmid = eqmid;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    pub fn encode_ldac(
+        &mut self,
+        pcm_interleaved: &mut [i16],
+        flen: usize,
+        ch: u32,
+        out_payload: &mut [u8],
+    ) -> Option<(usize, u8)> {
+        let ch_us = ch as usize;
+        let need_samples = flen.checked_mul(ch_us)?;
+        if pcm_interleaved.len() < need_samples || out_payload.is_empty() {
+            return None;
+        }
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                if h.ldac_enc.is_null() {
+                    return None;
+                }
+                let ldac = load_ldac_library()?;
+                let mut pcm_used = (need_samples * mem::size_of::<i16>()) as c_int;
+                let mut stream_sz = out_payload.len().min(c_int::MAX as usize) as c_int;
+                let mut frame_num = 0 as c_int;
+                let enc_rc = unsafe {
+                    (ldac.encode)(
+                        h.ldac_enc,
+                        pcm_interleaved.as_mut_ptr().cast::<c_void>(),
+                        &mut pcm_used,
+                        out_payload.as_mut_ptr(),
+                        &mut stream_sz,
+                        &mut frame_num,
+                    )
+                };
+                if enc_rc == 0
+                    && frame_num > 0
+                    && stream_sz > 0
+                    && (stream_sz as usize) <= out_payload.len()
+                {
+                    Some((stream_sz as usize, frame_num as u8))
+                } else {
+                    None
+                }
+            }
+            CodecAdapterMode::Synthetic(s) => {
+                if !s.ldac_active {
+                    return None;
+                }
+                let sz = out_payload.len().min(128);
+                out_payload[..sz].fill(0xAA);
+                Some((sz, 1))
+            }
+        }
+    }
+
+    pub fn has_aptx(&self) -> bool {
+        match &self.mode {
+            CodecAdapterMode::Host(h) => !h.aptx_enc.is_null(),
+            CodecAdapterMode::Synthetic(s) => s.aptx_active,
+        }
+    }
+
+    pub fn init_aptx(&mut self, is_hd: bool) -> bool {
+        self.close_all();
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                let Some(aptx) = load_aptx_library() else {
+                    return false;
+                };
+                let ah = unsafe { (aptx.init)(c_int::from(is_hd)) };
+                if ah.is_null() {
+                    return false;
+                }
+                h.aptx_enc = ah;
+                true
+            }
+            CodecAdapterMode::Synthetic(s) => {
+                s.aptx_active = true;
+                s.aptx_hd = is_hd;
+                true
+            }
+        }
+    }
+
+    pub fn encode_aptx(&mut self, s24_bytes: &[u8], out_payload: &mut [u8]) -> Option<usize> {
+        if s24_bytes.is_empty() || out_payload.is_empty() {
+            return None;
+        }
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                if h.aptx_enc.is_null() {
+                    return None;
+                }
+                let aptx = load_aptx_library()?;
+                let mut written = 0usize;
+                unsafe {
+                    let _ = (aptx.encode)(
+                        h.aptx_enc,
+                        s24_bytes.as_ptr(),
+                        s24_bytes.len(),
+                        out_payload.as_mut_ptr(),
+                        out_payload.len(),
+                        &mut written,
+                    );
+                }
+                (written > 0 && written <= out_payload.len()).then_some(written)
+            }
+            CodecAdapterMode::Synthetic(s) => {
+                if !s.aptx_active {
+                    return None;
+                }
+                let blk = if s.aptx_hd { 6 } else { 4 };
+                let out_len = (s24_bytes.len() / 24 * blk).min(out_payload.len());
+                if out_len == 0 {
+                    return None;
+                }
+                out_payload[..out_len].fill(0x5A);
+                Some(out_len)
+            }
+        }
+    }
+
+    pub fn has_fdk_aac(&self) -> bool {
+        match &self.mode {
+            CodecAdapterMode::Host(h) => !h.fdk_enc.is_null(),
+            CodecAdapterMode::Synthetic(s) => s.fdk_active,
+        }
+    }
+
+    pub fn fdk_frame_length(&self) -> u32 {
+        match &self.mode {
+            CodecAdapterMode::Host(h) => h.fdk_frame_length,
+            CodecAdapterMode::Synthetic(s) => s.fdk_frame_length,
+        }
+    }
+
+    pub fn init_fdk_aac(
+        &mut self,
+        channels: u32,
+        aot: u32,
+        sample_rate: u32,
+        target_bps: u32,
+        peak_bps: u32,
+    ) -> bool {
+        self.close_all();
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                let Some(fdk) = load_fdk_aac_library() else {
+                    return false;
+                };
+                let mut enc: *mut c_void = ptr::null_mut();
+                if unsafe { (fdk.open)(&mut enc, 0, channels) } != FDK_AACENC_OK || enc.is_null() {
+                    return false;
+                }
+                unsafe {
+                    let _ = (fdk.set_param)(enc, FDK_PARAM_AOT, aot);
+                    let _ = (fdk.set_param)(enc, FDK_PARAM_SAMPLERATE, sample_rate);
+                    let _ = (fdk.set_param)(enc, FDK_PARAM_CHANNELMODE, channels);
+                    let _ = (fdk.set_param)(enc, FDK_PARAM_BITRATEMODE, 0);
+                    let _ = (fdk.set_param)(enc, FDK_PARAM_AUDIOMUXVER, 2);
+                    let _ = (fdk.set_param)(enc, FDK_PARAM_SIGNALING_MODE, 1);
+                    let _ = (fdk.set_param)(enc, FDK_PARAM_BITRATE, target_bps);
+                    let _ = (fdk.set_param)(enc, FDK_PARAM_PEAK_BITRATE, peak_bps);
+                    if target_bps > 110_000 {
+                        let _ = (fdk.set_param)(enc, FDK_PARAM_BANDWIDTH, 19_293);
+                    }
+                    let _ = (fdk.set_param)(enc, FDK_PARAM_TRANSMUX, FDK_TT_MP4_LATM_MCP1);
+                    let _ = (fdk.set_param)(enc, FDK_PARAM_HEADER_PERIOD, 1);
+                    let _ = (fdk.set_param)(enc, FDK_PARAM_AFTERBURNER, 1);
+                    if (fdk.encode)(enc, ptr::null(), ptr::null(), ptr::null(), ptr::null_mut())
+                        != FDK_AACENC_OK
+                    {
+                        let _ = (fdk.close)(&mut enc);
+                        return false;
+                    }
+                    let mut info = FdkInfo::default();
+                    if (fdk.info)(enc, &mut info) != FDK_AACENC_OK {
+                        let _ = (fdk.close)(&mut enc);
+                        return false;
+                    }
+                    h.fdk_enc = enc;
+                    h.fdk_frame_length = if info.frame_length > 0 {
+                        info.frame_length
+                    } else {
+                        1024
+                    };
+                }
+                true
+            }
+            CodecAdapterMode::Synthetic(s) => {
+                s.fdk_active = true;
+                s.fdk_frame_length = 1024;
+                s.fdk_bitrate = target_bps;
+                true
+            }
+        }
+    }
+
+    pub fn set_fdk_aac_bitrate(&mut self, next_bps: u32, next_peak: u32) -> bool {
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                if h.fdk_enc.is_null() {
+                    return false;
+                }
+                let Some(fdk) = load_fdk_aac_library() else {
+                    return false;
+                };
+                if unsafe { (fdk.set_param)(h.fdk_enc, FDK_PARAM_BITRATE, next_bps) }
+                    == FDK_AACENC_OK
+                {
+                    unsafe {
+                        let _ = (fdk.set_param)(h.fdk_enc, FDK_PARAM_PEAK_BITRATE, next_peak);
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            CodecAdapterMode::Synthetic(s) => {
+                if s.fdk_active {
+                    s.fdk_bitrate = next_bps;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    pub fn encode_fdk_aac(
+        &mut self,
+        pcm_interleaved: &mut [i16],
+        flen: usize,
+        ch: u32,
+        out_payload: &mut [u8],
+    ) -> Result<usize, (i32, i32)> {
+        let ch_us = ch as usize;
+        let Some(need_samples) = flen.checked_mul(ch_us) else {
+            return Err((-1, 0));
+        };
+        if pcm_interleaved.len() < need_samples || out_payload.is_empty() {
+            return Err((-1, 0));
+        }
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                if h.fdk_enc.is_null() {
+                    return Err((-1, 0));
+                }
+                let Some(fdk) = load_fdk_aac_library() else {
+                    return Err((-1, 0));
+                };
+                let mut in_ptr = pcm_interleaved.as_mut_ptr().cast::<c_void>();
+                let mut out_ptr = out_payload.as_mut_ptr().cast::<c_void>();
+                let mut in_id = FDK_IN_AUDIO_DATA;
+                let mut out_id = FDK_OUT_BITSTREAM_DATA;
+                let mut in_sz = (need_samples * 2) as c_int;
+                let mut out_sz = out_payload.len().min(c_int::MAX as usize) as c_int;
+                let mut in_el = 2 as c_int;
+                let mut out_el = 1 as c_int;
+                let in_desc = FdkBufDesc {
+                    num_bufs: 1,
+                    bufs: &mut in_ptr,
+                    buffer_identifiers: &mut in_id,
+                    buf_sizes: &mut in_sz,
+                    buf_el_sizes: &mut in_el,
+                };
+                let out_desc = FdkBufDesc {
+                    num_bufs: 1,
+                    bufs: &mut out_ptr,
+                    buffer_identifiers: &mut out_id,
+                    buf_sizes: &mut out_sz,
+                    buf_el_sizes: &mut out_el,
+                };
+                let in_args = FdkInArgs {
+                    num_in_samples: need_samples as c_int,
+                    num_anc_bytes: 0,
+                };
+                let mut out_args = FdkOutArgs::default();
+                let enc_rc = unsafe {
+                    (fdk.encode)(
+                        h.fdk_enc,
+                        &in_desc,
+                        &out_desc,
+                        &in_args,
+                        &mut out_args,
+                    )
+                };
+                if enc_rc == FDK_AACENC_OK
+                    && out_args.num_out_bytes > 0
+                    && (out_args.num_out_bytes as usize) <= out_payload.len()
+                {
+                    Ok(out_args.num_out_bytes as usize)
+                } else {
+                    Err((enc_rc, out_args.num_out_bytes))
+                }
+            }
+            CodecAdapterMode::Synthetic(s) => {
+                if !s.fdk_active {
+                    return Err((-1, 0));
+                }
+                let out_len = out_payload.len().min(192);
+                out_payload[..out_len].fill(0x47);
+                Ok(out_len)
+            }
+        }
+    }
+
+    pub fn has_sbc(&self) -> bool {
+        match &self.mode {
+            CodecAdapterMode::Host(h) => h.sbc_enc.is_some(),
+            CodecAdapterMode::Synthetic(s) => s.sbc_active,
+        }
+    }
+
+    pub fn init_sbc_a2dp(&mut self, cfg4: &mut [u8; 4]) -> bool {
+        self.close_all();
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                let Some(sbc_api) = load_sbc_library() else {
+                    return false;
+                };
+                let mut sbc = Box::<SbcStruct>::default();
+                unsafe {
+                    let _ = (sbc_api.init_a2dp)(&mut *sbc, 0, cfg4.as_mut_ptr().cast::<c_void>(), 4);
+                }
+                sbc.endian = SBC_LE;
+                h.sbc_enc = Some(sbc);
+                true
+            }
+            CodecAdapterMode::Synthetic(s) => {
+                s.sbc_active = true;
+                true
+            }
+        }
+    }
+
+    pub fn sbc_samples_per_frame(&mut self, ch: u32) -> Option<(usize, usize)> {
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                let sbc = h.sbc_enc.as_mut()?;
+                let sbc_api = load_sbc_library()?;
+                let codesize = unsafe { (sbc_api.get_codesize)(&mut **sbc) };
+                let spf = (codesize / ((ch as usize).max(1) * mem::size_of::<i16>())).max(1);
+                let eff_spf = if codesize / ((ch as usize).max(1) * 2) == 0 {
+                    128
+                } else {
+                    spf
+                };
+                Some((codesize, eff_spf))
+            }
+            CodecAdapterMode::Synthetic(s) => s.sbc_active.then(|| {
+                let codesize = 128 * (ch as usize).max(1) * mem::size_of::<i16>();
+                (codesize, 128)
+            }),
+        }
+    }
+
+    pub fn encode_sbc_frame(
+        &mut self,
+        pcm_in: &[i16],
+        codesize: usize,
+        out_frame: &mut [u8],
+    ) -> Option<usize> {
+        if codesize == 0 || out_frame.is_empty() || mem::size_of_val(pcm_in) < codesize {
+            return None;
+        }
+        match &mut self.mode {
+            CodecAdapterMode::Host(h) => {
+                let sbc = h.sbc_enc.as_mut()?;
+                let sbc_api = load_sbc_library()?;
+                let mut enc_written = 0isize;
+                let in_consumed = unsafe {
+                    (sbc_api.encode)(
+                        &mut **sbc,
+                        pcm_in.as_ptr().cast::<c_void>(),
+                        codesize,
+                        out_frame.as_mut_ptr().cast::<c_void>(),
+                        out_frame.len(),
+                        &mut enc_written,
+                    )
+                };
+                if in_consumed > 0 && enc_written > 0 && (enc_written as usize) <= out_frame.len() {
+                    Some(enc_written as usize)
+                } else {
+                    None
+                }
+            }
+            CodecAdapterMode::Synthetic(s) => {
+                if !s.sbc_active || out_frame.len() < 119 {
+                    return None;
+                }
+                out_frame[..119].fill(0x9C);
+                Some(119)
+            }
+        }
+    }
+}
+
+impl Drop for A2dpCodecAdapter {
+    fn drop(&mut self) {
+        self.close_all();
+    }
+}
+
+pub struct MsbcScoTranscoder {
+    api: &'static SbcApi,
+    dec: SbcStruct,
+    enc: SbcStruct,
+}
+
+unsafe impl Send for MsbcScoTranscoder {}
+
+impl MsbcScoTranscoder {
+    pub fn new_if_available() -> Option<Self> {
+        let api = load_sbc_library()?;
+        let mut dec = SbcStruct::default();
+        let mut enc = SbcStruct::default();
+        unsafe {
+            let _ = (api.init_msbc)(&mut dec, 0);
+            let _ = (api.init_msbc)(&mut enc, 0);
+        }
+        Some(Self { api, dec, enc })
+    }
+
+    pub fn decode_frame(&mut self, src: &[u8], dst: &mut [i16]) -> Option<usize> {
+        if src.is_empty() || dst.is_empty() {
+            return None;
+        }
+        let mut written = 0usize;
+        let rc = unsafe {
+            (self.api.decode)(
+                &mut self.dec,
+                src.as_ptr().cast::<c_void>(),
+                src.len(),
+                dst.as_mut_ptr().cast::<c_void>(),
+                mem::size_of_val(dst),
+                &mut written,
+            )
+        };
+        (rc > 0).then_some(written / 2)
+    }
+
+    pub fn encode_frame(&mut self, src_bytes: &[u8], dst: &mut [u8]) -> Option<usize> {
+        if src_bytes.is_empty() || dst.is_empty() {
+            return None;
+        }
+        let mut enc_written = 0isize;
+        let rc = unsafe {
+            (self.api.encode)(
+                &mut self.enc,
+                src_bytes.as_ptr().cast::<c_void>(),
+                src_bytes.len(),
+                dst.as_mut_ptr().cast::<c_void>(),
+                dst.len(),
+                &mut enc_written,
+            )
+        };
+        if rc > 0 && enc_written > 0 && (enc_written as usize) <= dst.len() {
+            Some(enc_written as usize)
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for MsbcScoTranscoder {
+    fn drop(&mut self) {
+        unsafe {
+            (self.api.finish)(&mut self.dec);
+            (self.api.finish)(&mut self.enc);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1339,5 +2052,45 @@ mod tests {
         assert!(!is_valid_dbus_object_path("/org//bluez"));
         assert!(!is_valid_dbus_object_path("/org/bad-dash"));
         assert!(!is_valid_dbus_object_path("/org/\0null"));
+    }
+
+    #[test]
+    fn a2dp_codec_adapter_synthetic_lifecycle_and_encoding_work() {
+        let mut ad = A2dpCodecAdapter::new_synthetic();
+        assert!(!ad.has_ldac());
+
+        assert!(ad.init_ldac(660, LDACBT_EQMID_SQ, 1, 96_000, true));
+        assert!(ad.has_ldac());
+        assert!(ad.has_ldac_abr());
+        assert_eq!(ad.step_ldac_abr(5), Some(LDACBT_EQMID_MQ));
+        assert!(ad.set_ldac_eqmid(LDACBT_EQMID_HQ));
+        assert_eq!(ad.ldac_eqmid(), LDACBT_EQMID_HQ);
+        let mut pcm = [1024i16; 256];
+        let mut out = [0u8; 512];
+        assert_eq!(ad.encode_ldac(&mut pcm, 128, 2, &mut out), Some((128, 1)));
+
+        assert!(ad.init_aptx(true));
+        assert!(!ad.has_ldac());
+        assert!(ad.has_aptx());
+        let s24 = [0u8; 48];
+        assert_eq!(ad.encode_aptx(&s24, &mut out), Some(12));
+
+        assert!(ad.init_fdk_aac(2, FDK_AOT_AAC_LC, 48_000, 192_000, 240_000));
+        assert!(ad.has_fdk_aac());
+        assert_eq!(ad.fdk_frame_length(), 1024);
+        assert!(ad.set_fdk_aac_bitrate(160_000, 192_000));
+        let mut aac_pcm = [0i16; 2048];
+        assert_eq!(ad.encode_fdk_aac(&mut aac_pcm, 1024, 2, &mut out), Ok(192));
+
+        let mut cfg = [0u8; 4];
+        assert!(ad.init_sbc_a2dp(&mut cfg));
+        assert!(ad.has_sbc());
+        let (codesize, spf) = ad.sbc_samples_per_frame(2).unwrap();
+        assert_eq!(spf, 128);
+        assert_eq!(ad.encode_sbc_frame(&pcm, codesize, &mut out), Some(119));
+
+        ad.close_all();
+        assert!(!ad.has_sbc());
+        assert!(!ad.has_fdk_aac());
     }
 }

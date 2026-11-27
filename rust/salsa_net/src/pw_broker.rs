@@ -11,12 +11,14 @@
 
 use crate::c_abi::{
     copy_str_to_c, LasapiPwPreviewShm, LASAPI_DBG_INFO, LASAPI_DBG_PW_VIDEO, LASAPI_DBG_WARN,
-    LASAPI_PW_PREVIEW_MAGIC, LASAPI_PW_PREVIEW_MAX_H, LASAPI_PW_PREVIEW_MAX_W,
-    LASAPI_PW_PREVIEW_VERSION,
+    LASAPI_PW_PREVIEW_MAX_H, LASAPI_PW_PREVIEW_MAX_W,
 };
 use crate::json::JsonValue;
 use crate::dmabuf_gl::{DmabufFrameDesc, DmabufGlBlitter};
 use crate::failsafe::{record_trip, FS_FD_QUOTA, FS_PW_BAD_PKT};
+use crate::preview_shm::{PreviewFrameHeader, PreviewShmWriter};
+#[cfg(test)]
+use crate::preview_shm::PreviewShmReader;
 use crate::pw_wire::{
     build_negotiated_format_pod_iv, convert_preview_row, fd_quota_check, frame_pw_msg,
     intersect_vfmt, parse_param_pod, parse_pkt_hdr, parse_pkt_hdr_status, vfmt_name, vfmt_size,
@@ -34,8 +36,7 @@ use crate::unix_sys::{
     MappedMem, PollFd, RecvFdsResult, POLLERR, POLLHUP, POLLIN,
 };
 
-use core::mem::{offset_of, size_of};
-use core::ptr;
+use core::mem::size_of;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::fs;
 use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
@@ -147,16 +148,6 @@ fn atomic_u32_load(ptr: *const u32, ord: Ordering) -> u32 {
 #[inline]
 fn atomic_u32_store(ptr: *mut u32, val: u32, ord: Ordering) {
     unsafe { (&*ptr.cast::<AtomicU32>()).store(val, ord) }
-}
-
-#[inline]
-fn atomic_u64_load(ptr: *const u64, ord: Ordering) -> u64 {
-    unsafe { (&*ptr.cast::<AtomicU64>()).load(ord) }
-}
-
-#[inline]
-fn atomic_u64_store(ptr: *mut u64, val: u64, ord: Ordering) {
-    unsafe { (&*ptr.cast::<AtomicU64>()).store(val, ord) }
 }
 
 fn pace_due(now: u64, next_due_ns: &mut u64, fps: u32) -> bool {
@@ -871,7 +862,7 @@ struct PwState {
     preview_shm_name: String,
     preview_shm_posix: bool,
     preview_shm_fd: Option<OwnedFd>,
-    preview_shm_map: Option<MappedMem>,
+    preview_shm: Option<PreviewShmWriter>,
     preview_next_due_ns: u64,
     preview_applied_fps: u32,
     preview_fps_win_ns: u64,
@@ -918,7 +909,7 @@ impl PwState {
             preview_shm_name: String::new(),
             preview_shm_posix: false,
             preview_shm_fd: None,
-            preview_shm_map: None,
+            preview_shm: None,
             preview_next_due_ns: 0,
             preview_applied_fps: 0,
             preview_fps_win_ns: 0,
@@ -1266,11 +1257,8 @@ impl PwState {
     fn update_preview_active_state(&self) {
         let any_active = self.links.iter().any(|lk| lk.in_use && lk.state == 4);
         if !any_active {
-            if let Some(map) = self.preview_shm_map.as_ref() {
-                let shm = map.as_ptr().cast::<LasapiPwPreviewShm>();
-                unsafe {
-                    atomic_u32_store(ptr::addr_of!((*shm).active_stream).cast_mut(), 0, Ordering::Release);
-                }
+            if let Some(shm) = self.preview_shm.as_ref() {
+                shm.clear_active_stream();
             }
         }
     }
@@ -2178,54 +2166,34 @@ impl PwState {
     }
 
     fn copy_frame_to_preview_shm(&mut self, nidx: usize, buf_id: u32, cons_count: u32) {
-        let shm_base = match self.preview_shm_map.as_ref() {
-            Some(m) => m.as_ptr().cast::<LasapiPwPreviewShm>().cast_mut(),
-            None => return,
+        let Some(shm_w) = self.preview_shm.as_ref() else {
+            return;
         };
-        let req = unsafe { atomic_u32_load(ptr::addr_of!((*shm_base).preview_requested), Ordering::Relaxed) };
-        if req == 0 {
+        if !shm_w.preview_requested() {
             self.dmabuf_blitter = None;
             return;
         }
         let now = mono_ns();
         let exp_ns = self.shared.preview_expiry_ns.load(Ordering::Relaxed);
-        let last_ping =
-            unsafe { atomic_u64_load(ptr::addr_of!((*shm_base).last_gui_ping_ns), Ordering::Relaxed) };
+        let last_ping = shm_w.last_gui_ping_ns();
         let ping_fresh = last_ping > 0 && now.saturating_sub(last_ping) <= 8_000_000_000;
         if exp_ns > 0 && now > exp_ns {
             if ping_fresh {
                 // Continuous SHM keepalive pings from the debugger keep the stream alive past initial TTL.
                 self.shared.preview_expiry_ns.store(0, Ordering::Relaxed);
             } else {
-                unsafe {
-                    atomic_u32_store(
-                        ptr::addr_of_mut!((*shm_base).preview_requested),
-                        0,
-                        Ordering::Relaxed,
-                    );
-                }
+                shm_w.set_preview_requested(false);
                 self.dmabuf_blitter = None;
                 return;
             }
         } else if exp_ns == 0 && last_ping > 0 && !ping_fresh {
-            unsafe {
-                atomic_u32_store(
-                    ptr::addr_of_mut!((*shm_base).preview_requested),
-                    0,
-                    Ordering::Relaxed,
-                );
-            }
+            shm_w.set_preview_requested(false);
             self.dmabuf_blitter = None;
             return;
         }
 
         let (tw, th_lim, tfps) = if ping_fresh {
-            let sw_t = unsafe { atomic_u32_load(ptr::addr_of!((*shm_base).target_max_w), Ordering::Relaxed) };
-            let sh_t = unsafe { atomic_u32_load(ptr::addr_of!((*shm_base).target_max_h), Ordering::Relaxed) };
-            let sf_t = unsafe { atomic_u32_load(ptr::addr_of!((*shm_base).target_fps), Ordering::Relaxed) };
-            let cw = sw_t.min(LASAPI_PW_PREVIEW_MAX_W);
-            let ch = sh_t.min(LASAPI_PW_PREVIEW_MAX_H);
-            let cf = sf_t.min(240);
+            let (cw, ch, cf) = shm_w.read_gui_targets();
             self.shared.preview_target_w.store(cw, Ordering::Relaxed);
             self.shared.preview_target_h.store(ch, Ordering::Relaxed);
             self.shared.preview_target_fps.store(cf, Ordering::Relaxed);
@@ -2262,7 +2230,7 @@ impl PwState {
             return;
         }
         let sw = prod.neg_w;
-        let mut sh = prod.neg_h;
+        let sh = prod.neg_h;
         let neg_fmt = prod.neg_format;
         let neg_stride = prod.neg_stride;
         let neg_mod = prod.neg_modifier;
@@ -2312,36 +2280,6 @@ impl PwState {
         let is_dmabuf = pb.mem_type == DATA_DMA_BUF;
         let cpu_mappable = pb.mapped.is_some();
 
-        let seq = unsafe { atomic_u64_load(ptr::addr_of!((*shm_base).seqlock), Ordering::Relaxed) };
-        unsafe {
-            atomic_u64_store(ptr::addr_of_mut!((*shm_base).seqlock), seq + 1, Ordering::Release);
-            let s = &mut *shm_base;
-            s.active_stream = 1;
-            s.is_dmabuf = u32::from(is_dmabuf);
-            s.dmabuf_mappable = u32::from(is_dmabuf && cpu_mappable);
-            s.src_width = sw;
-            s.src_height = sh;
-            s.src_stride = neg_stride;
-            s.src_spa_format = neg_fmt;
-            s.drm_modifier_lo = (neg_mod & 0xffff_ffff) as u32;
-            s.drm_modifier_hi = (neg_mod >> 32) as u32;
-            s.prod_node_id = prod_gid;
-            s.cons_count = cons_count;
-            s.frame_seq = s.frame_seq.wrapping_add(1);
-            s.pts_ns = now;
-            copy_str_to_c(&mut s.prod_name, &prod_name);
-            copy_str_to_c(&mut s.format_name, vfmt_name(neg_fmt));
-            s.target_max_w = tw;
-            s.target_max_h = th_lim;
-            s.target_fps = tfps;
-            s.actual_fps_x100 = if self.relay_actual_fps_x100 > 0 {
-                self.relay_actual_fps_x100
-            } else {
-                self.preview_actual_fps_x100
-            };
-            s.cast_fps_cap = self.shared.cast_limit_fps.load(Ordering::Relaxed);
-        }
-
         let cap_w = if tw > 0 && tw <= LASAPI_PW_PREVIEW_MAX_W {
             tw
         } else {
@@ -2373,94 +2311,104 @@ impl PwState {
             min_row
         };
 
-        if let Some(src_map) = pb.mapped.as_ref() {
-            if is_dmabuf {
-                if let Some(f) = pb.fd.as_ref() {
-                    dmabuf_sync(f.as_raw_fd(), true);
+        let actual_fps = if self.relay_actual_fps_x100 > 0 {
+            self.relay_actual_fps_x100
+        } else {
+            self.preview_actual_fps_x100
+        };
+        let fmt_name = vfmt_name(neg_fmt);
+        let hdr = PreviewFrameHeader {
+            is_dmabuf,
+            dmabuf_mappable: is_dmabuf && cpu_mappable,
+            src_width: sw,
+            src_height: sh,
+            src_stride: neg_stride,
+            src_spa_format: neg_fmt,
+            drm_modifier: neg_mod,
+            prod_node_id: prod_gid,
+            cons_count,
+            pts_ns: now,
+            prod_name: &prod_name,
+            format_name: fmt_name,
+            target_max_w: tw,
+            target_max_h: th_lim,
+            target_fps: tfps,
+            actual_fps_x100: actual_fps,
+            cast_fps_cap: self.shared.cast_limit_fps.load(Ordering::Relaxed),
+        };
+
+        let Some(preview_shm) = self.preview_shm.as_mut() else {
+            return;
+        };
+        let pb_ref = &self.nodes[nidx].bufs[bidx];
+        let dmabuf_blitter = &mut self.dmabuf_blitter;
+        preview_shm.publish_frame(&hdr, |pixels| {
+            if let Some(src_map) = pb_ref.mapped.as_ref() {
+                if is_dmabuf {
+                    if let Some(f) = pb_ref.fd.as_ref() {
+                        dmabuf_sync(f.as_raw_fd(), true);
+                    }
                 }
-            }
-            let full = src_map.as_slice();
-            let coff_u = if (coff as usize) < full.len() {
-                coff as usize
-            } else {
-                0
-            };
-            let src = &full[coff_u..];
-            if sstride < min_row || min_row == 0 || src.len() < min_row || src.len() < sstride {
-                sh = 0;
-            } else if (sh as usize).saturating_mul(sstride) > src.len() {
-                sh = (src.len() / sstride) as u32;
-            }
-            let dst_stride = dw * 4;
-            unsafe {
-                let s = &mut *shm_base;
-                s.dst_width = dw;
-                s.dst_height = dh;
-                s.dst_stride = dst_stride;
-                if sh > 0 {
+                let full = src_map.as_slice();
+                let coff_u = if (coff as usize) < full.len() {
+                    coff as usize
+                } else {
+                    0
+                };
+                let src = &full[coff_u..];
+                let eff_sh = if sstride < min_row
+                    || min_row == 0
+                    || src.len() < min_row
+                    || src.len() < sstride
+                {
+                    0
+                } else if (sh as usize).saturating_mul(sstride) > src.len() {
+                    (src.len() / sstride) as u32
+                } else {
+                    sh
+                };
+                let dst_stride = dw * 4;
+                if eff_sh > 0 {
                     for y in 0..dh {
-                        let sy = ((y as u64 * sh as u64) / dh as u64) as u32;
+                        let sy = ((y as u64 * eff_sh as u64) / dh as u64) as u32;
                         let roff = (y as usize) * (dst_stride as usize);
                         let rend = roff + (dst_stride as usize);
-                        if let Some(drow) = s.pixels.get_mut(roff..rend) {
-                            convert_preview_row(neg_fmt, src, sy, sh, sw, sstride, drow, dw);
+                        if let Some(drow) = pixels.get_mut(roff..rend) {
+                            convert_preview_row(neg_fmt, src, sy, eff_sh, sw, sstride, drow, dw);
                         }
                     }
                 }
-            }
-            if is_dmabuf {
-                if let Some(f) = pb.fd.as_ref() {
-                    dmabuf_sync(f.as_raw_fd(), false);
+                if is_dmabuf {
+                    if let Some(f) = pb_ref.fd.as_ref() {
+                        dmabuf_sync(f.as_raw_fd(), false);
+                    }
                 }
-            }
-        } else if is_dmabuf {
-            let dma_fd = pb.fd.as_ref().map_or(-1, AsRawFd::as_raw_fd);
-            let dma_off = pb.mapoffset.saturating_add(coff);
-            let blitter = self.dmabuf_blitter.get_or_insert_with(DmabufGlBlitter::new);
-            let dst_stride = dw * 4;
-            let dst_len = (dh as usize).saturating_mul(dst_stride as usize);
-            let desc = DmabufFrameDesc {
-                dmabuf_fd: dma_fd,
-                sw,
-                sh,
-                offset: dma_off,
-                stride: sstride as u32,
-                spa_fmt: neg_fmt,
-                modifier: neg_has_mod.then_some(neg_mod),
-                dw,
-                dh,
-            };
-            let gl_ok = unsafe {
-                let s = &mut *shm_base;
-                s.pixels
+                Some((dw, dh, dst_stride, false))
+            } else if is_dmabuf {
+                let dma_fd = pb_ref.fd.as_ref().map_or(-1, AsRawFd::as_raw_fd);
+                let dma_off = pb_ref.mapoffset.saturating_add(coff);
+                let blitter = dmabuf_blitter.get_or_insert_with(DmabufGlBlitter::new);
+                let dst_stride = dw * 4;
+                let dst_len = (dh as usize).saturating_mul(dst_stride as usize);
+                let desc = DmabufFrameDesc {
+                    dmabuf_fd: dma_fd,
+                    sw,
+                    sh,
+                    offset: dma_off,
+                    stride: sstride as u32,
+                    spa_fmt: neg_fmt,
+                    modifier: neg_has_mod.then_some(neg_mod),
+                    dw,
+                    dh,
+                };
+                let gl_ok = pixels
                     .get_mut(..dst_len)
-                    .is_some_and(|dst| blitter.blit_to_bgrx(&desc, dst))
-            };
-            unsafe {
-                let s = &mut *shm_base;
-                if gl_ok {
-                    s.dmabuf_mappable = 1;
-                    s.dst_width = dw;
-                    s.dst_height = dh;
-                    s.dst_stride = dst_stride;
-                } else {
-                    s.dst_width = 0;
-                    s.dst_height = 0;
-                    s.dst_stride = 0;
-                }
+                    .is_some_and(|dst| blitter.blit_to_bgrx(&desc, dst));
+                gl_ok.then_some((dw, dh, dst_stride, true))
+            } else {
+                None
             }
-        } else {
-            unsafe {
-                let s = &mut *shm_base;
-                s.dst_width = 0;
-                s.dst_height = 0;
-                s.dst_stride = 0;
-            }
-        }
-
-        unsafe {
-            atomic_u64_store(ptr::addr_of_mut!((*shm_base).seqlock), seq + 2, Ordering::Release);
-        }
+        });
     }
 
     fn on_prod_done_event(&mut self, nidx: usize) {
@@ -4182,17 +4130,10 @@ pub fn start_pw_broker(opts: Option<PwBrokerStartOpts>) -> Option<PwBrokerHandle
     st.preview_shm_name = shm_name.clone();
     if let Some((fd, is_posix)) = open_private_shm(&shm_name, size_of::<LasapiPwPreviewShm>()) {
         st.preview_shm_posix = is_posix;
-        if let Some(mut map) =
+        if let Some(map) =
             MappedMem::map_fd(fd.as_raw_fd(), size_of::<LasapiPwPreviewShm>(), true, 0)
         {
-            let hdr_end = offset_of!(LasapiPwPreviewShm, pixels);
-            map.as_mut_slice()[..hdr_end].fill(0);
-            let shm = map.as_mut_ptr().cast::<LasapiPwPreviewShm>();
-            unsafe {
-                (*shm).magic = LASAPI_PW_PREVIEW_MAGIC;
-                (*shm).version = LASAPI_PW_PREVIEW_VERSION;
-            }
-            st.preview_shm_map = Some(map);
+            st.preview_shm = PreviewShmWriter::init_from_map(map);
         }
         st.preview_shm_fd = Some(fd);
     }
@@ -4239,7 +4180,7 @@ impl PwBrokerHandle {
             }
             st.systemd_listen_fd = None;
             st.systemd_mgr_fd = None;
-            st.preview_shm_map = None;
+            st.preview_shm = None;
             st.preview_shm_fd = None;
             unlink_shm_path(&st.preview_shm_name, st.preview_shm_posix);
         }
@@ -4270,40 +4211,19 @@ impl PwBrokerHandle {
         self.shared.preview_target_fps.store(cfps, Ordering::Relaxed);
 
         let st = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(map) = st.preview_shm_map.as_ref() else {
+        let Some(writer) = st.preview_shm.as_ref() else {
             return;
         };
-        let shm_ptr = map.as_ptr().cast::<LasapiPwPreviewShm>().cast_mut();
         let now = mono_ns();
         if enabled {
             let ttl_ns = (if ttl_ms != 0 { ttl_ms } else { 15000 }) as u64 * 1_000_000;
             self.shared
                 .preview_expiry_ns
                 .store(now.saturating_add(ttl_ns), Ordering::Relaxed);
-            unsafe {
-                atomic_u32_store(ptr::addr_of_mut!((*shm_ptr).target_max_w), cw, Ordering::Relaxed);
-                atomic_u32_store(ptr::addr_of_mut!((*shm_ptr).target_max_h), ch, Ordering::Relaxed);
-                atomic_u32_store(ptr::addr_of_mut!((*shm_ptr).target_fps), cfps, Ordering::Relaxed);
-                atomic_u64_store(
-                    ptr::addr_of_mut!((*shm_ptr).last_gui_ping_ns),
-                    now,
-                    Ordering::Relaxed,
-                );
-                atomic_u32_store(
-                    ptr::addr_of_mut!((*shm_ptr).preview_requested),
-                    1,
-                    Ordering::Release,
-                );
-            }
+            writer.configure_targets(cw, ch, cfps, now, true);
         } else {
             self.shared.preview_expiry_ns.store(0, Ordering::Relaxed);
-            unsafe {
-                atomic_u32_store(
-                    ptr::addr_of_mut!((*shm_ptr).preview_requested),
-                    0,
-                    Ordering::Release,
-                );
-            }
+            writer.configure_targets(cw, ch, cfps, now, false);
         }
     }
 
@@ -4323,12 +4243,10 @@ impl PwBrokerHandle {
         let st = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let broker_running = i64::from(self.shared.broker_listening.load(Ordering::Relaxed));
         let zero_pw_mode = i64::from(self.shared.zero_pw_mode.load(Ordering::Relaxed));
-        let preview_requested = st.preview_shm_map.as_ref().map_or(0i64, |m| {
-            let shm = m.as_ptr().cast::<LasapiPwPreviewShm>();
-            i64::from(unsafe {
-                atomic_u32_load(ptr::addr_of!((*shm).preview_requested), Ordering::Relaxed) != 0
-            })
-        });
+        let preview_requested = st
+            .preview_shm
+            .as_ref()
+            .map_or(0i64, |w| i64::from(w.preview_requested()));
 
         let mut clients_json = Vec::new();
         for (ci, c) in st.clients.iter().enumerate() {
@@ -4869,12 +4787,21 @@ mod tests {
 
             // Verify preview SHM received converted frame
             let mut buf_px = [0u8; 4];
-            if let Some(m) = st.preview_shm_map.as_ref() {
-                let mut rfile =
-                    fs::File::from(dup_fd_cloexec(st.preview_shm_fd.as_ref().unwrap().as_raw_fd()).unwrap());
+            if st.preview_shm.is_some() {
+                let fd_ref = st.preview_shm_fd.as_ref().unwrap();
+                let mut rfile = fs::File::from(dup_fd_cloexec(fd_ref.as_raw_fd()).unwrap());
                 rfile.seek(SeekFrom::Start(520)).unwrap();
                 rfile.read_exact(&mut buf_px).unwrap();
-                assert_eq!(m.as_slice()[0..4], LASAPI_PW_PREVIEW_MAGIC.to_le_bytes());
+                let rmap = MappedMem::map_fd(
+                    fd_ref.as_raw_fd(),
+                    size_of::<LasapiPwPreviewShm>(),
+                    true,
+                    0,
+                )
+                .unwrap();
+                let rd = PreviewShmReader::from_mapped(None, rmap).expect("valid preview shm");
+                let snap = rd.read_frame().expect("preview snapshot");
+                assert!(snap.active_stream);
             }
             assert_eq!(&buf_px[..3], &[0x11, 0x55, 0xaa]);
         }

@@ -7,7 +7,6 @@
 
 #![allow(clippy::too_many_lines)]
 
-use core::ffi::c_char;
 use core::mem;
 use core::sync::atomic::AtomicU64;
 use std::env;
@@ -19,16 +18,12 @@ use salsa_wire::bluez_wire::{
     select_a2dp_config, write_rtp_header, write_rtp_sbc_payload_hdr,
 };
 use salsa_wire::c_abi::{
-    LasapiDbgDgram, LasapiHwAnalogCfg, LasapiMicApoCfg, LasapiParamEqExt, SalsaMicCubicState,
+    LasapiDbgDgram, LasapiMicApoCfg, LasapiParamEqExt, PodBytes, SalsaMicCubicState,
     LASAPI_DEBUG_DGRAM_MAGIC,
 };
 use salsa_wire::debug_server::{parse_dgram_bytes, trim_cmd_line};
-use salsa_wire::dsp::{
-    salsa_dsp_pack_pcm, salsa_dsp_resample_mic_cubic, salsa_dsp_scale_cap_clip,
-};
-use salsa_wire::hw_analog::{
-    lasapi_hw_analog_clamp_cfg, lasapi_hw_analog_default_cfg, lasapi_hw_analog_score_card,
-};
+use salsa_wire::dsp::{pack_pcm_bytes, resample_mic_cubic_slice, scale_cap_clip_slice};
+use salsa_wire::hw_analog::{clamp_hw_analog_cfg, default_hw_analog_cfg, score_card_by_index};
 use salsa_wire::json::JsonValue;
 use salsa_wire::pa_wire::{parse_frame_hdr, PaPropBag, TagReader, PA_MAX_FRAME_SZ};
 use salsa_wire::pw_wire::{fd_quota_check, parse_param_pod, parse_pkt_hdr, PWB_MAX_CLIENT_FDS};
@@ -334,12 +329,10 @@ fn fuzz_one_input(data: &[u8]) {
         let rst = default_runtime_state();
         assert!(rst.sample_rate >= 44100 && rst.sample_rate <= 384000);
 
-        let mut hwa: LasapiHwAnalogCfg = mem::zeroed();
-        lasapi_hw_analog_default_cfg(&mut hwa);
+        let mut hwa = default_hw_analog_cfg();
         assert_eq!(hwa.hw_dac_unity_vol, 1);
-        lasapi_hw_analog_clamp_cfg(&mut hwa);
-        let cname = b"Scarlett 2i2 4th Gen\0";
-        let _ = lasapi_hw_analog_score_card(99, cname.as_ptr().cast::<c_char>());
+        clamp_hw_analog_cfg(&mut hwa);
+        let _ = score_card_by_index(99, "Scarlett 2i2 4th Gen");
 
         if size >= mem::size_of::<LasapiParamEqExt>() {
             let mut r_ext: LasapiParamEqExt = mem::zeroed();
@@ -374,7 +367,7 @@ fn fuzz_one_input(data: &[u8]) {
             }
             let gain = 0.25 + f32::from(data[0] & 0x3F) * 0.05;
             let softknee = (data[1] & 1) != 0;
-            salsa_dsp_scale_cap_clip(r_clip.as_mut_ptr(), 16, gain);
+            scale_cap_clip_slice(&mut r_clip, gain);
             for v in r_clip {
                 assert!(v.is_finite());
                 if (gain - 1.0).abs() > 0.002 {
@@ -384,25 +377,12 @@ fn fuzz_one_input(data: &[u8]) {
 
             let fmt = u32::from(data[2] % 5);
             let mut r_out = [0u8; 64];
-            salsa_dsp_pack_pcm(
-                r_in.as_ptr(),
-                16,
-                gain,
-                softknee,
-                fmt,
-                r_out.as_mut_ptr(),
-            );
+            pack_pcm_bytes(&r_in, gain, softknee, fmt, &mut r_out);
 
-            let mut rst_c: SalsaMicCubicState = mem::zeroed();
+            let mut rst_c = SalsaMicCubicState::zeroed();
             let mut r_res = [0.0f32; 32];
             let out_fr = 8 + u32::from(data[3] % 9);
-            salsa_dsp_resample_mic_cubic(
-                r_in.as_ptr(),
-                8,
-                r_res.as_mut_ptr(),
-                out_fr,
-                &raw mut rst_c,
-            );
+            resample_mic_cubic_slice(&r_in, 8, &mut r_res, out_fr as usize, &mut rst_c);
             for &v in &r_res[..(out_fr as usize) * 2] {
                 assert!(v.is_finite());
             }

@@ -34,5 +34,6 @@ name = "salsa-regression"
 path = "src/bin/salsa_regression.rs"
 
 [dependencies]
-salsa_net = { path = "../salsa_net" }
 lasapi_client = { path = "../lasapi_client" }
+salsa_host_dl = { path = "../salsa_host_dl" }
+salsa_net = { path = "../salsa_net" }

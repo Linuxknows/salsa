@@ -8,6 +8,7 @@
 #![deny(unsafe_code)]
 #![deny(warnings)]
 
+pub mod alsa_hw;
 pub mod audiodg_engine;
 pub mod bluez_cap;
 pub mod bluez_ffi;
@@ -28,8 +29,11 @@ pub mod legal;
 pub mod midi_hub;
 pub mod pa_server;
 pub mod pa_wire;
+pub mod preview_shm;
+pub mod provisioning;
 pub mod pw_broker;
 pub mod pw_wire;
 pub mod settings;
 pub mod state_conf;
 pub mod unix_sys;
+pub mod wavert_ring;

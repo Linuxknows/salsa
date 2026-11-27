@@ -25,7 +25,7 @@ use salsa_tools::debug_core::{
 };
 use salsa_tools::host::{
     ensure_dir_0700, flock_fd, getpid, getuid, home_dir, install_root, private_runtime_dir,
-    read_text_lossy, state_dir, write_atomic_secure,
+    read_text_lossy, write_atomic_secure,
 };
 use salsa_tools::ipc::{
     bt_connection_ctl, get_engine_status, gui_settings_path, list_devices, load_gui_settings,
@@ -48,6 +48,7 @@ use salsa_wire::legal::{
     full_license_bundle, handle_common_cli_flag, salsa_version, short_legal_notice, COPY_TEXT,
     LESSER_COPY_TEXT, THIRD_PARTY_TEXT,
 };
+use salsa_wire::provisioning::{all_pacman_hook_paths, SalsaHostPaths};
 use salsa_wire::unix_sys::{
     current_uid, ensure_dir_0700_safe, reset_sigpipe_default, O_CLOEXEC, O_NOFOLLOW,
 };
@@ -266,12 +267,7 @@ fn render_segments_html(segs: &[crate::studio_manual::ManualRichSegment], t: &Sa
 }
 
 fn collect_config_texts(base_dir: &Path) -> BTreeMap<String, String> {
-    let home = home_dir();
-    let cfg = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".config"));
-    let st_dir = state_dir();
+    let paths = SalsaHostPaths::from_env(base_dir.to_path_buf());
     let read_or = |p: PathBuf| -> String {
         if p.is_file() {
             let txt = read_text_lossy(&p, 65536);
@@ -281,26 +277,26 @@ fn collect_config_texts(base_dir: &Path) -> BTreeMap<String, String> {
         }
     };
     let mut map = BTreeMap::new();
-    map.insert("~/.asoundrc".into(), read_or(home.join(".asoundrc")));
+    map.insert("~/.asoundrc".into(), read_or(paths.asoundrc()));
     map.insert(
         "~/.config/OpenAL/alsoft.conf".into(),
-        read_or(cfg.join("OpenAL/alsoft.conf")),
+        read_or(paths.alsoft_conf()),
     );
     map.insert(
         "pipewire_zero_mode".into(),
-        read_or(st_dir.join("pipewire_zero_mode")),
+        read_or(paths.pipewire_zero_flag()),
     );
     map.insert(
         "99-salsa-direct.conf".into(),
-        read_or(cfg.join("pipewire/pipewire.conf.d/99-salsa-direct.conf")),
+        read_or(paths.direct_env_conf()),
     );
     map.insert(
         "99-lasapi-video-only.conf".into(),
-        read_or(cfg.join("pipewire/pipewire.conf.d/99-lasapi-video-only.conf")),
+        read_or(paths.video_only_pw_conf()),
     );
     map.insert(
         "module_versions.state".into(),
-        read_or(st_dir.join("module_versions.state")),
+        read_or(paths.config_lasapi_dir().join("module_versions.state")),
     );
     map.insert(
         "src/lasapi.version".into(),
@@ -1103,13 +1099,9 @@ pub extern "C" fn salsa_render_manual_chapter_html(
 }
 
 fn pacman_hook_installed() -> bool {
-    const HOOK_PATHS: [&str; 4] = [
-        "/etc/pacman.d/hooks/99-salsa-autosync.hook",
-        "/etc/pacman.d/hooks/95-salsa-autosync.hook",
-        "/etc/pacman.d/hooks/99-lasapi-autosync.hook",
-        "/etc/pacman.d/hooks/lasapi-autosync.hook",
-    ];
-    HOOK_PATHS.iter().any(|p| Path::new(p).exists())
+    all_pacman_hook_paths()
+        .iter()
+        .any(|p| Path::new(p).exists())
 }
 
 #[no_mangle]
@@ -1297,7 +1289,7 @@ pub extern "C" fn salsa_bt_reset_sync() -> *mut c_char {
             hint = pb;
         }
     }
-    let (rc, msg) = salsa_wire::bluez_runtime::reset_device(&hint);
+    let (rc, msg) = salsa_wire::bluez_runtime::reset_device_prefer_daemon(&hint);
     let _ = bt_connection_ctl(0, None);
     to_c_string(if !msg.is_empty() {
         msg

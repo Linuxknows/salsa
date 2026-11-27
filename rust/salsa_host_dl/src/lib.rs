@@ -140,6 +140,126 @@ pub unsafe fn open_verified_host_lib(
     ptr::null_mut()
 }
 
+#[cfg(target_arch = "x86")]
+pub const TRUSTED_OPT_LIB_DIRS: &[&str] = &[
+    "/usr/lib32",
+    "/usr/lib/i386-linux-gnu",
+    "/lib/i386-linux-gnu",
+    "/usr/lib",
+    "/lib",
+];
+
+#[cfg(not(target_arch = "x86"))]
+pub const TRUSTED_OPT_LIB_DIRS: &[&str] = &[
+    "/usr/lib",
+    "/usr/lib64",
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/lib/aarch64-linux-gnu",
+    "/lib/x86_64-linux-gnu",
+    "/lib/aarch64-linux-gnu",
+    "/lib64",
+    "/lib",
+];
+
+/// Expands optional library sonames across `trusted_dirs` (rejecting any resolved
+/// path matching `self_dev_ino`) and also collects bare soname fallbacks for
+/// non-FHS layouts such as NixOS/Guix.
+pub fn select_optional_lib_candidates(
+    sonames: &[&str],
+    trusted_dirs: &[&str],
+    self_dev_ino: Option<(u64, u64)>,
+) -> (Vec<String>, Vec<String>) {
+    let mut trusted_paths = Vec::new();
+    let mut bare_fallbacks = Vec::new();
+    let push_unique = |list: &mut Vec<String>, s: String| {
+        if !list.contains(&s) {
+            list.push(s);
+        }
+    };
+
+    for &entry in sonames {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with('/') {
+            for resolved in select_verified_host_candidates(&[trimmed], self_dev_ino) {
+                push_unique(&mut trusted_paths, resolved);
+            }
+        } else if !trimmed.contains('/') {
+            for dir in trusted_dirs {
+                let d = dir.trim_end_matches('/');
+                if d.is_empty() {
+                    continue;
+                }
+                let joined = format!("{d}/{trimmed}");
+                for resolved in select_verified_host_candidates(&[&joined], self_dev_ino) {
+                    push_unique(&mut trusted_paths, resolved);
+                }
+            }
+            push_unique(&mut bare_fallbacks, trimmed.to_string());
+        }
+    }
+    (trusted_paths, bare_fallbacks)
+}
+
+unsafe fn loaded_self_handle(self_path: Option<&str>) -> *mut c_void {
+    let Some(p) = self_path else {
+        return ptr::null_mut();
+    };
+    let Ok(cpath) = CString::new(p) else {
+        return ptr::null_mut();
+    };
+    let h = dlopen(cpath.as_ptr(), RTLD_LAZY | RTLD_NOLOAD);
+    if !h.is_null() {
+        dlclose(h);
+    }
+    h
+}
+
+/// Opens an optional host shared library (`libsbc`, `libfdk-aac`, `libldac*`, `libfreeaptx`,
+/// `libdbus-1`, `librnnoise`, `libasound`, `libz`, `libEGL`, GLib/GIO, `libX11`) by probing
+/// trusted system directories first with `(st_dev, st_ino)` self-skip, and falling back on
+/// non-FHS distributions with a `dladdr` / `RTLD_NOLOAD` self-collision guard under `RTLD_NOW | RTLD_LOCAL`.
+pub unsafe fn open_verified_optional_lib(sonames: &[&str], self_anchor: *const c_void) -> *mut c_void {
+    let self_path = self_so_path(self_anchor);
+    let self_dev_ino = self_path.as_deref().and_then(path_dev_ino);
+    let self_handle = loaded_self_handle(self_path.as_deref());
+    let (trusted_paths, bare_fallbacks) =
+        select_optional_lib_candidates(sonames, TRUSTED_OPT_LIB_DIRS, self_dev_ino);
+    let flags = RTLD_NOW | RTLD_LOCAL;
+
+    for resolved in trusted_paths {
+        let Ok(cpath) = CString::new(resolved) else {
+            continue;
+        };
+        let h = dlopen(cpath.as_ptr(), flags);
+        if !h.is_null() {
+            if !self_handle.is_null() && h == self_handle {
+                dlclose(h);
+                continue;
+            }
+            return h;
+        }
+    }
+
+    for bare in bare_fallbacks {
+        let Ok(cbare) = CString::new(bare) else {
+            continue;
+        };
+        let h = dlopen(cbare.as_ptr(), flags);
+        if !h.is_null() {
+            if !self_handle.is_null() && h == self_handle {
+                dlclose(h);
+                continue;
+            }
+            return h;
+        }
+    }
+
+    ptr::null_mut()
+}
+
 pub const HOST_LIBASOUND_CANDIDATES: &[&str] = &[
     "/usr/lib/libasound.so.2.0.0",
     "/usr/lib/libasound.so.2",
@@ -261,6 +381,37 @@ mod tests {
             .into_string()
             .unwrap();
         assert_eq!(picked, vec![other_canon]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn optional_lib_candidate_expansion_skips_self_and_preserves_bare_fallback() {
+        let dir = format!("/tmp/salsa_opt_dl_test_{}", std::process::id());
+        let _ = fs::remove_dir_all(&dir);
+        let d1 = format!("{dir}/trusted1");
+        let d2 = format!("{dir}/trusted2");
+        fs::create_dir_all(&d1).unwrap();
+        fs::create_dir_all(&d2).unwrap();
+
+        let self_so = format!("{d1}/libfoo.so.1");
+        let real_so = format!("{d2}/libfoo.so.1");
+        fs::write(&self_so, b"self").unwrap();
+        fs::write(&real_so, b"real").unwrap();
+
+        let self_id = path_dev_ino(&self_so).unwrap();
+        let (trusted, bare) = select_optional_lib_candidates(
+            &["libfoo.so.1", "/nonexistent/libfoo.so.1", "../rel.so"],
+            &[&d1, &d2],
+            Some(self_id),
+        );
+        let real_canon = fs::canonicalize(&real_so)
+            .unwrap()
+            .into_os_string()
+            .into_string()
+            .unwrap();
+        assert_eq!(trusted, vec![real_canon]);
+        assert_eq!(bare, vec!["libfoo.so.1".to_string()]);
 
         let _ = fs::remove_dir_all(&dir);
     }

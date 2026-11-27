@@ -8,16 +8,15 @@
 #![allow(unsafe_code)]
 #![allow(clippy::missing_safety_doc)]
 
-use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void};
+use core::ffi::{c_int, c_long, c_uint, c_ulong, c_void};
 use core::mem;
-use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, ptr_to_opt_str, LasapiHwAnalogCfg, LasapiHwAnalogInfo,
+    c_str_to_string, copy_str_to_c, LasapiHwAnalogCfg, LasapiHwAnalogInfo, PodBytes,
     LASAPI_DBG_ENGINE, LASAPI_DBG_INFO,
 };
 use crate::unix_sys::{
@@ -314,7 +313,7 @@ impl Drop for HwAnalogInner {
     }
 }
 
-pub struct LasapiHwAnalogCtx {
+struct LasapiHwAnalogCtx {
     inner: Mutex<HwAnalogInner>,
     dac_unity_active: AtomicI32,
     softknee_active: AtomicI32,
@@ -1084,45 +1083,38 @@ pub fn clamp_hw_analog_cfg(cfg: &mut LasapiHwAnalogCfg) {
     clamp_cfg(cfg);
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_hw_analog_default_cfg(cfg: *mut LasapiHwAnalogCfg) {
-    if !cfg.is_null() {
-        unsafe { *cfg = default_cfg_value() };
+pub fn score_card_by_index(card_index: u32, dev_name: &str) -> i32 {
+    let p_usb = format!("/proc/asound/card{card_index}/usbid");
+    let p_drv = format!("/sys/class/sound/card{card_index}/device/uevent");
+    let p_stream = format!("/proc/asound/card{card_index}/stream0");
+    let usbid_opt = read_small_text(&p_usb);
+    let is_usb = usbid_opt.is_some();
+    let has_usb_file = Path::new(&p_usb).exists();
+    let usbid = usbid_opt.unwrap_or_default();
+    let uevent = read_small_text(&p_drv).unwrap_or_default();
+    let stream_head = read_small_text(&p_stream).unwrap_or_default();
+    let has_hp_jack = card_has_plugged_headphone_jack(card_index as i32);
+    score_card_with_meta_hp(dev_name, is_usb, has_usb_file, &usbid, &uevent, &stream_head, has_hp_jack)
+}
+
+pub struct AnalogStage(LasapiHwAnalogCtx);
+
+impl Default for AnalogStage {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_hw_analog_clamp_cfg(cfg: *mut LasapiHwAnalogCfg) {
-    if !cfg.is_null() {
-        clamp_cfg(unsafe { &mut *cfg });
+impl AnalogStage {
+    pub fn new() -> Self {
+        Self(LasapiHwAnalogCtx::new())
     }
-}
 
-#[no_mangle]
-pub extern "C" fn lasapi_hw_analog_create() -> *mut LasapiHwAnalogCtx {
-    Box::into_raw(Box::new(LasapiHwAnalogCtx::new()))
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_hw_analog_destroy(ctx: *mut LasapiHwAnalogCtx) {
-    if !ctx.is_null() {
-        drop(unsafe { Box::from_raw(ctx) });
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_hw_analog_probe(
-    ctx: *mut LasapiHwAnalogCtx,
-    pb_card: c_int,
-    cap_card: c_int,
-) {
-    if ctx.is_null() {
-        return;
-    }
-    let ctx_ref = unsafe { &*ctx };
-    let Ok(mut inner) = ctx_ref.inner.lock() else {
-        return;
-    };
+    pub fn probe(&self, pb_card: i32, cap_card: i32) {
+        let ctx_ref = &self.0;
+        let Ok(mut inner) = ctx_ref.inner.lock() else {
+            return;
+        };
     inner.pb_card = pb_card;
     inner.cap_card = cap_card;
     inner.caps_mask = 0;
@@ -1176,27 +1168,22 @@ pub unsafe extern "C" fn lasapi_hw_analog_probe(
     }
 
     inner.sync_cache_valid = false;
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_hw_analog_sync(
-    ctx: *mut LasapiHwAnalogCtx,
-    cfg_in: *const LasapiHwAnalogCfg,
-    desktop_vol_pct: u32,
-    desktop_muted: bool,
-    _mic_vol_pct: u32,
-    mic_muted: bool,
-) {
-    if ctx.is_null() || cfg_in.is_null() {
-        return;
     }
-    let mut cfg = unsafe { *cfg_in };
-    clamp_cfg(&mut cfg);
 
-    let ctx_ref = unsafe { &*ctx };
-    let Ok(mut inner) = ctx_ref.inner.lock() else {
-        return;
-    };
+    pub fn sync(
+        &self,
+        cfg_in: &LasapiHwAnalogCfg,
+        desktop_vol_pct: u32,
+        desktop_muted: bool,
+        _mic_vol_pct: u32,
+        mic_muted: bool,
+    ) {
+        let mut cfg = *cfg_in;
+        clamp_cfg(&mut cfg);
+        let ctx_ref = &self.0;
+        let Ok(mut inner) = ctx_ref.inner.lock() else {
+            return;
+        };
 
     if inner.sync_cache_valid
         && inner.last_pb_card == inner.pb_card
@@ -1418,198 +1405,123 @@ pub unsafe extern "C" fn lasapi_hw_analog_sync(
     inner.last_d_muted = desktop_muted;
     inner.last_m_muted = mic_muted;
     inner.sync_cache_valid = true;
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_hw_analog_poll_hid(
-    ctx: *mut LasapiHwAnalogCtx,
-    out_vol_delta: *mut c_int,
-    out_mute_toggle: *mut c_int,
-) -> c_int {
-    if !out_vol_delta.is_null() {
-        unsafe { *out_vol_delta = 0 };
-    }
-    if !out_mute_toggle.is_null() {
-        unsafe { *out_mute_toggle = 0 };
-    }
-    if ctx.is_null() {
-        return 0;
-    }
-    let ctx_ref = unsafe { &*ctx };
-    let Ok(mut inner) = ctx_ref.inner.lock() else {
-        return 0;
-    };
-    let fd = inner.hid_fd;
-    if fd < 0 || !inner.hid_has_consumer {
-        return 0;
     }
 
-    let mut buf = [0u8; 64];
-    let mut events = 0;
-    for _ in 0..16 {
-        let n = nb_read_raw(fd, &mut buf);
-        if n <= 0 {
-            break;
-        }
-        let len = n as usize;
-        let bits = if inner.hid_has_report_id {
-            if !(2..=8).contains(&len) || buf[0] != inner.hid_consumer_report_id {
-                continue;
-            }
-            buf[1]
-        } else {
-            if !(1..=8).contains(&len) {
-                continue;
-            }
-            if len >= 2 { buf[1] } else { buf[0] }
+    /// Polls connected Strix HID consumer controls, returning `Some((vol_delta, mute_toggle))` on activity.
+    pub fn poll_hid(&self) -> Option<(i32, i32)> {
+        let Ok(mut inner) = self.0.inner.lock() else {
+            return None;
         };
-        let up = (bits & 0x01) != 0;
-        let dn = (bits & 0x02) != 0;
-        let mute = (bits & 0x04) != 0;
-        if up && !inner.hid_prev_up {
-            if !out_vol_delta.is_null() {
-                unsafe { *out_vol_delta += 2 };
-            }
-            events += 1;
+        let fd = inner.hid_fd;
+        if fd < 0 || !inner.hid_has_consumer {
+            return None;
         }
-        if dn && !inner.hid_prev_dn {
-            if !out_vol_delta.is_null() {
-                unsafe { *out_vol_delta -= 2 };
+        let mut buf = [0u8; 64];
+        let mut vol_delta = 0i32;
+        let mut mute_toggle = 0i32;
+        let mut events = 0i32;
+        for _ in 0..16 {
+            let n = nb_read_raw(fd, &mut buf);
+            if n <= 0 {
+                break;
             }
-            events += 1;
-        }
-        if mute && !inner.hid_prev_mute {
-            if !out_mute_toggle.is_null() {
-                unsafe { *out_mute_toggle = 1 };
+            let len = n as usize;
+            let bits = if inner.hid_has_report_id {
+                if !(2..=8).contains(&len) || buf[0] != inner.hid_consumer_report_id {
+                    continue;
+                }
+                buf[1]
+            } else {
+                if !(1..=8).contains(&len) {
+                    continue;
+                }
+                if len >= 2 { buf[1] } else { buf[0] }
+            };
+            let up = (bits & 0x01) != 0;
+            let dn = (bits & 0x02) != 0;
+            let mute = (bits & 0x04) != 0;
+            if up && !inner.hid_prev_up {
+                vol_delta += 2;
+                events += 1;
             }
-            events += 1;
+            if dn && !inner.hid_prev_dn {
+                vol_delta -= 2;
+                events += 1;
+            }
+            if mute && !inner.hid_prev_mute {
+                mute_toggle = 1;
+                events += 1;
+            }
+            inner.hid_prev_up = up;
+            inner.hid_prev_dn = dn;
+            inner.hid_prev_mute = mute;
         }
-        inner.hid_prev_up = up;
-        inner.hid_prev_dn = dn;
-        inner.hid_prev_mute = mute;
+        if events > 0 {
+            Some((vol_delta, mute_toggle))
+        } else {
+            None
+        }
     }
-    events
-}
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_hw_analog_get_info(
-    ctx: *mut LasapiHwAnalogCtx,
-    out_info: *mut LasapiHwAnalogInfo,
-) {
-    if out_info.is_null() {
-        return;
+    pub fn info(&self) -> LasapiHwAnalogInfo {
+        let mut out = LasapiHwAnalogInfo::zeroed();
+        let Ok(inner) = self.0.inner.lock() else {
+            out.active_pb_card = -1;
+            out.active_cap_card = -1;
+            return out;
+        };
+        out.caps_mask = inner.caps_mask;
+        out.dac_unity_active = self.0.dac_unity_active.load(Ordering::Relaxed) as u32;
+        out.hid_box_connected = u32::from(inner.hid_fd >= 0);
+        out.active_pb_card = inner.pb_card;
+        out.active_cap_card = inner.cap_card;
+        copy_str_to_c(&mut out.card_arch_name, &inner.card_arch_name);
+
+        let dac_name = if inner.pb_dac_vol.valid {
+            inner.pb_dac_vol.name.as_str()
+        } else {
+            "Software/AVRCP"
+        };
+        copy_str_to_c(&mut out.dac_ctl_name, dac_name);
+
+        let amp_name = if inner.pb_amp_ctl.valid {
+            inner.pb_amp_ctl.name.as_str()
+        } else if inner.pb_route_ctl.valid {
+            inner.pb_route_ctl.name.as_str()
+        } else if (inner.caps_mask & LASAPI_HW_CAP_STRIX_ARCH) != 0 {
+            "TPA6120A2 Analog Stage"
+        } else {
+            "Default Output Stage"
+        };
+        copy_str_to_c(&mut out.amp_ctl_name, amp_name);
+
+        let cap_name = if inner.cap_boost_ctl.valid {
+            inner.cap_boost_ctl.name.as_str()
+        } else if inner.cap_vol_ctl.valid {
+            inner.cap_vol_ctl.name.as_str()
+        } else {
+            "Direct PCM Preamp"
+        };
+        copy_str_to_c(&mut out.cap_ctl_name, cap_name);
+        copy_str_to_c(&mut out.diag_note, &inner.diag_note);
+        out
     }
-    unsafe { ptr::write_bytes(out_info, 0, 1) };
-    let out = unsafe { &mut *out_info };
-    if ctx.is_null() {
-        out.active_pb_card = -1;
-        out.active_cap_card = -1;
-        return;
+
+    pub fn is_dac_unity_active(&self) -> bool {
+        self.0.dac_unity_active.load(Ordering::Relaxed) != 0
     }
-    let ctx_ref = unsafe { &*ctx };
-    let Ok(inner) = ctx_ref.inner.lock() else {
-        out.active_pb_card = -1;
-        out.active_cap_card = -1;
-        return;
-    };
 
-    out.caps_mask = inner.caps_mask;
-    out.dac_unity_active = ctx_ref.dac_unity_active.load(Ordering::Relaxed) as u32;
-    out.hid_box_connected = u32::from(inner.hid_fd >= 0);
-    out.active_pb_card = inner.pb_card;
-    out.active_cap_card = inner.cap_card;
-    copy_str_to_c(&mut out.card_arch_name, &inner.card_arch_name);
-
-    let dac_name = if inner.pb_dac_vol.valid {
-        inner.pb_dac_vol.name.as_str()
-    } else {
-        "Software/AVRCP"
-    };
-    copy_str_to_c(&mut out.dac_ctl_name, dac_name);
-
-    let amp_name = if inner.pb_amp_ctl.valid {
-        inner.pb_amp_ctl.name.as_str()
-    } else if inner.pb_route_ctl.valid {
-        inner.pb_route_ctl.name.as_str()
-    } else if (inner.caps_mask & LASAPI_HW_CAP_STRIX_ARCH) != 0 {
-        "TPA6120A2 Analog Stage"
-    } else {
-        "Default Output Stage"
-    };
-    copy_str_to_c(&mut out.amp_ctl_name, amp_name);
-
-    let cap_name = if inner.cap_boost_ctl.valid {
-        inner.cap_boost_ctl.name.as_str()
-    } else if inner.cap_vol_ctl.valid {
-        inner.cap_vol_ctl.name.as_str()
-    } else {
-        "Direct PCM Preamp"
-    };
-    copy_str_to_c(&mut out.cap_ctl_name, cap_name);
-    copy_str_to_c(&mut out.diag_note, &inner.diag_note);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_hw_analog_is_dac_unity_active(
-    ctx: *const LasapiHwAnalogCtx,
-) -> bool {
-    !ctx.is_null() && unsafe { &*ctx }.dac_unity_active.load(Ordering::Relaxed) != 0
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_hw_analog_get_drive_linear(
-    ctx: *const LasapiHwAnalogCtx,
-) -> f32 {
-    if ctx.is_null() {
-        return 1.0;
+    pub fn drive_linear(&self) -> f32 {
+        (self.0.drive_ppm.load(Ordering::Relaxed) as f32) * (1.0 / 1_000_000.0)
     }
-    let ppm = unsafe { &*ctx }.drive_ppm.load(Ordering::Relaxed);
-    (ppm as f32) * (1.0 / 1_000_000.0)
-}
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_hw_analog_softknee_active(
-    ctx: *const LasapiHwAnalogCtx,
-) -> bool {
-    !ctx.is_null() && unsafe { &*ctx }.softknee_active.load(Ordering::Relaxed) != 0
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_hw_analog_get_cap_makeup_linear(
-    ctx: *const LasapiHwAnalogCtx,
-) -> f32 {
-    if ctx.is_null() {
-        return 1.0;
+    pub fn softknee_active(&self) -> bool {
+        self.0.softknee_active.load(Ordering::Relaxed) != 0
     }
-    let ppm = unsafe { &*ctx }.cap_makeup_ppm.load(Ordering::Relaxed);
-    (ppm as f32) * (1.0 / 1_000_000.0)
-}
 
-#[no_mangle]
-pub unsafe extern "C" fn lasapi_hw_analog_score_card(
-    card_index: u32,
-    dev_name: *const c_char,
-) -> c_int {
-    let p_usb = format!("/proc/asound/card{card_index}/usbid");
-    let p_drv = format!("/sys/class/sound/card{card_index}/device/uevent");
-    let p_stream = format!("/proc/asound/card{card_index}/stream0");
-    let usbid_opt = read_small_text(&p_usb);
-    let is_usb = usbid_opt.is_some();
-    let has_usb_file = Path::new(&p_usb).exists();
-    let usbid = usbid_opt.unwrap_or_default();
-    let uevent = read_small_text(&p_drv).unwrap_or_default();
-    let stream_head = read_small_text(&p_stream).unwrap_or_default();
-    let has_hp_jack = card_has_plugged_headphone_jack(card_index as i32);
-    let dname = unsafe { ptr_to_opt_str(dev_name) }.unwrap_or_default();
-    score_card_with_meta_hp(
-        &dname,
-        is_usb,
-        has_usb_file,
-        &usbid,
-        &uevent,
-        &stream_head,
-        has_hp_jack,
-    )
+    pub fn cap_makeup_linear(&self) -> f32 {
+        (self.0.cap_makeup_ppm.load(Ordering::Relaxed) as f32) * (1.0 / 1_000_000.0)
+    }
 }
 
 #[cfg(test)]
@@ -1685,11 +1597,8 @@ mod tests {
         assert_eq!(cfg.analog_boost_db, 0.0);
         assert_eq!(cfg.mic_hw_boost_db, 24.0);
 
-        let ctx = lasapi_hw_analog_create();
-        unsafe {
-            assert!(!lasapi_hw_analog_is_dac_unity_active(ctx));
-            assert!((lasapi_hw_analog_get_drive_linear(ctx) - 1.0).abs() < 1e-6);
-            lasapi_hw_analog_destroy(ctx);
-        }
+        let stage = AnalogStage::new();
+        assert!(!stage.is_dac_unity_active());
+        assert!((stage.drive_linear() - 1.0).abs() < 1e-6);
     }
 }

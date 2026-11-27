@@ -15,7 +15,6 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use salsa_tools::host::{home_dir, read_text_lossy};
-use salsa_wire::unix_sys::dl_open_any;
 
 use crate::gio_dbus::{load_opt_sym, load_sym};
 
@@ -89,7 +88,10 @@ static X11_ERR_HANDLER_SET: AtomicBool = AtomicBool::new(false);
 
 pub fn x11() -> Option<&'static X11Api> {
     X11.get_or_init(|| unsafe {
-        let lib = dl_open_any(&["libX11.so.6", "libX11.so"]);
+        let lib = salsa_host_dl::open_verified_optional_lib(
+            &["libX11.so.6", "libX11.so"],
+            x11 as *const () as *const c_void,
+        );
         if lib.is_null() {
             return None;
         }
@@ -116,7 +118,10 @@ pub fn x11() -> Option<&'static X11Api> {
 fn xrandr() -> Option<&'static XrandrApi> {
     XRANDR
         .get_or_init(|| unsafe {
-            let lib = dl_open_any(&["libXrandr.so.2", "libXrandr.so"]);
+            let lib = salsa_host_dl::open_verified_optional_lib(
+                &["libXrandr.so.2", "libXrandr.so"],
+                xrandr as *const () as *const c_void,
+            );
             if lib.is_null() {
                 return None;
             }

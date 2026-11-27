@@ -6,17 +6,16 @@
 // the Free Software Foundation, version 3 of the License.
 
 use core::ffi::{c_char, c_int, c_long, c_void};
-use core::mem::{self, offset_of};
-use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::mem;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::collections::VecDeque;
 use std::env;
 use std::ffi::CString;
 use std::fmt::Write as FmtWrite;
-use std::fs::{self, File, OpenOptions};
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::os::unix::io::{AsRawFd, OwnedFd};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,14 +24,16 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use salsa_wire::c_abi::{
-    LasapiMidiEvent, LasapiPwPreviewShm, WaveFormatEx, AUDCLNT_SHAREMODE_SHARED,
-    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, LASAPI_FMT_FLOAT32, LASAPI_PW_PREVIEW_MAGIC,
-    LASAPI_PW_PREVIEW_MAX_BYTES, LASAPI_PW_PREVIEW_MAX_H, LASAPI_PW_PREVIEW_MAX_W,
-    LASAPI_PW_PREVIEW_VERSION,
+    LasapiMidiEvent, WaveFormatEx, AUDCLNT_SHAREMODE_SHARED,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, LASAPI_FMT_FLOAT32, LASAPI_PW_PREVIEW_MAX_H,
+    LASAPI_PW_PREVIEW_MAX_W,
+};
+use salsa_wire::provisioning::{
+    LEGACY_SETTINGS_FILENAME, MANAGED_USER_UNITS, MASKED_PIPEWIRE_UNITS, UNIFIED_SETTINGS_FILENAME,
 };
 use salsa_wire::unix_sys::{
     audiodg_sock_path, current_hostname, debug_in_sock_path, mono_ns,
-    resolve_sock_path_common, MappedMem, O_CLOEXEC, O_NOFOLLOW,
+    resolve_sock_path_common,
 };
 
 use crate::host::{
@@ -930,23 +931,8 @@ impl SystemAuditScanner {
             ]));
         }
 
-        let unit_names = [
-            "lasapi-pipewire.socket",
-            "lasapi-audiodg.service",
-            "lasapi-tray.service",
-            "lasapi-module-watcher.path",
-            "lasapi-module-watcher.service",
-            "lasapi-module-watcher.timer",
-            "pipewire.service",
-            "pipewire.socket",
-            "pipewire-pulse.service",
-            "pipewire-pulse.socket",
-            "wireplumber.service",
-            "pulseaudio.service",
-            "pulseaudio.socket",
-        ];
-        let mut units_arr = Vec::with_capacity(unit_names.len());
-        for unit in unit_names {
+        let mut units_arr = Vec::with_capacity(MANAGED_USER_UNITS.len() + MASKED_PIPEWIRE_UNITS.len());
+        for unit in MANAGED_USER_UNITS.iter().chain(MASKED_PIPEWIRE_UNITS.iter()) {
             units_arr.push(query_systemd_unit(unit));
         }
 
@@ -1289,8 +1275,8 @@ fn scan_configs(base_dir: &Path) -> JsonValue {
 
     let mut state_files = Vec::new();
     for fname in [
-        "salsa_settings.json",
-        "gui_settings.json",
+        LEGACY_SETTINGS_FILENAME,
+        UNIFIED_SETTINGS_FILENAME,
         "pipewire_zero_mode",
         "module_versions.state",
         "autosync.log",
@@ -2185,8 +2171,8 @@ impl DiagnosticProbes {
         }
         let st_dir = state_dir();
         for fname in [
-            "salsa_settings.json",
-            "gui_settings.json",
+            LEGACY_SETTINGS_FILENAME,
+            UNIFIED_SETTINGS_FILENAME,
             "pipewire_zero_mode",
             "module_versions.state",
             "flatpak_overrides.list",
@@ -2372,74 +2358,16 @@ fn dlopen_symbol_check(path: &Path, symbol: &str) -> bool {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct PreviewFrameData {
-    pub width: u32,
-    pub height: u32,
-    pub stride: u32,
-    pub seq: u64,
-    pub pts_ns: u64,
-    pub prod_node_id: u32,
-    pub cons_count: u32,
-    pub active_stream: bool,
-    pub is_dmabuf: bool,
-    pub dmabuf_mappable: bool,
-    pub actual_fps_x100: u32,
-    pub target_max_w: u32,
-    pub target_max_h: u32,
-    pub target_fps: u32,
-    pub cast_fps_cap: u32,
-    pub prod_name: String,
-    pub format_name: String,
-    pub rgba: Vec<u8>,
-}
+pub use salsa_wire::preview_shm::PreviewFrameSnapshot as PreviewFrameData;
 
 pub struct ScreenCastShmReader {
-    _fd: OwnedFd,
-    map: MappedMem,
+    inner: salsa_wire::preview_shm::PreviewShmReader,
 }
 
 impl ScreenCastShmReader {
     pub fn open(shm_name: &str) -> Result<Self, String> {
-        let map_size = mem::size_of::<LasapiPwPreviewShm>();
-        let trimmed = shm_name.trim_start_matches('/');
-        if trimmed.is_empty() {
-            return Err("empty preview shm name".to_string());
-        }
-        let path = if shm_name.starts_with('/') && Path::new(shm_name).exists() {
-            PathBuf::from(shm_name)
-        } else {
-            PathBuf::from(format!("/dev/shm/{trimmed}"))
-        };
-        let f: File = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(O_CLOEXEC | O_NOFOLLOW)
-            .open(&path)
-            .map_err(|e| format!("open {}: {e}", path.display()))?;
-        let meta = f
-            .metadata()
-            .map_err(|e| format!("stat {}: {e}", path.display()))?;
-        if !meta.file_type().is_file() || (meta.len() as usize) < map_size {
-            return Err(format!(
-                "invalid preview shm {}: size={}",
-                path.display(),
-                meta.len()
-            ));
-        }
-        let fd: OwnedFd = f.into();
-        let map = MappedMem::map_fd(fd.as_raw_fd(), map_size, true, 0)
-            .ok_or_else(|| format!("mmap {} failed", path.display()))?;
-        let shm = unsafe { &*(map.as_ptr() as *const LasapiPwPreviewShm) };
-        let magic = unsafe { core::ptr::read_volatile(&shm.magic) };
-        let version = unsafe { core::ptr::read_volatile(&shm.version) };
-        if magic != LASAPI_PW_PREVIEW_MAGIC || version != LASAPI_PW_PREVIEW_VERSION {
-            return Err(format!(
-                "invalid preview shm header in {} (magic=0x{magic:08x}, version={version})",
-                path.display()
-            ));
-        }
-        Ok(Self { _fd: fd, map })
+        salsa_wire::preview_shm::PreviewShmReader::open_path(shm_name)
+            .map(|inner| Self { inner })
     }
 
     pub fn send_preview_ping(
@@ -2450,167 +2378,16 @@ impl ScreenCastShmReader {
         target_fps: u32,
         cast_fps_cap: u32,
     ) {
-        let base = self.map.as_ptr();
-        if base.is_null() {
-            return;
-        }
-        unsafe {
-            let ping_ptr = base.add(offset_of!(LasapiPwPreviewShm, last_gui_ping_ns)) as *const AtomicU64;
-            let req_ptr = base.add(offset_of!(LasapiPwPreviewShm, preview_requested)) as *const AtomicU32;
-            let tw_ptr = base.add(offset_of!(LasapiPwPreviewShm, target_max_w)) as *const AtomicU32;
-            let th_ptr = base.add(offset_of!(LasapiPwPreviewShm, target_max_h)) as *const AtomicU32;
-            let tf_ptr = base.add(offset_of!(LasapiPwPreviewShm, target_fps)) as *const AtomicU32;
-            let cap_ptr = base.add(offset_of!(LasapiPwPreviewShm, cast_fps_cap)) as *const AtomicU32;
-            (*tw_ptr).store(max_w.min(LASAPI_PW_PREVIEW_MAX_W), Ordering::Relaxed);
-            (*th_ptr).store(max_h.min(LASAPI_PW_PREVIEW_MAX_H), Ordering::Relaxed);
-            (*tf_ptr).store(target_fps, Ordering::Relaxed);
-            (*cap_ptr).store(cast_fps_cap, Ordering::Relaxed);
-            (*req_ptr).store(u32::from(enabled), Ordering::Release);
-            (*ping_ptr).store(mono_ns(), Ordering::Release);
-        }
+        self.inner
+            .send_preview_ping(enabled, max_w, max_h, target_fps, cast_fps_cap);
     }
 
     pub fn read_frame(&self) -> Option<PreviewFrameData> {
-        self.read_frame_since(None)
+        self.inner.read_frame()
     }
 
     pub fn read_frame_since(&self, prev_seq: Option<u64>) -> Option<PreviewFrameData> {
-        let base = self.map.as_ptr();
-        if base.is_null() {
-            return None;
-        }
-        let shm = unsafe { &*(base as *const LasapiPwPreviewShm) };
-        let magic = unsafe { core::ptr::read_volatile(&shm.magic) };
-        let version = unsafe { core::ptr::read_volatile(&shm.version) };
-        if magic != LASAPI_PW_PREVIEW_MAGIC || version != LASAPI_PW_PREVIEW_VERSION {
-            return None;
-        }
-        let seqlock_ptr =
-            unsafe { base.add(offset_of!(LasapiPwPreviewShm, seqlock)) as *const AtomicU64 };
-        let mut deadline: Option<Instant> = None;
-        for attempt in 0..64 {
-            let s1 = unsafe { (*seqlock_ptr).load(Ordering::Acquire) };
-            if (s1 & 1) == 0 {
-                let (
-                    w,
-                    h,
-                    src_w,
-                    src_h,
-                    stride,
-                    seq,
-                    pts_ns,
-                    prod_node_id,
-                    cons_count,
-                    active_stream,
-                    is_dmabuf,
-                    dmabuf_mappable,
-                    actual_fps_x100,
-                    target_max_w,
-                    target_max_h,
-                    target_fps,
-                    cast_fps_cap,
-                    prod_raw,
-                    fmt_raw,
-                ) = unsafe {
-                    (
-                        core::ptr::read_volatile(&shm.dst_width),
-                        core::ptr::read_volatile(&shm.dst_height),
-                        core::ptr::read_volatile(&shm.src_width),
-                        core::ptr::read_volatile(&shm.src_height),
-                        core::ptr::read_volatile(&shm.dst_stride),
-                        core::ptr::read_volatile(&shm.frame_seq),
-                        core::ptr::read_volatile(&shm.pts_ns),
-                        core::ptr::read_volatile(&shm.prod_node_id),
-                        core::ptr::read_volatile(&shm.cons_count),
-                        core::ptr::read_volatile(&shm.active_stream) != 0,
-                        core::ptr::read_volatile(&shm.is_dmabuf) != 0,
-                        core::ptr::read_volatile(&shm.dmabuf_mappable) != 0,
-                        core::ptr::read_volatile(&shm.actual_fps_x100),
-                        core::ptr::read_volatile(&shm.target_max_w),
-                        core::ptr::read_volatile(&shm.target_max_h),
-                        core::ptr::read_volatile(&shm.target_fps),
-                        core::ptr::read_volatile(&shm.cast_fps_cap),
-                        core::ptr::read_volatile(&shm.prod_name),
-                        core::ptr::read_volatile(&shm.format_name),
-                    )
-                };
-                let unchanged = active_stream && prev_seq.is_some_and(|p| p != 0 && seq == p);
-                let row_bytes = (w as usize).saturating_mul(4);
-                let byte_len = (stride as usize).saturating_mul(h as usize);
-                let rgba = if !unchanged
-                    && w > 0
-                    && h > 0
-                    && w <= LASAPI_PW_PREVIEW_MAX_W
-                    && h <= LASAPI_PW_PREVIEW_MAX_H
-                    && (stride as usize) >= row_bytes
-                    && byte_len <= LASAPI_PW_PREVIEW_MAX_BYTES
-                    && byte_len <= shm.pixels.len()
-                {
-                    let total_out = row_bytes.saturating_mul(h as usize);
-                    let mut out = vec![0u8; total_out];
-                    let src = &shm.pixels[..byte_len];
-                    let st = stride as usize;
-                    let wu = w as usize;
-                    for (y, drow) in out.chunks_exact_mut(row_bytes).enumerate() {
-                        let srow = &src[y * st..y * st + row_bytes];
-                        let (schunks, _) = srow.as_chunks::<4>();
-                        let (dchunks, _) = drow.as_chunks_mut::<4>();
-                        for (&[b, g, r, _], dp) in schunks.iter().take(wu).zip(dchunks.iter_mut()) {
-                            // PipeWire preview pixels arrive in BGRx/BGRA byte order;
-                            // force opaque alpha so BGRx frames render visibly and export cleanly.
-                            *dp = [r, g, b, 255];
-                        }
-                    }
-                    out
-                } else {
-                    Vec::new()
-                };
-                let out_stride = if rgba.is_empty() { 0 } else { w.saturating_mul(4) };
-                let disp_w = if w > 0 { w } else { src_w };
-                let disp_h = if h > 0 { h } else { src_h };
-                let prod_name = cstr_to_string(&prod_raw);
-                let format_name = cstr_to_string(&fmt_raw);
-
-                fence(Ordering::Acquire);
-                let s2 = unsafe { (*seqlock_ptr).load(Ordering::Acquire) };
-                if s1 == s2 {
-                    return Some(PreviewFrameData {
-                        width: disp_w,
-                        height: disp_h,
-                        stride: out_stride,
-                        seq,
-                        pts_ns,
-                        prod_node_id,
-                        cons_count,
-                        active_stream,
-                        is_dmabuf,
-                        dmabuf_mappable,
-                        actual_fps_x100,
-                        target_max_w,
-                        target_max_h,
-                        target_fps,
-                        cast_fps_cap,
-                        prod_name,
-                        format_name,
-                        rgba,
-                    });
-                }
-            }
-            if attempt < 4 {
-                std::hint::spin_loop();
-            } else {
-                let d = *deadline.get_or_insert_with(|| Instant::now() + Duration::from_millis(8));
-                if Instant::now() >= d {
-                    return None;
-                }
-                if attempt == 4 {
-                    thread::yield_now();
-                } else {
-                    thread::sleep(Duration::from_micros(250));
-                }
-            }
-        }
-        None
+        self.inner.read_frame_since(prev_seq)
     }
 }
 
@@ -2678,6 +2455,12 @@ impl DryRunDesktopCapturer {
 
 #[cfg(test)]
 mod tests {
+    use core::mem::offset_of;
+    use core::sync::atomic::AtomicU64;
+    use std::fs::OpenOptions;
+    use std::os::unix::io::AsRawFd;
+    use salsa_wire::c_abi::{LasapiPwPreviewShm, LASAPI_PW_PREVIEW_MAX_BYTES};
+    use salsa_wire::unix_sys::MappedMem;
     use super::*;
 
     #[test]
@@ -2737,6 +2520,8 @@ mod tests {
 
     #[test]
     fn screencast_shm_reader_waits_for_seqlock_and_skips_unchanged_seq() {
+        use salsa_wire::preview_shm::{PreviewFrameHeader, PreviewShmWriter};
+
         let shm_path = env::temp_dir().join(format!("salsa_sc_shm_test_{}", std::process::id()));
         let map_size = mem::size_of::<LasapiPwPreviewShm>();
         {
@@ -2751,22 +2536,33 @@ mod tests {
         }
         let shm_str = shm_path.to_string_lossy().into_owned();
         let fd = OpenOptions::new().read(true).write(true).open(&shm_path).unwrap();
-        let mut map = MappedMem::map_fd(fd.as_raw_fd(), map_size, true, 0).unwrap();
-        let base = map.as_mut_slice().as_mut_ptr();
-        unsafe {
-            let shm = &mut *(base as *mut LasapiPwPreviewShm);
-            shm.magic = LASAPI_PW_PREVIEW_MAGIC;
-            shm.version = LASAPI_PW_PREVIEW_VERSION;
-            shm.active_stream = 1;
-            shm.dst_width = 4;
-            shm.dst_height = 2;
-            shm.dst_stride = 16;
-            shm.frame_seq = 1;
-            shm.seqlock = 2;
-            for px in shm.pixels[..32].as_chunks_mut::<4>().0 {
+        let wmap = MappedMem::map_fd(fd.as_raw_fd(), map_size, true, 0).unwrap();
+        let mut writer_shm = PreviewShmWriter::init_from_map(wmap).unwrap();
+        let hdr = PreviewFrameHeader {
+            is_dmabuf: false,
+            dmabuf_mappable: false,
+            src_width: 4,
+            src_height: 2,
+            src_stride: 16,
+            src_spa_format: 8,
+            drm_modifier: 0,
+            prod_node_id: 1,
+            cons_count: 1,
+            pts_ns: 1,
+            prod_name: "test-src",
+            format_name: "BGRx",
+            target_max_w: 1920,
+            target_max_h: 1080,
+            target_fps: 60,
+            actual_fps_x100: 6000,
+            cast_fps_cap: 120,
+        };
+        writer_shm.publish_frame(&hdr, |pixels| {
+            for px in pixels[..32].as_chunks_mut::<4>().0 {
                 px.copy_from_slice(&[0x11, 0x55, 0xaa, 0x00]);
             }
-        }
+            Some((4, 2, 16, false))
+        });
 
         let reader = ScreenCastShmReader::open(&shm_str).unwrap();
         let f1 = reader.read_frame_since(None).expect("initial frame");
@@ -2781,22 +2577,29 @@ mod tests {
         assert!(unchanged.rgba.is_empty());
 
         // Hold writer seqlock odd for 2ms, simulating a slow 1440p SHM copy.
+        let fd2 = OpenOptions::new().read(true).write(true).open(&shm_path).unwrap();
+        let map2 = MappedMem::map_fd(fd2.as_raw_fd(), map_size, true, 0).unwrap();
+        let base_addr = map2.as_ptr() as usize;
         unsafe {
-            let seq_ptr = base.add(offset_of!(LasapiPwPreviewShm, seqlock)) as *const AtomicU64;
-            (*seq_ptr).store(3, Ordering::Release);
+            let shm_p = (base_addr as *mut u8).cast::<LasapiPwPreviewShm>();
+            AtomicU64::from_ptr(core::ptr::addr_of_mut!((*shm_p).seqlock))
+                .store(3, Ordering::Release);
         }
-        let shm_addr = base as usize;
         let writer = thread::spawn(move || {
-            let base_p = shm_addr as *mut u8;
-            let seq_ptr =
-                unsafe { base_p.add(offset_of!(LasapiPwPreviewShm, seqlock)) as *const AtomicU64 };
-            let shm = unsafe { &mut *(base_p as *mut LasapiPwPreviewShm) };
+            let _keep_map = map2;
+            let _keep_fd = fd2;
             thread::sleep(Duration::from_millis(2));
-            shm.frame_seq = 2;
-            for px in shm.pixels[..32].as_chunks_mut::<4>().0 {
-                px.copy_from_slice(&[0x22, 0x66, 0xbb, 0x00]);
+            unsafe {
+                let shm_p = (base_addr as *mut u8).cast::<LasapiPwPreviewShm>();
+                AtomicU64::from_ptr(core::ptr::addr_of_mut!((*shm_p).seqlock))
+                    .store(2, Ordering::Release);
             }
-            unsafe { (*seq_ptr).store(4, Ordering::Release) };
+            writer_shm.publish_frame(&hdr, |pixels| {
+                for px in pixels[..32].as_chunks_mut::<4>().0 {
+                    px.copy_from_slice(&[0x22, 0x66, 0xbb, 0x00]);
+                }
+                Some((4, 2, 16, false))
+            });
         });
 
         let f2 = reader

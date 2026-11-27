@@ -9,7 +9,7 @@
 #![allow(non_camel_case_types)]
 #![allow(clippy::too_many_arguments)]
 
-use core::ffi::{c_char, c_int, c_uint, c_void};
+use core::ffi::{c_char, c_void};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ use std::ffi::CStr;
 use std::fs;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -29,11 +29,11 @@ use salsa_wire::pw_wire::{
     VF_ABGR, VF_ARGB, VF_BGRA, VF_BGRX, VF_RGBA, VF_RGBX, VF_XBGR, VF_XRGB,
 };
 use salsa_wire::unix_sys::{
-    dl_open_any, do_poll, eventfd_drain, eventfd_signal, mono_ns, recvmsg_with_fds,
-    sendmsg_all_with_fds, MappedMem, PollFd, RecvFdsResult, POLLIN,
+    do_poll, eventfd_drain, eventfd_signal, mono_ns, recvmsg_with_fds, sendmsg_all_with_fds,
+    MappedMem, PollFd, RecvFdsResult, POLLIN,
 };
 
-use crate::gio_dbus::{cstr, glib, gobj, load_sym, G_BUS_TYPE_SESSION};
+use crate::gio_dbus::{cstr, gio, glib, gobj, G_BUS_TYPE_SESSION};
 
 const PW_CORE_M_HELLO: u8 = 1;
 const PW_CORE_M_CREATE_OBJ: u8 = 6;
@@ -59,139 +59,6 @@ const PORTAL_PATH: &CStr = c"/org/freedesktop/portal/desktop";
 const PORTAL_SC_IFACE: &CStr = c"org.freedesktop.portal.ScreenCast";
 const PORTAL_REQ_IFACE: &CStr = c"org.freedesktop.portal.Request";
 const PORTAL_SESS_IFACE: &CStr = c"org.freedesktop.portal.Session";
-
-type SignalCallback = unsafe extern "C" fn(
-    *mut c_void,
-    *const c_char,
-    *const c_char,
-    *const c_char,
-    *const c_char,
-    *mut c_void,
-    *mut c_void,
-);
-
-struct PortalGlibExt {
-    g_main_context_iteration: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
-    g_variant_builder_new: unsafe extern "C" fn(*const c_void) -> *mut c_void,
-    g_variant_builder_add_value: unsafe extern "C" fn(*mut c_void, *mut c_void),
-    g_variant_builder_end: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-    g_variant_builder_unref: unsafe extern "C" fn(*mut c_void),
-    g_variant_new_dict_entry: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void,
-    g_variant_new_variant: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-    g_variant_new_object_path: unsafe extern "C" fn(*const c_char) -> *mut c_void,
-    g_variant_lookup_value:
-        unsafe extern "C" fn(*mut c_void, *const c_char, *const c_void) -> *mut c_void,
-    g_variant_get_uint32: unsafe extern "C" fn(*mut c_void) -> u32,
-    g_variant_get_handle: unsafe extern "C" fn(*mut c_void) -> i32,
-}
-
-struct PortalGioExt {
-    g_bus_get_sync: unsafe extern "C" fn(c_int, *mut c_void, *mut *mut c_void) -> *mut c_void,
-    g_dbus_connection_get_unique_name: unsafe extern "C" fn(*mut c_void) -> *const c_char,
-    g_dbus_connection_signal_subscribe: unsafe extern "C" fn(
-        *mut c_void,
-        *const c_char,
-        *const c_char,
-        *const c_char,
-        *const c_char,
-        *const c_char,
-        c_uint,
-        Option<SignalCallback>,
-        *mut c_void,
-        Option<unsafe extern "C" fn(*mut c_void)>,
-    ) -> c_uint,
-    g_dbus_connection_signal_unsubscribe: unsafe extern "C" fn(*mut c_void, c_uint),
-    g_dbus_connection_call_sync: unsafe extern "C" fn(
-        *mut c_void,
-        *const c_char,
-        *const c_char,
-        *const c_char,
-        *const c_char,
-        *mut c_void,
-        *const c_void,
-        c_uint,
-        c_int,
-        *mut c_void,
-        *mut *mut c_void,
-    ) -> *mut c_void,
-    g_dbus_connection_call_with_unix_fd_list_sync: unsafe extern "C" fn(
-        *mut c_void,
-        *const c_char,
-        *const c_char,
-        *const c_char,
-        *const c_char,
-        *mut c_void,
-        *const c_void,
-        c_uint,
-        c_int,
-        *mut c_void,
-        *mut *mut c_void,
-        *mut c_void,
-        *mut *mut c_void,
-    ) -> *mut c_void,
-    g_unix_fd_list_get: unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_void) -> c_int,
-}
-
-static PORTAL_GLIB_EXT: OnceLock<Result<PortalGlibExt, String>> = OnceLock::new();
-static PORTAL_GIO_EXT: OnceLock<Result<PortalGioExt, String>> = OnceLock::new();
-
-fn portal_glib() -> Result<&'static PortalGlibExt, &'static str> {
-    PORTAL_GLIB_EXT
-        .get_or_init(|| unsafe {
-            let lib = dl_open_any(&["libglib-2.0.so.0", "libglib-2.0.so"]);
-            if lib.is_null() {
-                return Err("failed dlopen libglib-2.0.so.0".into());
-            }
-            Ok(PortalGlibExt {
-                g_main_context_iteration: load_sym(lib, c"g_main_context_iteration")?,
-                g_variant_builder_new: load_sym(lib, c"g_variant_builder_new")?,
-                g_variant_builder_add_value: load_sym(lib, c"g_variant_builder_add_value")?,
-                g_variant_builder_end: load_sym(lib, c"g_variant_builder_end")?,
-                g_variant_builder_unref: load_sym(lib, c"g_variant_builder_unref")?,
-                g_variant_new_dict_entry: load_sym(lib, c"g_variant_new_dict_entry")?,
-                g_variant_new_variant: load_sym(lib, c"g_variant_new_variant")?,
-                g_variant_new_object_path: load_sym(lib, c"g_variant_new_object_path")?,
-                g_variant_lookup_value: load_sym(lib, c"g_variant_lookup_value")?,
-                g_variant_get_uint32: load_sym(lib, c"g_variant_get_uint32")?,
-                g_variant_get_handle: load_sym(lib, c"g_variant_get_handle")?,
-            })
-        })
-        .as_ref()
-        .map_err(String::as_str)
-}
-
-fn portal_gio() -> Result<&'static PortalGioExt, &'static str> {
-    PORTAL_GIO_EXT
-        .get_or_init(|| unsafe {
-            let lib = dl_open_any(&["libgio-2.0.so.0", "libgio-2.0.so"]);
-            if lib.is_null() {
-                return Err("failed dlopen libgio-2.0.so.0".into());
-            }
-            Ok(PortalGioExt {
-                g_bus_get_sync: load_sym(lib, c"g_bus_get_sync")?,
-                g_dbus_connection_get_unique_name: load_sym(
-                    lib,
-                    c"g_dbus_connection_get_unique_name",
-                )?,
-                g_dbus_connection_signal_subscribe: load_sym(
-                    lib,
-                    c"g_dbus_connection_signal_subscribe",
-                )?,
-                g_dbus_connection_signal_unsubscribe: load_sym(
-                    lib,
-                    c"g_dbus_connection_signal_unsubscribe",
-                )?,
-                g_dbus_connection_call_sync: load_sym(lib, c"g_dbus_connection_call_sync")?,
-                g_dbus_connection_call_with_unix_fd_list_sync: load_sym(
-                    lib,
-                    c"g_dbus_connection_call_with_unix_fd_list_sync",
-                )?,
-                g_unix_fd_list_get: load_sym(lib, c"g_unix_fd_list_get")?,
-            })
-        })
-        .as_ref()
-        .map_err(String::as_str)
-}
 
 #[derive(Clone, Debug)]
 pub struct PortalPreviewStatus {
@@ -270,7 +137,6 @@ unsafe extern "C" fn on_portal_request_response(
         return;
     }
     let Ok(gl) = glib() else { return };
-    let Ok(pgl) = portal_glib() else { return };
 
     let slot_arc = unsafe { &*(user_data as *const Mutex<PortalResponseSlot>) };
     let path_str = unsafe { CStr::from_ptr(obj_path) }.to_string_lossy();
@@ -291,7 +157,7 @@ unsafe extern "C" fn on_portal_request_response(
     let code_v = unsafe { (gl.g_variant_get_child_value)(parameters, 0) };
     let results_v = unsafe { (gl.g_variant_get_child_value)(parameters, 1) };
     let code = if !code_v.is_null() {
-        unsafe { (pgl.g_variant_get_uint32)(code_v) }
+        unsafe { (gl.g_variant_get_uint32)(code_v) }
     } else {
         2
     };
@@ -301,7 +167,7 @@ unsafe extern "C" fn on_portal_request_response(
 
     if !results_v.is_null() {
         let sh_v = unsafe {
-            (pgl.g_variant_lookup_value)(
+            (gl.g_variant_lookup_value)(
                 results_v,
                 c"session_handle".as_ptr(),
                 (gl.g_variant_type_checked_)(c"s".as_ptr()),
@@ -321,7 +187,7 @@ unsafe extern "C" fn on_portal_request_response(
         }
 
         let tok_v = unsafe {
-            (pgl.g_variant_lookup_value)(
+            (gl.g_variant_lookup_value)(
                 results_v,
                 c"restore_token".as_ptr(),
                 (gl.g_variant_type_checked_)(c"s".as_ptr()),
@@ -342,7 +208,7 @@ unsafe extern "C" fn on_portal_request_response(
         }
 
         let streams_v = unsafe {
-            (pgl.g_variant_lookup_value)(
+            (gl.g_variant_lookup_value)(
                 results_v,
                 c"streams".as_ptr(),
                 (gl.g_variant_type_checked_)(c"a(ua{sv})".as_ptr()),
@@ -355,7 +221,7 @@ unsafe extern "C" fn on_portal_request_response(
                 if !st0.is_null() {
                     let nid_v = unsafe { (gl.g_variant_get_child_value)(st0, 0) };
                     if !nid_v.is_null() {
-                        guard.node_id = Some(unsafe { (pgl.g_variant_get_uint32)(nid_v) });
+                        guard.node_id = Some(unsafe { (gl.g_variant_get_uint32)(nid_v) });
                         unsafe { (gl.g_variant_unref)(nid_v) };
                     }
                     unsafe { (gl.g_variant_unref)(st0) };
@@ -372,21 +238,20 @@ unsafe extern "C" fn on_portal_request_response(
 
 unsafe fn build_vardict(entries: &[(&str, *mut c_void)]) -> Option<*mut c_void> {
     let gl = glib().ok()?;
-    let pgl = portal_glib().ok()?;
     let tp = unsafe { (gl.g_variant_type_checked_)(c"a{sv}".as_ptr()) };
-    let b = unsafe { (pgl.g_variant_builder_new)(tp) };
+    let b = unsafe { (gl.g_variant_builder_new)(tp) };
     if b.is_null() {
         return None;
     }
     for &(k, val) in entries {
         let kc = cstr(k);
         let k_var = unsafe { (gl.g_variant_new_string)(kc.as_ptr()) };
-        let wrapped = unsafe { (pgl.g_variant_new_variant)(val) };
-        let de = unsafe { (pgl.g_variant_new_dict_entry)(k_var, wrapped) };
-        unsafe { (pgl.g_variant_builder_add_value)(b, de) };
+        let wrapped = unsafe { (gl.g_variant_new_variant)(val) };
+        let de = unsafe { (gl.g_variant_new_dict_entry)(k_var, wrapped) };
+        unsafe { (gl.g_variant_builder_add_value)(b, de) };
     }
-    let out = unsafe { (pgl.g_variant_builder_end)(b) };
-    unsafe { (pgl.g_variant_builder_unref)(b) };
+    let out = unsafe { (gl.g_variant_builder_end)(b) };
+    unsafe { (gl.g_variant_builder_unref)(b) };
     Some(out)
 }
 
@@ -401,8 +266,7 @@ unsafe fn portal_call_and_wait(
     timeout_ms: u64,
 ) -> Result<PortalResponseSlot, String> {
     let gl = glib().map_err(str::to_string)?;
-    let pgl = portal_glib().map_err(str::to_string)?;
-    let pgio = portal_gio().map_err(str::to_string)?;
+    let gi = gio().map_err(str::to_string)?;
 
     let expected_path = format!("/org/freedesktop/portal/desktop/request/{sender_sanitized}/{handle_token}");
     let slot = Box::new(Mutex::new(PortalResponseSlot {
@@ -417,7 +281,7 @@ unsafe fn portal_call_and_wait(
     let slot_ptr = Box::into_raw(slot);
 
     let sub_id = unsafe {
-        (pgio.g_dbus_connection_signal_subscribe)(
+        (gi.g_dbus_connection_signal_subscribe)(
             conn,
             PORTAL_DEST.as_ptr(),
             PORTAL_REQ_IFACE.as_ptr(),
@@ -433,7 +297,7 @@ unsafe fn portal_call_and_wait(
 
     let mut gerr: *mut c_void = ptr::null_mut();
     let reply = unsafe {
-        (pgio.g_dbus_connection_call_sync)(
+        (gi.g_dbus_connection_call_sync)(
             conn,
             PORTAL_DEST.as_ptr(),
             PORTAL_PATH.as_ptr(),
@@ -450,7 +314,7 @@ unsafe fn portal_call_and_wait(
     if !gerr.is_null() {
         unsafe {
             (gl.g_error_free)(gerr);
-            (pgio.g_dbus_connection_signal_unsubscribe)(conn, sub_id);
+            (gi.g_dbus_connection_signal_unsubscribe)(conn, sub_id);
             drop(Box::from_raw(slot_ptr));
         }
         return Err(format!("D-Bus call {} failed", method.to_string_lossy()));
@@ -473,7 +337,7 @@ unsafe fn portal_call_and_wait(
     let deadline_ns = mono_ns().saturating_add(timeout_ms * 1_000_000);
     while !stop.load(Ordering::Acquire) {
         unsafe {
-            while (pgl.g_main_context_iteration)(ctx, 0) != 0 {}
+            while (gl.g_main_context_iteration)(ctx, 0) != 0 {}
         }
         {
             let g = unsafe { &*slot_ptr }.lock().unwrap_or_else(|p| p.into_inner());
@@ -483,7 +347,7 @@ unsafe fn portal_call_and_wait(
         }
         if mono_ns() >= deadline_ns {
             unsafe {
-                (pgio.g_dbus_connection_signal_unsubscribe)(conn, sub_id);
+                (gi.g_dbus_connection_signal_unsubscribe)(conn, sub_id);
                 drop(Box::from_raw(slot_ptr));
             }
             return Err(format!("{} timed out", method.to_string_lossy()));
@@ -491,7 +355,7 @@ unsafe fn portal_call_and_wait(
         thread::sleep(Duration::from_millis(12));
     }
 
-    unsafe { (pgio.g_dbus_connection_signal_unsubscribe)(conn, sub_id) };
+    unsafe { (gi.g_dbus_connection_signal_unsubscribe)(conn, sub_id) };
     let final_slot = unsafe { Box::from_raw(slot_ptr) }
         .into_inner()
         .unwrap_or_else(|p| p.into_inner());
@@ -507,11 +371,10 @@ fn open_portal_screencast(
     allow_restore_token: bool,
 ) -> Result<(OwnedFd, u32, String, *mut c_void), (u32, String)> {
     let gl = glib().map_err(|e| (2, e.to_string()))?;
-    let pgl = portal_glib().map_err(|e| (2, e.to_string()))?;
-    let pgio = portal_gio().map_err(|e| (2, e.to_string()))?;
+    let gi = gio().map_err(|e| (2, e.to_string()))?;
 
     let mut gerr: *mut c_void = ptr::null_mut();
-    let conn = unsafe { (pgio.g_bus_get_sync)(G_BUS_TYPE_SESSION, ptr::null_mut(), &mut gerr) };
+    let conn = unsafe { (gi.g_bus_get_sync)(G_BUS_TYPE_SESSION, ptr::null_mut(), &mut gerr) };
     if conn.is_null() {
         if !gerr.is_null() {
             unsafe { (gl.g_error_free)(gerr) };
@@ -520,7 +383,7 @@ fn open_portal_screencast(
     }
     let go = gobj().map_err(|e| (2, e.to_string()))?;
 
-    let uname_ptr = unsafe { (pgio.g_dbus_connection_get_unique_name)(conn) };
+    let uname_ptr = unsafe { (gi.g_dbus_connection_get_unique_name)(conn) };
     if uname_ptr.is_null() {
         unsafe { (go.g_object_unref)(conn) };
         return Err((2, "missing D-Bus unique name".to_string()));
@@ -595,7 +458,7 @@ fn open_portal_screencast(
         let sh_c = cstr(sh);
         let mut e2: *mut c_void = ptr::null_mut();
         let res = unsafe {
-            (pgio.g_dbus_connection_call_sync)(
+            (gi.g_dbus_connection_call_sync)(
                 c,
                 PORTAL_DEST.as_ptr(),
                 sh_c.as_ptr(),
@@ -660,7 +523,7 @@ fn open_portal_screencast(
         return Err((2, "SelectSources options build failed".to_string()));
     };
     let sh_c = cstr(&session_handle);
-    let sel_args = [unsafe { (pgl.g_variant_new_object_path)(sh_c.as_ptr()) }, sel_opts];
+    let sel_args = [unsafe { (gl.g_variant_new_object_path)(sh_c.as_ptr()) }, sel_opts];
     let sel_params = unsafe { (gl.g_variant_new_tuple)(sel_args.as_ptr(), 2) };
     let sel_slot = unsafe {
         portal_call_and_wait(
@@ -711,7 +574,7 @@ fn open_portal_screencast(
         return Err((2, "Start options build failed".to_string()));
     };
     let start_args = [
-        unsafe { (pgl.g_variant_new_object_path)(sh_c.as_ptr()) },
+        unsafe { (gl.g_variant_new_object_path)(sh_c.as_ptr()) },
         unsafe { (gl.g_variant_new_string)(c"".as_ptr()) },
         start_opts,
     ];
@@ -778,14 +641,14 @@ fn open_portal_screencast(
         (2, "OpenPipeWireRemote options failed".to_string())
     })?;
     let open_args = [
-        unsafe { (pgl.g_variant_new_object_path)(sh_c.as_ptr()) },
+        unsafe { (gl.g_variant_new_object_path)(sh_c.as_ptr()) },
         empty_opts,
     ];
     let open_params = unsafe { (gl.g_variant_new_tuple)(open_args.as_ptr(), 2) };
     let mut out_fd_list: *mut c_void = ptr::null_mut();
     let mut gerr2: *mut c_void = ptr::null_mut();
     let open_reply = unsafe {
-        (pgio.g_dbus_connection_call_with_unix_fd_list_sync)(
+        (gi.g_dbus_connection_call_with_unix_fd_list_sync)(
             conn,
             PORTAL_DEST.as_ptr(),
             PORTAL_PATH.as_ptr(),
@@ -822,7 +685,7 @@ fn open_portal_screencast(
 
     let h_v = unsafe { (gl.g_variant_get_child_value)(open_reply, 0) };
     let fd_idx = if !h_v.is_null() {
-        let idx = unsafe { (pgl.g_variant_get_handle)(h_v) };
+        let idx = unsafe { (gl.g_variant_get_handle)(h_v) };
         unsafe { (gl.g_variant_unref)(h_v) };
         idx
     } else {
@@ -832,7 +695,7 @@ fn open_portal_screencast(
 
     let mut fd_err: *mut c_void = ptr::null_mut();
     let raw_fd = if fd_idx >= 0 {
-        unsafe { (pgio.g_unix_fd_list_get)(out_fd_list, fd_idx, &mut fd_err) }
+        unsafe { (gi.g_unix_fd_list_get)(out_fd_list, fd_idx, &mut fd_err) }
     } else {
         -1
     };
@@ -860,13 +723,13 @@ fn close_portal_session_dbus(conn: *mut c_void, session_handle: &str) {
         return;
     }
     let Ok(gl) = glib() else { return };
-    let Ok(pgio) = portal_gio() else { return };
+    let Ok(gi) = gio() else { return };
     let Ok(go) = gobj() else { return };
 
     let sh_c = cstr(session_handle);
     let mut gerr: *mut c_void = ptr::null_mut();
     let res = unsafe {
-        (pgio.g_dbus_connection_call_sync)(
+        (gi.g_dbus_connection_call_sync)(
             conn,
             PORTAL_DEST.as_ptr(),
             sh_c.as_ptr(),

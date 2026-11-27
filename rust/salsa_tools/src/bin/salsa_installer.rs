@@ -22,16 +22,10 @@ use salsa_tools::zlib_png::{decode_png_rgba, encode_png_rgba, resize_rgba};
 use salsa_wire::legal::{
     handle_common_cli_flag, salsa_version, COPY_TEXT, LESSER_COPY_TEXT, THIRD_PARTY_TEXT,
 };
+use salsa_wire::provisioning::{LEGACY_PACMAN_HOOK_PATHS, MANAGED_USER_UNITS, PACMAN_HOOK_PATH};
 use salsa_wire::unix_sys::reset_sigpipe_default;
 
 const ICON_SIZES: [u32; 5] = [512, 256, 128, 64, 48];
-
-const PACMAN_HOOK_PATH: &str = "/etc/pacman.d/hooks/99-salsa-autosync.hook";
-const LEGACY_PACMAN_HOOK_PATHS: [&str; 3] = [
-    "/etc/pacman.d/hooks/95-salsa-autosync.hook",
-    "/etc/pacman.d/hooks/99-lasapi-autosync.hook",
-    "/etc/pacman.d/hooks/lasapi-autosync.hook",
-];
 const AUTOSYNC_MARKER_DIR: &str = "/var/lib/salsa-autosync";
 const AUTOSYNC_MARKER_PATH: &str = "/var/lib/salsa-autosync/libpulse-updated";
 const PACMAN_HOOK_CONTENT: &str = "[Trigger]\n\
@@ -1104,14 +1098,7 @@ fn do_check(root: &Path) -> ExitCode {
     }
 
     let unit_dir = config_home().join("systemd/user");
-    for unit in [
-        "lasapi-pipewire.socket",
-        "lasapi-audiodg.service",
-        "lasapi-tray.service",
-        "lasapi-module-watcher.path",
-        "lasapi-module-watcher.service",
-        "lasapi-module-watcher.timer",
-    ] {
+    for unit in MANAGED_USER_UNITS {
         let up = unit_dir.join(unit);
         let active = run_quiet("systemctl", &["--user", "is-active", unit]);
         let enabled = run_quiet("systemctl", &["--user", "is-enabled", unit]);
@@ -1214,14 +1201,7 @@ fn do_check(root: &Path) -> ExitCode {
 
 fn do_uninstall(root: &Path) -> ExitCode {
     println!("==> Stopping & disabling Salsa user units...");
-    for unit in [
-        "lasapi-module-watcher.timer",
-        "lasapi-module-watcher.path",
-        "lasapi-module-watcher.service",
-        "lasapi-tray.service",
-        "lasapi-audiodg.service",
-        "lasapi-pipewire.socket",
-    ] {
+    for unit in MANAGED_USER_UNITS.iter().copied().rev() {
         let _ = run_quiet("systemctl", &["--user", "disable", "--now", unit]);
         let _ = fs::remove_file(config_home().join("systemd/user").join(unit));
     }

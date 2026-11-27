@@ -17,7 +17,8 @@ use crate::c_abi::{
     LasapiEngineStatus, LasapiEqConfig, LasapiHwAnalogCfg, LasapiIpcReq, LasapiIpcResp,
     LasapiMicApoCfg, LasapiMidiEvent, LasapiParamEqPayload, E_FAIL, E_INVALIDARG,
     LASAPI_BT_CONN_CONNECT, LASAPI_BT_CONN_DISCONNECT, LASAPI_BT_CONN_QUERY,
-    LASAPI_BT_CONN_SET_AUTOCONN, LASAPI_BT_CONN_SET_OPTIONAL, LASAPI_CFG_FLAG_CAPTURE_RATE,
+    LASAPI_BT_CONN_RESET, LASAPI_BT_CONN_SET_AUTOCONN, LASAPI_BT_CONN_SET_OPTIONAL,
+    LASAPI_CFG_FLAG_CAPTURE_RATE,
     LASAPI_CMD_BT_CONNECTION, LASAPI_CMD_CONTROL_V2, LASAPI_CMD_GET_STATUS,
     LASAPI_CMD_INJECT_MIDI, LASAPI_CMD_LIST_DEVICES, LASAPI_CMD_RELOAD_CONFIG,
     LASAPI_CMD_SAVE_CONFIG, LASAPI_CMD_SET_BT_CODEC, LASAPI_CMD_SET_DEVICES,
@@ -124,6 +125,7 @@ pub enum BtConnOp {
     SetAutoConn,
     Connect,
     Disconnect,
+    Reset,
 }
 
 impl BtConnOp {
@@ -134,6 +136,7 @@ impl BtConnOp {
             LASAPI_BT_CONN_SET_AUTOCONN => Some(Self::SetAutoConn),
             LASAPI_BT_CONN_CONNECT => Some(Self::Connect),
             LASAPI_BT_CONN_DISCONNECT => Some(Self::Disconnect),
+            LASAPI_BT_CONN_RESET => Some(Self::Reset),
             _ => None,
         }
     }
@@ -145,6 +148,7 @@ impl BtConnOp {
             Self::SetAutoConn => LASAPI_BT_CONN_SET_AUTOCONN,
             Self::Connect => LASAPI_BT_CONN_CONNECT,
             Self::Disconnect => LASAPI_BT_CONN_DISCONNECT,
+            Self::Reset => LASAPI_BT_CONN_RESET,
         }
     }
 }
@@ -210,6 +214,10 @@ pub enum ControlPayload {
         buffer_frames: u32,
     },
     BtFlags(u32),
+    BtFlagsMsg {
+        flags: u32,
+        message: String,
+    },
 }
 
 #[derive(Clone)]
@@ -529,6 +537,11 @@ pub fn encode_response(resp: &ControlResponse) -> Vec<u8> {
             out.push(4);
             out.extend_from_slice(&flags.to_le_bytes());
         }
+        ControlPayload::BtFlagsMsg { flags, message } => {
+            out.push(5);
+            out.extend_from_slice(&flags.to_le_bytes());
+            push_str(&mut out, message);
+        }
     }
     out
 }
@@ -554,6 +567,10 @@ pub fn decode_response(raw: &[u8]) -> Option<ControlResponse> {
             buffer_frames: c.take_u32()?,
         },
         4 => ControlPayload::BtFlags(c.take_u32()?),
+        5 => ControlPayload::BtFlagsMsg {
+            flags: c.take_u32()?,
+            message: c.take_str()?,
+        },
         _ => return None,
     };
     (c.pos == raw.len()).then_some(ControlResponse { hr, payload })
@@ -611,6 +628,15 @@ impl ControlClient {
     ) -> Result<ControlResponse, i32> {
         let mut stream = connect_unix_stream_verified_with_timeout(sock_path, timeout).ok_or(E_FAIL)?;
         Self::send_over_stream(&mut stream, req)
+    }
+
+    pub fn send_if_reachable_with_timeout(
+        sock_path: &str,
+        req: &ControlRequest,
+        timeout: Duration,
+    ) -> Option<Result<ControlResponse, i32>> {
+        let mut stream = connect_unix_stream_verified_with_timeout(sock_path, timeout)?;
+        Some(Self::send_over_stream(&mut stream, req))
     }
 
     pub fn send(req: &ControlRequest) -> Result<ControlResponse, i32> {
@@ -722,7 +748,7 @@ pub fn control_resp_to_legacy(resp: &ControlResponse) -> LasapiIpcResp {
             out.actual_period_frames = period_frames;
             out.actual_buffer_frames = buffer_frames;
         }
-        ControlPayload::BtFlags(flags) => {
+        ControlPayload::BtFlags(flags) | ControlPayload::BtFlagsMsg { flags, .. } => {
             out.session_id = flags;
         }
         _ => {}
@@ -771,6 +797,10 @@ mod tests {
                 op: BtConnOp::Connect,
                 mac: "AA:BB:CC:DD:EE:FF".into(),
             },
+            ControlRequest::BtConnection {
+                op: BtConnOp::Reset,
+                mac: "11:22:33:44:55:66".into(),
+            },
             ControlRequest::SaveConfig,
             ControlRequest::ReloadConfig,
         ];
@@ -807,6 +837,22 @@ mod tests {
                 assert_eq!(status.hw_sample_rate, 192_000);
             }
             _ => panic!("expected Status payload"),
+        }
+
+        let bt_msg = ControlResponse {
+            hr: S_OK,
+            payload: ControlPayload::BtFlagsMsg {
+                flags: 0x3,
+                message: "Headset reconnected cleanly".into(),
+            },
+        };
+        let bdec = decode_response(&encode_response(&bt_msg)).expect("decode BtFlagsMsg");
+        match bdec.payload {
+            ControlPayload::BtFlagsMsg { flags, message } => {
+                assert_eq!(flags, 0x3);
+                assert_eq!(message, "Headset reconnected cleanly");
+            }
+            _ => panic!("expected BtFlagsMsg payload"),
         }
     }
 

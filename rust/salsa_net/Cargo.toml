@@ -25,3 +25,6 @@ path = "src/bin/salsa_gen_pa_proxy.rs"
 [[bin]]
 name = "fuzz_wire"
 path = "src/bin/fuzz_wire.rs"
+
+[dependencies]
+salsa_host_dl = { path = "../salsa_host_dl" }

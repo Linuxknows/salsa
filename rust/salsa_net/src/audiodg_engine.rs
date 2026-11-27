@@ -5,40 +5,37 @@
 // under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, version 3 of the License.
 
-#![allow(unsafe_code)]
-#![allow(clippy::missing_safety_doc)]
+#![deny(unsafe_code)]
+#![allow(clippy::too_many_arguments)]
 
-use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void};
-use core::mem::{self, offset_of};
-use core::ptr;
-use core::slice;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::mem;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::fs;
 use std::io::Read;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use crate::alsa_hw::{
+    AlsaPlaybackBackend, AlsaWriteOutcome, KernelAlsaBackend, KernelWaveRtHw,
+    SNDRV_PCM_FORMAT_FLOAT_LE,
+};
 use crate::bluez_runtime::{BluetoothBackend, RealBluezBackend};
 use crate::c_abi::{
-    c_str_to_string, copy_str_to_c, ptr_to_opt_str, LasapiBtCodecCfg, LasapiDbgRtStats,
-    LasapiDeviceList, LasapiEngineStatus, LasapiEqConfig, LasapiHwAnalogCfg, LasapiIpcReq,
-    LasapiIpcResp, LasapiMicApoCfg, LasapiMidiEvent, LasapiMidiHub, LasapiParamEqExt,
-    LasapiParamEqPayload,
-    LasapiShmRing, SalsaMicCubicState, SalsaRuntimeState, AUDCLNT_E_DEVICE_IN_USE,
-    AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_CAPTURE, AUDCLNT_STREAMFLAGS_LOOPBACK,
-    E_FAIL, E_INVALIDARG, E_OUTOFMEMORY, LASAPI_BT_RING_FRAMES,
-    LASAPI_BT_STAT_CONNECTED, LASAPI_BT_STAT_OPTIONAL, LASAPI_BT_STAT_TRANSPORT,
-    LASAPI_BT_STAT_USB_MATCHES_BT, LASAPI_CMD_CONTROL_V2, LASAPI_CMD_CREATE_SESSION,
-    LASAPI_CMD_SET_BT_CODEC, LASAPI_CMD_SET_HW_ANALOG, LASAPI_CMD_SET_MIC_APO,
-    LASAPI_CMD_SET_PARAM_EQ, LASAPI_DBG_ALSA, LASAPI_DBG_BLUEZ, LASAPI_DBG_ENGINE, LASAPI_DBG_ERR,
-    LASAPI_DBG_INFO, LASAPI_DBG_LASAPI, LASAPI_DBG_MIDI, LASAPI_DBG_PA, LASAPI_DBG_WARN,
-    LASAPI_FMT_FLOAT32, LASAPI_MAX_CHANNELS, LASAPI_MAX_DEVICES, LASAPI_MAX_PERIOD,
-    LASAPI_MAX_SESSIONS, LASAPI_RING_FRAMES, LASAPI_RING_MAGIC, LASAPI_RING_MASK,
-    LASAPI_SOCKET_DEFAULT, SALSA_PACK_F32_LE, SALSA_PACK_S16_LE, SALSA_PACK_S24_3LE,
-    SALSA_PACK_S24_LE, SALSA_PACK_S32_LE, S_OK,
+    c_str_to_string, copy_str_to_c, LasapiBtCodecCfg, LasapiDbgRtStats, LasapiDeviceList,
+    LasapiEngineStatus, LasapiEqConfig, LasapiHwAnalogCfg, LasapiIpcReq, LasapiIpcResp,
+    LasapiMicApoCfg, LasapiMidiEvent, LasapiParamEqExt, LasapiParamEqPayload, PodBytes,
+    SalsaMicCubicState, SalsaRuntimeState, AUDCLNT_E_DEVICE_IN_USE, AUDCLNT_SHAREMODE_EXCLUSIVE,
+    AUDCLNT_STREAMFLAGS_CAPTURE, AUDCLNT_STREAMFLAGS_LOOPBACK, E_FAIL, E_INVALIDARG, E_OUTOFMEMORY,
+    LASAPI_BT_RING_FRAMES, LASAPI_BT_STAT_CONNECTED, LASAPI_BT_STAT_OPTIONAL,
+    LASAPI_BT_STAT_TRANSPORT, LASAPI_BT_STAT_USB_MATCHES_BT, LASAPI_CMD_CONTROL_V2,
+    LASAPI_CMD_CREATE_SESSION, LASAPI_CMD_SET_BT_CODEC, LASAPI_CMD_SET_HW_ANALOG,
+    LASAPI_CMD_SET_MIC_APO, LASAPI_CMD_SET_PARAM_EQ, LASAPI_DBG_ALSA, LASAPI_DBG_BLUEZ,
+    LASAPI_DBG_ENGINE, LASAPI_DBG_ERR, LASAPI_DBG_INFO, LASAPI_DBG_LASAPI, LASAPI_DBG_MIDI,
+    LASAPI_DBG_PA, LASAPI_DBG_WARN, LASAPI_MAX_CHANNELS, LASAPI_MAX_DEVICES, LASAPI_MAX_PERIOD,
+    LASAPI_MAX_SESSIONS, LASAPI_RING_FRAMES, LASAPI_SOCKET_DEFAULT, S_OK,
 };
 use crate::control_ipc::{
     control_resp_to_legacy, decode_request, legacy_ipc_req_to_control, write_response_frame,
@@ -50,24 +47,17 @@ use crate::debug_server::{
     DebugEngineHost,
 };
 use crate::dsp::{
-    salsa_dsp_consume_session_frames, salsa_dsp_get_telem, salsa_dsp_pack_pcm,
-    salsa_dsp_process_capture_mic_apo, salsa_dsp_process_dynamic_eq, salsa_dsp_resample_mic_cubic,
-    salsa_dsp_scale_cap_clip, shape_hw_analog_sample,
+    dsp_telemetry, process_capture_mic_apo, process_dynamic_eq, resample_mic_cubic_slice,
+    scale_cap_clip_slice, shape_hw_analog_sample,
 };
 use crate::failsafe::{record_trip, FS_MANUAL_RESET};
 use crate::hw_analog::{
     card_has_plugged_headphone_jack, clamp_hw_analog_cfg, is_headphone_playback_card,
-    lasapi_hw_analog_create, lasapi_hw_analog_destroy,
-    lasapi_hw_analog_get_cap_makeup_linear, lasapi_hw_analog_get_drive_linear,
-    lasapi_hw_analog_get_info, lasapi_hw_analog_is_dac_unity_active, lasapi_hw_analog_poll_hid,
-    lasapi_hw_analog_probe, lasapi_hw_analog_score_card, lasapi_hw_analog_softknee_active,
-    lasapi_hw_analog_sync, LasapiHwAnalogCtx,
+    score_card_by_index, AnalogStage,
 };
-use crate::midi_hub::{
-    lasapi_midi_close, lasapi_midi_init, lasapi_midi_poll_events, lasapi_midi_push_to_ring,
-};
-use crate::pa_server::{start_pa_server, PaEngineHost, PaServerHandle};
 use crate::json::JsonValue;
+use crate::midi_hub::MidiHub;
+use crate::pa_server::{start_pa_server, PaEngineHost, PaServerHandle};
 use crate::pw_broker::{empty_debug_json, start_pw_broker, PwBrokerHandle};
 use crate::settings::{extract_per_device_eq_for_sink, is_per_device_eq_enabled};
 use crate::state_conf::{
@@ -75,141 +65,16 @@ use crate::state_conf::{
     save_runtime_state,
 };
 use crate::unix_sys::{
-    bind_unix_listener_0600, claim_systemd_unix_listeners, close_raw_fd, create_memfd, current_pid,
-    current_uid, dbg_emit, dbg_emit_vals, do_poll, install_term_signals, ioctl_raw, mono_ns,
-    nb_recv, new_eventfd, open_chrdev_rw_cloexec, resolve_sock_path_common, seal_memfd_size,
-    send_all_nosignal, sendmsg_all_with_fds, sleep_abs_mono_ns, socket_peercred,
-    term_signal_requested, try_realtime_fifo, MappedMem, PollFd, POLLERR, POLLHUP, POLLIN,
+    bind_unix_listener_0600, claim_systemd_unix_listeners, current_pid, current_uid, dbg_emit,
+    dbg_emit_vals, do_poll, install_term_signals, mono_ns, nb_recv, new_eventfd,
+    resolve_sock_path_common, send_all_nosignal, sendmsg_all_with_fds, sleep_abs_mono_ns,
+    socket_peercred, term_signal_requested, try_realtime_fifo, PollFd, ERRNO_EINTR, ERRNO_EINVAL,
+    ERRNO_ENOSYS, POLLERR,
+    POLLHUP, POLLIN,
 };
-
-// Linux errno constants (x86_64/generic)
-pub(crate) const ERRNO_EINTR: i32 = 4;
-pub(crate) const ERRNO_EIO: i32 = 5;
-pub(crate) const ERRNO_EBADF: i32 = 9;
-pub(crate) const ERRNO_EAGAIN: i32 = 11;
-pub(crate) const ERRNO_ENODEV: i32 = 19;
-const ERRNO_EINVAL: i32 = 22;
-pub(crate) const ERRNO_EPIPE: i32 = 32;
-const ERRNO_ENOSYS: i32 = 38;
-const ERRNO_EBADFD: i32 = 77;
-pub(crate) const ERRNO_ESTRPIPE: i32 = 86;
-pub(crate) const ERRNO_ECONNRESET: i32 = 104;
-pub(crate) const ERRNO_EINPROGRESS: i32 = 115;
-
-// Linux <sound/asound.h> PCM kernel ABI constants & ioctls
-pub(crate) const SNDRV_PCM_IOCTL_HW_REFINE: c_ulong = 0xc260_4110;
-pub(crate) const SNDRV_PCM_IOCTL_HW_PARAMS: c_ulong = 0xc260_4111;
-pub(crate) const SNDRV_PCM_IOCTL_SW_PARAMS: c_ulong = 0xc088_4113;
-pub(crate) const SNDRV_PCM_IOCTL_PREPARE: c_ulong = 0x4140;
-pub(crate) const SNDRV_PCM_IOCTL_START: c_ulong = 0x4142;
-const SNDRV_PCM_IOCTL_WRITEI_FRAMES: c_ulong = 0x4018_4150;
-pub(crate) const SNDRV_PCM_IOCTL_READI_FRAMES: c_ulong = 0x8018_4151;
-
-pub(crate) const SNDRV_PCM_HW_PARAM_ACCESS: usize = 0;
-pub(crate) const SNDRV_PCM_HW_PARAM_FORMAT: usize = 1;
-pub(crate) const SNDRV_PCM_HW_PARAM_FIRST_MASK: usize = 0;
-pub(crate) const SNDRV_PCM_HW_PARAM_LAST_MASK: usize = 2;
-pub(crate) const SNDRV_PCM_HW_PARAM_FIRST_INTERVAL: usize = 8;
-pub(crate) const SNDRV_PCM_HW_PARAM_LAST_INTERVAL: usize = 19;
-pub(crate) const SNDRV_PCM_HW_PARAM_CHANNELS: usize = 10;
-pub(crate) const SNDRV_PCM_HW_PARAM_RATE: usize = 11;
-pub(crate) const SNDRV_PCM_HW_PARAM_PERIOD_SIZE: usize = 13;
-pub(crate) const SNDRV_PCM_HW_PARAM_BUFFER_SIZE: usize = 17;
-
-pub(crate) const SNDRV_PCM_ACCESS_RW_INTERLEAVED: u32 = 3;
-pub(crate) const SNDRV_PCM_FORMAT_S16_LE: i32 = 2;
-const SNDRV_PCM_FORMAT_S24_LE: i32 = 6;
-pub(crate) const SNDRV_PCM_FORMAT_S32_LE: i32 = 10;
-const SNDRV_PCM_FORMAT_FLOAT_LE: i32 = 14;
-pub(crate) const SNDRV_PCM_FORMAT_S24_3LE: i32 = 32;
-pub(crate) const SNDRV_PCM_TSTAMP_ENABLE: i32 = 1;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct SndMask {
-    pub(crate) bits: [u32; 8],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct SndInterval {
-    pub(crate) min: u32,
-    pub(crate) max: u32,
-    pub(crate) flags: u32,
-}
-
-#[repr(C)]
-pub(crate) struct SndPcmHwParams {
-    pub(crate) flags: u32,
-    pub(crate) masks: [SndMask; 8],
-    pub(crate) intervals: [SndInterval; 21],
-    pub(crate) rmask: u32,
-    pub(crate) cmask: u32,
-    pub(crate) info: u32,
-    pub(crate) msbits: u32,
-    pub(crate) rate_num: u32,
-    pub(crate) rate_den: u32,
-    pub(crate) fifo_size: u64,
-    pub(crate) reserved: [u8; 64],
-}
-
-#[repr(C)]
-pub(crate) struct SndPcmSwParams {
-    pub(crate) tstamp_mode: c_int,
-    pub(crate) period_step: c_uint,
-    pub(crate) sleep_min: c_uint,
-    pub(crate) pad0: c_uint,
-    pub(crate) avail_min: u64,
-    pub(crate) xfer_align: u64,
-    pub(crate) start_threshold: u64,
-    pub(crate) stop_threshold: u64,
-    pub(crate) silence_threshold: u64,
-    pub(crate) silence_size: u64,
-    pub(crate) boundary: u64,
-    pub(crate) proto: u32,
-    pub(crate) tstamp_type: u32,
-    pub(crate) reserved: [u8; 56],
-}
-
-#[repr(C)]
-pub(crate) struct SndXferi {
-    pub(crate) result: c_long,
-    pub(crate) buf: *mut c_void,
-    pub(crate) frames: c_ulong,
-}
-
-#[derive(Clone, Copy)]
-struct KernelWaveRtHw {
-    fd: RawFd,
-    device_path: [u8; 64],
-    is_virtual: bool,
-    is_bluetooth: bool,
-    sample_rate: u32,
-    channels: u32,
-    period_frames: u32,
-    buffer_frames: u32,
-    sndrv_format: i32,
-    format_bits: u32,
-}
-
-impl Default for KernelWaveRtHw {
-    fn default() -> Self {
-        let mut device_path = [0u8; 64];
-        copy_str_to_c(&mut device_path, "WaveRT-Virtual-Clock");
-        Self {
-            fd: -1,
-            device_path,
-            is_virtual: true,
-            is_bluetooth: false,
-            sample_rate: 48_000,
-            channels: 2,
-            period_frames: 256,
-            buffer_frames: 1024,
-            sndrv_format: SNDRV_PCM_FORMAT_FLOAT_LE,
-            format_bits: 32,
-        }
-    }
-}
+use crate::wavert_ring::{
+    RingMuteOp, SessionResampleState, SessionRingSpec, WaveRtEngineRing,
+};
 
 struct HwState {
     hw: KernelWaveRtHw,
@@ -256,15 +121,12 @@ struct EngineSession {
     client_sock: Option<UnixStream>,
     _shm_fd: Option<OwnedFd>,
     event_fd: Option<OwnedFd>,
-    ring_map: Option<MappedMem>,
-    resample_phase: f64,
+    ring: Option<WaveRtEngineRing>,
+    resample: SessionResampleState,
     sample_rate: u32,
     channels: u32,
     is_capture: bool,
     is_loopback: bool,
-    stream_live: bool,
-    underrun_pending: bool,
-    last_audio_ns: u64,
     last_pa_ctl_seq: u64,
 }
 
@@ -279,23 +141,13 @@ impl EngineSession {
             client_sock: None,
             _shm_fd: None,
             event_fd: None,
-            ring_map: None,
-            resample_phase: 0.0,
+            ring: None,
+            resample: SessionResampleState::new(),
             sample_rate: 0,
             channels: 0,
             is_capture: false,
             is_loopback: false,
-            stream_live: false,
-            underrun_pending: false,
-            last_audio_ns: 0,
             last_pa_ctl_seq: 0,
-        }
-    }
-
-    fn ring_ptr(&self) -> *mut LasapiShmRing {
-        match &self.ring_map {
-            Some(m) => m.as_ptr() as *mut LasapiShmRing,
-            None => ptr::null_mut(),
         }
     }
 }
@@ -349,9 +201,6 @@ impl SavedBtState {
         }
     }
 }
-
-struct MidiHubBox(Box<LasapiMidiHub>);
-unsafe impl Send for MidiHubBox {}
 
 #[derive(Clone, Copy)]
 struct MidiMeta {
@@ -629,14 +478,15 @@ struct AudiodgEngine {
     hw_lock: Mutex<HwState>,
     sessions_lock: Mutex<SessionsState>,
     saved_bt: Mutex<SavedBtState>,
-    midi_hub: Mutex<MidiHubBox>,
+    midi_hub: Mutex<MidiHub>,
     midi_meta: Mutex<MidiMeta>,
     hotplug_tracker: Mutex<HotplugTracker>,
 
     bt: Arc<dyn BluetoothBackend>,
+    alsa_hw: Arc<dyn AlsaPlaybackBackend>,
     pa_srv: OnceLock<PaServerHandle>,
     pw_brk: OnceLock<PwBrokerHandle>,
-    hw_analog: AtomicPtr<LasapiHwAnalogCtx>,
+    hw_analog: AnalogStage,
 
     running: AtomicBool,
     rt_priority: AtomicU32,
@@ -652,24 +502,28 @@ struct AudiodgEngine {
 
 impl AudiodgEngine {
     fn new(rt: &SalsaRuntimeState, bt: Arc<dyn BluetoothBackend>) -> Self {
-        let midi_box: Box<LasapiMidiHub> = unsafe {
-            let mut u = Box::<LasapiMidiHub>::new_uninit();
-            ptr::write_bytes(u.as_mut_ptr(), 0, 1);
-            u.assume_init()
-        };
+        Self::with_backends(rt, bt, KernelAlsaBackend::global())
+    }
+
+    fn with_backends(
+        rt: &SalsaRuntimeState,
+        bt: Arc<dyn BluetoothBackend>,
+        alsa_hw: Arc<dyn AlsaPlaybackBackend>,
+    ) -> Self {
         Self {
             reconf_lock: Mutex::new(()),
             hw_io_lock: Mutex::new(()),
             hw_lock: Mutex::new(HwState::from_runtime(rt)),
             sessions_lock: Mutex::new(SessionsState::from_runtime(rt)),
             saved_bt: Mutex::new(SavedBtState::from_runtime(rt)),
-            midi_hub: Mutex::new(MidiHubBox(midi_box)),
+            midi_hub: Mutex::new(MidiHub::new()),
             midi_meta: Mutex::new(MidiMeta::default()),
             hotplug_tracker: Mutex::new(HotplugTracker::default()),
             bt,
+            alsa_hw,
             pa_srv: OnceLock::new(),
             pw_brk: OnceLock::new(),
-            hw_analog: AtomicPtr::new(ptr::null_mut()),
+            hw_analog: AnalogStage::new(),
             running: AtomicBool::new(true),
             rt_priority: AtomicU32::new(0),
             total_cycles: AtomicU64::new(0),
@@ -697,10 +551,6 @@ impl AudiodgEngine {
 
     fn pw(&self) -> Option<&PwBrokerHandle> {
         self.pw_brk.get()
-    }
-
-    fn hwa(&self) -> *mut LasapiHwAnalogCtx {
-        self.hw_analog.load(Ordering::Acquire)
     }
 
     fn mark_state_dirty(&self) {
@@ -781,10 +631,6 @@ impl AudiodgEngine {
     }
 
     fn hw_analog_probe_and_sync(&self, re_probe: bool) {
-        let hwa = self.hwa();
-        if hwa.is_null() {
-            return;
-        }
         let (pb_card, cap_card) = {
             let hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
             let pb = if !hws.hw.is_virtual && !hws.hw.is_bluetooth {
@@ -805,18 +651,15 @@ impl AudiodgEngine {
         };
         let bt_snap = self.bt().snapshot();
         if re_probe {
-            unsafe { lasapi_hw_analog_probe(hwa, pb_card, cap_card) };
+            self.hw_analog.probe(pb_card, cap_card);
         }
-        unsafe {
-            lasapi_hw_analog_sync(
-                hwa,
-                &cfg,
-                bt_snap.desktop_volume_pct,
-                bt_snap.desktop_muted,
-                bt_snap.desktop_mic_volume_pct,
-                bt_snap.desktop_mic_muted,
-            );
-        }
+        self.hw_analog.sync(
+            &cfg,
+            bt_snap.desktop_volume_pct,
+            bt_snap.desktop_muted,
+            bt_snap.desktop_mic_volume_pct,
+            bt_snap.desktop_mic_muted,
+        );
     }
 
     fn maybe_apply_per_device_eq_for_sink(&self, sink_id: &str) {
@@ -928,7 +771,7 @@ impl AudiodgEngine {
                 fd
             };
             if old_fd >= 0 {
-                close_raw_fd(old_fd);
+                self.alsa_hw.close_pcm(old_fd);
             }
         }
 
@@ -945,7 +788,7 @@ impl AudiodgEngine {
             format_bits: target_bits,
         };
         let next_id: String;
-        let mut local_dl: LasapiDeviceList = unsafe { mem::zeroed() };
+        let mut local_dl = LasapiDeviceList::zeroed();
         let dlp: Option<&LasapiDeviceList> = if !force_virtual && req != "virtual" {
             Some(match pre_dl {
                 Some(d) => d,
@@ -1099,7 +942,7 @@ impl AudiodgEngine {
 
         if !force_virtual && !auto_mode && !want_bt && req != "virtual" {
             let dev_path = resolve_dev_id_to_path(req);
-            if let Some(opened) = open_kernel_pcm_device(&dev_path, rate, period, target_bits) {
+            if let Some(opened) = self.alsa_hw.open_pcm(&dev_path, rate, period, target_bits) {
                 next_hw = opened;
                 next_id = if let Some((c, d)) = parse_pcm_card_dev(&dev_path) {
                     format!("hw:{c},{d}")
@@ -1158,7 +1001,7 @@ impl AudiodgEngine {
                 if e.is_capture != 0 || e.is_bluetooth != 0 {
                     continue;
                 }
-                let mut sc = unsafe { lasapi_hw_analog_score_card(e.card_index, e.name.as_ptr().cast()) };
+                let mut sc = score_card_by_index(e.card_index, &c_str_to_string(&e.name));
                 if e.device_index == 0 {
                     sc += 10;
                 }
@@ -1172,7 +1015,7 @@ impl AudiodgEngine {
             for (idx, _) in cands {
                 let e = &dlp.devices[idx];
                 let dev_path = format!("/dev/snd/pcmC{}D{}p", e.card_index, e.device_index);
-                if let Some(opened) = open_kernel_pcm_device(&dev_path, rate, period, target_bits) {
+                if let Some(opened) = self.alsa_hw.open_pcm(&dev_path, rate, period, target_bits) {
                     next_hw = opened;
                     next_id = c_str_to_string(&e.id);
                     let e_name = c_str_to_string(&e.name);
@@ -1294,7 +1137,7 @@ impl AudiodgEngine {
             self.bt().set_sco_enabled(bt_cfg_saved.hfp_sco_enabled != 0);
             self.bt().set_codec_config(&bt_cfg_saved);
             if has_vol {
-                self.bt().set_volume(d_vol as c_int, i32::from(d_muted != 0));
+                self.bt().set_volume(d_vol as i32, i32::from(d_muted != 0));
                 dbg_emit_vals(
                     LASAPI_DBG_ENGINE,
                     LASAPI_DBG_INFO,
@@ -1307,10 +1150,10 @@ impl AudiodgEngine {
                     "master_out",
                     &format!("restored vol={d_vol}% muted={}", i32::from(d_muted != 0)),
                 );
-                self.bt().set_mic_volume(m_vol as c_int, i32::from(m_muted != 0));
+                self.bt().set_mic_volume(m_vol as i32, i32::from(m_muted != 0));
                 self.bt().set_mic_gain_ppm(
                     m_gain,
-                    m_vol as c_int,
+                    m_vol as i32,
                     i32::from(m_muted != 0),
                 );
             }
@@ -1335,7 +1178,7 @@ impl AudiodgEngine {
     }
 
     fn fill_engine_status_impl(&self, st: &mut LasapiEngineStatus, include_pa_sessions: bool) {
-        *st = unsafe { mem::zeroed() };
+        *st = LasapiEngineStatus::zeroed();
         let bt_snap = self.bt().snapshot();
         let bt_has_tr = bt_snap.has_bluez_transport;
         let bt_has_cap = bt_snap.has_capture_hw;
@@ -1411,55 +1254,38 @@ impl AudiodgEngine {
             st.eq_cfg = ss.eq_cfg;
             st.param_eq = ss.param_eq;
             st.mic_apo = ss.mic_apo;
-            unsafe {
-                salsa_dsp_get_telem(
-                    st.eq_band_levels_db.as_mut_ptr(),
-                    st.eq_dyn_delta_db.as_mut_ptr(),
-                    &mut st.output_peak_l,
-                    &mut st.output_peak_r,
-                    &mut st.mic_apo_peak_in,
-                    &mut st.mic_apo_peak_out,
-                    &mut st.mic_rnnoise_active,
-                );
-            }
+            let dt = dsp_telemetry();
+            st.eq_band_levels_db = dt.band_levels_db;
+            st.eq_dyn_delta_db = dt.dyn_delta_db;
+            st.output_peak_l = dt.output_peak_l;
+            st.output_peak_r = dt.output_peak_r;
+            st.mic_apo_peak_in = dt.mic_apo_peak_in;
+            st.mic_apo_peak_out = dt.mic_apo_peak_out;
+            st.mic_rnnoise_active = dt.mic_rnnoise_active;
 
             let mut count = 0usize;
             for slot in &ss.sessions {
-                let r = slot.ring_ptr();
-                if slot.in_use && !r.is_null() {
+                if let Some(ring) = slot.ring.as_ref().filter(|_| slot.in_use) {
+                    let tel = ring.telemetry();
                     let info = &mut st.sessions[count];
                     count += 1;
-                    unsafe {
-                        info.session_id = slot.session_id;
-                        info.client_pid = slot.client_pid;
-                        info.is_capture = u32::from(slot.is_capture);
-                        info.client_name.copy_from_slice(&slot.client_name);
-                        info.share_mode = slot.share_mode;
-                        info.sample_rate = slot.sample_rate;
-                        info.channels = slot.channels;
-                        info.active = (*ptr::addr_of!((*r).active)).load(Ordering::Relaxed);
-                        info.volume_milli =
-                            (*ptr::addr_of!((*r).volume_milli)).load(Ordering::Relaxed);
-                        let (w, rd) = if info.is_capture != 0 {
-                            (
-                                (*ptr::addr_of!((*r).cap_write_frame)).load(Ordering::Relaxed),
-                                (*ptr::addr_of!((*r).cap_read_frame)).load(Ordering::Relaxed),
-                            )
-                        } else {
-                            (
-                                (*ptr::addr_of!((*r).write_frame)).load(Ordering::Relaxed),
-                                (*ptr::addr_of!((*r).read_frame)).load(Ordering::Relaxed),
-                            )
-                        };
-                        info.buffered_frames = w.saturating_sub(rd);
-                        info.xruns = (*ptr::addr_of!((*r).xruns)).load(Ordering::Relaxed);
-                        info.muted = (*ptr::addr_of!((*r).muted)).load(Ordering::Relaxed);
-                        info.routing_flags = 0;
-                        if info.is_capture != 0 {
-                            info.target_device.copy_from_slice(&st.active_capture_id);
-                        } else {
-                            info.target_device.copy_from_slice(&st.active_playback_id);
-                        }
+                    info.session_id = slot.session_id;
+                    info.client_pid = slot.client_pid;
+                    info.is_capture = u32::from(slot.is_capture);
+                    info.client_name.copy_from_slice(&slot.client_name);
+                    info.share_mode = slot.share_mode;
+                    info.sample_rate = slot.sample_rate;
+                    info.channels = slot.channels;
+                    info.active = tel.active;
+                    info.volume_milli = tel.volume_milli;
+                    info.buffered_frames = tel.buffered_frames;
+                    info.xruns = tel.xruns;
+                    info.muted = tel.muted;
+                    info.routing_flags = 0;
+                    if info.is_capture != 0 {
+                        info.target_device.copy_from_slice(&st.active_capture_id);
+                    } else {
+                        info.target_device.copy_from_slice(&st.active_playback_id);
                     }
                 }
             }
@@ -1467,10 +1293,7 @@ impl AudiodgEngine {
             st.hw_analog_cfg = ss.hw_analog_cfg;
         }
 
-        let hwa = self.hwa();
-        if !hwa.is_null() {
-            unsafe { lasapi_hw_analog_get_info(hwa, &mut st.hw_analog_info) };
-        }
+        st.hw_analog_info = self.hw_analog.info();
         st.hw_analog_info.reserved = if bt_has_cap && bt_cap_rate >= 8000 {
             bt_cap_rate
         } else {
@@ -1686,9 +1509,8 @@ impl AudiodgEngine {
         {
             let ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
             for slot in &ss.sessions {
-                let r = slot.ring_ptr();
-                if slot.in_use && !r.is_null() {
-                    unsafe { ptr::addr_of_mut!((*r).period_frames).write(resp.actual_period_frames) };
+                if let Some(ring) = slot.ring.as_ref().filter(|_| slot.in_use) {
+                    ring.set_period_frames(resp.actual_period_frames);
                 }
             }
         }
@@ -1792,7 +1614,7 @@ impl AudiodgEngine {
     }
 
     fn seed_hotplug_baseline(&self, clear_restore: bool) {
-        let mut dlist: LasapiDeviceList = unsafe { mem::zeroed() };
+        let mut dlist = LasapiDeviceList::zeroed();
         self.enumerate_devices_safe(&mut dlist);
         let hp_jacks = Self::probe_card_hp_jacks();
         let mut ht = self.hotplug_tracker.lock().unwrap_or_else(|e| e.into_inner());
@@ -1807,7 +1629,7 @@ impl AudiodgEngine {
     fn sync_hotplug_topology(&self, force_virtual: bool, bt_now: bool) -> bool {
         let mut cap_deferred = false;
         let _reconf = self.reconf_lock.lock().unwrap();
-        let mut dlist: LasapiDeviceList = unsafe { mem::zeroed() };
+        let mut dlist = LasapiDeviceList::zeroed();
         self.enumerate_devices_safe(&mut dlist);
         let hp_jacks = Self::probe_card_hp_jacks();
         let bt_has_cap = self.bt().snapshot().has_capture_hw;
@@ -1971,7 +1793,7 @@ impl AudiodgEngine {
     }
 
     fn handle_create_session(&self, client_sock: UnixStream, req: &LasapiIpcReq) {
-        let mut resp: LasapiIpcResp = unsafe { mem::zeroed() };
+        let mut resp = LasapiIpcResp::zeroed();
         let req_name = c_str_to_string(&req.client_name);
         let cname_dbg = if req_name.is_empty() {
             "session".to_string()
@@ -1979,27 +1801,11 @@ impl AudiodgEngine {
             req_name.clone()
         };
 
-        let Some(shm_fd) = create_memfd("lasapi_ring", mem::size_of::<LasapiShmRing>()) else {
-            resp.hr = E_OUTOFMEMORY;
-            let _ = sendmsg_all_with_fds(client_sock.as_raw_fd(), as_bytes(&resp), &[]);
-            return;
-        };
         let Some(ev_fd) = new_eventfd() else {
             resp.hr = E_OUTOFMEMORY;
-            let _ = sendmsg_all_with_fds(client_sock.as_raw_fd(), as_bytes(&resp), &[]);
+            let _ = sendmsg_all_with_fds(client_sock.as_raw_fd(), &resp.to_bytes(), &[]);
             return;
         };
-        let Some(ring_map) =
-            MappedMem::map_fd(shm_fd.as_raw_fd(), mem::size_of::<LasapiShmRing>(), true, 0)
-        else {
-            resp.hr = E_OUTOFMEMORY;
-            let _ = sendmsg_all_with_fds(client_sock.as_raw_fd(), as_bytes(&resp), &[]);
-            return;
-        };
-
-        unsafe {
-            ptr::write_bytes(ring_map.as_ptr() as *mut u8, 0, offset_of!(LasapiShmRing, pcm_data));
-        }
 
         let (hw_rate, hw_ch, hw_per) = {
             let hws = self.hw_lock.lock().unwrap();
@@ -2023,18 +1829,17 @@ impl AudiodgEngine {
                 &cname_dbg,
                 &format!("exclusive lock held by session #{holder}"),
             );
-            let _ = sendmsg_all_with_fds(client_sock.as_raw_fd(), as_bytes(&resp), &[]);
+            let _ = sendmsg_all_with_fds(client_sock.as_raw_fd(), &resp.to_bytes(), &[]);
             return;
         }
 
         let Some(slot_idx) = ss.sessions.iter().position(|s| !s.in_use) else {
             resp.hr = E_OUTOFMEMORY;
             drop(ss);
-            let _ = sendmsg_all_with_fds(client_sock.as_raw_fd(), as_bytes(&resp), &[]);
+            let _ = sendmsg_all_with_fds(client_sock.as_raw_fd(), &resp.to_bytes(), &[]);
             return;
         };
 
-        let ring = ring_map.as_ptr() as *mut LasapiShmRing;
         let sid = ss.next_session_id;
         ss.next_session_id = ss.next_session_id.wrapping_add(1);
 
@@ -2077,27 +1882,29 @@ impl AudiodgEngine {
             .and_then(|uc| (uc.pid > 0).then_some(uc.pid as u32))
             .unwrap_or(req.client_pid);
 
-        unsafe {
-            ptr::addr_of_mut!((*ring).magic).write(LASAPI_RING_MAGIC);
-            ptr::addr_of_mut!((*ring).session_id).write(sid);
-            ptr::addr_of_mut!((*ring).client_pid).write(auth_pid);
-            copy_str_to_c(&mut *ptr::addr_of_mut!((*ring).client_name), s_name_str);
-            ptr::addr_of_mut!((*ring).share_mode).write(req.share_mode);
-            ptr::addr_of_mut!((*ring).stream_flags).write(req.stream_flags);
-            ptr::addr_of_mut!((*ring).is_capture).write(is_cap_u32);
-            ptr::addr_of_mut!((*ring).sample_rate).write(eff_rate);
-            ptr::addr_of_mut!((*ring).channels).write(eff_ch);
-            ptr::addr_of_mut!((*ring).format).write(LASAPI_FMT_FLOAT32);
-            ptr::addr_of_mut!((*ring).period_frames).write(hw_per);
-            ptr::addr_of_mut!((*ring).buffer_frames).write(buf_frames);
-            (*ptr::addr_of!((*ring).volume_milli)).store(1000, Ordering::SeqCst);
-        }
-
-        seal_memfd_size(shm_fd.as_raw_fd());
-        let fds_to_send = [shm_fd.as_raw_fd(), ev_fd.as_raw_fd()];
-
         let mut auth_name = [0u8; 64];
         copy_str_to_c(&mut auth_name, s_name_str);
+
+        let Some((ring, shm_fd)) = WaveRtEngineRing::create_sealed(SessionRingSpec {
+            session_id: sid,
+            client_pid: auth_pid,
+            client_name: auth_name,
+            share_mode: req.share_mode,
+            stream_flags: req.stream_flags,
+            is_capture: is_cap_u32 != 0,
+            sample_rate: eff_rate,
+            channels: eff_ch,
+            format: crate::c_abi::LASAPI_FMT_FLOAT32,
+            buffer_frames: buf_frames,
+            period_frames: hw_per,
+        }) else {
+            resp.hr = E_OUTOFMEMORY;
+            drop(ss);
+            let _ = sendmsg_all_with_fds(sock_raw, &resp.to_bytes(), &[]);
+            return;
+        };
+
+        let fds_to_send = [shm_fd.as_raw_fd(), ev_fd.as_raw_fd()];
 
         let is_loopback = (req.stream_flags & AUDCLNT_STREAMFLAGS_LOOPBACK) != 0;
         ss.sessions[slot_idx] = EngineSession {
@@ -2109,15 +1916,12 @@ impl AudiodgEngine {
             client_sock: Some(client_sock),
             _shm_fd: Some(shm_fd),
             event_fd: Some(ev_fd),
-            ring_map: Some(ring_map),
-            resample_phase: 0.0,
+            ring: Some(ring),
+            resample: SessionResampleState::new(),
             sample_rate: eff_rate,
             channels: eff_ch,
             is_capture: is_cap_u32 != 0,
             is_loopback,
-            stream_live: false,
-            underrun_pending: false,
-            last_audio_ns: 0,
             last_pa_ctl_seq: 0,
         };
         if req.share_mode == AUDCLNT_SHAREMODE_EXCLUSIVE {
@@ -2132,7 +1936,7 @@ impl AudiodgEngine {
         resp.actual_period_frames = hw_per;
         drop(ss);
 
-        if sendmsg_all_with_fds(sock_raw, as_bytes(&resp), &fds_to_send).is_err() {
+        if sendmsg_all_with_fds(sock_raw, &resp.to_bytes(), &fds_to_send).is_err() {
             let mut ss = self.sessions_lock.lock().unwrap();
             if ss.sessions[slot_idx].in_use && ss.sessions[slot_idx].session_id == sid {
                 destroy_session_slot(&mut ss, slot_idx);
@@ -2201,7 +2005,7 @@ impl AudiodgEngine {
     fn dispatch_control_req(&self, peer_pid: u32, req: ControlRequest) -> ControlResponse {
         match req {
             ControlRequest::GetStatus => {
-                let mut st: LasapiEngineStatus = unsafe { mem::zeroed() };
+                let mut st = LasapiEngineStatus::zeroed();
                 self.fill_engine_status_impl(&mut st, true);
                 let active_capture_rate_hz = st.effective_capture_rate_hz();
                 ControlResponse {
@@ -2213,7 +2017,7 @@ impl AudiodgEngine {
                 }
             }
             ControlRequest::ListDevices => {
-                let mut dlist: LasapiDeviceList = unsafe { mem::zeroed() };
+                let mut dlist = LasapiDeviceList::zeroed();
                 self.enumerate_devices_safe(&mut dlist);
                 ControlResponse {
                     hr: S_OK,
@@ -2274,7 +2078,7 @@ impl AudiodgEngine {
                 mute,
                 client_tag,
             } => {
-                let vol_pct = volume_pct.map_or(-1, |v| v.min(150) as c_int);
+                let vol_pct = volume_pct.map_or(-1, |v| v.min(150) as i32);
                 let mute_flag = mute.to_legacy_flag();
                 let is_cap = matches!(dir, AudioDir::Capture);
                 if is_cap {
@@ -2321,13 +2125,12 @@ impl AudiodgEngine {
                 {
                     let ss = self.sessions_lock.lock().unwrap();
                     for (slot_idx, slot) in ss.sessions.iter().enumerate() {
-                        let r = slot.ring_ptr();
-                        if slot.in_use && slot.session_id == session_id && !r.is_null() {
-                            let muted_now = unsafe {
-                                (*ptr::addr_of!((*r).volume_milli))
-                                    .store(volume_milli, Ordering::SeqCst);
-                                (*ptr::addr_of!((*r).muted)).load(Ordering::SeqCst) != 0
-                            };
+                        if let Some(ring) = slot
+                            .ring
+                            .as_ref()
+                            .filter(|_| slot.in_use && slot.session_id == session_id)
+                        {
+                            let muted_now = ring.set_volume_milli_query_muted(volume_milli);
                             if !slot.is_capture && !slot.is_loopback {
                                 upd_pa =
                                     Some((slot_idx as u32, slot.session_id, volume_milli, muted_now));
@@ -2375,30 +2178,20 @@ impl AudiodgEngine {
                         {
                             let ss = self.sessions_lock.lock().unwrap();
                             for (slot_idx, slot) in ss.sessions.iter().enumerate() {
-                                let r = slot.ring_ptr();
-                                if slot.in_use && slot.session_id == sid && !r.is_null() {
-                                    unsafe {
-                                        if let Some(vm) = volume_milli {
-                                            (*ptr::addr_of!((*r).volume_milli))
-                                                .store(vm.min(1500), Ordering::SeqCst);
-                                        }
-                                        let muted_at = &*ptr::addr_of!((*r).muted);
-                                        match mute {
-                                            MuteOp::Unmute => muted_at.store(0, Ordering::SeqCst),
-                                            MuteOp::Mute => muted_at.store(1, Ordering::SeqCst),
-                                            MuteOp::Toggle => {
-                                                let cur = muted_at.load(Ordering::SeqCst);
-                                                muted_at.store(u32::from(cur == 0), Ordering::SeqCst);
-                                            }
-                                            MuteOp::Keep => {}
-                                        }
-                                        if !slot.is_capture && !slot.is_loopback {
-                                            let vm = (*ptr::addr_of!((*r).volume_milli))
-                                                .load(Ordering::SeqCst);
-                                            let mu = muted_at.load(Ordering::SeqCst) != 0;
-                                            upd_pa =
-                                                Some((slot_idx as u32, slot.session_id, vm, mu));
-                                        }
+                                if let Some(ring) = slot
+                                    .ring
+                                    .as_ref()
+                                    .filter(|_| slot.in_use && slot.session_id == sid)
+                                {
+                                    let op = match mute {
+                                        MuteOp::Unmute => RingMuteOp::Unmute,
+                                        MuteOp::Mute => RingMuteOp::Mute,
+                                        MuteOp::Toggle => RingMuteOp::Toggle,
+                                        MuteOp::Keep => RingMuteOp::Keep,
+                                    };
+                                    let (vm, mu) = ring.apply_control(volume_milli, op);
+                                    if !slot.is_capture && !slot.is_loopback {
+                                        upd_pa = Some((slot_idx as u32, slot.session_id, vm, mu));
                                     }
                                     hr = S_OK;
                                     break;
@@ -2466,9 +2259,8 @@ impl AudiodgEngine {
                 {
                     let ss = self.sessions_lock.lock().unwrap();
                     for slot in &ss.sessions {
-                        let r = slot.ring_ptr();
-                        if slot.in_use && !r.is_null() {
-                            unsafe { lasapi_midi_push_to_ring(r, &ev) };
+                        if let Some(ring) = slot.ring.as_ref().filter(|_| slot.in_use) {
+                            let _ = ring.push_midi(&ev);
                         }
                     }
                 }
@@ -2781,7 +2573,7 @@ impl AudiodgEngine {
             ControlRequest::BtConnection { op, mac } => {
                 let action = op.to_u32();
                 let (rc, msg_str, mut flags) = self.bt().connection_ctl(action, &mac);
-                let mut dlist: LasapiDeviceList = unsafe { mem::zeroed() };
+                let mut dlist = LasapiDeviceList::zeroed();
                 self.enumerate_devices_safe(&mut dlist);
                 let usb_matches_bt = any_usb_matches_bt(&dlist, self.bt());
                 if usb_matches_bt {
@@ -2820,7 +2612,7 @@ impl AudiodgEngine {
                         rc >= 0 && ((target_pb == "auto" && !usb_matches_bt) || want_bt_target);
                     let should_reapply = match op {
                         BtConnOp::Connect => reeval_connect,
-                        BtConnOp::SetAutoConn => {
+                        BtConnOp::SetAutoConn | BtConnOp::Reset => {
                             reeval_connect && (flags & LASAPI_BT_STAT_CONNECTED) != 0
                         }
                         BtConnOp::Disconnect => hw_is_bt,
@@ -2880,9 +2672,17 @@ impl AudiodgEngine {
                         &msg_str,
                     );
                 }
+                let payload = if op == BtConnOp::Reset {
+                    ControlPayload::BtFlagsMsg {
+                        flags,
+                        message: msg_str,
+                    }
+                } else {
+                    ControlPayload::BtFlags(flags)
+                };
                 ControlResponse {
                     hr: if rc >= 0 { S_OK } else { E_FAIL },
-                    payload: ControlPayload::BtFlags(flags),
+                    payload,
                 }
             }
             ControlRequest::SetHwAnalog(mut cfg) => {
@@ -2973,12 +2773,12 @@ impl AudiodgEngine {
                     self.bt().set_codec_config(&rt.bt_cfg);
                     if rt.has_saved_vol_state {
                         self.bt().set_volume(
-                            rt.desktop_volume_pct as c_int,
+                            rt.desktop_volume_pct as i32,
                             i32::from(rt.desktop_muted != 0),
                         );
                         self.bt().set_mic_gain_ppm(
                             rt.desktop_mic_gain_ppm,
-                            rt.desktop_mic_volume_pct as c_int,
+                            rt.desktop_mic_volume_pct as i32,
                             i32::from(rt.desktop_mic_muted != 0),
                         );
                     }
@@ -3083,16 +2883,16 @@ impl AudiodgEngine {
         };
         if let Some(exp) = expected_payload {
             if req.requested_buffer_frames as usize != exp {
-                let mut err_resp: LasapiIpcResp = unsafe { mem::zeroed() };
+                let mut err_resp = LasapiIpcResp::zeroed();
                 err_resp.hr = E_INVALIDARG;
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&err_resp));
+                let _ = send_all_nosignal(stream.as_raw_fd(), &err_resp.to_bytes());
                 return;
             }
             legacy_payload.resize(exp, 0);
             if stream.read_exact(&mut legacy_payload).is_err() {
-                let mut err_resp: LasapiIpcResp = unsafe { mem::zeroed() };
+                let mut err_resp = LasapiIpcResp::zeroed();
                 err_resp.hr = E_INVALIDARG;
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&err_resp));
+                let _ = send_all_nosignal(stream.as_raw_fd(), &err_resp.to_bytes());
                 return;
             }
         }
@@ -3103,14 +2903,97 @@ impl AudiodgEngine {
         let resp = self.dispatch_control_req(req.client_pid, ctrl_req);
         match resp.payload {
             ControlPayload::Status { status, .. } => {
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&*status));
+                let _ = send_all_nosignal(stream.as_raw_fd(), &status.to_bytes());
             }
             ControlPayload::Devices(dlist) => {
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&*dlist));
+                let _ = send_all_nosignal(stream.as_raw_fd(), &dlist.to_bytes());
             }
             _ => {
                 let leg = control_resp_to_legacy(&resp);
-                let _ = send_all_nosignal(stream.as_raw_fd(), as_bytes(&leg));
+                let _ = send_all_nosignal(stream.as_raw_fd(), &leg.to_bytes());
+            }
+        }
+    }
+
+    fn record_hw_xrun(&self, hw_snap: &KernelWaveRtHw, xerr: i32) {
+        let xc = self.hw_xruns.fetch_add(1, Ordering::Relaxed) + 1;
+        if xc <= 16 || xc.is_power_of_two() || xc.is_multiple_of(256) {
+            let dp = c_str_to_string(&hw_snap.device_path);
+            dbg_emit_vals(
+                LASAPI_DBG_ALSA,
+                LASAPI_DBG_WARN,
+                0,
+                0,
+                xc as i32,
+                xerr,
+                -xerr,
+                "HW_XRUN",
+                &dp,
+                &format!("ALSA PCM XRUN #{xc} (errno={xerr})"),
+            );
+        }
+    }
+
+    fn write_alsa_period_and_handle_fault(
+        &self,
+        hw_snap: &KernelWaveRtHw,
+        mix_buf: &[f32],
+        period: u32,
+        ch: u32,
+        master_gain: f32,
+        softknee: bool,
+        pcm_pack_bytes: &mut [u8],
+    ) -> (bool, bool) {
+        match self.alsa_hw.write_packed_period(
+            hw_snap,
+            mix_buf,
+            period,
+            ch,
+            master_gain,
+            softknee,
+            pcm_pack_bytes,
+        ) {
+            AlsaWriteOutcome::Ok => (true, true),
+            AlsaWriteOutcome::RecoveredXrun { xerr } => {
+                self.record_hw_xrun(hw_snap, xerr);
+                (false, true)
+            }
+            AlsaWriteOutcome::DeviceLost { dead_err, xerr } => {
+                if let Some(xe) = xerr {
+                    self.record_hw_xrun(hw_snap, xe);
+                }
+                let dp = c_str_to_string(&hw_snap.device_path);
+                dbg_emit_vals(
+                    LASAPI_DBG_ALSA,
+                    LASAPI_DBG_ERR,
+                    0,
+                    0,
+                    dead_err,
+                    0,
+                    -dead_err,
+                    "HW_DEV_LOST",
+                    &dp,
+                    &format!("Kernel playback device removed (errno={dead_err}) -> Virtual Clock"),
+                );
+                eprintln!(
+                    "[LASAPI-audiodg] Kernel playback device {} removed (errno={}), dropping to virtual clock until failover.",
+                    dp, dead_err
+                );
+                let mut hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
+                if hws.hw.fd == hw_snap.fd && hws.hw.fd >= 0 {
+                    self.alsa_hw.close_pcm(hws.hw.fd);
+                    hws.hw.fd = -1;
+                    hws.hw.is_virtual = true;
+                    copy_str_to_c(&mut hws.hw.device_path, "WaveRT-Virtual-Clock");
+                    copy_str_to_c(&mut hws.active_playback_id, "virtual");
+                }
+                (false, false)
+            }
+            AlsaWriteOutcome::TransientErr { had_xrun, xerr } => {
+                if had_xrun {
+                    self.record_hw_xrun(hw_snap, xerr);
+                }
+                (false, false)
             }
         }
     }
@@ -3137,9 +3020,7 @@ impl AudiodgEngine {
         let mut pa_stereo = vec![0.0f32; LASAPI_MAX_PERIOD * 2];
         let mut mic_buf = vec![0.0f32; LASAPI_MAX_PERIOD * 2];
         let mut native_mic_buf = vec![0.0f32; LASAPI_MAX_PERIOD * 2];
-        let mut s32_buf = vec![0i32; LASAPI_MAX_PERIOD * LASAPI_MAX_CHANNELS];
-        let mut s24_buf = vec![0u8; LASAPI_MAX_PERIOD * LASAPI_MAX_CHANNELS * 3];
-        let mut s16_buf = vec![0i16; LASAPI_MAX_PERIOD * LASAPI_MAX_CHANNELS];
+        let mut pcm_pack_bytes = vec![0u8; LASAPI_MAX_PERIOD * LASAPI_MAX_CHANNELS * 4];
         let mut midi_ev: [LasapiMidiEvent; 64] = [LasapiMidiEvent::default(); 64];
 
         let mut mic_read_cursor = 0u64;
@@ -3207,42 +3088,20 @@ impl AudiodgEngine {
                 };
                 last_mic_up_rate = mic_rate;
             }
-            let hwa = self.hwa();
-            if !hwa.is_null() {
-                let cap_makeup = unsafe { lasapi_hw_analog_get_cap_makeup_linear(hwa) };
-                unsafe {
-                    salsa_dsp_scale_cap_clip(native_mic_buf.as_mut_ptr(), mic_frames * 2, cap_makeup);
-                }
-            }
+            let cap_makeup = self.hw_analog.cap_makeup_linear();
+            scale_cap_clip_slice(&mut native_mic_buf[..(mic_frames as usize) * 2], cap_makeup);
             let mic_cfg = {
                 let ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
                 ss.mic_apo
             };
-            unsafe {
-                salsa_dsp_process_capture_mic_apo(
-                    native_mic_buf.as_mut_ptr(),
-                    mic_frames,
-                    mic_rate,
-                    &mic_cfg,
-                );
-            }
+            process_capture_mic_apo(&mut native_mic_buf, mic_frames as usize, mic_rate, &mic_cfg);
 
             // 2. MIDI hub poll
             let num_midi = {
                 let mut mh = self.midi_hub.lock().unwrap_or_else(|e| e.into_inner());
-                let n = unsafe {
-                    lasapi_midi_poll_events(
-                        &mut *mh.0,
-                        midi_ev.as_mut_ptr(),
-                        64,
-                        now_ns,
-                        rate,
-                        period,
-                    )
-                };
-                self.midi_hw_events
-                    .store(mh.0.total_events.load(Ordering::Relaxed), Ordering::Relaxed);
-                n.max(0) as usize
+                let n = mh.poll_events(&mut midi_ev, now_ns, rate, period);
+                self.midi_hw_events.store(mh.total_events(), Ordering::Relaxed);
+                n
             };
 
             let mut pa_mix_ns = 0u64;
@@ -3252,10 +3111,9 @@ impl AudiodgEngine {
                 let mut ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
                 if num_midi > 0 {
                     for slot in &ss.sessions {
-                        let r = slot.ring_ptr();
-                        if slot.in_use && !r.is_null() {
+                        if let Some(ring) = slot.ring.as_ref().filter(|_| slot.in_use) {
                             for ev in &midi_ev[..num_midi] {
-                                unsafe { lasapi_midi_push_to_ring(r, ev) };
+                                let _ = ring.push_midi(ev);
                             }
                         }
                     }
@@ -3266,15 +3124,13 @@ impl AudiodgEngine {
                 let doi_mask = pa.map_or(0, PaServerHandle::lasapi_doi_mask);
                 if exclusive_id >= 0 {
                     for (slot_idx, slot) in ss.sessions.iter_mut().enumerate() {
-                        let r = slot.ring_ptr();
-                        if slot.in_use && (slot.session_id as i32) == exclusive_id && !r.is_null() {
-                            unsafe {
-                                (*ptr::addr_of!((*r).hw_clock_ns)).store(now_ns, Ordering::Relaxed);
+                        if slot.in_use && (slot.session_id as i32) == exclusive_id && slot.ring.is_some() {
+                            if let Some(ref ring) = slot.ring {
+                                ring.set_hw_clock_ns(now_ns);
                             }
                             consume_lasapi_playback_slot(
                                 slot_idx,
                                 slot,
-                                r,
                                 pa,
                                 doi_mask,
                                 &mut lasapi_doi_buf,
@@ -3287,16 +3143,14 @@ impl AudiodgEngine {
                     }
                 } else {
                     for (slot_idx, slot) in ss.sessions.iter_mut().enumerate() {
-                        let r = slot.ring_ptr();
-                        if slot.in_use && !r.is_null() {
-                            unsafe {
-                                (*ptr::addr_of!((*r).hw_clock_ns)).store(now_ns, Ordering::Relaxed);
+                        if slot.in_use && slot.ring.is_some() {
+                            if let Some(ref ring) = slot.ring {
+                                ring.set_hw_clock_ns(now_ns);
                             }
                             if !slot.is_capture && !slot.is_loopback {
                                 consume_lasapi_playback_slot(
                                     slot_idx,
                                     slot,
-                                    r,
                                     pa,
                                     doi_mask,
                                     &mut lasapi_doi_buf,
@@ -3330,16 +3184,7 @@ impl AudiodgEngine {
 
                 // 3. Dynamic EQ + Spectrum
                 let t_eq0 = mono_ns();
-                unsafe {
-                    salsa_dsp_process_dynamic_eq(
-                        mix_buf.as_mut_ptr(),
-                        period,
-                        ch,
-                        rate,
-                        &ss.eq_cfg,
-                        &ss.param_eq,
-                    );
-                }
+                process_dynamic_eq(&mut mix_buf, p_us, ch_us, rate, &ss.eq_cfg, &ss.param_eq);
                 eq_ns = mono_ns().saturating_sub(t_eq0);
 
                 if ch != 2 {
@@ -3361,27 +3206,24 @@ impl AudiodgEngine {
                     mic_cfg.enabled != 0 && mic_cfg.sidetone_enabled != 0 && mic_cfg.sidetone_pct > 0;
                 if !need_eng_mic {
                     for slot in &ss.sessions {
-                        if slot.in_use && slot.is_capture && !slot.ring_ptr().is_null() && !slot.is_loopback {
+                        if slot.in_use && slot.is_capture && slot.ring.is_some() && !slot.is_loopback {
                             need_eng_mic = true;
                             break;
                         }
                     }
                 }
                 if need_eng_mic {
-                    unsafe {
-                        salsa_dsp_resample_mic_cubic(
-                            native_mic_buf.as_ptr(),
-                            mic_frames,
-                            mic_buf.as_mut_ptr(),
-                            period,
-                            &mut mic_up_st,
-                        );
-                    }
+                    resample_mic_cubic_slice(
+                        &native_mic_buf,
+                        mic_frames as usize,
+                        &mut mic_buf,
+                        p_us,
+                        &mut mic_up_st,
+                    );
                 }
 
                 for slot in &ss.sessions {
-                    let r = slot.ring_ptr();
-                    if slot.in_use && !r.is_null() {
+                    if let Some(ring) = slot.ring.as_ref().filter(|_| slot.in_use) {
                         if slot.is_capture || slot.is_loopback {
                             let cap_src: &[f32] = if slot.is_loopback {
                                 if monitor_is_pa_stereo {
@@ -3392,17 +3234,7 @@ impl AudiodgEngine {
                             } else {
                                 &mic_buf[..p_us * 2]
                             };
-                            unsafe {
-                                let cwf = &*ptr::addr_of!((*r).cap_write_frame);
-                                let cw = cwf.load(Ordering::Relaxed);
-                                let cap_base = ptr::addr_of_mut!((*r).cap_pcm_data.0) as *mut f32;
-                                for f in 0..p_us {
-                                    let idx = ((cw.wrapping_add(f as u64) as usize) & LASAPI_RING_MASK) * 2;
-                                    cap_base.add(idx).write(cap_src[f * 2]);
-                                    cap_base.add(idx + 1).write(cap_src[f * 2 + 1]);
-                                }
-                                cwf.store(cw.wrapping_add(period as u64), Ordering::Release);
-                            }
+                            ring.push_capture_stereo(cap_src, p_us);
                         }
                         if let Some(ref efd) = slot.event_fd {
                             crate::unix_sys::eventfd_signal(efd.as_raw_fd());
@@ -3453,149 +3285,35 @@ impl AudiodgEngine {
                     && hw_snap.sample_rate == rate
                 {
                     if hw_snap.is_bluetooth && self.bt().is_initialized() {
-                        let hwa = self.hwa();
-                        let (drive_gain, softknee) = if !hwa.is_null() {
-                            unsafe {
-                                (
-                                    lasapi_hw_analog_get_drive_linear(hwa),
-                                    lasapi_hw_analog_softknee_active(hwa),
-                                )
-                            }
-                        } else {
-                            (1.0, false)
-                        };
+                        let drive_gain = self.hw_analog.drive_linear();
+                        let softknee = self.hw_analog.softknee_active();
                         apply_bt_hw_analog_drive(&mut mix_buf[..p_us * ch_us], drive_gain, softknee);
                         self.bt().write_period(&mix_buf[..p_us * ch_us], period, ch);
                     } else if !hw_snap.is_virtual && hw_snap.fd >= 0 {
                         let (d_vol, d_muted) = self.bt().rt_master_vol();
                         let mut master_gain = if d_muted {
                             0.0f32
+                        } else if self.hw_analog.is_dac_unity_active() && d_vol <= 100 {
+                            1.0
                         } else {
                             (d_vol as f32) / 100.0
                         };
-                        let mut softknee = false;
-                        if !hwa.is_null() {
-                            if unsafe { lasapi_hw_analog_is_dac_unity_active(hwa) } {
-                                master_gain = if d_muted {
-                                    0.0
-                                } else if d_vol <= 100 {
-                                    1.0
-                                } else {
-                                    (d_vol as f32) / 100.0
-                                };
-                            }
-                            master_gain *= unsafe { lasapi_hw_analog_get_drive_linear(hwa) };
-                            softknee = unsafe { lasapi_hw_analog_softknee_active(hwa) };
-                        }
+                        master_gain *= self.hw_analog.drive_linear();
+                        let softknee = self.hw_analog.softknee_active();
 
-                        let (pack_fmt, pack_dst): (u32, *mut u8) = match hw_snap.sndrv_format {
-                            SNDRV_PCM_FORMAT_S32_LE => (SALSA_PACK_S32_LE, s32_buf.as_mut_ptr().cast()),
-                            SNDRV_PCM_FORMAT_S24_LE => (SALSA_PACK_S24_LE, s32_buf.as_mut_ptr().cast()),
-                            SNDRV_PCM_FORMAT_S24_3LE => (SALSA_PACK_S24_3LE, s24_buf.as_mut_ptr()),
-                            SNDRV_PCM_FORMAT_S16_LE => (SALSA_PACK_S16_LE, s16_buf.as_mut_ptr().cast()),
-                            _ => (SALSA_PACK_F32_LE, s32_buf.as_mut_ptr().cast()),
-                        };
-                        unsafe {
-                            salsa_dsp_pack_pcm(
-                                mix_buf.as_ptr(),
-                                period * ch,
-                                master_gain,
-                                softknee,
-                                pack_fmt,
-                                pack_dst,
-                            );
+                        let (clear_pace, update_wake) = self.write_alsa_period_and_handle_fault(
+                            &hw_snap,
+                            &mix_buf,
+                            period,
+                            ch,
+                            master_gain,
+                            softknee,
+                            &mut pcm_pack_bytes,
+                        );
+                        if clear_pace {
+                            need_timer_pace = false;
                         }
-
-                        let mut xfer = SndXferi {
-                            result: 0,
-                            buf: pack_dst.cast::<c_void>(),
-                            frames: period as c_ulong,
-                        };
-                        let mut had_xrun = false;
-                        let mut wr = unsafe {
-                            ioctl_raw(
-                                hw_snap.fd,
-                                SNDRV_PCM_IOCTL_WRITEI_FRAMES,
-                                (&mut xfer as *mut SndXferi).cast::<c_void>(),
-                            )
-                        };
-                        if wr < 0 {
-                            let xerr = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-                            if xerr == ERRNO_EPIPE || xerr == ERRNO_ESTRPIPE {
-                                had_xrun = true;
-                                let xc = self.hw_xruns.fetch_add(1, Ordering::Relaxed) + 1;
-                                if xc <= 16 || xc.is_power_of_two() || xc.is_multiple_of(256) {
-                                    let dp = c_str_to_string(&hw_snap.device_path);
-                                    dbg_emit_vals(
-                                        LASAPI_DBG_ALSA,
-                                        LASAPI_DBG_WARN,
-                                        0,
-                                        0,
-                                        xc as i32,
-                                        xerr,
-                                        -xerr,
-                                        "HW_XRUN",
-                                        &dp,
-                                        &format!("ALSA PCM XRUN #{xc} (errno={xerr})"),
-                                    );
-                                }
-                                unsafe {
-                                    let _ = ioctl_raw(
-                                        hw_snap.fd,
-                                        SNDRV_PCM_IOCTL_PREPARE,
-                                        ptr::null_mut(),
-                                    );
-                                }
-                                xfer.result = 0;
-                                wr = unsafe {
-                                    ioctl_raw(
-                                        hw_snap.fd,
-                                        SNDRV_PCM_IOCTL_WRITEI_FRAMES,
-                                        (&mut xfer as *mut SndXferi).cast::<c_void>(),
-                                    )
-                                };
-                            }
-                        }
-
-                        if wr < 0 {
-                            let dead_err =
-                                std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-                            if dead_err == ERRNO_ENODEV
-                                || dead_err == ERRNO_EBADFD
-                                || dead_err == ERRNO_EIO
-                            {
-                                let dp = c_str_to_string(&hw_snap.device_path);
-                                dbg_emit_vals(
-                                    LASAPI_DBG_ALSA,
-                                    LASAPI_DBG_ERR,
-                                    0,
-                                    0,
-                                    dead_err,
-                                    0,
-                                    -dead_err,
-                                    "HW_DEV_LOST",
-                                    &dp,
-                                    &format!(
-                                        "Kernel playback device removed (errno={dead_err}) -> Virtual Clock"
-                                    ),
-                                );
-                                eprintln!(
-                                    "[LASAPI-audiodg] Kernel playback device {} removed (errno={}), dropping to virtual clock until failover.",
-                                    dp, dead_err
-                                );
-                                let mut hws = self.hw_lock.lock().unwrap_or_else(|e| e.into_inner());
-                                if hws.hw.fd == hw_snap.fd && hws.hw.fd >= 0 {
-                                    close_raw_fd(hws.hw.fd);
-                                    hws.hw.fd = -1;
-                                    hws.hw.is_virtual = true;
-                                    copy_str_to_c(&mut hws.hw.device_path, "WaveRT-Virtual-Clock");
-                                    copy_str_to_c(&mut hws.active_playback_id, "virtual");
-                                }
-                            }
-                        } else {
-                            if !had_xrun {
-                                need_timer_pace = false;
-                            }
+                        if update_wake {
                             next_wakeup_ns = mono_ns();
                         }
                     }
@@ -3682,7 +3400,6 @@ fn destroy_session_slot(ss: &mut SessionsState, slot_idx: usize) {
 fn consume_lasapi_playback_slot(
     slot_idx: usize,
     slot: &mut EngineSession,
-    r: *mut LasapiShmRing,
     pa: Option<&PaServerHandle>,
     doi_mask: u32,
     lasapi_doi_buf: &mut [f32],
@@ -3690,50 +3407,24 @@ fn consume_lasapi_playback_slot(
     spec: (u32, u32, u32, u64),
     exclusive: bool,
 ) {
+    let Some(ref ring) = slot.ring else {
+        return;
+    };
     let (period, ch, rate, now_ns) = spec;
     if let Some(pa_srv) = pa {
         if let Some((new_vol, new_mut)) =
             pa_srv.poll_lasapi_ctl(slot_idx as u32, &mut slot.last_pa_ctl_seq)
         {
-            unsafe {
-                (*ptr::addr_of!((*r).volume_milli)).store(new_vol, Ordering::SeqCst);
-                (*ptr::addr_of!((*r).muted)).store(new_mut, Ordering::SeqCst);
-            }
+            ring.set_volume_and_mute(new_vol, new_mut);
         }
     }
     let watch_doi = pa.is_some() && slot_idx < 32 && ((doi_mask >> slot_idx) & 1) != 0;
     let total_samples = (period as usize) * (ch as usize);
-    let (pre_active, pre_w, pre_rd, pre_buf, pre_xruns) = unsafe {
-        (
-            (*ptr::addr_of!((*r).active)).load(Ordering::Acquire),
-            (*ptr::addr_of!((*r).write_frame)).load(Ordering::Acquire),
-            (*ptr::addr_of!((*r).read_frame)).load(Ordering::Relaxed),
-            ptr::addr_of!((*r).buffer_frames).read(),
-            (*ptr::addr_of!((*r).xruns)).load(Ordering::Relaxed),
-        )
-    };
-    let pre_live = slot.stream_live;
-    let pre_pending = slot.underrun_pending;
-    if watch_doi && total_samples <= lasapi_doi_buf.len() && total_samples <= mix_buf.len() {
+    let rep = if watch_doi && total_samples <= lasapi_doi_buf.len() && total_samples <= mix_buf.len()
+    {
         let doi_slice = &mut lasapi_doi_buf[..total_samples];
         doi_slice.fill(0.0);
-        unsafe {
-            salsa_dsp_consume_session_frames(
-                r,
-                &mut slot.resample_phase,
-                slot.sample_rate,
-                slot.channels,
-                &mut slot.stream_live,
-                &mut slot.underrun_pending,
-                &mut slot.last_audio_ns,
-                doi_slice.as_mut_ptr(),
-                period,
-                ch,
-                rate,
-                true,
-                now_ns,
-            );
-        }
+        let r = ring.consume_playback(&mut slot.resample, doi_slice, period, ch, rate, true, now_ns);
         if let Some(pa_srv) = pa {
             pa_srv.push_lasapi_period(slot_idx as u32, doi_slice, period, ch);
         }
@@ -3744,32 +3435,24 @@ fn consume_lasapi_playback_slot(
                 *dst += *src;
             }
         }
+        r
     } else {
-        unsafe {
-            salsa_dsp_consume_session_frames(
-                r,
-                &mut slot.resample_phase,
-                slot.sample_rate,
-                slot.channels,
-                &mut slot.stream_live,
-                &mut slot.underrun_pending,
-                &mut slot.last_audio_ns,
-                mix_buf.as_mut_ptr(),
-                period,
-                ch,
-                rate,
-                exclusive,
-                now_ns,
-            );
-        }
-    }
-    if pre_active != 0 && pre_live {
+        ring.consume_playback(
+            &mut slot.resample,
+            mix_buf,
+            period,
+            ch,
+            rate,
+            exclusive,
+            now_ns,
+        )
+    };
+    if rep.pre_active != 0 && rep.pre_live {
         static LAST_LASAPI_XRUN_LOG_NS: AtomicU64 = AtomicU64::new(0);
-        let avail = pre_w.saturating_sub(pre_rd);
-        let post_xruns = unsafe { (*ptr::addr_of!((*r).xruns)).load(Ordering::Relaxed) };
-        let empty_trip = !pre_pending && slot.underrun_pending;
+        let avail = rep.pre_avail;
+        let empty_trip = !rep.pre_pending && rep.post_pending;
         let partial_trip = avail > 0 && avail < u64::from(period);
-        let recover_trip = post_xruns > pre_xruns;
+        let recover_trip = rep.post_xruns > rep.pre_xruns;
         if empty_trip || partial_trip || recover_trip {
             let prev_t = LAST_LASAPI_XRUN_LOG_NS.load(Ordering::Relaxed);
             if now_ns.saturating_sub(prev_t) >= 200_000_000 {
@@ -3789,12 +3472,12 @@ fn consume_lasapi_playback_slot(
                     slot.session_id,
                     avail.min(i32::MAX as u64) as i32,
                     period as i32,
-                    post_xruns as i32,
+                    rep.post_xruns as i32,
                     tag,
                     if cname.is_empty() { "session" } else { &cname },
                     &format!(
-                        "sid={} avail={avail}/{period} buf={pre_buf} xruns={post_xruns}",
-                        slot.session_id
+                        "sid={} avail={avail}/{period} buf={} xruns={}",
+                        slot.session_id, rep.pre_buf, rep.post_xruns
                     ),
                 );
             }
@@ -3852,7 +3535,7 @@ impl PaEngineHost for AudiodgEngine {
 
 impl DebugEngineHost for AudiodgEngine {
     fn build_snapshot_json(&self, rt: &LasapiDbgRtStats) -> JsonValue {
-        let mut st: LasapiEngineStatus = unsafe { mem::zeroed() };
+        let mut st = LasapiEngineStatus::zeroed();
         self.fill_engine_status_impl(&mut st, true);
 
         let (tgt_pb_id, tgt_cap_id, pref_cap, pref_pb_rate, pb_is_hw, active_pb_copy) = {
@@ -3903,45 +3586,26 @@ impl DebugEngineHost for AudiodgEngine {
         {
             let ss = self.sessions_lock.lock().unwrap_or_else(|e| e.into_inner());
             for slot in &ss.sessions {
-                let r = slot.ring_ptr();
-                if slot.in_use && !r.is_null() {
-                    unsafe {
-                        let active = (*ptr::addr_of!((*r).active)).load(Ordering::Relaxed);
-                        let muted = (*ptr::addr_of!((*r).muted)).load(Ordering::Relaxed);
-                        let volume_milli = (*ptr::addr_of!((*r).volume_milli)).load(Ordering::Relaxed);
-                        let is_cap = u32::from(slot.is_capture);
-                        let (w, rd) = if is_cap != 0 {
-                            (
-                                (*ptr::addr_of!((*r).cap_write_frame)).load(Ordering::Relaxed),
-                                (*ptr::addr_of!((*r).cap_read_frame)).load(Ordering::Relaxed),
-                            )
-                        } else {
-                            (
-                                (*ptr::addr_of!((*r).write_frame)).load(Ordering::Relaxed),
-                                (*ptr::addr_of!((*r).read_frame)).load(Ordering::Relaxed),
-                            )
-                        };
-                        lasapi_sessions.push(JsonValue::obj(vec![
-                            ("session_id", JsonValue::Int(i64::from(slot.session_id))),
-                            ("pid", JsonValue::Int(i64::from(slot.client_pid))),
-                            ("name", JsonValue::Str(c_str_to_string(&slot.client_name))),
-                            ("share_mode", JsonValue::Int(i64::from(slot.share_mode))),
-                            ("stream_flags", JsonValue::Int(i64::from((*r).stream_flags))),
-                            ("is_capture", JsonValue::Int(i64::from(is_cap))),
-                            ("rate", JsonValue::Int(i64::from(slot.sample_rate))),
-                            ("channels", JsonValue::Int(i64::from(slot.channels))),
-                            ("active", JsonValue::Int(i64::from(active))),
-                            ("muted", JsonValue::Int(i64::from(muted))),
-                            ("volume_milli", JsonValue::Int(i64::from(volume_milli))),
-                            ("buffer_frames", JsonValue::Int(i64::from((*r).buffer_frames))),
-                            ("period_frames", JsonValue::Int(i64::from((*r).period_frames))),
-                            ("buffered_frames", JsonValue::from_u64(w.saturating_sub(rd))),
-                            (
-                                "xruns",
-                                JsonValue::from_u64((*ptr::addr_of!((*r).xruns)).load(Ordering::Relaxed)),
-                            ),
-                        ]));
-                    }
+                if let Some(ring) = slot.ring.as_ref().filter(|_| slot.in_use) {
+                    let tel = ring.telemetry();
+                    let is_cap = u32::from(slot.is_capture);
+                    lasapi_sessions.push(JsonValue::obj(vec![
+                        ("session_id", JsonValue::Int(i64::from(slot.session_id))),
+                        ("pid", JsonValue::Int(i64::from(slot.client_pid))),
+                        ("name", JsonValue::Str(c_str_to_string(&slot.client_name))),
+                        ("share_mode", JsonValue::Int(i64::from(slot.share_mode))),
+                        ("stream_flags", JsonValue::Int(i64::from(tel.stream_flags))),
+                        ("is_capture", JsonValue::Int(i64::from(is_cap))),
+                        ("rate", JsonValue::Int(i64::from(slot.sample_rate))),
+                        ("channels", JsonValue::Int(i64::from(slot.channels))),
+                        ("active", JsonValue::Int(i64::from(tel.active))),
+                        ("muted", JsonValue::Int(i64::from(tel.muted))),
+                        ("volume_milli", JsonValue::Int(i64::from(tel.volume_milli))),
+                        ("buffer_frames", JsonValue::Int(i64::from(tel.buffer_frames))),
+                        ("period_frames", JsonValue::Int(i64::from(tel.period_frames))),
+                        ("buffered_frames", JsonValue::from_u64(tel.buffered_frames)),
+                        ("xruns", JsonValue::from_u64(tel.xruns)),
+                    ]));
                 }
             }
         }
@@ -4228,22 +3892,11 @@ impl DebugEngineHost for AudiodgEngine {
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_char) -> c_int {
+pub fn run_audiodg_from_env() -> i32 {
     std::env::remove_var("LD_LIBRARY_PATH");
     claim_systemd_unix_listeners();
 
-    let mut args: Vec<String> = Vec::new();
-    if argc > 0 && !argv.is_null() {
-        for i in 0..(argc as isize) {
-            let p = unsafe { *argv.offset(i) };
-            if let Some(s) = unsafe { ptr_to_opt_str(p) } {
-                args.push(s);
-            } else {
-                args.push(String::new());
-            }
-        }
-    }
+    let args: Vec<String> = std::env::args().collect();
 
     for arg in args.iter().skip(1) {
         if matches!(arg.as_str(), "--version" | "-V" | "--license" | "--legal") {
@@ -4328,8 +3981,6 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     rt.format_bits = bits_arg;
 
     let engine = Arc::new(AudiodgEngine::new(&rt, RealBluezBackend::global()));
-    let hwa_ptr = lasapi_hw_analog_create();
-    engine.hw_analog.store(hwa_ptr, Ordering::Release);
 
     // Bind `audiodg.sock` BEFORE `init_hardware()` so active games/WASAPI clients
     // opening streams across a daemon restart connect immediately into the kernel
@@ -4360,14 +4011,15 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
 
     if !(force_virtual && std::env::var("LASAPI_VIRTUAL_NO_MIDI").as_deref() == Ok("1")) {
         let mut mh = engine.midi_hub.lock().unwrap();
-        let _ = unsafe { lasapi_midi_init(&mut *mh.0) };
+        let _ = mh.init();
+        let snap = mh.meta_snapshot();
         let mut mm = engine.midi_meta.lock().unwrap();
-        mm.initialized = mh.0.initialized;
-        mm.rawmidi_open = mh.0.rawmidi_fd >= 0;
-        mm.controller_name.copy_from_slice(&mh.0.controller_name);
-        mm.dev_path.copy_from_slice(&mh.0.dev_path);
-        mm.seq_client_id = mh.0.seq_client_id;
-        mm.seq_in_port = mh.0.seq_in_port;
+        mm.initialized = snap.initialized;
+        mm.rawmidi_open = snap.rawmidi_open;
+        mm.controller_name.copy_from_slice(&snap.controller_name);
+        mm.dev_path.copy_from_slice(&snap.dev_path);
+        mm.seq_client_id = snap.seq_client_id;
+        mm.seq_in_port = snap.seq_in_port;
     }
 
     if let Some(pa) = start_pa_server(Arc::clone(&engine) as Arc<dyn PaEngineHost>) {
@@ -4518,10 +4170,12 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
                     }
                     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-                    let mut req: LasapiIpcReq = unsafe { mem::zeroed() };
+                    let mut req_buf = [0u8; mem::size_of::<LasapiIpcReq>()];
                     let mut stream = stream;
-                    if stream.read_exact(as_bytes_mut(&mut req)).is_ok() {
-                        engine.handle_client_cmd(stream, &req);
+                    if stream.read_exact(&mut req_buf).is_ok() {
+                        if let Some(req) = LasapiIpcReq::from_bytes(&req_buf) {
+                            engine.handle_client_cmd(stream, &req);
+                        }
                     }
                 }
             }
@@ -4618,13 +4272,8 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
             engine.mark_state_dirty();
         }
 
-        let hwa = engine.hwa();
-        if !hwa.is_null() {
-            let mut hid_delta = 0i32;
-            let mut hid_mute = 0i32;
-            if unsafe { lasapi_hw_analog_poll_hid(hwa, &mut hid_delta, &mut hid_mute) > 0 }
-                && (hid_delta != 0 || hid_mute != 0)
-            {
+        if let Some((hid_delta, hid_mute)) = engine.hw_analog.poll_hid() {
+            if hid_delta != 0 || hid_mute != 0 {
                 let bt_cur = engine.bt().snapshot();
                 let new_v = ((bt_cur.desktop_volume_pct as i32) + hid_delta * 2).clamp(0, 150);
                 let mute_op = if hid_mute != 0 {
@@ -4691,11 +4340,7 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     }
     {
         let mut mh = engine.midi_hub.lock().unwrap();
-        unsafe { lasapi_midi_close(&mut *mh.0) };
-    }
-    let hwa_old = engine.hw_analog.swap(ptr::null_mut(), Ordering::AcqRel);
-    if !hwa_old.is_null() {
-        unsafe { lasapi_hw_analog_destroy(hwa_old) };
+        mh.close();
     }
     if engine.bt().snapshot().initialized {
         engine.bt().close();
@@ -4703,21 +4348,13 @@ pub unsafe extern "C" fn salsa_audiodg_main(argc: c_int, argv: *const *const c_c
     {
         let mut hws = engine.hw_lock.lock().unwrap();
         if hws.hw.fd >= 0 {
-            close_raw_fd(hws.hw.fd);
+            engine.alsa_hw.close_pcm(hws.hw.fd);
             hws.hw.fd = -1;
         }
     }
     drop(listener);
     let _ = fs::remove_file(&sock_path);
     0
-}
-
-fn as_bytes<T>(v: &T) -> &[u8] {
-    unsafe { slice::from_raw_parts((v as *const T).cast::<u8>(), mem::size_of::<T>()) }
-}
-
-fn as_bytes_mut<T>(v: &mut T) -> &mut [u8] {
-    unsafe { slice::from_raw_parts_mut((v as *mut T).cast::<u8>(), mem::size_of::<T>()) }
 }
 
 #[inline]
@@ -4858,241 +4495,6 @@ pub fn device_list_has_any_type(
         return true;
     }
     false
-}
-
-pub(crate) fn hw_params_any(params: &mut SndPcmHwParams) {
-    unsafe { ptr::write_bytes(params, 0, 1) };
-    let mask_cnt = SNDRV_PCM_HW_PARAM_LAST_MASK - SNDRV_PCM_HW_PARAM_FIRST_MASK + 1;
-    for m in params.masks.iter_mut().take(mask_cnt) {
-        m.bits.fill(u32::MAX);
-    }
-    let int_cnt = SNDRV_PCM_HW_PARAM_LAST_INTERVAL - SNDRV_PCM_HW_PARAM_FIRST_INTERVAL + 1;
-    for iv in params.intervals.iter_mut().take(int_cnt) {
-        iv.min = 0;
-        iv.max = u32::MAX;
-    }
-    params.rmask = u32::MAX;
-}
-
-pub(crate) fn hw_param_set_mask(params: &mut SndPcmHwParams, param: usize, bit: u32) {
-    let idx = param - SNDRV_PCM_HW_PARAM_FIRST_MASK;
-    params.masks[idx].bits.fill(0);
-    params.masks[idx].bits[(bit >> 5) as usize] |= 1u32 << (bit & 31);
-    params.cmask |= 1u32 << (param as u32);
-}
-
-pub(crate) fn hw_param_set_minmax(params: &mut SndPcmHwParams, param: usize, minv: u32, maxv: u32) {
-    let idx = param - SNDRV_PCM_HW_PARAM_FIRST_INTERVAL;
-    params.intervals[idx].min = minv;
-    params.intervals[idx].max = maxv;
-    params.intervals[idx].flags = 0;
-    params.cmask |= 1u32 << (param as u32);
-}
-
-fn is_valid_alsa_pcm_path(p: &str) -> bool {
-    let Some(rest) = p.strip_prefix("/dev/snd/pcmC") else {
-        return false;
-    };
-    let mut chars = rest.chars().peekable();
-    let mut card_digits = 0usize;
-    while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
-        chars.next();
-        card_digits += 1;
-    }
-    if card_digits == 0 || chars.next() != Some('D') {
-        return false;
-    }
-    let mut dev_digits = 0usize;
-    while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
-        chars.next();
-        dev_digits += 1;
-    }
-    dev_digits > 0 && matches!(chars.next(), Some('p' | 'c')) && chars.next().is_none()
-}
-
-fn open_kernel_pcm_device(
-    dev_path: &str,
-    req_rate: u32,
-    req_period: u32,
-    req_bits: u32,
-) -> Option<KernelWaveRtHw> {
-    if !is_valid_alsa_pcm_path(dev_path) {
-        return None;
-    }
-    let fd = open_chrdev_rw_cloexec(dev_path);
-    if fd < 0 {
-        return None;
-    }
-
-    let (candidate_formats, candidate_bits): ([i32; 5], [u32; 5]) = match req_bits {
-        16 => (
-            [
-                SNDRV_PCM_FORMAT_S16_LE,
-                SNDRV_PCM_FORMAT_S24_3LE,
-                SNDRV_PCM_FORMAT_S24_LE,
-                SNDRV_PCM_FORMAT_S32_LE,
-                SNDRV_PCM_FORMAT_FLOAT_LE,
-            ],
-            [16, 24, 24, 32, 32],
-        ),
-        24 => (
-            [
-                SNDRV_PCM_FORMAT_S24_3LE,
-                SNDRV_PCM_FORMAT_S24_LE,
-                SNDRV_PCM_FORMAT_S32_LE,
-                SNDRV_PCM_FORMAT_FLOAT_LE,
-                SNDRV_PCM_FORMAT_S16_LE,
-            ],
-            [24, 24, 32, 32, 16],
-        ),
-        _ => (
-            [
-                SNDRV_PCM_FORMAT_S32_LE,
-                SNDRV_PCM_FORMAT_FLOAT_LE,
-                SNDRV_PCM_FORMAT_S24_3LE,
-                SNDRV_PCM_FORMAT_S24_LE,
-                SNDRV_PCM_FORMAT_S16_LE,
-            ],
-            [32, 32, 24, 24, 16],
-        ),
-    };
-
-    let candidate_chs = [2u32, 1u32];
-    let mut candidate_rates = [req_rate, 0u32, 48_000, 44_100];
-    if req_rate == 192_000 {
-        candidate_rates[1] = 96_000;
-    } else if req_rate == 176_400 {
-        candidate_rates[1] = 88_200;
-        candidate_rates[2] = 44_100;
-        candidate_rates[3] = 48_000;
-    } else if req_rate == 88_200 || req_rate == 44_100 {
-        candidate_rates[2] = 44_100;
-        candidate_rates[3] = 48_000;
-    }
-
-    let mut params: SndPcmHwParams = unsafe { mem::zeroed() };
-    let mut chosen_fmt = -1i32;
-    let mut chosen_bits = 0u32;
-
-    'outer: for &bm in &[4u32, 2u32] {
-        for (r_idx, &cand_r) in candidate_rates.iter().enumerate() {
-            if cand_r < 44_100 {
-                continue;
-            }
-            if r_idx > 0 && cand_r == req_rate {
-                continue;
-            }
-            for &ch in &candidate_chs {
-                for (&fmt, &bits) in candidate_formats.iter().zip(candidate_bits.iter()) {
-                    hw_params_any(&mut params);
-                    if unsafe {
-                        ioctl_raw(
-                            fd,
-                            SNDRV_PCM_IOCTL_HW_REFINE,
-                            (&mut params as *mut SndPcmHwParams).cast::<c_void>(),
-                        )
-                    } < 0
-                    {
-                        continue;
-                    }
-                    hw_param_set_mask(
-                        &mut params,
-                        SNDRV_PCM_HW_PARAM_ACCESS,
-                        SNDRV_PCM_ACCESS_RW_INTERLEAVED,
-                    );
-                    hw_param_set_mask(&mut params, SNDRV_PCM_HW_PARAM_FORMAT, fmt as u32);
-                    hw_param_set_minmax(&mut params, SNDRV_PCM_HW_PARAM_CHANNELS, ch, ch);
-                    hw_param_set_minmax(&mut params, SNDRV_PCM_HW_PARAM_RATE, cand_r, cand_r);
-                    let max_p = LASAPI_MAX_PERIOD as u32;
-                    let min_per = req_period.clamp(64, max_p);
-                    let max_per = req_period.saturating_mul(2).clamp(min_per, max_p);
-                    hw_param_set_minmax(
-                        &mut params,
-                        SNDRV_PCM_HW_PARAM_PERIOD_SIZE,
-                        min_per,
-                        max_per,
-                    );
-                    hw_param_set_minmax(
-                        &mut params,
-                        SNDRV_PCM_HW_PARAM_BUFFER_SIZE,
-                        min_per.saturating_mul(bm),
-                        min_per.saturating_mul(8),
-                    );
-                    if unsafe {
-                        ioctl_raw(
-                            fd,
-                            SNDRV_PCM_IOCTL_HW_PARAMS,
-                            (&mut params as *mut SndPcmHwParams).cast::<c_void>(),
-                        )
-                    } == 0
-                    {
-                        chosen_fmt = fmt;
-                        chosen_bits = bits;
-                        break 'outer;
-                    }
-                }
-            }
-        }
-    }
-
-    if chosen_fmt < 0 {
-        close_raw_fd(fd);
-        return None;
-    }
-
-    let actual_rate = params.intervals[SNDRV_PCM_HW_PARAM_RATE - SNDRV_PCM_HW_PARAM_FIRST_INTERVAL].min;
-    let actual_ch = params.intervals[SNDRV_PCM_HW_PARAM_CHANNELS - SNDRV_PCM_HW_PARAM_FIRST_INTERVAL].min;
-    let actual_per =
-        params.intervals[SNDRV_PCM_HW_PARAM_PERIOD_SIZE - SNDRV_PCM_HW_PARAM_FIRST_INTERVAL].min;
-    let actual_buf =
-        params.intervals[SNDRV_PCM_HW_PARAM_BUFFER_SIZE - SNDRV_PCM_HW_PARAM_FIRST_INTERVAL].min;
-
-    let base_per = if actual_per != 0 { actual_per } else { req_period };
-    let mut sw: SndPcmSwParams = unsafe { mem::zeroed() };
-    sw.tstamp_mode = SNDRV_PCM_TSTAMP_ENABLE;
-    sw.period_step = 1;
-    sw.avail_min = base_per as u64;
-    sw.start_threshold = if actual_buf >= base_per.saturating_mul(3) {
-        (base_per.saturating_mul(2)) as u64
-    } else {
-        base_per as u64
-    };
-    sw.stop_threshold = if actual_buf != 0 {
-        actual_buf as u64
-    } else {
-        base_per.saturating_mul(4) as u64
-    };
-    sw.xfer_align = 1;
-    unsafe {
-        let _ = ioctl_raw(
-            fd,
-            SNDRV_PCM_IOCTL_SW_PARAMS,
-            (&mut sw as *mut SndPcmSwParams).cast::<c_void>(),
-        );
-        if ioctl_raw(fd, SNDRV_PCM_IOCTL_PREPARE, ptr::null_mut()) < 0 {
-            close_raw_fd(fd);
-            return None;
-        }
-    }
-
-    let mut device_path = [0u8; 64];
-    copy_str_to_c(&mut device_path, dev_path);
-    Some(KernelWaveRtHw {
-        fd,
-        device_path,
-        is_virtual: false,
-        is_bluetooth: false,
-        sample_rate: if actual_rate != 0 { actual_rate } else { req_rate },
-        channels: if actual_ch != 0 { actual_ch } else { 2 },
-        period_frames: base_per,
-        buffer_frames: if actual_buf != 0 {
-            actual_buf
-        } else {
-            req_period.saturating_mul(4)
-        },
-        sndrv_format: chosen_fmt,
-        format_bits: chosen_bits,
-    })
 }
 
 fn is_usb_device_entry(dev: &crate::c_abi::LasapiDeviceEntry) -> bool {
@@ -5267,7 +4669,6 @@ fn apply_bt_hw_analog_drive(samples: &mut [f32], drive_gain: f32, softknee: bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::mem::{offset_of, size_of};
 
     #[test]
     fn usb_matches_dual_mode_bt_headset_names() {
@@ -5294,29 +4695,6 @@ mod tests {
     }
 
     #[test]
-    fn alsa_pcm_uapi_layouts_match_kernel() {
-        assert_eq!(size_of::<SndMask>(), 32);
-        assert_eq!(size_of::<SndInterval>(), 12);
-        assert_eq!(size_of::<SndPcmHwParams>(), 608);
-        assert_eq!(offset_of!(SndPcmHwParams, masks), 4);
-        assert_eq!(offset_of!(SndPcmHwParams, intervals), 260);
-        assert_eq!(offset_of!(SndPcmHwParams, rmask), 512);
-        assert_eq!(offset_of!(SndPcmHwParams, fifo_size), 536);
-
-        assert_eq!(size_of::<SndPcmSwParams>(), 136);
-        assert_eq!(offset_of!(SndPcmSwParams, avail_min), 16);
-        assert_eq!(offset_of!(SndPcmSwParams, xfer_align), 24);
-        assert_eq!(offset_of!(SndPcmSwParams, start_threshold), 32);
-        assert_eq!(offset_of!(SndPcmSwParams, stop_threshold), 40);
-        assert_eq!(offset_of!(SndPcmSwParams, silence_size), 56);
-        assert_eq!(offset_of!(SndPcmSwParams, proto), 72);
-
-        assert_eq!(size_of::<SndXferi>(), 24);
-        assert_eq!(offset_of!(SndXferi, buf), 8);
-        assert_eq!(offset_of!(SndXferi, frames), 16);
-    }
-
-    #[test]
     fn dev_id_bt_label_and_card_parsing_match_c() {
         assert_eq!(parse_card_idx_from_id("hw:3,0"), 3);
         assert_eq!(parse_card_idx_from_id("/dev/snd/pcmC12D0c"), 12);
@@ -5335,7 +4713,7 @@ mod tests {
 
     #[test]
     fn device_list_matching_and_midi_press_work() {
-        let mut dl: LasapiDeviceList = unsafe { mem::zeroed() };
+        let mut dl = LasapiDeviceList::zeroed();
         dl.num_devices = 2;
         copy_str_to_c(&mut dl.devices[0].id, "hw:0,0");
         dl.devices[0].is_capture = 1;
@@ -5398,7 +4776,7 @@ mod tests {
     }
 
     fn make_pb_list(devs: &[(&str, &str, bool)]) -> LasapiDeviceList {
-        let mut dl: LasapiDeviceList = unsafe { mem::zeroed() };
+        let mut dl = LasapiDeviceList::zeroed();
         for &(id, name, is_bt) in devs {
             let i = dl.num_devices as usize;
             dl.num_devices += 1;
@@ -5680,5 +5058,61 @@ mod tests {
         assert_eq!(vol_resp.hr, S_OK);
 
         h.join().unwrap();
+    }
+
+    #[test]
+    fn engine_alsa_backend_seam_handles_writes_xrun_and_device_loss() {
+        use crate::alsa_hw::InMemoryAlsaBackend;
+        use crate::unix_sys::{ERRNO_ENODEV, ERRNO_EPIPE};
+
+        let mut rt = default_runtime_state();
+        copy_str_to_c(&mut rt.target_playback_id, "hw:2,1");
+        let alsa = Arc::new(InMemoryAlsaBackend::new());
+        let eng = AudiodgEngine::with_backends(
+            &rt,
+            Arc::new(crate::bluez_runtime::NullBluetoothBackend),
+            Arc::clone(&alsa) as Arc<dyn AlsaPlaybackBackend>,
+        );
+
+        let opened = alsa.open_pcm("/dev/snd/pcmC2D1p", 48_000, 256, 32).unwrap();
+        let opened_fd = opened.fd;
+        {
+            let mut hws = eng.hw_lock.lock().unwrap();
+            hws.hw = opened;
+            copy_str_to_c(&mut hws.active_playback_id, "hw:2,1");
+        }
+        assert_eq!(alsa.opened_paths(), vec!["/dev/snd/pcmC2D1p".to_string()]);
+
+        let mix = vec![0.25f32; 256 * 2];
+        let mut scratch = vec![0u8; 256 * 2 * 4];
+
+        let (clear1, wake1) = eng.write_alsa_period_and_handle_fault(
+            &opened, &mix, 256, 2, 1.0, false, &mut scratch,
+        );
+        assert_eq!((clear1, wake1), (true, true));
+        assert_eq!(alsa.written_packet_count(), 1);
+        assert_eq!(eng.hw_xruns.load(Ordering::Relaxed), 0);
+
+        alsa.inject_fault(AlsaWriteOutcome::RecoveredXrun { xerr: ERRNO_EPIPE });
+        let (clear2, wake2) = eng.write_alsa_period_and_handle_fault(
+            &opened, &mix, 256, 2, 1.0, false, &mut scratch,
+        );
+        assert_eq!((clear2, wake2), (false, true));
+        assert_eq!(eng.hw_xruns.load(Ordering::Relaxed), 1);
+
+        alsa.inject_fault(AlsaWriteOutcome::DeviceLost {
+            dead_err: ERRNO_ENODEV,
+            xerr: None,
+        });
+        let (clear3, wake3) = eng.write_alsa_period_and_handle_fault(
+            &opened, &mix, 256, 2, 1.0, false, &mut scratch,
+        );
+        assert_eq!((clear3, wake3), (false, false));
+        assert_eq!(alsa.closed_fds(), vec![opened_fd]);
+
+        let hws = eng.hw_lock.lock().unwrap();
+        assert!(hws.hw.is_virtual);
+        assert_eq!(hws.hw.fd, -1);
+        assert_eq!(c_str_to_string(&hws.active_playback_id), "virtual");
     }
 }

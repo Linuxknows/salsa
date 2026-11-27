@@ -6,15 +6,12 @@
 // the Free Software Foundation, version 3 of the License.
 
 use std::env;
-use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::Shutdown;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
-use std::process::{Command, Stdio};
-use std::thread;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use crate::c_abi::{
@@ -40,7 +37,11 @@ use crate::hw_analog::{
     LASAPI_HW_ROUTE_AUTO, LASAPI_HW_ROUTE_HP, LASAPI_HW_ROUTE_SPK,
 };
 use crate::legal::{handle_common_cli_flag, one_line_legal_notice, salsa_version};
-use crate::unix_sys::{current_uid, resolve_sock_path_common, O_CLOEXEC, O_NOFOLLOW};
+use crate::provisioning::{
+    apply_zero_pipewire_cutover, restore_stock_pipewire, RealHostEnvOps, SalsaHostPaths,
+};
+pub use crate::provisioning::{build_filtered_ld_path, transform_steam_desktop};
+use crate::unix_sys::resolve_sock_path_common;
 
 fn get_socket_path() -> String {
     resolve_sock_path_common("LASAPI_SOCKET", "audiodg.sock", "/tmp/lasapi-audiodg.sock")
@@ -679,7 +680,7 @@ fn cmd_bt_reset(mac_or_empty: &str) -> i32 {
         }
     }
 
-    let (rc, msg) = crate::bluez_runtime::reset_device(&target_hint);
+    let (rc, msg) = crate::bluez_runtime::reset_device_prefer_daemon(&target_hint);
     if rc == 0 {
         println!(
             "{}",
@@ -1433,103 +1434,6 @@ fn get_install_root() -> String {
         .unwrap_or_else(|| ".".to_string())
 }
 
-fn run_quiet(bin: &str, args: &[&str]) -> bool {
-    Command::new(bin)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
-fn unit_exists(unit: &str) -> bool {
-    let Ok(out) = Command::new("systemctl")
-        .args(["--user", "list-unit-files", "--full", "--no-legend", unit])
-        .stderr(Stdio::null())
-        .output()
-    else {
-        return false;
-    };
-    let text = String::from_utf8_lossy(&out.stdout);
-    if let Some(first_line) = text.lines().next() {
-        if let Some(rest) = first_line.strip_prefix(unit) {
-            return rest.starts_with(' ') || rest.starts_with('\t');
-        }
-    }
-    false
-}
-
-fn stop_and_mask_unit(unit: &str) {
-    let _ = run_quiet("systemctl", &["--user", "stop", unit]);
-    let _ = run_quiet("systemctl", &["--user", "mask", unit]);
-}
-
-fn unmask_and_enable_unit(unit: &str) {
-    let _ = run_quiet("systemctl", &["--user", "unmask", unit]);
-    let _ = run_quiet("systemctl", &["--user", "enable", "--now", unit]);
-}
-
-fn record_masked_unit(list_path: &str, unit: &str) {
-    if let Ok(existing) = fs::read_to_string(list_path) {
-        if existing.lines().any(|l| l.trim_end_matches(&['\r', '\n', ' ', '\t'][..]) == unit) {
-            return;
-        }
-    }
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(list_path) {
-        let _ = writeln!(f, "{unit}");
-    }
-}
-
-fn trigger_broker_sync_mode() -> bool {
-    let dsock = get_debug_socket_path();
-    let Ok(mut stream) = UnixStream::connect(dsock) else {
-        return false;
-    };
-    let to = Some(Duration::from_millis(500));
-    let _ = stream.set_read_timeout(to);
-    let _ = stream.set_write_timeout(to);
-    if stream.write_all(b"PW_SYNC_MODE\n").is_err() {
-        return false;
-    }
-    let _ = stream.shutdown(Shutdown::Write);
-    let mut rbuf = [0u8; 512];
-    stream.read(&mut rbuf).is_ok_and(|n| n > 0)
-}
-
-fn is_salsa_pa_dir(seg: &str) -> bool {
-    seg.ends_with("/build/pa_reconnect") || seg.ends_with("/build/pa_reconnect32")
-}
-
-pub fn build_filtered_ld_path(prepend_dir: Option<&str>, cur_ld: Option<&str>) -> String {
-    let mut parts: Vec<&str> = Vec::new();
-    if let Some(p) = prepend_dir.filter(|s| !s.is_empty()) {
-        parts.push(p);
-    }
-    if let Some(cur) = cur_ld.filter(|s| !s.is_empty()) {
-        for seg in cur.split(':') {
-            if seg.is_empty() || is_salsa_pa_dir(seg) {
-                continue;
-            }
-            if prepend_dir == Some(seg) {
-                continue;
-            }
-            parts.push(seg);
-        }
-    }
-    let mut out = String::new();
-    for seg in parts {
-        let sep = usize::from(!out.is_empty());
-        if out.len() + sep + seg.len() > 2047 {
-            break;
-        }
-        if sep != 0 {
-            out.push(':');
-        }
-        out.push_str(seg);
-    }
-    out
-}
-
 fn cmd_pw_self_test() -> i32 {
     let dsock = get_debug_socket_path();
     let Ok(stream) = UnixStream::connect(&dsock) else {
@@ -1570,631 +1474,62 @@ fn cmd_pw_self_test() -> i32 {
     1
 }
 
-fn write_nofollow_file(path: &str, mode: u32, content: &[u8]) -> bool {
-    let Ok(mut f) = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
-        .mode(mode)
-        .open(path)
-    else {
-        return false;
-    };
-    let _ = f.set_permissions(fs::Permissions::from_mode(mode));
-    f.write_all(content).is_ok()
-}
-
-fn read_nofollow_string(path: &str) -> Option<String> {
-    let mut f = OpenOptions::new()
-        .read(true)
-        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
-        .open(path)
-        .ok()?;
-    let mut s = String::new();
-    f.read_to_string(&mut s).ok()?;
-    Some(s)
-}
-
-fn file_contains_str(path: &str, needle: &str) -> bool {
-    read_nofollow_string(path).is_some_and(|s| s.contains(needle))
-}
-
-fn copy_file_nofollow(src: &str, dst: &str, mode: u32) -> bool {
-    let Ok(mut inf) = OpenOptions::new()
-        .read(true)
-        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
-        .open(src)
-    else {
-        return false;
-    };
-    let mut buf = Vec::new();
-    if inf.read_to_end(&mut buf).is_err() {
-        return false;
-    }
-    write_nofollow_file(dst, mode, &buf)
-}
-
-pub fn transform_steam_desktop(contents: &str, wrap_cmd: &str, enable: bool) -> String {
-    let wrap_prefix = format!("Exec={wrap_cmd}");
-    let mut out = String::with_capacity(contents.len() + 64);
-    for chunk in contents.split_inclusive('\n') {
-        if enable {
-            if let Some(rest) = chunk.strip_prefix("Exec=/usr/bin/steam") {
-                if rest.is_empty()
-                    || rest.starts_with(' ')
-                    || rest.starts_with('\t')
-                    || rest.starts_with('\r')
-                    || rest.starts_with('\n')
-                {
-                    out.push_str(&wrap_prefix);
-                    out.push_str(rest);
-                    continue;
-                }
-            }
-            if let Some(rest) = chunk.strip_prefix("Exec=steam") {
-                if rest.is_empty()
-                    || rest.starts_with(' ')
-                    || rest.starts_with('\t')
-                    || rest.starts_with('\r')
-                    || rest.starts_with('\n')
-                {
-                    out.push_str(&wrap_prefix);
-                    out.push_str(rest);
-                    continue;
-                }
-            }
-        } else if let Some(rest) = chunk.strip_prefix(&wrap_prefix) {
-            if rest.is_empty()
-                || rest.starts_with(' ')
-                || rest.starts_with('\t')
-                || rest.starts_with('\r')
-                || rest.starts_with('\n')
-            {
-                out.push_str("Exec=/usr/bin/steam");
-                out.push_str(rest);
-                continue;
-            }
-        }
-        out.push_str(chunk);
-    }
-    out
-}
-
-fn rewrite_steam_desktop_exec(
-    src_path: &str,
-    dst_path: &str,
-    wrap_cmd: &str,
-    enable: bool,
-    mode: u32,
-) -> bool {
-    let Some(contents) = read_nofollow_string(src_path) else {
-        return false;
-    };
-    let rewritten = transform_steam_desktop(&contents, wrap_cmd, enable);
-    let tmp_path = format!("{dst_path}.tmp");
-    if !write_nofollow_file(&tmp_path, mode, rewritten.as_bytes()) {
-        let _ = fs::remove_file(&tmp_path);
-        return false;
-    }
-    if fs::rename(&tmp_path, dst_path).is_err() {
-        let _ = fs::remove_file(&tmp_path);
-        return false;
-    }
-    true
-}
-
-fn refresh_desktop_db(apps_dir: &str) {
-    let _ = run_quiet("update-desktop-database", &[apps_dir]);
-}
-
-fn install_steam_wrapper(home: &str, root: &str) {
-    let bin_dir = format!("{home}/.local/bin");
-    let apps_dir = format!("{home}/.local/share/applications");
-    let auto_dir = format!("{home}/.config/autostart");
-    let cfg_dir = format!("{home}/.config/lasapi");
-    let _ = fs::create_dir_all(&bin_dir);
-    let _ = fs::create_dir_all(&apps_dir);
-    let _ = fs::create_dir_all(&cfg_dir);
-
-    if root.is_empty() || root.contains(['\0', '\n', '\r']) {
-        return;
-    }
-    let recon_so_path = format!("{root}/build/libsalsa_pa_reconnect.so");
-    let mut recon_quoted = String::with_capacity(recon_so_path.len() + 2);
-    recon_quoted.push('\'');
-    for ch in recon_so_path.chars() {
-        if ch == '\'' {
-            recon_quoted.push_str("'\\''");
-        } else {
-            recon_quoted.push(ch);
-        }
-    }
-    recon_quoted.push('\'');
-
-    let wrap_path = format!("{bin_dir}/salsa-steam-launch");
-    let script = format!(
-        "#!/bin/sh\n\
-# Salsa PulseAudio Reconnect wrapper for Steam (propagates inside pressure-vessel)\n\
-# Revert anytime with: lasapi-ctl disable-auto\n\
-RECON_SO={recon_quoted}\n\
-if [ -r \"$RECON_SO\" ]; then\n    \
-    case \":${{LD_PRELOAD:-}}:\" in\n        \
-        *\":$RECON_SO:\"*) ;;\n        \
-        *) export LD_PRELOAD=\"${{RECON_SO}}${{LD_PRELOAD:+:$LD_PRELOAD}}\" ;;\n    \
-    esac\n\
-fi\n\
-if [ -x /usr/bin/steam ]; then\n    \
-    exec /usr/bin/steam \"$@\"\n\
-fi\n\
-exec steam \"$@\"\n"
-    );
-    if !write_nofollow_file(&wrap_path, 0o700, script.as_bytes()) {
-        return;
-    }
-
-    let app_desk = format!("{apps_dir}/steam.desktop");
-    let app_bak = format!("{cfg_dir}/steam_app.desktop.bak");
-    let sys_desk = "/usr/share/applications/steam.desktop";
-    if Path::new(&app_desk).exists()
-        && !file_contains_str(&app_desk, "salsa-steam-launch")
-        && !Path::new(&app_bak).exists()
-    {
-        copy_file_nofollow(&app_desk, &app_bak, 0o600);
-    }
-    let app_src = if Path::new(&app_bak).exists() {
-        app_bak.as_str()
-    } else {
-        sys_desk
-    };
-    if Path::new(app_src).exists()
-        && rewrite_steam_desktop_exec(app_src, &app_desk, &wrap_path, true, 0o644)
-    {
-        refresh_desktop_db(&apps_dir);
-    }
-
-    let auto_desk = format!("{auto_dir}/steam.desktop");
-    let auto_bak = format!("{cfg_dir}/steam_autostart.desktop.bak");
-    if Path::new(&auto_desk).exists() {
-        if !file_contains_str(&auto_desk, "salsa-steam-launch") && !Path::new(&auto_bak).exists() {
-            copy_file_nofollow(&auto_desk, &auto_bak, 0o600);
-        }
-        let auto_src = if Path::new(&auto_bak).exists() {
-            auto_bak.as_str()
-        } else {
-            auto_desk.as_str()
-        };
-        rewrite_steam_desktop_exec(auto_src, &auto_desk, &wrap_path, true, 0o644);
-    }
-}
-
-fn remove_steam_wrapper(home: &str) {
-    let apps_dir = format!("{home}/.local/share/applications");
-    let auto_dir = format!("{home}/.config/autostart");
-    let cfg_dir = format!("{home}/.config/lasapi");
-    let wrap_path = format!("{home}/.local/bin/salsa-steam-launch");
-    let _ = fs::remove_file(&wrap_path);
-
-    let app_desk = format!("{apps_dir}/steam.desktop");
-    let app_bak = format!("{cfg_dir}/steam_app.desktop.bak");
-    if Path::new(&app_bak).exists() {
-        if copy_file_nofollow(&app_bak, &app_desk, 0o644) {
-            let _ = fs::remove_file(&app_bak);
-        }
-        refresh_desktop_db(&apps_dir);
-    } else if file_contains_str(&app_desk, "salsa-steam-launch") {
-        let _ = fs::remove_file(&app_desk);
-        refresh_desktop_db(&apps_dir);
-    }
-
-    let auto_desk = format!("{auto_dir}/steam.desktop");
-    let auto_bak = format!("{cfg_dir}/steam_autostart.desktop.bak");
-    if Path::new(&auto_bak).exists() {
-        if copy_file_nofollow(&auto_bak, &auto_desk, 0o644) {
-            let _ = fs::remove_file(&auto_bak);
-        }
-    } else if file_contains_str(&auto_desk, "salsa-steam-launch") {
-        rewrite_steam_desktop_exec(&auto_desk, &auto_desk, &wrap_path, false, 0o644);
-    }
-}
-
 fn cmd_enable_auto() -> i32 {
-    let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let root = get_install_root();
-
-    let asoundrc = format!("{home}/.asoundrc");
-    let backup = format!("{home}/.asoundrc.lasapi.bak");
-    if Path::new(&asoundrc).exists() && !Path::new(&backup).exists() {
-        let _ = fs::rename(&asoundrc, &backup);
-    }
-
-    let asoundrc_body = format!(
-        "# LASAPI Full-Duplex Automatic ALSA Application Recognition Config\n\
-# Routes both Playback and Capture streams through LASAPI.\n\
-# Revert anytime with: lasapi-ctl disable-auto\n\
-pcm_type.lasapi {{\n    \
-    lib \"{root}/build/libasound_module_pcm_lasapi.so\"\n\
-}}\n\n\
-pcm.lasapi_raw {{\n    \
-    type lasapi\n\
-}}\n\n\
-pcm.lasapi {{\n    \
-    type plug\n    \
-    slave.pcm \"lasapi_raw\"\n\
-}}\n\n\
-pcm.!default {{\n    \
-    type asym\n    \
-    playback.pcm \"lasapi\"\n    \
-    capture.pcm \"lasapi\"\n\
-}}\n"
-    );
-    if let Err(e) = fs::write(&asoundrc, asoundrc_body) {
-        eprintln!("fopen ~/.asoundrc: {e}");
-        return 1;
-    }
-
-    let oal_dir = format!("{home}/.config/OpenAL");
-    let oal_conf = format!("{oal_dir}/alsoft.conf");
-    let oal_bak = format!("{oal_dir}/alsoft.conf.lasapi.bak");
-    let _ = fs::create_dir_all(&oal_dir);
-    if Path::new(&oal_conf).exists() && !Path::new(&oal_bak).exists() {
-        let _ = fs::rename(&oal_conf, &oal_bak);
-    }
-    let oal_body = "# LASAPI OpenAL Soft Automatic Routing\n\
-[general]\n\
-drivers = pulse,alsa\n\
-channels = stereo\n\
-sample-type = float32\n\
-frequency = 48000\n\
-period_size = 256\n\
-periods = 4\n";
-    let _ = fs::write(&oal_conf, oal_body);
-
-    let wp_dir = format!("{home}/.config/wireplumber/wireplumber.conf.d");
-    let wp_lua_main = format!("{home}/.config/wireplumber/main.lua.d");
-    let wp_lua_bt = format!("{home}/.config/wireplumber/bluetooth.lua.d");
-    let pw_conf_dir = format!("{home}/.config/pipewire/pipewire.conf.d");
-    let cfg_dir = format!("{home}/.config/lasapi");
-    let bak_dir = format!("{cfg_dir}/pw_backup");
-    let _ = fs::create_dir_all(&bak_dir);
-
-    for legacy in [
-        format!("{pw_conf_dir}/99-lasapi-bridge.conf"),
-        format!("{wp_dir}/99-lasapi-video-only.conf"),
-        format!("{wp_lua_main}/99-lasapi-no-audio.lua"),
-        format!("{wp_lua_bt}/99-lasapi-no-bluez.lua"),
-    ] {
-        let _ = fs::remove_file(legacy);
-    }
-
-    for (src, dst) in [
-        (
-            format!("{pw_conf_dir}/10-bose-persistent-bridge.conf"),
-            format!("{bak_dir}/10-bose-persistent-bridge.conf"),
-        ),
-        (
-            format!("{wp_dir}/51-bluetooth-autoswitch.conf"),
-            format!("{bak_dir}/51-bluetooth-autoswitch.conf"),
-        ),
-        (
-            format!("{wp_dir}/52-bose-keepalive.conf"),
-            format!("{bak_dir}/52-bose-keepalive.conf"),
-        ),
-    ] {
-        if Path::new(&src).exists() {
-            let _ = fs::rename(src, dst);
+    let root = PathBuf::from(get_install_root());
+    let paths = SalsaHostPaths::from_env(root);
+    let summary = match apply_zero_pipewire_cutover(&RealHostEnvOps, &paths) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
         }
-    }
-
-    let zero_flag = format!("{cfg_dir}/pipewire_zero_mode");
-    let _ = fs::write(&zero_flag, "enabled\n");
-
-    let pa32_so = format!("{root}/build/pa_reconnect32/libpulse.so.0");
-    let pa_dir = if Path::new(&pa32_so).exists() {
-        format!("{root}/build/pa_reconnect:{root}/build/pa_reconnect32")
-    } else {
-        format!("{root}/build/pa_reconnect")
     };
-    let cur_ld = env::var("LD_LIBRARY_PATH").ok();
-    let ld_val = build_filtered_ld_path(Some(&pa_dir), cur_ld.as_deref());
-    let ld_env = format!("LD_LIBRARY_PATH={ld_val}");
-
-    let env_dir = format!("{home}/.config/environment.d");
-    let env_file = format!("{env_dir}/99-salsa-direct.conf");
-    let _ = fs::create_dir_all(&env_dir);
-    let env_body = format!(
-        "# Salsa Zero-PipeWire Direct Steam/Proton/Desktop Audio Environment\n\
-# Revert anytime with: lasapi-ctl disable-auto\n\
-PROTON_USE_PIPEWIRE=0\n\
-SDL_AUDIODRIVER=pulse\n\
-ALSOFT_DRIVERS=pulse,alsa\n\
-LD_LIBRARY_PATH={ld_val}\n"
-    );
-    let _ = fs::write(&env_file, env_body);
-
-    let _ = run_quiet(
-        "systemctl",
-        &[
-            "--user",
-            "set-environment",
-            "PROTON_USE_PIPEWIRE=0",
-            "SDL_AUDIODRIVER=pulse",
-            "ALSOFT_DRIVERS=pulse,alsa",
-            &ld_env,
-        ],
-    );
-    let _ = run_quiet(
-        "dbus-update-activation-environment",
-        &[
-            "--systemd",
-            "PROTON_USE_PIPEWIRE=0",
-            "SDL_AUDIODRIVER=pulse",
-            "ALSOFT_DRIVERS=pulse,alsa",
-            &ld_env,
-        ],
-    );
-
-    install_steam_wrapper(&home, &root);
-
-    const ZERO_UNITS: [&str; 7] = [
-        "pipewire-pulse.socket",
-        "pipewire-pulse.service",
-        "wireplumber.service",
-        "pipewire.socket",
-        "pipewire.service",
-        "pulseaudio.socket",
-        "pulseaudio.service",
-    ];
-    let units_list = format!("{cfg_dir}/masked_units.list");
-    for unit in ZERO_UNITS {
-        if unit_exists(unit) {
-            record_masked_unit(&units_list, unit);
-            stop_and_mask_unit(unit);
-        }
-    }
-
-    let has_pw_socket_unit = unit_exists("lasapi-pipewire.socket");
-    let pw_socket_was_active = has_pw_socket_unit
-        && run_quiet(
-            "systemctl",
-            &["--user", "is-active", "--quiet", "lasapi-pipewire.socket"],
-        );
-    let audiodg_was_active = run_quiet(
-        "systemctl",
-        &["--user", "is-active", "--quiet", "lasapi-audiodg.service"],
-    );
-
-    if has_pw_socket_unit && !pw_socket_was_active {
-        if audiodg_was_active {
-            let _ = run_quiet("systemctl", &["--user", "stop", "lasapi-audiodg.service"]);
-        }
-        let _ = run_quiet(
-            "systemctl",
-            &["--user", "enable", "--now", "lasapi-pipewire.socket"],
-        );
-        if audiodg_was_active {
-            let _ = run_quiet("systemctl", &["--user", "start", "lasapi-audiodg.service"]);
-        }
-    }
-
-    if audiodg_was_active {
-        if !(has_pw_socket_unit && !pw_socket_was_active) && !trigger_broker_sync_mode() {
-            let _ = run_quiet(
-                "systemctl",
-                &["--user", "try-restart", "lasapi-audiodg.service"],
-            );
-        }
-        let rt = env::var("XDG_RUNTIME_DIR")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| format!("/run/user/{}", current_uid()));
-        let pw_sock = format!("{rt}/pipewire-0");
-        for _ in 0..40 {
-            if Path::new(&pw_sock).exists() {
-                break;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-        let _ = run_quiet(
-            "systemctl",
-            &[
-                "--user",
-                "try-restart",
-                "xdg-desktop-portal.service",
-                "plasma-xdg-desktop-portal-kde.service",
-                "xdg-desktop-portal-kde.service",
-                "xdg-desktop-portal-wlr.service",
-                "xdg-desktop-portal-hyprland.service",
-                "xdg-desktop-portal-gnome.service",
-                "xdg-desktop-portal-gtk.service",
-            ],
-        );
-    }
-
     println!("Enabled Zero-PipeWire Pure Salsa mode (ScreenCast portals preserved by Salsa Video Broker):");
-    println!("  - ALSA/OpenAL routing   : {asoundrc}, {oal_conf}");
-    println!("  - Zero-PipeWire flag    : {zero_flag} (Salsa owns $XDG_RUNTIME_DIR/pipewire-0 for video)");
-    println!("  - Steam/Proton direct   : {env_file} (PROTON_USE_PIPEWIRE=0, direct PA/ALSA)");
-    println!("  - Steam container proxy : {home}/.local/bin/salsa-steam-launch (reconnects across engine resets)");
+    println!(
+        "  - ALSA/OpenAL routing   : {}, {}",
+        summary.asoundrc.display(),
+        summary.alsoft_conf.display()
+    );
+    println!(
+        "  - Zero-PipeWire flag    : {} (Salsa owns $XDG_RUNTIME_DIR/pipewire-0 for video)",
+        summary.zero_flag.display()
+    );
+    println!(
+        "  - Steam/Proton direct   : {} (PROTON_USE_PIPEWIRE=0, direct PA/ALSA)",
+        summary.direct_env_file.display()
+    );
+    println!(
+        "  - Steam container proxy : {} (reconnects across engine resets)",
+        summary.steam_wrapper.display()
+    );
     println!("  - Upstream PW/WP/PA     : stopped & masked cleanly");
     println!("To revert cleanly anytime, run: lasapi-ctl disable-auto");
     0
 }
 
 fn cmd_disable_auto() -> i32 {
-    let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-
-    let asoundrc = format!("{home}/.asoundrc");
-    let backup = format!("{home}/.asoundrc.lasapi.bak");
-    let _ = fs::remove_file(&asoundrc);
-    if Path::new(&backup).exists() {
-        let _ = fs::rename(&backup, &asoundrc);
-        println!("Restored previous {asoundrc} from backup.");
-    } else {
-        println!("Removed {asoundrc} and restored stock ALSA configuration.");
-    }
-
-    let oal_conf = format!("{home}/.config/OpenAL/alsoft.conf");
-    let oal_bak = format!("{home}/.config/OpenAL/alsoft.conf.lasapi.bak");
-    let _ = fs::remove_file(&oal_conf);
-    if Path::new(&oal_bak).exists() {
-        let _ = fs::rename(&oal_bak, &oal_conf);
-    }
-
-    let wp_dir = format!("{home}/.config/wireplumber/wireplumber.conf.d");
-    let wp_lua_main = format!("{home}/.config/wireplumber/main.lua.d");
-    let wp_lua_bt = format!("{home}/.config/wireplumber/bluetooth.lua.d");
-    let pw_dir = format!("{home}/.config/pipewire/pipewire.conf.d");
-    let cfg_dir = format!("{home}/.config/lasapi");
-    let bak_dir = format!("{cfg_dir}/pw_backup");
-
-    for legacy in [
-        format!("{pw_dir}/99-lasapi-bridge.conf"),
-        format!("{wp_dir}/99-lasapi-video-only.conf"),
-        format!("{wp_lua_main}/99-lasapi-no-audio.lua"),
-        format!("{wp_lua_bt}/99-lasapi-no-bluez.lua"),
-        format!("{cfg_dir}/pipewire_zero_mode"),
-        format!("{home}/.config/environment.d/99-salsa-direct.conf"),
-    ] {
-        let _ = fs::remove_file(legacy);
-    }
-
-    remove_steam_wrapper(&home);
-
-    let cur_ld = env::var("LD_LIBRARY_PATH").ok();
-    let ld_val = build_filtered_ld_path(None, cur_ld.as_deref());
-    if ld_val.is_empty() {
-        let _ = run_quiet(
-            "systemctl",
-            &[
-                "--user",
-                "unset-environment",
-                "PROTON_USE_PIPEWIRE",
-                "SDL_AUDIODRIVER",
-                "ALSOFT_DRIVERS",
-                "LD_LIBRARY_PATH",
-            ],
-        );
-    } else {
-        let ld_env = format!("LD_LIBRARY_PATH={ld_val}");
-        let _ = run_quiet(
-            "systemctl",
-            &[
-                "--user",
-                "unset-environment",
-                "PROTON_USE_PIPEWIRE",
-                "SDL_AUDIODRIVER",
-                "ALSOFT_DRIVERS",
-            ],
-        );
-        let _ = run_quiet("systemctl", &["--user", "set-environment", &ld_env]);
-        let _ = run_quiet(
-            "dbus-update-activation-environment",
-            &["--systemd", &ld_env],
-        );
-    }
-
-    for (src, dst, parent_dir) in [
-        (
-            format!("{bak_dir}/10-bose-persistent-bridge.conf"),
-            format!("{pw_dir}/10-bose-persistent-bridge.conf"),
-            &pw_dir,
-        ),
-        (
-            format!("{bak_dir}/51-bluetooth-autoswitch.conf"),
-            format!("{wp_dir}/51-bluetooth-autoswitch.conf"),
-            &wp_dir,
-        ),
-        (
-            format!("{bak_dir}/52-bose-keepalive.conf"),
-            format!("{wp_dir}/52-bose-keepalive.conf"),
-            &wp_dir,
-        ),
-    ] {
-        if Path::new(&src).exists() {
-            let _ = fs::create_dir_all(parent_dir);
-            let _ = fs::rename(src, dst);
-        }
-    }
-
-    let _ = trigger_broker_sync_mode();
-    let _ = run_quiet("systemctl", &["--user", "stop", "lasapi-audiodg.service"]);
-    let _ = run_quiet(
-        "systemctl",
-        &["--user", "disable", "--now", "lasapi-pipewire.socket"],
-    );
-
-    let units_list = format!("{cfg_dir}/masked_units.list");
-    if let Ok(text) = fs::read_to_string(&units_list) {
-        for line in text.lines() {
-            let unit = line.trim_end_matches(&['\r', '\n', ' ', '\t'][..]);
-            if !unit.is_empty() {
-                unmask_and_enable_unit(unit);
+    let root = PathBuf::from(get_install_root());
+    let paths = SalsaHostPaths::from_env(root);
+    match restore_stock_pipewire(&RealHostEnvOps, &paths) {
+        Ok(summary) => {
+            if summary.restored_asoundrc_from_backup {
+                println!("Restored previous {} from backup.", summary.asoundrc.display());
+            } else {
+                println!(
+                    "Removed {} and restored stock ALSA configuration.",
+                    summary.asoundrc.display()
+                );
             }
+            println!(
+                "Restored upstream desktop sound server (PipeWire, PipeWire-Pulse & WirePlumber) cleanly."
+            );
+            0
         }
-        let _ = fs::remove_file(&units_list);
-    }
-
-    const FALLBACK_UNITS: [&str; 7] = [
-        "pipewire.socket",
-        "pipewire.service",
-        "wireplumber.service",
-        "pipewire-pulse.socket",
-        "pipewire-pulse.service",
-        "pulseaudio.socket",
-        "pulseaudio.service",
-    ];
-    for unit in FALLBACK_UNITS {
-        if unit_exists(unit) {
-            unmask_and_enable_unit(unit);
+        Err(e) => {
+            eprintln!("{e}");
+            1
         }
     }
-
-    let _ = run_quiet(
-        "systemctl",
-        &[
-            "--user",
-            "reset-failed",
-            "pipewire.service",
-            "pipewire.socket",
-            "wireplumber.service",
-            "pipewire-pulse.service",
-            "pipewire-pulse.socket",
-        ],
-    );
-    if unit_exists("pipewire.socket") {
-        let _ = run_quiet("systemctl", &["--user", "start", "pipewire.socket"]);
-    }
-    if unit_exists("pipewire.service") {
-        let _ = run_quiet("systemctl", &["--user", "restart", "pipewire.service"]);
-    }
-    if unit_exists("wireplumber.service")
-        && !run_quiet(
-            "systemctl",
-            &["--user", "is-active", "--quiet", "wireplumber.service"],
-        )
-    {
-        let _ = run_quiet("systemctl", &["--user", "start", "wireplumber.service"]);
-    }
-    let _ = run_quiet(
-        "systemctl",
-        &[
-            "--user",
-            "try-restart",
-            "xdg-desktop-portal.service",
-            "plasma-xdg-desktop-portal-kde.service",
-            "xdg-desktop-portal-kde.service",
-            "xdg-desktop-portal-wlr.service",
-            "xdg-desktop-portal-hyprland.service",
-            "xdg-desktop-portal-gnome.service",
-            "xdg-desktop-portal-gtk.service",
-        ],
-    );
-
-    println!(
-        "Restored upstream desktop sound server (PipeWire, PipeWire-Pulse & WirePlumber) cleanly."
-    );
-    0
 }
 
 fn print_usage(prog: &str) {

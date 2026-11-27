@@ -11,19 +11,17 @@
 use core::ffi::c_void;
 use core::mem;
 use core::ptr;
-use core::slice;
 use core::sync::atomic::{AtomicU32, Ordering};
 use std::f64::consts::PI;
 use std::sync::Mutex;
 
 use crate::c_abi::{
-    LasapiEqConfig, LasapiMicApoCfg, LasapiParamEqExt, LasapiShmRing, SalsaMicCubicState,
-    LASAPI_EQ_BANDS, LASAPI_FILTER_HIGH_SHELF, LASAPI_FILTER_LOW_SHELF, LASAPI_MAX_CHANNELS,
-    LASAPI_RING_FRAMES, LASAPI_RING_MASK, SALSA_PACK_F32_LE, SALSA_PACK_S16_LE, SALSA_PACK_S24_3LE, SALSA_PACK_S24_LE,
-    SALSA_PACK_S32_LE,
+    LasapiEqConfig, LasapiMicApoCfg, LasapiParamEqExt, SalsaMicCubicState, LASAPI_EQ_BANDS,
+    LASAPI_FILTER_HIGH_SHELF, LASAPI_FILTER_LOW_SHELF, LASAPI_MAX_CHANNELS, SALSA_PACK_F32_LE,
+    SALSA_PACK_S16_LE, SALSA_PACK_S24_3LE, SALSA_PACK_S24_LE, SALSA_PACK_S32_LE,
 };
 use crate::state_conf::K_EQ_FREQS;
-use crate::unix_sys::{dl_open_any, dl_sym};
+use crate::unix_sys::dl_sym;
 
 const MIC_RN_FRAME: usize = 480;
 const MIC_RN_CAP: usize = 8192;
@@ -355,12 +353,13 @@ impl MicRnnoiseCtx {
             return;
         }
         self.probed = true;
-        const CANDS: &[&str] = &[
-            "librnnoise.so.0",
-            "/usr/lib/librnnoise.so.0",
-            "/usr/local/lib/librnnoise.so.0",
-        ];
-        let lib = unsafe { dl_open_any(CANDS) };
+        const CANDS: &[&str] = &["librnnoise.so.0", "/usr/local/lib/librnnoise.so.0"];
+        let lib = unsafe {
+            salsa_host_dl::open_verified_optional_lib(
+                CANDS,
+                Self::ensure_loaded as *const () as *const c_void,
+            )
+        };
         if lib.is_null() {
             return;
         }
@@ -1450,355 +1449,80 @@ pub fn pack_pcm_bytes(
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn salsa_dsp_process_dynamic_eq(
-    buf: *mut f32,
-    frames: u32,
-    ch: u32,
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DspTelemetrySnapshot {
+    pub band_levels_db: [f32; LASAPI_EQ_BANDS],
+    pub dyn_delta_db: [f32; LASAPI_EQ_BANDS],
+    pub output_peak_l: f32,
+    pub output_peak_r: f32,
+    pub mic_apo_peak_in: f32,
+    pub mic_apo_peak_out: f32,
+    pub mic_rnnoise_active: u32,
+}
+
+pub fn process_dynamic_eq(
+    buf: &mut [f32],
+    frames: usize,
+    ch: usize,
     rate: u32,
-    eq_cfg: *const LasapiEqConfig,
-    param_eq: *const LasapiParamEqExt,
+    eq_cfg: &LasapiEqConfig,
+    param_eq: &LasapiParamEqExt,
 ) {
-    if buf.is_null() || frames == 0 || ch == 0 || eq_cfg.is_null() || param_eq.is_null() {
-        return;
-    }
-    let Some(len) = (frames as usize).checked_mul(ch as usize) else {
+    let Some(need) = frames.checked_mul(ch) else {
         return;
     };
-    let slice_buf = unsafe { slice::from_raw_parts_mut(buf, len) };
-    let eq = unsafe { &*eq_cfg };
-    let peq = unsafe { &*param_eq };
+    if frames == 0 || ch == 0 || buf.len() < need {
+        return;
+    }
     if let Ok(mut st) = EQ_DSP.lock() {
-        process_dynamic_eq_inner(&mut st, &GLOBAL_TELEM, slice_buf, frames as usize, ch as usize, rate, eq, peq);
+        process_dynamic_eq_inner(&mut st, &GLOBAL_TELEM, &mut buf[..need], frames, ch, rate, eq_cfg, param_eq);
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn salsa_dsp_process_capture_mic_apo(
-    mic_buf: *mut f32,
-    frames: u32,
+pub fn process_capture_mic_apo(
+    mic_buf: &mut [f32],
+    frames: usize,
     rate: u32,
-    cfg: *const LasapiMicApoCfg,
+    cfg: &LasapiMicApoCfg,
 ) {
-    if mic_buf.is_null() || frames == 0 || cfg.is_null() {
-        return;
-    }
-    let Some(len) = (frames as usize).checked_mul(2) else {
+    let Some(need) = frames.checked_mul(2) else {
         return;
     };
-    let slice_buf = unsafe { slice::from_raw_parts_mut(mic_buf, len) };
-    let cfg_ref = unsafe { &*cfg };
+    if frames == 0 || mic_buf.len() < need {
+        return;
+    }
     if let Ok(mut st) = MIC_APO_DSP.lock() {
-        process_capture_mic_apo_inner(
-            &mut st,
-            &GLOBAL_TELEM,
-            slice_buf,
-            frames as usize,
-            rate,
-            cfg_ref,
-        );
+        process_capture_mic_apo_inner(&mut st, &GLOBAL_TELEM, &mut mic_buf[..need], frames, rate, cfg);
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn salsa_dsp_get_telem(
-    out_band_levels_db: *mut f32,
-    out_dyn_delta_db: *mut f32,
-    out_pk_l: *mut f32,
-    out_pk_r: *mut f32,
-    out_mic_pk_in: *mut f32,
-    out_mic_pk_out: *mut f32,
-    out_rnnoise_active: *mut u32,
-) {
-    if !out_band_levels_db.is_null() {
-        let out = unsafe { slice::from_raw_parts_mut(out_band_levels_db, LASAPI_EQ_BANDS) };
-        for (dst, src) in out.iter_mut().zip(GLOBAL_TELEM.band_levels_db.iter()) {
-            *dst = f32::from_bits(src.load(Ordering::Relaxed));
-        }
-    }
-    if !out_dyn_delta_db.is_null() {
-        let out = unsafe { slice::from_raw_parts_mut(out_dyn_delta_db, LASAPI_EQ_BANDS) };
-        for (dst, src) in out.iter_mut().zip(GLOBAL_TELEM.dyn_delta_db.iter()) {
-            *dst = f32::from_bits(src.load(Ordering::Relaxed));
-        }
-    }
-    if !out_pk_l.is_null() {
-        unsafe { *out_pk_l = f32::from_bits(GLOBAL_TELEM.output_peak_l.load(Ordering::Relaxed)) };
-    }
-    if !out_pk_r.is_null() {
-        unsafe { *out_pk_r = f32::from_bits(GLOBAL_TELEM.output_peak_r.load(Ordering::Relaxed)) };
-    }
-    if !out_mic_pk_in.is_null() {
-        unsafe {
-            *out_mic_pk_in = f32::from_bits(GLOBAL_TELEM.mic_apo_peak_in.load(Ordering::Relaxed))
-        };
-    }
-    if !out_mic_pk_out.is_null() {
-        unsafe {
-            *out_mic_pk_out = f32::from_bits(GLOBAL_TELEM.mic_apo_peak_out.load(Ordering::Relaxed))
-        };
-    }
-    if !out_rnnoise_active.is_null() {
-        unsafe { *out_rnnoise_active = GLOBAL_TELEM.mic_rnnoise_active.load(Ordering::Relaxed) };
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn salsa_dsp_consume_session_frames(
-    r: *mut LasapiShmRing,
-    io_phase: *mut f64,
-    s_rate: u32,
-    s_ch: u32,
-    io_stream_live: *mut bool,
-    io_underrun_pending: *mut bool,
-    io_last_audio_ns: *mut u64,
-    mix_buf: *mut f32,
-    out_frames: u32,
-    out_channels: u32,
-    hw_rate: u32,
-    replace_output: bool,
-    now_ns: u64,
-) {
-    if io_phase.is_null()
-        || io_stream_live.is_null()
-        || io_underrun_pending.is_null()
-        || io_last_audio_ns.is_null()
-        || mix_buf.is_null()
-        || out_frames == 0
-        || out_channels == 0
+pub fn dsp_telemetry() -> DspTelemetrySnapshot {
+    let mut snap = DspTelemetrySnapshot::default();
+    for (dst, src) in snap
+        .band_levels_db
+        .iter_mut()
+        .zip(GLOBAL_TELEM.band_levels_db.iter())
     {
-        return;
+        *dst = f32::from_bits(src.load(Ordering::Relaxed));
     }
-
-    let reset_idle = || unsafe {
-        *io_stream_live = false;
-        *io_underrun_pending = false;
-        *io_phase = 0.0;
-    };
-
-    if r.is_null() {
-        reset_idle();
-        return;
+    for (dst, src) in snap
+        .dyn_delta_db
+        .iter_mut()
+        .zip(GLOBAL_TELEM.dyn_delta_db.iter())
+    {
+        *dst = f32::from_bits(src.load(Ordering::Relaxed));
     }
-
-    let active_ptr = unsafe { ptr::addr_of!((*r).active) };
-    if unsafe { (*active_ptr).load(Ordering::Acquire) } == 0 {
-        reset_idle();
-        return;
-    }
-
-    let ch = s_ch as usize;
-    if ch == 0 || ch > LASAPI_MAX_CHANNELS {
-        return;
-    }
-    let out_ch = out_channels as usize;
-    let out_fr = out_frames as usize;
-    let Some(mix_len) = out_fr.checked_mul(out_ch) else {
-        return;
-    };
-    let mix = unsafe { slice::from_raw_parts_mut(mix_buf, mix_len) };
-
-    let client_rate = if s_rate != 0 { s_rate } else { hw_rate };
-    if client_rate == 0 || hw_rate == 0 {
-        return;
-    }
-
-    let wf_ptr = unsafe { ptr::addr_of!((*r).write_frame) };
-    let rf_ptr = unsafe { ptr::addr_of!((*r).read_frame) };
-    let w = unsafe { (*wf_ptr).load(Ordering::Acquire) };
-    let mut rd = unsafe { (*rf_ptr).load(Ordering::Relaxed) };
-    if w < rd {
-        unsafe { (*rf_ptr).store(w, Ordering::Release) };
-        reset_idle();
-        return;
-    }
-
-    if w <= rd {
-        if unsafe { *io_stream_live } {
-            let last_ns = unsafe { *io_last_audio_ns };
-            if now_ns > last_ns && (now_ns - last_ns) > 500_000_000 {
-                unsafe {
-                    *io_stream_live = false;
-                    *io_underrun_pending = false;
-                }
-            } else {
-                unsafe { *io_underrun_pending = true };
-            }
-        }
-        return;
-    }
-    let mut avail = w - rd;
-    if avail > LASAPI_RING_FRAMES as u64 {
-        let keep = (out_fr as u64).saturating_mul(2).min(LASAPI_RING_FRAMES as u64);
-        rd = w.saturating_sub(keep);
-        avail = w - rd;
-        unsafe { (*rf_ptr).store(rd, Ordering::Release) };
-    }
-    let min_avail = if client_rate == hw_rate { 1 } else { 2 };
-    if avail < min_avail {
-        if unsafe { *io_stream_live } {
-            let last_ns = unsafe { *io_last_audio_ns };
-            if now_ns > last_ns && (now_ns - last_ns) > 500_000_000 {
-                unsafe {
-                    *io_stream_live = false;
-                    *io_underrun_pending = false;
-                }
-            } else {
-                unsafe { *io_underrun_pending = true };
-            }
-        }
-        return;
-    }
-
-    if unsafe { *io_underrun_pending } {
-        let xruns_ptr = unsafe { ptr::addr_of!((*r).xruns) };
-        unsafe { (*xruns_ptr).fetch_add(1, Ordering::Relaxed) };
-        unsafe { *io_underrun_pending = false };
-    }
-
-    let muted_ptr = unsafe { ptr::addr_of!((*r).muted) };
-    let vol_ptr = unsafe { ptr::addr_of!((*r).volume_milli) };
-    let mut vol = if unsafe { (*muted_ptr).load(Ordering::Relaxed) } != 0 {
-        0.0f32
-    } else {
-        (unsafe { (*vol_ptr).load(Ordering::Relaxed) } as f32) / 1000.0
-    };
-    if !(0.0..=4.0).contains(&vol) {
-        vol = if vol > 4.0 { 4.0 } else { 0.0 };
-    }
-
-    let pcm_base = unsafe { ptr::addr_of!((*r).pcm_data.0) as *const f32 };
-    if client_rate == hw_rate {
-        let to_read = (avail.min(out_fr as u64)) as usize;
-        let is_live = unsafe { *io_stream_live };
-        let fade_frames = if is_live && to_read > 0 && to_read < out_fr {
-            to_read.min(32)
-        } else {
-            0
-        };
-        let fade_start = to_read.saturating_sub(fade_frames);
-        for f in 0..to_read {
-            let slot = ((rd.wrapping_add(f as u64) as usize) & LASAPI_RING_MASK) * ch;
-            let env = if fade_frames > 0 && f >= fade_start {
-                ((to_read - 1 - f) as f32) / (fade_frames as f32)
-            } else {
-                1.0f32
-            };
-            for c in 0..out_ch {
-                let raw = unsafe { pcm_base.add(slot + (c % ch)).read() };
-                let sample = if raw.is_finite() { raw * vol * env } else { 0.0 };
-                let dst = &mut mix[f * out_ch + c];
-                if replace_output {
-                    *dst = sample;
-                } else {
-                    *dst += sample;
-                }
-            }
-        }
-        unsafe { (*rf_ptr).store(rd.wrapping_add(to_read as u64), Ordering::Release) };
-    } else {
-        let step = (client_rate as f64) / (hw_rate as f64);
-        let mut phase = unsafe { *io_phase };
-        for f in 0..out_fr {
-            let i0 = phase as u64;
-            if i0 + 1 >= avail {
-                break;
-            }
-            let frac = (phase - (i0 as f64)) as f32;
-            let slot0 = ((rd.wrapping_add(i0) as usize) & LASAPI_RING_MASK) * ch;
-            let slot1 = ((rd.wrapping_add(i0 + 1) as usize) & LASAPI_RING_MASK) * ch;
-            for c in 0..out_ch {
-                let ch_idx = c % ch;
-                let s0_raw = unsafe { pcm_base.add(slot0 + ch_idx).read() };
-                let s1_raw = unsafe { pcm_base.add(slot1 + ch_idx).read() };
-                let s0 = if s0_raw.is_finite() { s0_raw } else { 0.0 };
-                let s1 = if s1_raw.is_finite() { s1_raw } else { 0.0 };
-                let sample = (s0 + (s1 - s0) * frac) * vol;
-                let dst = &mut mix[f * out_ch + c];
-                if replace_output {
-                    *dst = sample;
-                } else {
-                    *dst += sample;
-                }
-            }
-            phase += step;
-        }
-        let advance = (phase as u64).min(avail);
-        unsafe { *io_phase = phase - (advance as f64) };
-        unsafe { (*rf_ptr).store(rd.wrapping_add(advance), Ordering::Release) };
-    }
-
-    unsafe {
-        *io_stream_live = true;
-        *io_last_audio_ns = now_ns;
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn salsa_dsp_resample_mic_cubic(
-    in_buf: *const f32,
-    in_frames: u32,
-    out_buf: *mut f32,
-    out_frames: u32,
-    st: *mut SalsaMicCubicState,
-) {
-    if in_buf.is_null() || out_buf.is_null() || in_frames == 0 || out_frames == 0 || st.is_null() {
-        return;
-    }
-    let Some(in_len) = (in_frames as usize).checked_mul(2) else {
-        return;
-    };
-    let Some(out_len) = (out_frames as usize).checked_mul(2) else {
-        return;
-    };
-    let in_slice = unsafe { slice::from_raw_parts(in_buf, in_len) };
-    let out_slice = unsafe { slice::from_raw_parts_mut(out_buf, out_len) };
-    resample_mic_cubic_slice(
-        in_slice,
-        in_frames as usize,
-        out_slice,
-        out_frames as usize,
-        unsafe { &mut *st },
-    );
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn salsa_dsp_scale_cap_clip(buf: *mut f32, samples: u32, gain: f32) {
-    if buf.is_null() || samples == 0 {
-        return;
-    }
-    let slice_buf = unsafe { slice::from_raw_parts_mut(buf, samples as usize) };
-    scale_cap_clip_slice(slice_buf, gain);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn salsa_dsp_pack_pcm(
-    mix_buf: *const f32,
-    total_samples: u32,
-    master_gain: f32,
-    softknee: bool,
-    pack_fmt: u32,
-    out_bytes: *mut u8,
-) {
-    if mix_buf.is_null() || out_bytes.is_null() || total_samples == 0 {
-        return;
-    }
-    let n = total_samples as usize;
-    let out_len = match pack_fmt {
-        SALSA_PACK_S32_LE | SALSA_PACK_S24_LE => n * 4,
-        SALSA_PACK_S24_3LE => n * 3,
-        SALSA_PACK_S16_LE => n * 2,
-        _ => n * 4,
-    };
-    let in_slice = unsafe { slice::from_raw_parts(mix_buf, n) };
-    let out_slice = unsafe { slice::from_raw_parts_mut(out_bytes, out_len) };
-    pack_pcm_bytes(in_slice, master_gain, softknee, pack_fmt, out_slice);
+    snap.output_peak_l = f32::from_bits(GLOBAL_TELEM.output_peak_l.load(Ordering::Relaxed));
+    snap.output_peak_r = f32::from_bits(GLOBAL_TELEM.output_peak_r.load(Ordering::Relaxed));
+    snap.mic_apo_peak_in = f32::from_bits(GLOBAL_TELEM.mic_apo_peak_in.load(Ordering::Relaxed));
+    snap.mic_apo_peak_out = f32::from_bits(GLOBAL_TELEM.mic_apo_peak_out.load(Ordering::Relaxed));
+    snap.mic_rnnoise_active = GLOBAL_TELEM.mic_rnnoise_active.load(Ordering::Relaxed);
+    snap
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::c_abi::LASAPI_RING_FRAMES;
     use crate::state_conf::default_runtime_state;
 
     #[test]
@@ -1903,223 +1627,4 @@ mod tests {
         assert!(f32::from_bits(telem.mic_apo_peak_out.load(Ordering::Relaxed)) > 0.05);
     }
 
-    #[test]
-    fn consume_session_frames_native_and_resample() {
-        let mut ring: Box<LasapiShmRing> = unsafe {
-            let mut u = Box::<LasapiShmRing>::new_uninit();
-            ptr::write_bytes(u.as_mut_ptr(), 0, 1);
-            u.assume_init()
-        };
-        ring.active.store(1, Ordering::Release);
-        ring.volume_milli.store(500, Ordering::Release); // 0.5x gain
-        for i in 0..256 {
-            let slot = (i & LASAPI_RING_MASK) * 2;
-            ring.pcm_data.0[slot] = 0.8;
-            ring.pcm_data.0[slot + 1] = -0.4;
-        }
-        ring.write_frame.store(256, Ordering::Release);
-
-        let mut phase = 0.0;
-        let mut live = false;
-        let mut underrun = false;
-        let mut last_ns = 0u64;
-        let mut mix = vec![0.0f32; 128 * 2];
-
-        unsafe {
-            salsa_dsp_consume_session_frames(
-                &mut *ring,
-                &mut phase,
-                48_000,
-                2,
-                &mut live,
-                &mut underrun,
-                &mut last_ns,
-                mix.as_mut_ptr(),
-                128,
-                2,
-                48_000,
-                true,
-                1_000_000_000,
-            );
-        }
-        assert!(live);
-        assert_eq!(ring.read_frame.load(Ordering::Acquire), 128);
-        assert!((mix[0] - 0.4).abs() < 1e-5);
-        assert!((mix[1] - (-0.2)).abs() < 1e-5);
-
-        // Resampled path 44100 -> 48000 adds onto existing mix
-        unsafe {
-            salsa_dsp_consume_session_frames(
-                &mut *ring,
-                &mut phase,
-                44_100,
-                2,
-                &mut live,
-                &mut underrun,
-                &mut last_ns,
-                mix.as_mut_ptr(),
-                64,
-                2,
-                48_000,
-                false,
-                1_010_000_000,
-            );
-        }
-        assert!(ring.read_frame.load(Ordering::Acquire) > 128);
-        assert!(mix[0] > 0.6);
-
-        // Next call with insufficient frames arms underrun and increments xruns on recovery
-        ring.read_frame.store(256, Ordering::Release);
-        unsafe {
-            salsa_dsp_consume_session_frames(
-                &mut *ring,
-                &mut phase,
-                44_100,
-                2,
-                &mut live,
-                &mut underrun,
-                &mut last_ns,
-                mix.as_mut_ptr(),
-                64,
-                2,
-                48_000,
-                true,
-                1_020_000_000,
-            );
-        }
-        assert!(underrun);
-        for i in 256..300 {
-            let slot = (i & LASAPI_RING_MASK) * 2;
-            ring.pcm_data.0[slot] = 0.2;
-            ring.pcm_data.0[slot + 1] = 0.2;
-        }
-        ring.write_frame.store(300, Ordering::Release);
-        unsafe {
-            salsa_dsp_consume_session_frames(
-                &mut *ring,
-                &mut phase,
-                44_100,
-                2,
-                &mut live,
-                &mut underrun,
-                &mut last_ns,
-                mix.as_mut_ptr(),
-                16,
-                2,
-                48_000,
-                true,
-                1_030_000_000,
-            );
-        }
-        assert!(!underrun);
-        assert_eq!(ring.xruns.load(Ordering::Relaxed), 1);
-        assert_eq!(LASAPI_RING_FRAMES, 32_768);
-    }
-
-    #[test]
-    fn consume_session_frames_filters_nan_and_recovers_read_ahead() {
-        let mut ring: Box<LasapiShmRing> = unsafe {
-            let mut u = Box::<LasapiShmRing>::new_uninit();
-            ptr::write_bytes(u.as_mut_ptr(), 0, 1);
-            u.assume_init()
-        };
-        ring.active.store(1, Ordering::Release);
-        ring.volume_milli.store(1000, Ordering::Release);
-        ring.pcm_data.0[0] = f32::NAN;
-        ring.pcm_data.0[1] = f32::INFINITY;
-        ring.pcm_data.0[2] = f32::NEG_INFINITY;
-        ring.pcm_data.0[3] = 0.25;
-        ring.read_frame.store(0, Ordering::Release);
-        ring.write_frame.store(2, Ordering::Release);
-
-        let mut phase = 0.0;
-        let mut live = false;
-        let mut underrun = false;
-        let mut last_ns = 0u64;
-        let mut mix = vec![0.0f32; 4];
-
-        unsafe {
-            salsa_dsp_consume_session_frames(
-                &mut *ring,
-                &mut phase,
-                48_000,
-                2,
-                &mut live,
-                &mut underrun,
-                &mut last_ns,
-                mix.as_mut_ptr(),
-                2,
-                2,
-                48_000,
-                true,
-                1_000_000_000,
-            );
-        }
-        assert!(mix.iter().all(|v| v.is_finite()));
-        assert!((mix[3] - 0.25).abs() < 1e-5);
-
-        // Corrupt read_frame ahead of write_frame recovers without underflow
-        ring.write_frame.store(10, Ordering::Release);
-        ring.read_frame.store(50, Ordering::Release);
-        unsafe {
-            salsa_dsp_consume_session_frames(
-                &mut *ring,
-                &mut phase,
-                48_000,
-                2,
-                &mut live,
-                &mut underrun,
-                &mut last_ns,
-                mix.as_mut_ptr(),
-                2,
-                2,
-                48_000,
-                true,
-                1_010_000_000,
-            );
-        }
-        assert_eq!(ring.read_frame.load(Ordering::Acquire), 10);
-    }
-
-    #[test]
-    fn consume_session_frames_softens_live_partial_underrun() {
-        let mut ring: Box<LasapiShmRing> = unsafe {
-            let mut u = Box::<LasapiShmRing>::new_uninit();
-            ptr::write_bytes(u.as_mut_ptr(), 0, 1);
-            u.assume_init()
-        };
-        ring.active.store(1, Ordering::Release);
-        ring.volume_milli.store(1000, Ordering::Release);
-        for i in 0..64 {
-            let slot = (i & LASAPI_RING_MASK) * 2;
-            ring.pcm_data.0[slot] = 0.5;
-            ring.pcm_data.0[slot + 1] = 0.5;
-        }
-        ring.write_frame.store(64, Ordering::Release);
-        let mut phase = 0.0;
-        let mut live = true;
-        let mut underrun = false;
-        let mut last_ns = 999_000_000u64;
-        let mut mix = vec![0.0f32; 256 * 2];
-
-        unsafe {
-            salsa_dsp_consume_session_frames(
-                &mut *ring,
-                &mut phase,
-                48_000,
-                2,
-                &mut live,
-                &mut underrun,
-                &mut last_ns,
-                mix.as_mut_ptr(),
-                256,
-                2,
-                48_000,
-                true,
-                1_000_000_000,
-            );
-        }
-        assert!((mix[0] - 0.5).abs() < 1e-5);
-        assert!(mix[63 * 2].abs() < 1e-5, "partial tail should ramp smoothly to 0");
-    }
 }
